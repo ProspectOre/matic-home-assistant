@@ -24,7 +24,7 @@ dependencies = [
 test = [
   "build>=1",
   "mypy>=1.16",
-  "PyTurboJPEG==1.8.3",
+  "PyTurboJPEG==2.5.0",
   "pytest>=8",
   "pytest-asyncio>=0.25",
   "pytest-cov>=6",
