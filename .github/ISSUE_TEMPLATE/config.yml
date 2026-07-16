@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ProspectOre/matic-home-assistant/security/advisories/new
+    about: Report credential, authorization, TLS, command, or privacy issues privately.

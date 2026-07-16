@@ -1,0 +1,57 @@
+blueprint:
+  name: Matic — Quiet-hours cleaning plan
+  description: >-
+    Start intelligent cleaning from a saved plan at a chosen time with an
+    optional battery guard. Set individual rooms to quick vacuuming for quieter
+    overnight cleaning.
+  domain: automation
+  source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/quiet_hours.yaml
+  input:
+    vacuum:
+      name: Matic vacuum
+      selector:
+        entity:
+          integration: matic_robot
+          domain: vacuum
+    battery:
+      name: Matic battery sensor
+      selector:
+        entity:
+          integration: matic_robot
+          domain: sensor
+          device_class: battery
+    plan:
+      name: Saved quiet-hours plan
+      selector:
+        text:
+    run_time:
+      name: Start time
+      default: "01:00:00"
+      selector:
+        time:
+    minimum_battery:
+      name: Minimum battery
+      default: 40
+      selector:
+        number:
+          min: 10
+          max: 100
+          unit_of_measurement: "%"
+
+mode: single
+
+triggers:
+  - trigger: time
+    at: !input run_time
+
+conditions:
+  - condition: numeric_state
+    entity_id: !input battery
+    above: !input minimum_battery
+
+actions:
+  - action: matic_robot.intelligent_clean
+    target:
+      entity_id: !input vacuum
+    data:
+      plan: !input plan

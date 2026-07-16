@@ -1,0 +1,16 @@
+syntax = "proto3";
+
+package hermes_auth;
+
+message TokenRequest {
+  string user_id = 1;
+}
+
+message BotToken {
+  bytes user = 1;
+  bytes hashed_token = 2;
+}
+
+service HermesAuth {
+  rpc AuthToken(TokenRequest) returns (BotToken);
+}

@@ -1,0 +1,15 @@
+{
+  "domain": "matic_robot",
+  "name": "Matic (Unofficial)",
+  "after_dependencies": ["bluetooth", "frontend"],
+  "codeowners": ["@ProspectOre"],
+  "config_flow": true,
+  "dependencies": ["http"],
+  "documentation": "https://github.com/ProspectOre/matic-home-assistant",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "issue_tracker": "https://github.com/ProspectOre/matic-home-assistant/issues",
+  "requirements": ["cryptography>=44", "grpclib==0.4.9", "protobuf>=6"],
+  "version": "0.1.0",
+  "zeroconf": ["_matic_hermes._tcp.local."]
+}

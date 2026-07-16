@@ -1,0 +1,74 @@
+blueprint:
+  name: Matic — Clean when everyone leaves
+  description: >-
+    Start intelligent cleaning after everyone leaves. Rooms that have waited
+    longest are cleaned first, so short trips do not repeatedly clean the same
+    beginning of the plan. When anyone returns, stop the managed run and send
+    Matic to its dock; an interrupted room remains due next time.
+  domain: automation
+  source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/clean_when_away.yaml
+  input:
+    vacuum:
+      name: Matic vacuum
+      selector:
+        entity:
+          integration: matic_robot
+          domain: vacuum
+    household:
+      name: Household members
+      selector:
+        entity:
+          domain: person
+          multiple: true
+    plan:
+      name: Saved plan name
+      selector:
+        text:
+    settle_time:
+      name: Departure settle time
+      default:
+        minutes: 5
+      selector:
+        duration:
+
+mode: parallel
+max: 2
+max_exceeded: silent
+
+variables:
+  household_entities: !input household
+
+triggers:
+  - trigger: state
+    id: everyone_left
+    entity_id: !input household
+    to: not_home
+    for: !input settle_time
+  - trigger: state
+    id: someone_returned
+    entity_id: !input household
+    to: home
+
+actions:
+  - choose:
+      - conditions:
+          - condition: trigger
+            id: everyone_left
+          - condition: template
+            value_template: >-
+              {{ expand(household_entities)
+                 | rejectattr('state', 'eq', 'not_home') | list | count == 0 }}
+        sequence:
+          - action: matic_robot.intelligent_clean
+            target:
+              entity_id: !input vacuum
+            data:
+              plan: !input plan
+      - conditions:
+          - condition: trigger
+            id: someone_returned
+        sequence:
+          - action: matic_robot.stop_intelligent_cleaning
+            continue_on_error: true
+            target:
+              entity_id: !input vacuum

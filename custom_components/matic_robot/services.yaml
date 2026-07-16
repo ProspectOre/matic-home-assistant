@@ -1,0 +1,253 @@
+clean:
+  target: &vacuum_target
+    entity:
+      integration: matic_robot
+      domain: vacuum
+  fields:
+    rooms:
+      example: [Kitchen, Study]
+      selector:
+        text:
+          multiple: true
+    cleaning_mode:
+      selector:
+        select:
+          translation_key: cleaning_mode
+          options: [vacuum, mop, vacuum_and_mop]
+    coverage_setting:
+      selector:
+        select:
+          translation_key: coverage_setting
+          options: [quick, standard]
+    ordered:
+      default: false
+      selector:
+        boolean:
+
+intelligent_clean:
+  target: *vacuum_target
+  fields: &optional_plan
+    plan:
+      selector:
+        text:
+
+clean_entire_plan:
+  target: *vacuum_target
+  fields: *optional_plan
+
+run_selected_plan:
+  target: *vacuum_target
+  fields: *optional_plan
+
+preview_plan:
+  target: *vacuum_target
+  fields: *optional_plan
+
+stop_intelligent_cleaning:
+  target: *vacuum_target
+
+reset_plan_history:
+  target: *vacuum_target
+  fields:
+    plan:
+      selector:
+        text:
+    all_plans:
+      default: false
+      selector:
+        boolean:
+
+list_plans:
+  target: *vacuum_target
+
+save_plan:
+  target: *vacuum_target
+  fields:
+    plan_id:
+      selector:
+        text:
+    name:
+      required: true
+      selector:
+        text:
+    enabled:
+      default: true
+      selector:
+        boolean:
+    run_behavior:
+      default: intelligent
+      selector:
+        select:
+          translation_key: run_behavior
+          options: [intelligent, ordered]
+    rooms:
+      required: true
+      example:
+        - room: Kitchen
+          cleaning_mode: vacuum_and_mop
+          coverage_setting: standard
+        - room: Study
+          cleaning_mode: vacuum
+          coverage_setting: quick
+      selector:
+        object:
+    return_to_base:
+      default: true
+      selector:
+        boolean:
+    select:
+      default: true
+      selector:
+        boolean:
+    start_timeout:
+      default: 120
+      advanced: true
+      selector:
+        number:
+          min: 10
+          max: 600
+          unit_of_measurement: seconds
+          mode: box
+    completion_timeout:
+      default: 21600
+      advanced: true
+      selector:
+        number:
+          min: 60
+          max: 43200
+          unit_of_measurement: seconds
+          mode: box
+
+delete_plan:
+  target: &plan_target
+    entity:
+      integration: matic_robot
+      domain: vacuum
+  fields: &plan_reference
+    plan:
+      required: true
+      selector:
+        text:
+
+select_plan:
+  target: *plan_target
+  fields: *plan_reference
+
+save_plan_room:
+  target: *plan_target
+  fields:
+    plan:
+      required: true
+      selector:
+        text:
+    room:
+      required: true
+      example:
+        room: Kitchen
+        cleaning_mode: vacuum_and_mop
+        coverage_setting: standard
+      selector:
+        object:
+
+delete_plan_room:
+  target: *plan_target
+  fields:
+    plan:
+      required: true
+      selector:
+        text:
+    room:
+      required: true
+      selector:
+        text:
+
+move_plan_room:
+  target: *plan_target
+  fields:
+    plan:
+      required: true
+      selector:
+        text:
+    room:
+      required: true
+      selector:
+        text:
+    new_position:
+      required: true
+      selector:
+        number:
+          min: 1
+          max: 100
+          mode: box
+
+fetch_hermes_collection:
+  target: *vacuum_target
+  fields:
+    collection:
+      required: true
+      selector:
+        select:
+          options:
+            - active_session_key
+            - approximate_trajectory
+            - child_lock_enabled_state
+            - coverage_corridor
+            - coverage_marker
+            - coverage_plan
+            - coverage_session_history
+            - coverage_session_thumbnails
+            - coverage_time
+            - current_version
+            - deep_mop_override_setting_state
+            - displayed_mission
+            - dock_detections
+            - jukebox_state
+            - kabuki_state
+            - labeled_missions
+            - latest_pose
+            - map_combined_coverage
+            - map_compressed_rgb
+            - map_compressed_rgb_higher
+            - map_integrated
+            - map_semantics
+            - map_semantics_override
+            - matter_pairing_state
+            - planned_path
+            - petwaste_enabled_state
+            - schedule_event_previews
+            - schedule_events
+            - semantics_override
+            - sink_summon_locations
+            - sink_summons
+            - time_zone
+            - update_config
+            - update_state
+            - uploader_config_state
+            - user_tunnel_ssh_permission
+            - voice_enabled_state
+            - water_flow_override_state
+            - wifi_status
+            - zones
+    limit:
+      default: 32
+      selector:
+        number:
+          min: 1
+          max: 256
+          mode: box
+    include_payload:
+      default: false
+      selector:
+        boolean:
+    payload_format:
+      default: base64
+      selector:
+        select:
+          options: [base64, hex]
+    max_bytes:
+      default: 65536
+      selector:
+        number:
+          min: 0
+          max: 1048576
+          mode: box

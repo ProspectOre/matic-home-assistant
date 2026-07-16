@@ -1,0 +1,21 @@
+.coverage
+.build/
+.DS_Store
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.venv/
+__pycache__/
+*.egg-info/
+coverage.xml
+htmlcov/
+build/
+dist/
+*.pcap
+*.pcapng
+*.har
+*.mobilebackup
+
+# Never commit live robot material.
+.private/
+captures/

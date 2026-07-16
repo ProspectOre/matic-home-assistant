@@ -1,0 +1,21 @@
+name: Feature request
+description: Suggest a local Home Assistant feature for Matic.
+title: "[Feature]: "
+labels: [enhancement]
+body:
+  - type: textarea
+    attributes:
+      label: Home Assistant use case
+      description: Describe the user outcome, automation, or dashboard behavior.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Local evidence
+      description: Describe the matching Matic app feature and any non-secret verification. Do not attach captures or credentials.
+  - type: checkboxes
+    attributes:
+      label: Safety
+      options:
+        - label: This request contains no private-home data or secret material.
+          required: true
