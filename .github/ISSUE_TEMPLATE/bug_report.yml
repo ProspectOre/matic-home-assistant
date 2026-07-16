@@ -1,0 +1,46 @@
+name: Bug report
+description: Report an integration problem without including private home data.
+title: "[Bug]: "
+labels: [bug]
+body:
+  - type: checkboxes
+    attributes:
+      label: Privacy check
+      options:
+        - label: I removed private home data, including credentials, addresses, serial numbers, certificate details, device and room names, maps, captures, backups, and raw Home Assistant storage.
+          required: true
+  - type: input
+    attributes:
+      label: Integration version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Home Assistant version and installation method
+      placeholder: 2026.7.2, Home Assistant OS
+    validations:
+      required: true
+  - type: dropdown
+    attributes:
+      label: Failure stage
+      options:
+        - Discovery
+        - Bluetooth pairing
+        - Setup or restart
+        - State update
+        - Map or rooms
+        - Vacuum control
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Reproduction
+      description: Give the smallest ordered reproduction using sanitized names.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Sanitized diagnostics or logs
+      description: Paste only diagnostics or logs that you reviewed and sanitized. Do not attach raw storage or captures.

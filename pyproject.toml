@@ -1,0 +1,101 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "matic-home-assistant"
+version = "0.1.0"
+description = "Unofficial local-only Home Assistant integration for Matic robot vacuums"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.14"
+classifiers = [
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = [
+  "cryptography>=44",
+  "grpclib==0.4.9",
+  "Pillow>=11",
+  "protobuf>=6",
+]
+
+[project.optional-dependencies]
+test = [
+  "build>=1",
+  "mypy>=1.16",
+  "PyTurboJPEG==1.8.3",
+  "pytest>=8",
+  "pytest-asyncio>=0.25",
+  "pytest-cov>=6",
+  "pytest-homeassistant-custom-component>=0.13.338",
+  "ruff>=0.12",
+  "types-protobuf>=6",
+]
+
+[project.urls]
+Documentation = "https://github.com/ProspectOre/matic-home-assistant#readme"
+Issues = "https://github.com/ProspectOre/matic-home-assistant/issues"
+Source = "https://github.com/ProspectOre/matic-home-assistant"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+faulthandler_timeout = "120"
+faulthandler_exit_on_timeout = true
+testpaths = ["tests"]
+
+[tool.setuptools.packages.find]
+include = ["custom_components*"]
+
+[tool.setuptools.package-data]
+"custom_components.matic_robot" = [
+  "brand/*.png",
+  "brand/*.svg",
+  "manifest.json",
+  "*.js",
+  "client/matic_intermediate_ca.pem",
+  "client/proto/*.proto",
+  "services.yaml",
+  "icons.json",
+  "strings.json",
+  "translations/*.json",
+]
+
+[tool.coverage.run]
+omit = ["custom_components/matic_robot/client/proto/*"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+
+[tool.ruff]
+target-version = "py314"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+  "ASYNC",
+  "B",
+  "C4",
+  "E",
+  "F",
+  "I",
+  "PERF",
+  "PIE",
+  "RUF",
+  "UP",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"custom_components/matic_robot/client/proto/*" = ["ALL"]
+"tests/*" = ["S101"]
+
+[tool.mypy]
+strict = true
+explicit_package_bases = true
+exclude = "custom_components/matic_robot/client/proto/"
+
+[[tool.mypy.overrides]]
+module = ["custom_components.matic_robot.client.proto.*"]
+follow_imports = "skip"
+ignore_errors = true

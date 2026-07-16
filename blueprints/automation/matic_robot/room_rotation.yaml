@@ -1,0 +1,37 @@
+blueprint:
+  name: Matic — Scheduled intelligent cleaning
+  description: >-
+    Start with rooms that have waited longest since a successful clean, then
+    continue through the saved plan. Failed, cancelled, and interrupted rooms
+    remain due.
+  domain: automation
+  source_url: https://github.com/ProspectOre/matic-home-assistant/blob/main/blueprints/automation/matic_robot/room_rotation.yaml
+  input:
+    vacuum:
+      name: Matic vacuum
+      selector:
+        entity:
+          integration: matic_robot
+          domain: vacuum
+    plan:
+      name: Saved rotation plan
+      selector:
+        text:
+    run_time:
+      name: Start time
+      default: "10:00:00"
+      selector:
+        time:
+
+mode: single
+
+triggers:
+  - trigger: time
+    at: !input run_time
+
+actions:
+  - action: matic_robot.intelligent_clean
+    target:
+      entity_id: !input vacuum
+    data:
+      plan: !input plan

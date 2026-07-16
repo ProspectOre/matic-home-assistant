@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="#0e2233"/>
+  <!-- house outline = local-only -->
+  <path d="M 52 118 L 128 54 L 204 118 L 204 196 Q 204 208 192 208 L 64 208 Q 52 208 52 196 Z"
+        fill="none" stroke="#2f4f66" stroke-width="12" stroke-linejoin="round"/>
+  <!-- vacuum sweep path inside the home -->
+  <path d="M 84 186 L 84 120 L 128 168 L 172 120 L 172 186"
+        fill="none" stroke="#4cc9f0" stroke-width="16"
+        stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="172" cy="186" r="12" fill="#eaf7fd"/>
+</svg>

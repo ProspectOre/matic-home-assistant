@@ -1,0 +1,71 @@
+{
+  "entity": {
+    "binary_sensor": {
+      "charging": { "default": "mdi:battery-charging" },
+      "paused": { "default": "mdi:pause-circle-outline" },
+      "cleaning": { "default": "mdi:robot-vacuum" },
+      "returning": { "default": "mdi:home-map-marker" },
+      "low_charge": { "default": "mdi:battery-alert" },
+      "fully_charged": { "default": "mdi:battery-check" },
+      "problem": { "default": "mdi:alert-circle-outline" },
+      "update_available": { "default": "mdi:update" },
+      "matter_pairing_mode": { "default": "mdi:access-point" },
+      "ssh_tunnel_permission": { "default": "mdi:console-network" },
+      "diagnostic_upload": { "default": "mdi:cloud-upload" }
+    },
+    "button": {
+      "run_selected_plan": { "default": "mdi:play-circle-outline" },
+      "intelligent_clean": { "default": "mdi:brain" },
+      "clean_entire_plan": { "default": "mdi:home-floor-0" },
+      "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" }
+    },
+    "camera": {
+      "map": { "default": "mdi:floor-plan" }
+    },
+    "number": {
+      "water_flow": { "default": "mdi:water-percent" }
+    },
+    "select": {
+      "cleaning_mode": { "default": "mdi:robot-vacuum" },
+      "coverage_setting": { "default": "mdi:map-marker-path" },
+      "saved_cleaning_plan": { "default": "mdi:playlist-check" }
+    },
+    "sensor": {
+      "activity": {
+        "default": "mdi:robot-vacuum",
+        "state": {
+          "error": "mdi:alert-circle",
+          "paused": "mdi:pause-circle",
+          "cleaning": "mdi:robot-vacuum",
+          "returning": "mdi:home-map-marker",
+          "charging": "mdi:battery-charging",
+          "docked": "mdi:home",
+          "ready": "mdi:robot-vacuum"
+        }
+      },
+      "battery": { "default": "mdi:battery" },
+      "cleaning_history": { "default": "mdi:history" },
+      "hardware_revision": { "default": "mdi:chip" },
+      "rooms": { "default": "mdi:floor-plan" },
+      "active_cleaning_plan": { "default": "mdi:progress-clock" },
+      "next_cleaning_room": { "default": "mdi:playlist-play" },
+      "software_version": { "default": "mdi:package-up" },
+      "protocol_version": { "default": "mdi:code-tags" },
+      "current_area": { "default": "mdi:map-marker" },
+      "update_channel": { "default": "mdi:source-branch" },
+      "update_state": { "default": "mdi:update" },
+      "wifi_state": { "default": "mdi:wifi" },
+      "scheduled_cleanings": { "default": "mdi:calendar-clock" },
+      "local_cleaning_sessions": { "default": "mdi:history" },
+      "dock_detections": { "default": "mdi:home-search" },
+      "sink_summon_locations": { "default": "mdi:water-pump" },
+      "coverage_time": { "default": "mdi:timer-outline" }
+    },
+    "switch": {
+      "child_lock": { "default": "mdi:lock" },
+      "pet_waste_avoidance": { "default": "mdi:paw-off" },
+      "voice_assistant": { "default": "mdi:microphone-message" },
+      "deep_mop": { "default": "mdi:water-plus" }
+    }
+  }
+}

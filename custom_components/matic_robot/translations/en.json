@@ -1,0 +1,696 @@
+{
+  "common": {
+    "cleaning_mode": "Cleaning mode",
+    "coverage": "Coverage",
+    "drag_room": "Drag {room}",
+    "include_room": "Include {room}",
+    "mop": "Mop",
+    "move_room_down": "Move {room} down",
+    "move_room_up": "Move {room} up",
+    "quick": "Quick",
+    "room_editor_intro": "Turn on the rooms to include. Drag rooms or use the arrows to set the saved order from top to bottom.",
+    "standard": "Standard",
+    "vacuum": "Vacuum",
+    "vacuum_and_mop": "Vacuum + mop"
+  },
+  "config": {
+    "abort": {
+      "already_configured": "This Matic robot is already configured.",
+      "already_in_progress": "Setup is already in progress. Return to the open setup dialog.",
+      "bluetooth_unavailable": "Setup requires physical access to the robot and a Bluetooth adapter built into or directly attached to this Home Assistant host. Resolve any Bluetooth repair under Settings → System → Repairs. Bluetooth proxies cannot complete setup.",
+      "cannot_connect": "Home Assistant could not connect to the robot. Confirm it is powered on and connected to the same network, then try again.",
+      "invalid_certificate": "The robot's certificate could not be verified.",
+      "invalid_credential": "The robot rejected the local credential.",
+      "pairing_session_expired": "The pairing session expired. Start setup again.",
+      "reauth_successful": "Local access was restored successfully.",
+      "reconfigure_successful": "The robot connection was updated successfully."
+    },
+    "error": {
+      "cannot_connect": "Unable to connect to the robot.",
+      "bluetooth_unavailable": "Setup requires physical access to the robot and a Bluetooth adapter built into or directly attached to this Home Assistant host. Resolve any Bluetooth repair under Settings → System → Repairs. Bluetooth proxies cannot complete setup.",
+      "invalid_certificate": "The robot's certificate could not be verified.",
+      "invalid_credential": "The local access credential is invalid or was not issued for this robot.",
+      "invalid_passkey": "Enter all six digits shown on the robot's screen.",
+      "pairing_code_expired": "That code expired. In the Matic app, turn Pairing mode off and back on. Select Submit in Home Assistant again, then enter the new code when prompted.",
+      "pairing_code_rejected": "The robot did not accept that code. In the Matic app, turn Pairing mode off and back on. Select Submit in Home Assistant again, then enter the new code when prompted.",
+      "pairing_mode_off": "The robot is not accepting a new local user. Turn on Pairing mode in the Matic app, then try again.",
+      "pairing_timeout": "Home Assistant did not detect Pairing mode. Open Add another user in the Matic app, turn on Pairing mode, and try again."
+    },
+    "step": {
+      "discovery_failed": {
+        "description": "Home Assistant did not find a Matic robot on this network. Make sure the robot is powered on and connected to the same local network, then retry.",
+        "title": "No Matic robot found",
+        "menu_options": {
+          "retry": "Search again",
+          "manual": "Enter network address"
+        }
+      },
+      "select_robot": {
+        "data": {
+          "robot": "Matic robot"
+        },
+        "description": "More than one Matic robot was found. Choose the one you want to add.",
+        "title": "Choose your Matic"
+      },
+      "manual": {
+        "data": {
+          "host": "IP address or hostname",
+          "port": "Port"
+        },
+        "description": "Enter an address only if automatic discovery fails. Home Assistant will still verify the robot and authorize through Bluetooth.",
+        "title": "Enter the robot's network address"
+      },
+      "pair": {
+        "description": "In the Matic app, open Settings → Connectivity → Add another user and turn on Pairing mode. Return to Home Assistant and select Submit. If a new Bluetooth pairing is required, the robot will show a six-digit code and Home Assistant will ask you to enter it. If this Home Assistant host is already paired over Bluetooth, setup may finish without a new code.",
+        "title": "Connect your Matic"
+      },
+      "pairing_code": {
+        "data": {
+          "passkey": "Six-digit code"
+        },
+        "data_description": {
+          "passkey": "Enter the current code. Home Assistant does not save it."
+        },
+        "description": "Read the six-digit code from the robot and enter it now. Keep this dialog open while pairing completes.",
+        "title": "Enter the code shown on Matic"
+      },
+      "reauth_confirm": {
+        "description": "In the Matic app, open Settings → Connectivity → Add another user and turn on Pairing mode. Return to Home Assistant and select Submit to replace its local credential. If a new Bluetooth pairing is required, enter the robot's code when prompted.",
+        "title": "Restore local access"
+      },
+      "reconfigure": {
+        "data": {
+          "host": "Host",
+          "port": "Port"
+        },
+        "description": "Update the robot's local address. Home Assistant verifies the robot before saving the change.",
+        "title": "Update robot connection"
+      }
+    },
+    "progress": {
+      "wait_for_pairing": "Connecting to Matic. Keep Pairing mode open. If the robot shows a six-digit code, enter it when Home Assistant asks."
+    }
+  },
+  "options": {
+    "abort": {
+      "entry_not_loaded": "Home Assistant needs the robot online to manage cleaning plans. After it reconnects, open Configure again."
+    },
+    "error": {
+      "confirmation_required": "Select the confirmation checkbox to continue.",
+      "duplicate_plan": "Enter a unique plan name containing at least one letter or number.",
+      "invalid_plan": "This plan cannot run with its current settings or the robot's current room map.",
+      "no_rooms": "Select at least one room."
+    },
+    "step": {
+      "init": {
+        "title": "Cleaning plans",
+        "description": "Create reusable room plans for dashboards and automations. Saved plans: {plan_count} · Mapped rooms: {room_count} · Default plan: {selected_plan}.",
+        "menu_options": {
+          "manage_plan": "Manage a cleaning plan",
+          "add_plan": "Create a cleaning plan",
+          "finish": "Done"
+        }
+      },
+      "manage_plan": {
+        "title": "Choose a cleaning plan",
+        "description": "Default plan: {selected_plan}. Choose a saved plan to review or change.",
+        "data": {
+          "plan": "Cleaning plan"
+        },
+        "data_description": {
+          "plan": "Choose the saved plan to inspect or change. The default plan is identified in the list."
+        }
+      },
+      "plan_menu": {
+        "title": "Manage cleaning plan",
+        "description": "{plan_name} · Rooms in plan: {plan_room_count}. Choose what to review or change.",
+        "menu_options": {
+          "edit_plan": "Edit every room and setting",
+          "preview_plan": "Preview next run",
+          "select_plan": "Use as the default plan",
+          "reset_history": "Reset intelligent cleaning history",
+          "delete_plan": "Delete this plan",
+          "change_plan": "Choose another plan",
+          "finish": "Done"
+        }
+      },
+      "add_plan": {
+        "title": "Create a cleaning plan",
+        "description": "Name the plan, choose how it runs, then turn on any of the robot's {room_count} mapped rooms. Every room starts off. Enabled rooms default to Vacuum and Standard, and all settings save together.",
+        "data": {
+          "name": "Plan name",
+          "run_behavior": "Cleaning order",
+          "room_editor": "Rooms — top to bottom",
+          "return_to_base": "Return to dock when finished"
+        },
+        "data_description": {
+          "name": "Use a name you will recognize in dashboards and automations, such as Away, Weekdays, or Deep clean.",
+          "run_behavior": "Intelligent rotation starts with selected rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due; the saved order breaks ties, so short runs do not always begin with the same rooms. Run all in saved order cleans every selected room once from top to bottom.",
+          "room_editor": "Turn on a room to include it and reveal its settings. The list is the exact order for Run all and the tie-break order for Intelligent rotation. Drag rooms or use the arrows to reorder them.",
+          "return_to_base": "Send the robot to its dock after all selected rooms finish successfully."
+        }
+      },
+      "edit_plan": {
+        "title": "Edit cleaning plan",
+        "description": "Update the plan's behavior, included rooms, room settings, and saved order on one screen. All changes save together.",
+        "data": {
+          "name": "Plan name",
+          "run_behavior": "Cleaning order",
+          "room_editor": "Rooms — top to bottom",
+          "enabled": "Plan enabled",
+          "return_to_base": "Return to dock when finished"
+        },
+        "data_description": {
+          "name": "The name shown in Home Assistant actions, entities, and plan management.",
+          "run_behavior": "Intelligent rotation starts with selected rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due; the saved order breaks ties. Run all in saved order cleans every selected room once from top to bottom.",
+          "room_editor": "Turn on a room to include it and reveal its settings. The list is the exact order for Run all and the tie-break order for Intelligent rotation. Drag rooms or use the arrows to reorder them.",
+          "enabled": "Disabled plans remain saved and editable but cannot be started.",
+          "return_to_base": "Send the robot to its dock after all selected rooms finish successfully."
+        }
+      },
+      "delete_plan": {
+        "title": "Delete cleaning plan",
+        "description": "This permanently deletes {plan_name}. Cleaning history for unrelated plans is retained.",
+        "data": {
+          "confirm": "I understand and want to delete this plan"
+        },
+        "data_description": {
+          "confirm": "Required safeguard. Leave this off to return without deleting the plan."
+        }
+      },
+      "preview_plan": {
+        "title": "Preview next run",
+        "description": "{plan_name} will clean: {next_rooms}. This preview uses the saved behavior and changes nothing.",
+        "data": {}
+      },
+      "reset_history": {
+        "title": "Reset intelligent cleaning history",
+        "description": "Clear successful-room tracking for {plan_name}, or every plan. Plans and room settings are never deleted.",
+        "data": {
+          "all_plans": "Reset history for every plan",
+          "confirm": "I understand and want to reset this history"
+        },
+        "data_description": {
+          "all_plans": "Off resets history only for the plan currently being managed. On resets history for every saved plan.",
+          "confirm": "Required safeguard. After reset, every affected room is treated as though it has never completed."
+        }
+      }
+    }
+  },
+  "selector": {
+    "cleaning_mode": {
+      "options": {
+        "mop": "Mop",
+        "vacuum": "Vacuum",
+        "vacuum_and_mop": "Vacuum + mop"
+      }
+    },
+    "coverage_setting": {
+      "options": {
+        "quick": "Quick",
+        "standard": "Standard"
+      }
+    },
+    "run_behavior": {
+      "options": {
+        "intelligent": "Intelligent rotation",
+        "ordered": "Run all in saved order"
+      }
+    }
+  },
+  "entity": {
+    "binary_sensor": {
+      "charging": {
+        "name": "Charging"
+      },
+      "paused": {
+        "name": "Paused",
+        "state": {
+          "off": "Not paused",
+          "on": "Paused"
+        }
+      },
+      "cleaning": {
+        "name": "Cleaning"
+      },
+      "returning": {
+        "name": "Returning to dock"
+      },
+      "low_charge": {
+        "name": "Low charge"
+      },
+      "fully_charged": {
+        "name": "Fully charged",
+        "state": {
+          "off": "Not fully charged",
+          "on": "Fully charged"
+        }
+      },
+      "matter_pairing_mode": {
+        "name": "Matter pairing mode",
+        "state": {
+          "off": "Inactive",
+          "on": "Active"
+        }
+      },
+      "problem": {
+        "name": "Problem"
+      },
+      "update_available": {
+        "name": "Update available",
+        "state": {
+          "off": "Up to date",
+          "on": "Update available"
+        }
+      },
+      "active_cleaning_session": {
+        "name": "Active cleaning session"
+      },
+      "diagnostic_upload": {
+        "name": "Robot diagnostic upload",
+        "state": {
+          "off": "Disabled",
+          "on": "Enabled"
+        }
+      },
+      "ssh_tunnel_permission": {
+        "name": "Robot SSH tunnel permission",
+        "state": {
+          "off": "Not allowed",
+          "on": "Allowed"
+        }
+      }
+    },
+    "button": {
+      "run_selected_plan": {
+        "name": "Start default plan"
+      },
+      "intelligent_clean": {
+        "name": "Start intelligent rotation"
+      },
+      "clean_entire_plan": {
+        "name": "Clean all rooms in default plan"
+      },
+      "stop_intelligent_cleaning": {
+        "name": "Stop plan and dock"
+      }
+    },
+    "camera": {
+      "map": {
+        "name": "Map"
+      }
+    },
+    "number": {
+      "water_flow": {
+        "name": "Mopping water flow"
+      }
+    },
+    "select": {
+      "cleaning_mode": {
+        "name": "Default cleaning mode",
+        "state": {
+          "vacuum": "Vacuum",
+          "mop": "Mop",
+          "vacuum_and_mop": "Vacuum + mop"
+        }
+      },
+      "coverage_setting": {
+        "name": "Default coverage",
+        "state": {
+          "quick": "Quick",
+          "standard": "Standard"
+        }
+      },
+      "saved_cleaning_plan": {
+        "name": "Default cleaning plan"
+      }
+    },
+    "sensor": {
+      "activity": {
+        "name": "Activity",
+        "state": {
+          "error": "Error",
+          "paused": "Paused",
+          "cleaning": "Cleaning",
+          "returning": "Returning to dock",
+          "charging": "Charging",
+          "docked": "Docked",
+          "ready": "Ready"
+        }
+      },
+      "battery": {
+        "name": "Battery"
+      },
+      "active_cleaning_plan": {
+        "name": "Active cleaning plan"
+      },
+      "cleaning_history": {
+        "name": "Plan room completions"
+      },
+      "current_area": {
+        "name": "Current area"
+      },
+      "coverage_time": {
+        "name": "Coverage time"
+      },
+      "dock_detections": {
+        "name": "Dock detections"
+      },
+      "hardware_revision": {
+        "name": "Hardware revision"
+      },
+      "local_cleaning_sessions": {
+        "name": "Local cleaning sessions"
+      },
+      "protocol_version": {
+        "name": "Protocol version"
+      },
+      "rooms": {
+        "name": "Rooms"
+      },
+      "scheduled_cleanings": {
+        "name": "Scheduled cleanings"
+      },
+      "software_version": {
+        "name": "Software version"
+      },
+      "sink_summon_locations": {
+        "name": "Sink summon locations"
+      },
+      "update_channel": {
+        "name": "Update channel"
+      },
+      "update_state": {
+        "name": "Update status",
+        "state": {
+          "idle": "Idle",
+          "busy": "Busy",
+          "progress": "Updating",
+          "error": "Error",
+          "complete": "Complete",
+          "available": "Available"
+        }
+      },
+      "wifi_state": {
+        "name": "Wi-Fi status",
+        "state": {
+          "unknown": "Unknown",
+          "connecting": "Connecting",
+          "connected": "Connected",
+          "disconnected": "Disconnected",
+          "disconnecting": "Disconnecting",
+          "roaming": "Roaming"
+        }
+      },
+      "next_cleaning_room": {
+        "name": "Next room to clean"
+      }
+    },
+    "switch": {
+      "child_lock": {
+        "name": "Child lock"
+      },
+      "deep_mop": {
+        "name": "Double-pass mopping"
+      },
+      "pet_waste_avoidance": {
+        "name": "Pet-waste avoidance"
+      },
+      "voice_assistant": {
+        "name": "Hey Matic"
+      }
+    }
+  },
+  "exceptions": {
+    "invalid_cleaning_option": {
+      "message": "The cleaning option is invalid: {error}"
+    },
+    "no_robot_target": {
+      "message": "Select at least one loaded Matic vacuum."
+    },
+    "no_rooms": {
+      "message": "Select at least one Matic room."
+    },
+    "ordered_must_be_boolean": {
+      "message": "Clean in order must be true or false."
+    },
+    "plan_already_running": {
+      "message": "A managed Matic cleaning plan is already running."
+    },
+    "plan_not_running": {
+      "message": "No managed Matic cleaning plan is running."
+    },
+    "invalid_plan": {
+      "message": "The saved cleaning plan is invalid: {error}"
+    },
+    "plan_timeout": {
+      "message": "Timed out while cleaning {room}."
+    },
+    "robot_unavailable": {
+      "message": "The selected Matic robot is unavailable."
+    },
+    "robot_error": {
+      "message": "The selected Matic robot reported an error."
+    },
+    "room_plan_unavailable": {
+      "message": "The robot's room map is unavailable."
+    },
+    "single_robot_required": {
+      "message": "Select exactly one Matic robot."
+    },
+    "rooms_must_be_list": {
+      "message": "Rooms must be a list of room names or IDs."
+    },
+    "unknown_rooms": {
+      "message": "Unknown Matic rooms: {rooms}"
+    },
+    "unknown_plan": {
+      "message": "Unknown Matic cleaning plan: {plan}"
+    },
+    "unsupported_command": {
+      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, or return_home."
+    }
+  },
+  "services": {
+    "clean": {
+      "name": "Clean",
+      "description": "Starts a cleaning run with the selected rooms, mode, coverage, and order.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Room names or stable room IDs in the desired order. Omit this field to clean every mapped room."
+        },
+        "cleaning_mode": {
+          "name": "Cleaning mode",
+          "description": "Cleaning system for this run. Omit it to use Default cleaning mode."
+        },
+        "coverage_setting": {
+          "name": "Coverage",
+          "description": "Coverage for this run. Omit it to use Default coverage."
+        },
+        "ordered": {
+          "name": "Clean in order",
+          "description": "Clean rooms in the supplied order."
+        }
+      }
+    },
+    "intelligent_clean": {
+      "name": "Intelligent cleaning",
+      "description": "Starts with rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID. Omit it to use the default plan."
+        }
+      }
+    },
+    "clean_entire_plan": {
+      "name": "Clean entire plan",
+      "description": "Runs the default or named plan once from top to bottom, using each room's saved settings.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID. Omit it to use the default plan."
+        }
+      }
+    },
+    "run_selected_plan": {
+      "name": "Run plan with saved behavior",
+      "description": "Runs the default or named plan using its saved cleaning behavior.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID. Omit it to use the default plan."
+        }
+      }
+    },
+    "preview_plan": {
+      "name": "Preview next plan run",
+      "description": "Shows which rooms the next plan run would clean without starting the robot or changing history.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID. Omit it to use the default plan."
+        }
+      }
+    },
+    "stop_intelligent_cleaning": {
+      "name": "Stop cleaning plan",
+      "description": "Stops the plan, leaves the current room due, and sends the robot to its dock.",
+      "fields": {}
+    },
+    "reset_plan_history": {
+      "name": "Reset cleaning history",
+      "description": "Clears room completion history without deleting plans or room settings.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID. Omit it to use the default plan."
+        },
+        "all_plans": {
+          "name": "Reset history for every plan",
+          "description": "Clear intelligent-cleaning history for every plan."
+        }
+      }
+    },
+    "list_plans": {
+      "name": "List cleaning plans",
+      "description": "Returns saved plans, rooms, room settings, IDs, and the default plan.",
+      "fields": {}
+    },
+    "save_plan": {
+      "name": "Create or replace cleaning plan",
+      "description": "Creates a plan or replaces an existing plan with the same ID.",
+      "fields": {
+        "plan_id": {
+          "name": "Plan ID",
+          "description": "Stable ID to replace; omit to derive it from the name."
+        },
+        "name": {
+          "name": "Plan name",
+          "description": "Human-readable plan name."
+        },
+        "enabled": {
+          "name": "Plan enabled",
+          "description": "Whether the plan can run."
+        },
+        "run_behavior": {
+          "name": "Cleaning order",
+          "description": "Intelligent rotation starts with rooms that have waited longest; the saved order breaks ties. Run all cleans every selected room from top to bottom."
+        },
+        "rooms": {
+          "name": "Rooms and settings",
+          "description": "Ordered mapped rooms with individual cleaning mode and coverage settings."
+        },
+        "return_to_base": {
+          "name": "Return to dock when finished",
+          "description": "Send the robot to its dock after all selected rooms finish successfully."
+        },
+        "select": {
+          "name": "Use as default plan",
+          "description": "Use this plan when an action does not name one."
+        },
+        "start_timeout": {
+          "name": "Start timeout",
+          "description": "Seconds to wait for each room to start cleaning."
+        },
+        "completion_timeout": {
+          "name": "Room completion timeout",
+          "description": "Seconds to wait for each room to finish."
+        }
+      }
+    },
+    "delete_plan": {
+      "name": "Delete cleaning plan",
+      "description": "Deletes one plan by stable ID or exact name.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Stable plan ID or exact name."
+        }
+      }
+    },
+    "select_plan": {
+      "name": "Set default cleaning plan",
+      "description": "Sets the plan used when an action, entity, or button does not name one.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Stable plan ID or exact name."
+        }
+      }
+    },
+    "save_plan_room": {
+      "name": "Add or update plan room",
+      "description": "Adds one mapped room or updates that room's individual settings.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Stable plan ID or exact name."
+        },
+        "room": {
+          "name": "Room and settings",
+          "description": "Mapped room with its cleaning mode and coverage setting."
+        }
+      }
+    },
+    "delete_plan_room": {
+      "name": "Remove room from plan",
+      "description": "Removes one mapped room and its settings from a plan.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Stable plan ID or exact name."
+        },
+        "room": {
+          "name": "Room",
+          "description": "Mapped room name or stable room ID."
+        }
+      }
+    },
+    "move_plan_room": {
+      "name": "Move room in plan",
+      "description": "Changes one mapped room's saved position.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Stable plan ID or exact name."
+        },
+        "room": {
+          "name": "Room",
+          "description": "Mapped room name or stable room ID."
+        },
+        "new_position": {
+          "name": "New position",
+          "description": "New position in the room list, where 1 is the top."
+        }
+      }
+    },
+    "fetch_hermes_collection": {
+      "name": "Fetch Hermes collection",
+      "description": "Reads a size-limited snapshot from a supported local Hermes collection. Credential collections are blocked.",
+      "fields": {
+        "collection": {
+          "name": "Collection",
+          "description": "Local Hermes property or collection to inspect."
+        },
+        "limit": {
+          "name": "Entry limit",
+          "description": "Maximum collection entries to return."
+        },
+        "include_payload": {
+          "name": "Include payload",
+          "description": "Include size-limited raw key/value bytes in the response. Raw payloads may contain private device or home data."
+        },
+        "payload_format": {
+          "name": "Payload format",
+          "description": "Encoding used when raw payloads are included."
+        },
+        "max_bytes": {
+          "name": "Maximum bytes",
+          "description": "Maximum bytes included from each key and value."
+        }
+      }
+    }
+  }
+}
