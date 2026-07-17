@@ -1,5 +1,8 @@
 # Privacy and local-data model
 
+[Documentation home](README.md) · [Project overview](../README.md) ·
+[Get support](README.md#support)
+
 After one-time authorization, Home Assistant talks directly to the robot's
 encrypted local service. Routine control, state, and maps stay inside the home.
 The integration does not receive or store Matic account or cloud-session

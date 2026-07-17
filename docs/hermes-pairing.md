@@ -1,5 +1,8 @@
 # Local pairing
 
+[Documentation home](README.md) · [Project overview](../README.md) ·
+[Get support](README.md#support)
+
 Status: verified on a Matic robot with Home Assistant 2026.7 and the built-in
 Bluetooth adapter in Home Assistant Yellow.
 

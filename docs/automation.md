@@ -1,5 +1,8 @@
 # Entity and automation reference
 
+[Documentation home](README.md) · [Project overview](../README.md) ·
+[Get support](README.md#support)
+
 The integration exposes Home Assistant entities and actions for robot state,
 settings, cleaning, and saved plans.
 
