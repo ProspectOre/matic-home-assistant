@@ -1,5 +1,8 @@
 # Recording-related protocol notes
 
+[Documentation home](README.md) · [Project overview](../README.md) ·
+[Get support](README.md#support)
+
 These notes document recording-related semantics observed in the robot's local
 protocol. They are not part of the Matic for Home Assistant 0.1 entity or action
 contract. The integration does not request these properties or collections,

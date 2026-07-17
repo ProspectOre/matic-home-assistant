@@ -13,6 +13,9 @@ Setup uses the robot's **Add another user** Bluetooth window. Routine control,
 state, and maps use the robot's encrypted local service without Matter or cloud
 relays.
 
+**[Documentation](docs/README.md)** — Installation, local pairing, cleaning
+plans, automation, privacy, and troubleshooting.
+
 ## Status
 
 Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
