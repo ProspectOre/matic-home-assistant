@@ -85,13 +85,16 @@ Assistant's `custom_components`, restart, select the discovered robot under
 1. Add **Matic (Unofficial)**. Home Assistant discovers the robot
    automatically; homes with multiple robots choose one from a list.
 2. In the Matic app, open **Settings → Connectivity → Add another user** and
-   enable its five-minute pairing window.
-3. Select **Pairing mode is on**, then **Submit** in Home Assistant and keep the
-   setup dialog open. When Home
-   Bluetooth pairing starts, Matic displays a six-digit code and Home Assistant
-   asks for it.
-4. Enter the code when prompted. Home Assistant then requests its own local
-   credential and verifies the robot's pinned TLS identity before saving.
+   turn on Pairing mode. The robot's screen stays on its idle view until
+   pairing actually starts, and the window expires silently — open it right
+   before the next step.
+3. Select **Pairing mode is on**, then **Submit** in Home Assistant and keep
+   the setup dialog open. Setup narrates its progress; when Bluetooth pairing
+   starts, Matic displays a six-digit code and Home Assistant asks for it.
+4. Enter the code right away — each code is valid for roughly 20 seconds, and
+   if it lapses the flow automatically starts a fresh pairing and asks for the
+   robot's new code. Home Assistant then requests its own local credential and
+   verifies the robot's pinned TLS identity before saving.
 
 Any displayed six-digit code belongs only to the current pairing attempt and is
 never stored by the integration. After setup, routine operation uses the robot's
