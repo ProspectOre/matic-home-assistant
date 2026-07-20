@@ -40,7 +40,9 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.entity import MaticEntity
 
 
-def _state(*, paused: bool = False, floor_plan: FloorPlan | None = None) -> RobotState:
+def _state(
+    *, paused: bool = False, idle: bool = False, floor_plan: FloorPlan | None = None
+) -> RobotState:
     return RobotState(
         info=RobotInfo(
             serial_number="synthetic-serial",
@@ -62,7 +64,7 @@ def _state(*, paused: bool = False, floor_plan: FloorPlan | None = None) -> Robo
             charging=False,
             low_charge=False,
             paused=paused,
-            cleaning=not paused,
+            cleaning=not paused and not idle,
             returning=False,
         ),
         floor_plan=floor_plan,
@@ -128,10 +130,10 @@ def _floor_plan() -> FloorPlan:
     )
 
 
-def _entry(*, paused: bool = False, with_floor_plan: bool = True):
+def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = True):
     floor_plan = _floor_plan() if with_floor_plan else None
     coordinator = SimpleNamespace(
-        data=_state(paused=paused, floor_plan=floor_plan),
+        data=_state(paused=paused, idle=idle, floor_plan=floor_plan),
         client=SimpleNamespace(
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
@@ -580,6 +582,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     assert commands == [
         UserCommand.PAUSE,
         UserCommand.STOP,
+        UserCommand.STOP,
         UserCommand.DOCK,
     ]
     # A user stop or dock ends the managed plan instead of letting the
@@ -594,7 +597,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
-    assert coordinator.async_request_refresh.await_count == 4
+    assert coordinator.async_request_refresh.await_count == 5
 
 
 async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
@@ -730,3 +733,14 @@ async def test_vacuum_named_commands_and_validation() -> None:
 
     with pytest.raises(ServiceValidationError, match="room map is unavailable"):
         await vacuum.MaticVacuum(_entry(with_floor_plan=False)).async_start()
+
+
+async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
+    entry = _entry(idle=True)
+    entity = vacuum.MaticVacuum(entry)
+
+    await entity.async_return_to_base()
+
+    client = entry.runtime_data.coordinator.client
+    commands = [call.args[0] for call in client.async_send_user_command.await_args_list]
+    assert commands == [UserCommand.DOCK]

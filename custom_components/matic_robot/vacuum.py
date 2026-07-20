@@ -156,8 +156,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         await self._async_command(UserCommand.STOP)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
-        """Send the robot to its dock and end any managed plan driving it."""
+        """Send the robot to its dock and end any task driving it."""
         self._async_cancel_managed_plan()
+        if self.activity in {VacuumActivity.CLEANING, VacuumActivity.PAUSED}:
+            # The robot treats docking mid-task as recharge-and-resume and
+            # heads back out afterwards; stop the task first so a
+            # user-requested dock is final.
+            await self._async_command(UserCommand.STOP)
         await self._async_command(UserCommand.DOCK)
 
     async def async_get_segments(self) -> list[Segment]:
