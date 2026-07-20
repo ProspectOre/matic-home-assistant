@@ -63,6 +63,17 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         super().__init__(entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_vacuum"
         self._reported_segment_change: SegmentSignature | None = None
+        self._plans = entry.runtime_data.cleaning_plans
+
+    @callback
+    def _async_cancel_managed_plan(self) -> None:
+        """End any managed plan run so a user stop or dock is final.
+
+        The plan runner reads a docked robot as room completion and would
+        otherwise dispatch the next room, sending the robot straight back
+        out after the user told it to stop.
+        """
+        self._plans.cancel(self.coordinator.data.info.serial_number)
 
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
@@ -140,11 +151,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         await self._async_command(UserCommand.PAUSE)
 
     async def async_stop(self, **kwargs: object) -> None:
-        """Stop the current task."""
+        """Stop the current task and any managed plan driving it."""
+        self._async_cancel_managed_plan()
         await self._async_command(UserCommand.STOP)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
-        """Send the robot to its dock."""
+        """Send the robot to its dock and end any managed plan driving it."""
+        self._async_cancel_managed_plan()
         await self._async_command(UserCommand.DOCK)
 
     async def async_get_segments(self) -> list[Segment]:

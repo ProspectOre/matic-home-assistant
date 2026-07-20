@@ -91,7 +91,12 @@ def _vacuum(*, with_floor_plan: bool = True) -> MaticVacuum:
             operational=SimpleNamespace(software_version=None),
         ),
     )
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            cleaning_plans=SimpleNamespace(cancel=MagicMock(return_value=False)),
+        )
+    )
     entity = MaticVacuum(entry)
     entity.entity_id = "vacuum.test"
     entity.hass = SimpleNamespace()

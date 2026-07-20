@@ -183,6 +183,7 @@ def _entry(*, paused: bool = False, with_floor_plan: bool = True):
         ),
         async_select_plan=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
+        cancel=MagicMock(return_value=True),
     )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(coordinator=coordinator, cleaning_plans=history),
@@ -566,7 +567,10 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "room-2",
     ]
 
+    plans = entry.runtime_data.cleaning_plans
     await entity.async_pause()
+    # Pausing must keep a managed plan resumable.
+    assert plans.cancel.call_count == 0
     await entity.async_stop()
     await entity.async_return_to_base()
     commands = [
@@ -578,6 +582,9 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         UserCommand.STOP,
         UserCommand.DOCK,
     ]
+    # A user stop or dock ends the managed plan instead of letting the
+    # runner treat the docked robot as a finished room and continue.
+    assert plans.cancel.call_count == 2
 
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args
