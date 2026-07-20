@@ -16,6 +16,7 @@ from custom_components.matic_robot.bluetooth_pairing import (
     HERMES_TOKEN_CHARACTERISTIC,
     MATIC_BLE_SERVICE_UUID,
     BluetoothAdapterUnavailableError,
+    BluetoothPairingIncompleteError,
     BluetoothPasskeyCancelledError,
     BluetoothPasskeyExchange,
     BluetoothProxyOnlyError,
@@ -258,7 +259,10 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
     hass = object()
     user_id = "40dd38c5-0492-49de-b333-41f16f67471e"
     pairing_agent_addresses = []
-    pairing_session = SimpleNamespace(async_pair=AsyncMock())
+    pairing_events = []
+    pairing_session = SimpleNamespace(
+        async_pair=AsyncMock(side_effect=lambda _path: pairing_events.append("pair"))
+    )
     monkeypatch.setattr(bluetooth_pairing.sys, "platform", "linux")
 
     @asynccontextmanager
@@ -300,7 +304,11 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
     monkeypatch.setattr(
         bluetooth_pairing,
         "establish_connection",
-        AsyncMock(return_value=client),
+        AsyncMock(
+            side_effect=lambda *_args, **_kwargs: (
+                pairing_events.append("connect") or client
+            )
+        ),
     )
     monkeypatch.setattr(
         bluetooth_pairing,
@@ -319,6 +327,7 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
     pairing_session.async_pair.assert_awaited_once_with(
         "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
     )
+    assert pairing_events == ["connect", "pair"]
     client.write_gatt_char.assert_awaited_once_with(
         HERMES_TOKEN_CHARACTERISTIC,
         TokenRequest(user_id=user_id).SerializeToString(),
@@ -595,10 +604,13 @@ async def test_generic_connection_failure_remains_retryable(
         AsyncMock(side_effect=connection_error),
     )
 
-    with pytest.raises(PairingModeRequiredError):
+    with pytest.raises(BluetoothPairingIncompleteError) as exc_info:
         await async_request_bluetooth_credential(
             object(), "40dd38c5-0492-49de-b333-41f16f67471e"
         )
+
+    assert "Bluetooth connection failed" in str(exc_info.value)
+    assert TEST_ADDRESS not in str(exc_info.value)
 
 
 async def test_requires_an_active_matic_advertisement(monkeypatch) -> None:
@@ -803,7 +815,7 @@ async def test_rejects_credential_for_a_different_user(monkeypatch) -> None:
         bluetooth_pairing, "establish_connection", AsyncMock(return_value=client)
     )
 
-    with pytest.raises(PairingModeRequiredError, match="request failed"):
+    with pytest.raises(BluetoothPairingIncompleteError, match="request failed"):
         await async_request_bluetooth_credential(object(), requested)
 
     client.read_gatt_char.assert_awaited_once()
@@ -827,7 +839,7 @@ async def test_skips_candidate_without_the_token_characteristic(monkeypatch) -> 
         bluetooth_pairing, "establish_connection", AsyncMock(return_value=client)
     )
 
-    with pytest.raises(PairingModeRequiredError, match="request failed"):
+    with pytest.raises(BluetoothPairingIncompleteError, match="request failed"):
         await async_request_bluetooth_credential(
             object(), "40dd38c5-0492-49de-b333-41f16f67471e"
         )
@@ -855,7 +867,7 @@ async def test_bounds_a_stalled_bluetooth_connection(monkeypatch) -> None:
     monkeypatch.setattr(bluetooth_pairing, "establish_connection", stall)
     monkeypatch.setattr(bluetooth_pairing, "BLUETOOTH_PAIRING_TIMEOUT_SECONDS", 0.001)
 
-    with pytest.raises(PairingModeRequiredError, match="request failed"):
+    with pytest.raises(BluetoothPairingIncompleteError, match="request failed"):
         await async_request_bluetooth_credential(
             object(), "40dd38c5-0492-49de-b333-41f16f67471e"
         )
@@ -892,7 +904,66 @@ async def test_bounds_a_stalled_bluetooth_token_read(monkeypatch) -> None:
     )
     monkeypatch.setattr(bluetooth_pairing, "BLUETOOTH_PAIRING_TIMEOUT_SECONDS", 0.001)
 
-    with pytest.raises(PairingModeRequiredError, match="request failed"):
+    with pytest.raises(BluetoothPairingIncompleteError, match="request failed"):
         await async_request_bluetooth_credential(
             object(), "40dd38c5-0492-49de-b333-41f16f67471e"
         )
+
+
+async def test_stage_callback_narrates_search_and_connection(monkeypatch) -> None:
+    stages = []
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "_async_matic_discoveries",
+        AsyncMock(
+            return_value=[
+                SimpleNamespace(
+                    device=SimpleNamespace(address=TEST_ADDRESS),
+                    name="Matic",
+                )
+            ]
+        ),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "establish_connection",
+        AsyncMock(side_effect=OSError(errno.EIO, "temporary failure")),
+    )
+
+    with pytest.raises(BluetoothPairingIncompleteError):
+        await async_request_bluetooth_credential(
+            object(),
+            "40dd38c5-0492-49de-b333-41f16f67471e",
+            stage_callback=stages.append,
+        )
+
+    assert stages == ["searching", "connecting"]
+
+
+async def test_missing_token_characteristic_clears_stale_service_cache(
+    monkeypatch,
+) -> None:
+    client = SimpleNamespace(
+        is_connected=False,
+        services=SimpleNamespace(characteristics={}),
+        write_gatt_char=AsyncMock(),
+        read_gatt_char=AsyncMock(),
+        clear_cache=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing,
+        "_async_matic_discoveries",
+        AsyncMock(
+            return_value=[SimpleNamespace(device=SimpleNamespace(address=TEST_ADDRESS))]
+        ),
+    )
+    monkeypatch.setattr(
+        bluetooth_pairing, "establish_connection", AsyncMock(return_value=client)
+    )
+
+    with pytest.raises(BluetoothPairingIncompleteError, match="request failed"):
+        await async_request_bluetooth_credential(
+            object(), "40dd38c5-0492-49de-b333-41f16f67471e"
+        )
+
+    client.clear_cache.assert_awaited_once()

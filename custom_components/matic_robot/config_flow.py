@@ -8,6 +8,7 @@ import re
 import socket
 from collections.abc import Mapping
 from ipaddress import ip_address
+from time import monotonic
 from typing import Any
 
 import voluptuous as vol
@@ -23,6 +24,7 @@ from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
 from .bluetooth_pairing import (
+    BluetoothPairingIncompleteError,
     BluetoothPairingUnavailableError,
     BluetoothPasskeyExchange,
     async_request_bluetooth_credential,
@@ -35,6 +37,7 @@ from .client.exceptions import (
     CannotConnectError,
     CertificateMismatchError,
     InvalidRobotCertificateError,
+    MaticError,
     PairingModeRequiredError,
 )
 from .client.tls import async_fetch_peer_certificate, validate_certificate
@@ -59,6 +62,7 @@ DISCOVERY_RESOLVE_TIMEOUT_SECONDS = 2
 _LOGGER = logging.getLogger(__name__)
 
 CONF_PASSKEY = "passkey"
+CONF_PAIRING_MODE_ENABLED = "pairing_mode_enabled"
 
 
 async def _async_discover_robots(
@@ -215,6 +219,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._pairing_checkpoint_task: asyncio.Task[None] | None = None
         self._passkey_exchange: BluetoothPasskeyExchange | None = None
         self._pairing_result: config_entries.ConfigFlowResult | None = None
+        self._pairing_diagnostic: str | None = None
+        self._pairing_update = asyncio.Event()
+        self._pairing_stage = "wait_for_pairing"
+        self._pairing_retry_note: str | None = None
+        self._pairing_ui_progress = False
 
     @callback
     def async_remove(self) -> None:
@@ -231,10 +240,16 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         step_id: str,
         errors: dict[str, str] | None = None,
     ) -> config_entries.ConfigFlowResult:
-        """Show the one-click Matic pairing form."""
+        """Require confirmation that Matic's pairing window is open."""
         return self.async_show_form(
             step_id=step_id,
-            data_schema=vol.Schema({}),
+            data_schema=vol.Schema(
+                {
+                    vol.Required(
+                        CONF_PAIRING_MODE_ENABLED, default=False
+                    ): selector.BooleanSelector()
+                }
+            ),
             errors=errors,
         )
 
@@ -360,6 +375,76 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         )
         return self.async_show_form(step_id="manual", data_schema=schema, errors=errors)
 
+    @callback
+    def _async_signal_pairing_update(self) -> None:
+        """Wake the pairing dialog so it can reflect new live state."""
+        self._pairing_update.set()
+
+    @callback
+    def _async_set_pairing_stage(self, stage: str) -> None:
+        """Narrate the live pairing stage in the progress dialog."""
+        action = {"searching": "wait_for_pairing"}.get(stage, stage)
+        if action != self._pairing_stage:
+            self._pairing_stage = action
+            self._async_signal_pairing_update()
+
+    @callback
+    def _async_begin_pairing_attempt(self) -> None:
+        """Arm a fresh passkey exchange and narration for one bond attempt."""
+        if self._passkey_exchange is not None:
+            self._passkey_exchange.cancel()
+        self._passkey_exchange = BluetoothPasskeyExchange(
+            on_state_change=self._async_signal_pairing_update
+        )
+        self._pairing_stage = "wait_for_pairing"
+        self._async_signal_pairing_update()
+
+    @callback
+    def _async_start_pairing(self, runner_name: str) -> None:
+        """Launch the background pairing engine for this flow."""
+        self._pairing_diagnostic = None
+        self._pairing_retry_note = None
+        self._pairing_update = asyncio.Event()
+        runner = (
+            self._async_reauth
+            if runner_name == "matic_robot_reauth"
+            else self._async_wait_for_pairing
+        )
+        self._pairing_task = self.hass.async_create_task(runner(), runner_name)
+
+    def _async_pairing_progress(self, step_id: str) -> config_entries.ConfigFlowResult:
+        """Show live pairing progress or hand off to the next dialog state."""
+        assert self._pairing_task is not None
+        exchange = self._passkey_exchange
+        task_done = self._pairing_task.done()
+        code_ready = exchange is not None and exchange.requested and exchange.can_submit
+        if self._pairing_ui_progress:
+            if task_done:
+                self._pairing_ui_progress = False
+                return self.async_show_progress_done(next_step_id="finish")
+            if code_ready:
+                self._pairing_ui_progress = False
+                return self.async_show_progress_done(next_step_id="pairing_code")
+        self._pairing_ui_progress = True
+        checkpoint = self._pairing_checkpoint_task
+        if checkpoint is None or checkpoint.done():
+            # Tasks start eagerly, so actionable state may already be waiting;
+            # clearing the update signal then would deadlock the dialog. Leave
+            # it set so the fresh checkpoint completes immediately and the
+            # next configure round performs the hand-off above.
+            if not (task_done or code_ready):
+                self._pairing_update.clear()
+            checkpoint = self.hass.async_create_task(
+                self._async_wait_for_pairing_checkpoint(),
+                "matic_robot_pairing_checkpoint",
+            )
+            self._pairing_checkpoint_task = checkpoint
+        return self.async_show_progress(
+            step_id=step_id,
+            progress_action=self._pairing_stage,
+            progress_task=checkpoint,
+        )
+
     async def async_step_pair(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
@@ -370,27 +455,12 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self.async_abort(reason="pairing_session_expired")
 
         if self._pairing_task is None:
-            self._passkey_exchange = BluetoothPasskeyExchange()
-            self._pairing_task = self.hass.async_create_task(
-                self._async_wait_for_pairing(),
-                "matic_robot_wait_for_pairing",
-            )
-            self._pairing_checkpoint_task = self.hass.async_create_task(
-                self._async_wait_for_pairing_checkpoint(),
-                "matic_robot_wait_for_pairing_code",
-            )
-        assert self._pairing_checkpoint_task is not None
-        if not self._pairing_checkpoint_task.done():
-            return self.async_show_progress(
-                step_id="pair",
-                progress_action="wait_for_pairing",
-                progress_task=self._pairing_checkpoint_task,
-            )
-        self._pairing_checkpoint_task.result()
-        assert self._passkey_exchange is not None
-        if self._passkey_exchange.requested and not self._passkey_exchange.submitted:
-            return self.async_show_progress_done(next_step_id="pairing_code")
-        return self.async_show_progress_done(next_step_id="finish")
+            if not user_input or not user_input.get(CONF_PAIRING_MODE_ENABLED):
+                return self._show_pairing_form(
+                    "pair", {"base": "pairing_mode_confirmation_required"}
+                )
+            self._async_start_pairing("matic_robot_wait_for_pairing")
+        return self._async_pairing_progress("pair")
 
     async def async_step_pairing_code(
         self, user_input: dict[str, Any] | None = None
@@ -399,26 +469,30 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         if self._pairing_task is None or self._passkey_exchange is None:
             return self.async_abort(reason="pairing_session_expired")
 
-        if self._passkey_exchange.submitted:
-            await self._pairing_task
-            return await self.async_step_finish()
+        if self._pairing_ui_progress:
+            return self._async_pairing_progress("pairing_code")
 
         if self._pairing_task.done():
             return await self.async_step_finish()
 
+        exchange = self._passkey_exchange
         if user_input is None:
-            return self._show_passkey_form()
+            if exchange.requested and exchange.can_submit:
+                note = self._pairing_retry_note
+                self._pairing_retry_note = None
+                return self._show_passkey_form({"base": note} if note else None)
+            # The attempt that displayed the last code already ended; a fresh
+            # bond is underway and the robot will show a new code.
+            return self._async_pairing_progress("pairing_code")
 
         passkey = str(user_input.get(CONF_PASSKEY, "")).strip()
         if re.fullmatch(r"\d{6}", passkey) is None:
             return self._show_passkey_form({CONF_PASSKEY: "invalid_passkey"})
 
-        self._passkey_exchange.submit(int(passkey))
-        # Return the final form or entry in this request. A second progress step can
-        # complete before the frontend subscribes to its update event, leaving the
-        # dialog visually stuck even though the pairing task already finished.
-        await self._pairing_task
-        return await self.async_step_finish()
+        if exchange.can_submit:
+            exchange.submit(int(passkey))
+            self._async_set_pairing_stage("verifying")
+        return self._async_pairing_progress("pairing_code")
 
     async def async_step_finish(
         self, user_input: dict[str, Any] | None = None
@@ -438,6 +512,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._pairing_checkpoint_task = None
             self._passkey_exchange = None
             self._pairing_result = None
+            self._pairing_retry_note = None
+            self._pairing_ui_progress = False
+            self._pairing_stage = "wait_for_pairing"
 
     async def async_step_reauth(
         self, entry_data: dict[str, Any]
@@ -459,46 +536,81 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             return self._show_pairing_form("reauth_confirm")
 
         if self._pairing_task is None:
-            self._passkey_exchange = BluetoothPasskeyExchange()
-            self._pairing_task = self.hass.async_create_task(
-                self._async_reauth(),
-                "matic_robot_reauth",
-            )
-            self._pairing_checkpoint_task = self.hass.async_create_task(
-                self._async_wait_for_pairing_checkpoint(),
-                "matic_robot_reauth_code",
-            )
-        assert self._pairing_checkpoint_task is not None
-        if not self._pairing_checkpoint_task.done():
-            return self.async_show_progress(
-                step_id="reauth_confirm",
-                progress_action="wait_for_pairing",
-                progress_task=self._pairing_checkpoint_task,
-            )
-        self._pairing_checkpoint_task.result()
-        assert self._passkey_exchange is not None
-        if self._passkey_exchange.requested and not self._passkey_exchange.submitted:
-            return self.async_show_progress_done(next_step_id="pairing_code")
-        return self.async_show_progress_done(next_step_id="finish")
+            if not user_input or not user_input.get(CONF_PAIRING_MODE_ENABLED):
+                return self._show_pairing_form(
+                    "reauth_confirm",
+                    {"base": "pairing_mode_confirmation_required"},
+                )
+            self._async_start_pairing("matic_robot_reauth")
+        return self._async_pairing_progress("reauth_confirm")
+
+    @callback
+    def _async_note_code_outcome(self) -> None:
+        """Remember why the last displayed code stopped working."""
+        exchange = self._passkey_exchange
+        if exchange is None or not exchange.requested:
+            return
+        self._pairing_retry_note = (
+            "pairing_code_rejected" if exchange.submitted else "pairing_code_expired"
+        )
+
+    async def _async_reauth_credential(self) -> HermesCredential:
+        """Request a replacement credential, renewing expired codes in place."""
+        started_at = monotonic()
+        last_error: MaticError = PairingModeRequiredError(
+            "no reauthorization attempt completed"
+        )
+        try:
+            async with asyncio.timeout(PAIRING_TIMEOUT_SECONDS):
+                for _attempt in range(PAIRING_ATTEMPTS):
+                    self._async_begin_pairing_attempt()
+                    try:
+                        return await async_request_bluetooth_credential(
+                            self.hass,
+                            self._pairing_user_id,
+                            self._passkey_exchange,
+                            stage_callback=self._async_set_pairing_stage,
+                        )
+                    except (
+                        BluetoothPairingIncompleteError,
+                        PairingModeRequiredError,
+                    ) as err:
+                        last_error = err
+                        self._pairing_diagnostic = str(err)
+                        self._async_note_code_outcome()
+                    elapsed = monotonic() - started_at
+                    self.async_update_progress(
+                        min(elapsed / PAIRING_TIMEOUT_SECONDS, 0.99)
+                    )
+                    await asyncio.sleep(PAIRING_RETRY_SECONDS)
+        except TimeoutError:
+            pass
+        raise last_error
 
     async def _async_reauth(self) -> None:
         """Reissue and verify the local credential during Matic pairing."""
         entry = self._get_reauth_entry()
         try:
-            credential = await async_request_bluetooth_credential(
-                self.hass, self._pairing_user_id, self._passkey_exchange
-            )
+            credential = await self._async_reauth_credential()
             await self._async_verify_existing_robot(
                 entry.data[CONF_HOST],
                 entry.data[CONF_PORT],
                 entry.data,
                 credential,
             )
-        except PairingModeRequiredError:
+        except BluetoothPairingIncompleteError as err:
+            self._pairing_diagnostic = str(err)
+            self._pairing_result = self._show_pairing_form(
+                "reauth_confirm", {"base": "pairing_incomplete"}
+            )
+        except PairingModeRequiredError as err:
+            self._pairing_diagnostic = str(err)
             self._pairing_result = self._show_pairing_form(
                 "reauth_confirm", {"base": "pairing_mode_off"}
             )
-        except BluetoothPairingUnavailableError:
+        except BluetoothPairingUnavailableError as err:
+            self._pairing_diagnostic = str(err)
+            _LOGGER.warning("Matic Bluetooth reauthentication stopped: %s", err)
             self._pairing_result = self._show_pairing_form(
                 "reauth_confirm", {"base": "bluetooth_unavailable"}
             )
@@ -605,11 +717,19 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             raise InvalidRobotCertificateError("robot serial number changed")
 
     async def _async_wait_for_pairing(self) -> None:
-        """Watch for the short Matic authorization window and finish setup."""
+        """Watch for the short Matic authorization window and finish setup.
+
+        Expired or rejected codes never end the flow: the loop starts a fresh
+        bond so the robot displays a new code, and the dialog re-prompts with
+        an explanatory note until the window closes.
+        """
         assert self._pairing_data is not None
+        started_at = monotonic()
+        last_error: str | None = None
         try:
             async with asyncio.timeout(PAIRING_TIMEOUT_SECONDS):
-                for attempt in range(PAIRING_ATTEMPTS):
+                for _attempt in range(PAIRING_ATTEMPTS):
+                    self._async_begin_pairing_attempt()
                     if self._discovery_info is not None:
                         self._pairing_data[
                             CONF_HOST
@@ -621,48 +741,47 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._pairing_result = result
                         return
                     error = (result.get("errors") or {}).get("base")
-                    if self._passkey_exchange is not None:
-                        if self._passkey_exchange.submitted:
-                            self._pairing_result = self._show_pairing_form(
-                                "pair", {"base": "pairing_code_rejected"}
-                            )
-                            return
-                        if self._passkey_exchange.requested:
-                            self._pairing_result = self._show_pairing_form(
-                                "pair", {"base": "pairing_code_expired"}
-                            )
-                            return
+                    last_error = error
+                    self._async_note_code_outcome()
                     if error not in {
                         "cannot_connect",
+                        "pairing_incomplete",
                         "pairing_mode_off",
                     }:
                         self._pairing_result = self.async_abort(
                             reason=error or "cannot_connect"
                         )
                         return
-                    self.async_update_progress((attempt + 1) / PAIRING_ATTEMPTS)
+                    elapsed = monotonic() - started_at
+                    self.async_update_progress(
+                        min(elapsed / PAIRING_TIMEOUT_SECONDS, 0.99)
+                    )
                     await asyncio.sleep(PAIRING_RETRY_SECONDS)
         except TimeoutError:
             pass
+        _LOGGER.warning(
+            "Matic pairing timed out after %s seconds; last setup result: %s; "
+            "Bluetooth detail: %s",
+            PAIRING_TIMEOUT_SECONDS,
+            last_error or "no completed attempt",
+            self._pairing_diagnostic or "no Bluetooth attempt completed",
+        )
         self._pairing_result = self._show_pairing_form(
             "pair", {"base": "pairing_timeout"}
         )
 
     async def _async_wait_for_pairing_checkpoint(self) -> None:
-        """Wait until setup either needs a displayed code or fully finishes."""
+        """Wait until the pairing dialog must change what it shows."""
         assert self._pairing_task is not None
-        assert self._passkey_exchange is not None
-        passkey_task = asyncio.create_task(
-            self._passkey_exchange.async_wait_until_requested()
-        )
+        update_task = asyncio.create_task(self._pairing_update.wait())
         try:
             await asyncio.wait(
-                {self._pairing_task, passkey_task},
+                {self._pairing_task, update_task},
                 return_when=asyncio.FIRST_COMPLETED,
             )
         finally:
-            passkey_task.cancel()
-            await asyncio.gather(passkey_task, return_exceptions=True)
+            update_task.cancel()
+            await asyncio.gather(update_task, return_exceptions=True)
 
     async def _async_create_or_error(
         self, data: dict[str, Any], step_id: str
@@ -708,6 +827,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self.hass,
                     self._pairing_user_id,
                     self._passkey_exchange,
+                    stage_callback=self._async_set_pairing_stage,
                 )
                 _LOGGER.debug("Received a robot-issued Bluetooth credential")
             if credential is not None:
@@ -731,8 +851,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self.hass,
                         self._pairing_user_id,
                         self._passkey_exchange,
+                        stage_callback=self._async_set_pairing_stage,
                     )
-                except BluetoothPairingUnavailableError:
+                except BluetoothPairingUnavailableError as err:
+                    self._pairing_diagnostic = str(err)
+                    _LOGGER.warning("Matic Bluetooth pairing stopped: %s", err)
                     self._pairing_data = {
                         CONF_HOST: host,
                         CONF_PORT: port,
@@ -741,7 +864,18 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_show_form(
                         step_id="pair", errors={"base": "bluetooth_unavailable"}
                     )
-                except PairingModeRequiredError:
+                except BluetoothPairingIncompleteError as err:
+                    self._pairing_diagnostic = str(err)
+                    self._pairing_data = {
+                        CONF_HOST: host,
+                        CONF_PORT: port,
+                        CONF_HOSTNAME: identity.hostname,
+                    }
+                    return self.async_show_form(
+                        step_id="pair", errors={"base": "pairing_incomplete"}
+                    )
+                except PairingModeRequiredError as err:
+                    self._pairing_diagnostic = str(err)
                     self._pairing_data = {
                         CONF_HOST: host,
                         CONF_PORT: port,
@@ -759,14 +893,28 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HOSTNAME: identity.hostname,
             }
             return self._show_pairing_form("pair")
-        except BluetoothPairingUnavailableError:
+        except BluetoothPairingUnavailableError as err:
+            self._pairing_diagnostic = str(err)
+            _LOGGER.warning("Matic Bluetooth pairing stopped: %s", err)
             self._pairing_data = {
                 CONF_HOST: host,
                 CONF_PORT: port,
                 CONF_HOSTNAME: identity.hostname,
             }
             return self._show_pairing_form("pair", {"base": "bluetooth_unavailable"})
-        except PairingModeRequiredError:
+        except BluetoothPairingIncompleteError as err:
+            self._pairing_diagnostic = str(err)
+            self._pairing_data = {
+                CONF_HOST: host,
+                CONF_PORT: port,
+                CONF_HOSTNAME: identity.hostname,
+            }
+            return self._show_pairing_form(
+                "pair",
+                {"base": "pairing_incomplete"} if step_id == "pair" else None,
+            )
+        except PairingModeRequiredError as err:
+            self._pairing_diagnostic = str(err)
             self._pairing_data = {
                 CONF_HOST: host,
                 CONF_PORT: port,
@@ -1006,13 +1154,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         if self.config_entry.state is not config_entries.ConfigEntryState.LOADED:
             return self.async_abort(reason="entry_not_loaded")
         self._plan_id = None
-        menu_options = ["add_plan"]
-        if self._manager.plans(self._serial_number):
-            menu_options.insert(0, "manage_plan")
-        menu_options.append("finish")
+        if not self._manager.plans(self._serial_number):
+            # Nothing to manage yet; open the creation screen directly.
+            return await self.async_step_add_plan()
         return self.async_show_menu(
             step_id="init",
-            menu_options=menu_options,
+            menu_options=["manage_plan", "add_plan", "finish"],
             description_placeholders=self._summary(),
         )
 
@@ -1026,8 +1173,13 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
         """Choose one plan and keep subsequent actions scoped to it."""
+        plans = self._manager.plans(self._serial_number)
         if user_input is not None:
             self._plan_id = user_input["plan"]
+            return await self.async_step_plan_menu()
+        if len(plans) == 1:
+            # With a single saved plan there is nothing to choose.
+            self._plan_id = next(iter(plans))
             return await self.async_step_plan_menu()
         return self.async_show_form(
             step_id="manage_plan",
@@ -1049,9 +1201,10 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             "select_plan",
             "reset_history",
             "delete_plan",
-            "change_plan",
-            "finish",
         ]
+        if len(self._manager.plans(self._serial_number)) > 1:
+            menu_options.append("change_plan")
+        menu_options.append("finish")
         return self.async_show_menu(
             step_id="plan_menu",
             menu_options=menu_options,
@@ -1149,19 +1302,13 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Delete the scoped plan after explicit confirmation."""
         if self._plan_id is None:
             return await self.async_step_manage_plan()
-        errors: dict[str, str] = {}
-        if user_input is not None and user_input["confirm"]:
+        if user_input is not None:
             await self._manager.async_delete_plan(self._serial_number, self._plan_id)
             self._plan_id = None
             return await self.async_step_init()
-        if user_input is not None:
-            errors["base"] = "confirmation_required"
         return self.async_show_form(
             step_id="delete_plan",
-            data_schema=vol.Schema(
-                {vol.Required("confirm", default=False): selector.BooleanSelector()}
-            ),
-            errors=errors,
+            data_schema=vol.Schema({}),
             description_placeholders=self._plan_summary(),
         )
 
@@ -1208,15 +1355,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Reset durable rotation history after explicit confirmation."""
         if self._plan_id is None:
             return await self.async_step_manage_plan()
-        errors: dict[str, str] = {}
-        if user_input is not None and user_input["confirm"]:
+        if user_input is not None:
             await self._manager.async_reset_history(
                 self._serial_number,
                 None if user_input["all_plans"] else self._plan_id,
             )
             return await self.async_step_plan_menu()
-        if user_input is not None:
-            errors["base"] = "confirmation_required"
         return self.async_show_form(
             step_id="reset_history",
             data_schema=vol.Schema(
@@ -1224,9 +1368,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     vol.Required(
                         "all_plans", default=False
                     ): selector.BooleanSelector(),
-                    vol.Required("confirm", default=False): selector.BooleanSelector(),
                 }
             ),
-            errors=errors,
             description_placeholders=self._plan_summary(),
         )

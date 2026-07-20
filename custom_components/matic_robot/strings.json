@@ -8,48 +8,50 @@
     "move_room_down": "Move {room} down",
     "move_room_up": "Move {room} up",
     "quick": "Quick",
-    "room_editor_intro": "Turn on the rooms to include. Drag rooms or use the arrows to set the saved order from top to bottom.",
+    "room_editor_intro": "Turn on rooms to include them. Drag or use the arrows to set the cleaning order.",
     "standard": "Standard",
     "vacuum": "Vacuum",
     "vacuum_and_mop": "Vacuum + mop"
   },
   "config": {
     "abort": {
-      "already_configured": "This Matic robot is already configured.",
-      "already_in_progress": "Setup is already in progress. Return to the open setup dialog.",
-      "bluetooth_unavailable": "Setup requires physical access to the robot and a Bluetooth adapter built into or directly attached to this Home Assistant host. Resolve any Bluetooth repair under Settings → System → Repairs. Bluetooth proxies cannot complete setup.",
-      "cannot_connect": "Home Assistant could not connect to the robot. Confirm it is powered on and connected to the same network, then try again.",
-      "invalid_certificate": "The robot's certificate could not be verified.",
-      "invalid_credential": "The robot rejected the local credential.",
-      "pairing_session_expired": "The pairing session expired. Start setup again.",
-      "reauth_successful": "Local access was restored successfully.",
-      "reconfigure_successful": "The robot connection was updated successfully."
+      "already_configured": "This robot is already set up.",
+      "already_in_progress": "Setup is already running — return to the open dialog.",
+      "bluetooth_unavailable": "Pairing needs a Bluetooth adapter built into or plugged into this Home Assistant machine — Bluetooth proxies cannot run setup. Resolve any Bluetooth repair under Settings → System → Repairs, then try again.",
+      "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then start setup again.",
+      "invalid_certificate": "The robot's identity could not be verified.",
+      "invalid_credential": "The robot rejected the saved local access.",
+      "pairing_session_expired": "The pairing session ended. Start setup again.",
+      "reauth_successful": "Local access restored.",
+      "reconfigure_successful": "Robot address updated."
     },
     "error": {
-      "cannot_connect": "Unable to connect to the robot.",
-      "bluetooth_unavailable": "Setup requires physical access to the robot and a Bluetooth adapter built into or directly attached to this Home Assistant host. Resolve any Bluetooth repair under Settings → System → Repairs. Bluetooth proxies cannot complete setup.",
-      "invalid_certificate": "The robot's certificate could not be verified.",
-      "invalid_credential": "The local access credential is invalid or was not issued for this robot.",
+      "bluetooth_unavailable": "Pairing needs a Bluetooth adapter built into or plugged into this Home Assistant machine — Bluetooth proxies cannot run setup. Resolve any Bluetooth repair under Settings → System → Repairs, then try again.",
+      "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then try again.",
+      "invalid_certificate": "The robot's identity could not be verified.",
+      "invalid_credential": "The robot rejected the saved local access. Pairing again will issue a new one.",
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
-      "pairing_code_expired": "That code expired. In the Matic app, turn Pairing mode off and back on. Select Submit in Home Assistant again, then enter the new code when prompted.",
-      "pairing_code_rejected": "The robot did not accept that code. In the Matic app, turn Pairing mode off and back on. Select Submit in Home Assistant again, then enter the new code when prompted.",
-      "pairing_mode_off": "The robot is not accepting a new local user. Turn on Pairing mode in the Matic app, then try again.",
-      "pairing_timeout": "Home Assistant did not detect Pairing mode. Open Add another user in the Matic app, turn on Pairing mode, and try again."
+      "pairing_code_expired": "That code expired, so a new pairing was started. Enter the new code the robot is showing right away.",
+      "pairing_code_rejected": "The robot did not accept that code, so a new pairing was started. Enter the new code the robot is showing right away.",
+      "pairing_incomplete": "Pairing started but did not finish. Keep the robot near Home Assistant's Bluetooth adapter, turn Pairing mode off and on, then try again.",
+      "pairing_mode_confirmation_required": "Turn on Pairing mode first, then check the box to continue.",
+      "pairing_mode_off": "The robot is not accepting new users right now. Turn on Pairing mode in the Matic app, then try again.",
+      "pairing_timeout": "Pairing did not finish within five minutes. Turn Pairing mode off and on, keep the robot near Home Assistant's Bluetooth adapter, and try again. Details are in Settings → System → Logs."
     },
     "step": {
       "discovery_failed": {
-        "description": "Home Assistant did not find a Matic robot on this network. Make sure the robot is powered on and connected to the same local network, then retry.",
+        "description": "Check that the robot is powered on and on the same network as Home Assistant.",
         "title": "No Matic robot found",
         "menu_options": {
           "retry": "Search again",
-          "manual": "Enter network address"
+          "manual": "Enter address manually"
         }
       },
       "select_robot": {
         "data": {
           "robot": "Matic robot"
         },
-        "description": "More than one Matic robot was found. Choose the one you want to add.",
+        "description": "More than one robot was found. Pick the one to add.",
         "title": "Choose your Matic"
       },
       "manual": {
@@ -57,11 +59,14 @@
           "host": "IP address or hostname",
           "port": "Port"
         },
-        "description": "Enter an address only if automatic discovery fails. Home Assistant will still verify the robot and authorize through Bluetooth.",
-        "title": "Enter the robot's network address"
+        "description": "Home Assistant verifies the robot's identity before anything is saved.",
+        "title": "Enter the robot's address"
       },
       "pair": {
-        "description": "In the Matic app, open Settings → Connectivity → Add another user and turn on Pairing mode. Return to Home Assistant and select Submit. If a new Bluetooth pairing is required, the robot will show a six-digit code and Home Assistant will ask you to enter it. If this Home Assistant host is already paired over Bluetooth, setup may finish without a new code.",
+        "description": "In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it.",
+        "data": {
+          "pairing_mode_enabled": "Pairing mode is on"
+        },
         "title": "Connect your Matic"
       },
       "pairing_code": {
@@ -69,13 +74,16 @@
           "passkey": "Six-digit code"
         },
         "data_description": {
-          "passkey": "Enter the current code. Home Assistant does not save it."
+          "passkey": "Home Assistant never saves the code."
         },
-        "description": "Read the six-digit code from the robot and enter it now. Keep this dialog open while pairing completes.",
+        "description": "Type the six-digit code from the robot's screen now — it expires after about 20 seconds.",
         "title": "Enter the code shown on Matic"
       },
       "reauth_confirm": {
-        "description": "In the Matic app, open Settings → Connectivity → Add another user and turn on Pairing mode. Return to Home Assistant and select Submit to replace its local credential. If a new Bluetooth pairing is required, enter the robot's code when prompted.",
+        "description": "In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it before replacing its local access.",
+        "data": {
+          "pairing_mode_enabled": "Pairing mode is on"
+        },
         "title": "Restore local access"
       },
       "reconfigure": {
@@ -83,116 +91,110 @@
           "host": "Host",
           "port": "Port"
         },
-        "description": "Update the robot's local address. Home Assistant verifies the robot before saving the change.",
-        "title": "Update robot connection"
+        "description": "Home Assistant verifies it is the same robot before saving.",
+        "title": "Update robot address"
       }
     },
     "progress": {
-      "wait_for_pairing": "Connecting to Matic. Keep Pairing mode open. If the robot shows a six-digit code, enter it when Home Assistant asks."
+      "wait_for_pairing": "Looking for your Matic… Keep Pairing mode open on the robot.",
+      "connecting": "Connecting to your Matic… When it displays a six-digit code, this screen will ask for it.",
+      "verifying": "Verifying the code and finishing setup…"
     }
   },
   "options": {
     "abort": {
-      "entry_not_loaded": "Home Assistant needs the robot online to manage cleaning plans. After it reconnects, open Configure again."
+      "entry_not_loaded": "The robot must be online to manage cleaning plans. Open Configure again once it reconnects."
     },
     "error": {
-      "confirmation_required": "Select the confirmation checkbox to continue.",
-      "duplicate_plan": "Enter a unique plan name containing at least one letter or number.",
-      "invalid_plan": "This plan cannot run with its current settings or the robot's current room map.",
-      "no_rooms": "Select at least one room."
+      "confirmation_required": "Check the confirmation box to continue.",
+      "duplicate_plan": "Use a unique plan name with at least one letter or number.",
+      "invalid_plan": "This plan cannot run with its current settings or room map.",
+      "no_rooms": "Turn on at least one room."
     },
     "step": {
       "init": {
         "title": "Cleaning plans",
-        "description": "Create reusable room plans for dashboards and automations. Saved plans: {plan_count} · Mapped rooms: {room_count} · Default plan: {selected_plan}.",
+        "description": "Reusable room plans for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}.",
         "menu_options": {
-          "manage_plan": "Manage a cleaning plan",
-          "add_plan": "Create a cleaning plan",
+          "manage_plan": "Manage a plan",
+          "add_plan": "Create a plan",
           "finish": "Done"
         }
       },
       "manage_plan": {
-        "title": "Choose a cleaning plan",
-        "description": "Default plan: {selected_plan}. Choose a saved plan to review or change.",
+        "title": "Choose a plan",
+        "description": "Default plan: {selected_plan}.",
         "data": {
-          "plan": "Cleaning plan"
+          "plan": "Plan"
         },
         "data_description": {
-          "plan": "Choose the saved plan to inspect or change. The default plan is identified in the list."
+          "plan": "The default plan is marked in the list."
         }
       },
       "plan_menu": {
-        "title": "Manage cleaning plan",
-        "description": "{plan_name} · Rooms in plan: {plan_room_count}. Choose what to review or change.",
+        "title": "Manage plan",
+        "description": "{plan_name} — rooms in plan: {plan_room_count}.",
         "menu_options": {
-          "edit_plan": "Edit every room and setting",
+          "edit_plan": "Edit plan",
           "preview_plan": "Preview next run",
-          "select_plan": "Use as the default plan",
-          "reset_history": "Reset intelligent cleaning history",
-          "delete_plan": "Delete this plan",
-          "change_plan": "Choose another plan",
+          "select_plan": "Set as default",
+          "reset_history": "Reset cleaning history",
+          "delete_plan": "Delete plan",
+          "change_plan": "Switch plan",
           "finish": "Done"
         }
       },
       "add_plan": {
         "title": "Create a cleaning plan",
-        "description": "Name the plan, choose how it runs, then turn on any of the robot's {room_count} mapped rooms. Every room starts off. Enabled rooms default to Vacuum and Standard, and all settings save together.",
+        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Standard.",
         "data": {
           "name": "Plan name",
           "run_behavior": "Cleaning order",
-          "room_editor": "Rooms — top to bottom",
+          "room_editor": "Rooms",
           "return_to_base": "Return to dock when finished"
         },
         "data_description": {
-          "name": "Use a name you will recognize in dashboards and automations, such as Away, Weekdays, or Deep clean.",
-          "run_behavior": "Intelligent rotation starts with selected rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due; the saved order breaks ties, so short runs do not always begin with the same rooms. Run all in saved order cleans every selected room once from top to bottom.",
-          "room_editor": "Turn on a room to include it and reveal its settings. The list is the exact order for Run all and the tie-break order for Intelligent rotation. Drag rooms or use the arrows to reorder them.",
-          "return_to_base": "Send the robot to its dock after all selected rooms finish successfully."
+          "name": "Shown in dashboards and automations — for example Away, Weekdays, or Deep clean.",
+          "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
+          "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
+          "return_to_base": "Dock the robot after the plan finishes."
         }
       },
       "edit_plan": {
         "title": "Edit cleaning plan",
-        "description": "Update the plan's behavior, included rooms, room settings, and saved order on one screen. All changes save together.",
+        "description": "Changes apply when you save.",
         "data": {
           "name": "Plan name",
           "run_behavior": "Cleaning order",
-          "room_editor": "Rooms — top to bottom",
+          "room_editor": "Rooms",
           "enabled": "Plan enabled",
           "return_to_base": "Return to dock when finished"
         },
         "data_description": {
-          "name": "The name shown in Home Assistant actions, entities, and plan management.",
-          "run_behavior": "Intelligent rotation starts with selected rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due; the saved order breaks ties. Run all in saved order cleans every selected room once from top to bottom.",
-          "room_editor": "Turn on a room to include it and reveal its settings. The list is the exact order for Run all and the tie-break order for Intelligent rotation. Drag rooms or use the arrows to reorder them.",
-          "enabled": "Disabled plans remain saved and editable but cannot be started.",
-          "return_to_base": "Send the robot to its dock after all selected rooms finish successfully."
+          "name": "Shown in dashboards, automations, and plan management.",
+          "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
+          "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
+          "enabled": "Disabled plans stay saved but cannot start.",
+          "return_to_base": "Dock the robot after the plan finishes."
         }
       },
       "delete_plan": {
-        "title": "Delete cleaning plan",
-        "description": "This permanently deletes {plan_name}. Cleaning history for unrelated plans is retained.",
-        "data": {
-          "confirm": "I understand and want to delete this plan"
-        },
-        "data_description": {
-          "confirm": "Required safeguard. Leave this off to return without deleting the plan."
-        }
+        "title": "Delete plan",
+        "description": "Submitting permanently deletes {plan_name}. Other plans keep their history."
       },
       "preview_plan": {
         "title": "Preview next run",
-        "description": "{plan_name} will clean: {next_rooms}. This preview uses the saved behavior and changes nothing.",
+        "description": "{plan_name} will clean: {next_rooms}. Nothing is changed.",
         "data": {}
       },
       "reset_history": {
-        "title": "Reset intelligent cleaning history",
-        "description": "Clear successful-room tracking for {plan_name}, or every plan. Plans and room settings are never deleted.",
+        "title": "Reset cleaning history",
+        "description": "Submitting clears which rooms {plan_name} has completed. Plans and room settings are kept; affected rooms are treated as never cleaned.",
         "data": {
-          "all_plans": "Reset history for every plan",
-          "confirm": "I understand and want to reset this history"
+          "all_plans": "Reset history for every plan"
         },
         "data_description": {
-          "all_plans": "Off resets history only for the plan currently being managed. On resets history for every saved plan.",
-          "confirm": "Required safeguard. After reset, every affected room is treated as though it has never completed."
+          "all_plans": "Off resets only this plan."
         }
       }
     }

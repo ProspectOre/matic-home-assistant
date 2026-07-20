@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 
+from scripts.check_fresh_install import FreshInstallError, check_fresh_install
 from scripts.check_release_artifacts import (
     ArtifactError,
     artifact_integration_files,
@@ -71,3 +72,8 @@ def test_release_directory_requires_one_archive_of_each_type(tmp_path) -> None:
 
     with pytest.raises(ArtifactError, match="exactly one wheel"):
         check_release_directory(tmp_path)
+
+
+def test_fresh_install_gate_requires_exactly_one_wheel(tmp_path) -> None:
+    with pytest.raises(FreshInstallError, match="exactly one wheel"):
+        check_fresh_install(tmp_path)

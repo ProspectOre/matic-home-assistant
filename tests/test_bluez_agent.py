@@ -55,7 +55,7 @@ def _install_message_bus(monkeypatch, call_results: list) -> MagicMock:
 
 
 def test_agent_declares_authenticated_pairing_capability() -> None:
-    assert _AGENT_CAPABILITY == "KeyboardDisplay"
+    assert _AGENT_CAPABILITY == "KeyboardOnly"
 
 
 async def test_agent_confirms_only_the_selected_matic() -> None:
@@ -67,7 +67,8 @@ async def test_agent_confirms_only_the_selected_matic() -> None:
     request_passkey = agent.RequestPasskey.__wrapped__
     request_confirmation = agent.RequestConfirmation.__wrapped__
 
-    assert request_confirmation(agent, expected_device, 123456) is None
+    with pytest.raises(DBusError, match="requires passkey entry"):
+        request_confirmation(agent, expected_device, 123456)
     with pytest.raises(DBusError, match="Bluetooth PIN"):
         request_pin(agent, expected_device)
     assert await request_passkey(agent, expected_device) == 123456
@@ -128,7 +129,7 @@ async def test_agent_accepts_display_callbacks_only_for_the_selected_matic() -> 
         display_passkey(agent, other_device, 123456, 3)
 
 
-async def test_agent_authorizes_only_the_selected_matic() -> None:
+async def test_agent_rejects_just_works_and_scopes_service_authorization() -> None:
     agent = MaticPairingAgent(TEST_ADDRESS)
     expected_device = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
     other_device = "/org/bluez/hci0/dev_11_22_33_44_55_66"
@@ -137,7 +138,8 @@ async def test_agent_authorizes_only_the_selected_matic() -> None:
     request_authorization = agent.RequestAuthorization.__wrapped__
     authorize_service = agent.AuthorizeService.__wrapped__
 
-    assert request_authorization(agent, expected_device) is None
+    with pytest.raises(DBusError, match="requires passkey entry"):
+        request_authorization(agent, expected_device)
     assert authorize_service(agent, expected_device, service_uuid) is None
     with pytest.raises(DBusError, match="selected Matic"):
         request_authorization(agent, other_device)
@@ -200,6 +202,22 @@ async def test_pairing_session_rejects_unverified_already_exists() -> None:
     with pytest.raises(BleakDBusError, match="Already Exists") as exc_info:
         await session.async_pair("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
     assert exc_info.value.dbus_error == "org.bluez.Error.AlreadyExists"
+
+
+async def test_pairing_session_waits_for_a_robot_initiated_bond(monkeypatch) -> None:
+    monkeypatch.setattr(bluez_agent, "_PAIRED_POLL_SECONDS", 0)
+    bus = AsyncMock()
+    bus.call.side_effect = [
+        _paired(False),
+        _error("org.bluez.Error.InProgress", "In Progress"),
+        _paired(False),
+        _paired(True),
+    ]
+    session = BlueZPairingSession(bus)
+
+    await session.async_pair("/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF")
+
+    assert bus.call.await_count == 4
 
 
 async def test_pairing_agent_registers_and_unregisters_a_default_agent(

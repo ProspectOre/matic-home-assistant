@@ -7,7 +7,7 @@ import errno
 import logging
 import re
 import sys
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -46,6 +46,10 @@ class BluetoothPasskeyCancelledError(MaticError):
     """The active robot passkey request ended without a submitted code."""
 
 
+class BluetoothPairingIncompleteError(MaticError):
+    """The robot was advertising, but Bluetooth pairing did not complete."""
+
+
 HERMES_TOKEN_CHARACTERISTIC = "84b52f26-d3b7-5ebe-ba52-ff38a447788d"
 MATIC_BLE_SERVICE_UUID = "5b14adcd-e995-9e80-c55a-b6c6fb6c612f"
 MATIC_LOCAL_NAME = "matic"
@@ -77,10 +81,11 @@ class _MaticDiscovery:
 class BluetoothPasskeyExchange:
     """Bridge BlueZ's live passkey request to a Home Assistant config flow."""
 
-    def __init__(self) -> None:
+    def __init__(self, on_state_change: Callable[[], None] | None = None) -> None:
         self._requested = asyncio.Event()
         self._passkey: asyncio.Future[int] = asyncio.get_running_loop().create_future()
         self._submitted = False
+        self._on_state_change = on_state_change
 
     @property
     def requested(self) -> bool:
@@ -92,6 +97,11 @@ class BluetoothPasskeyExchange:
         """Return whether the user has supplied a code."""
         return self._submitted
 
+    @property
+    def can_submit(self) -> bool:
+        """Return whether the live request can still accept a code."""
+        return not self._passkey.done()
+
     async def async_wait_until_requested(self) -> None:
         """Wait until BlueZ asks Home Assistant for Matic's displayed code."""
         await self._requested.wait()
@@ -99,6 +109,8 @@ class BluetoothPasskeyExchange:
     async def async_request_passkey(self) -> int:
         """Notify the config flow, then wait for its validated response."""
         self._requested.set()
+        if self._on_state_change is not None:
+            self._on_state_change()
         return await asyncio.shield(self._passkey)
 
     def submit(self, passkey: int) -> None:
@@ -280,18 +292,38 @@ def _has_adapter_access_error(err: BaseException) -> bool:
     return False
 
 
+def _safe_bluetooth_error_summary(err: BaseException) -> str:
+    """Describe a Bluetooth failure without device or home identifiers."""
+    current: BaseException | None = err
+    while current is not None:
+        if isinstance(current, BleakDBusError):
+            return f"{type(current).__name__}/{current.dbus_error}"
+        if isinstance(current, OSError) and current.errno is not None:
+            return f"{type(current).__name__}/errno={current.errno}"
+        current = current.__cause__ or current.__context__
+    return type(err).__name__
+
+
 async def async_request_bluetooth_credential(
     hass: HomeAssistant,
     user_id: str,
     passkey_exchange: BluetoothPasskeyExchange | None = None,
+    stage_callback: Callable[[str], None] | None = None,
 ) -> HermesCredential:
     """Request one Hermes credential through Matic's private GATT endpoint."""
+
+    def _stage(stage: str) -> None:
+        if stage_callback is not None:
+            stage_callback(stage)
+
+    _stage("searching")
     try:
         discoveries = await _async_matic_discoveries(hass)
     except OSError as err:
         if _has_adapter_access_error(err):
             raise BluetoothAdapterUnavailableError(
-                "Home Assistant's Bluetooth adapter cannot scan"
+                "Home Assistant's Bluetooth adapter cannot scan "
+                f"({_safe_bluetooth_error_summary(err)})"
             ) from err
         raise PairingModeRequiredError("Matic Bluetooth discovery failed") from err
     if not discoveries:
@@ -299,8 +331,10 @@ async def async_request_bluetooth_credential(
 
     request = TokenRequest(user_id=user_id).SerializeToString()
     adapter_access_error: BaseException | None = None
-    for discovery in discoveries:
+    last_failure = "no credential candidate completed"
+    for candidate_number, discovery in enumerate(discoveries, start=1):
         client = None
+        failure_stage = "pairing-agent setup"
         try:
             # Bond before requesting the credential over authenticated GATT.
             async with _async_bluez_pairing_agent(
@@ -310,6 +344,8 @@ async def async_request_bluetooth_credential(
                 async with asyncio.timeout(BLUETOOTH_PAIRING_TIMEOUT_SECONDS):
                     bluez_device_path = _bluez_device_path(discovery)
                     pair_with_bleak = bluez_session is None or bluez_device_path is None
+                    failure_stage = "Bluetooth connection"
+                    _stage("connecting")
                     client = await establish_connection(
                         BleakClientWithServiceCache,
                         discovery.device,
@@ -320,8 +356,16 @@ async def async_request_bluetooth_credential(
                     if not pair_with_bleak:
                         assert bluez_session is not None
                         assert bluez_device_path is not None
-                        # Keep this GATT connection open while BlueZ bonds.
+                        failure_stage = "Bluetooth pairing"
+                        # Matic initiates security itself once a client connects
+                        # (an SMP Security Request). Bond on the open GATT
+                        # connection so BlueZ answers that request through the
+                        # scoped agent; pairing before connecting races the
+                        # robot's request with a host-initiated exchange, which
+                        # the kernel drops as an unexpected SMP command and the
+                        # robot then cancels authentication.
                         await bluez_session.async_pair(bluez_device_path)
+                    failure_stage = "GATT service discovery"
                     services = getattr(client, "services", None)
                     characteristics = list(
                         getattr(services, "characteristics", {}).values()
@@ -335,10 +379,18 @@ async def async_request_bluetooth_credential(
                         None,
                     )
                     if token_characteristic is None:
+                        last_failure = "GATT token characteristic was not available"
                         _LOGGER.debug(
                             "Bluetooth candidate does not expose the Matic token "
                             "characteristic"
                         )
+                        # Matic reveals its token service only after
+                        # authentication, so a service list cached before the
+                        # bond hides it on every reconnect. Drop the cache so
+                        # the next attempt re-resolves over the encrypted link.
+                        clear_cache = getattr(client, "clear_cache", None)
+                        if clear_cache is not None:
+                            await clear_cache()
                         continue
                     token_properties = set(
                         getattr(token_characteristic, "properties", ())
@@ -353,14 +405,17 @@ async def async_request_bluetooth_credential(
                         "Token characteristic properties: %s",
                         sorted(token_properties),
                     )
+                    failure_stage = "credential request write"
                     await client.write_gatt_char(
                         HERMES_TOKEN_CHARACTERISTIC,
                         request,
                         response=("write-without-response" not in token_properties),
                     )
+                    failure_stage = "credential response read"
                     response = bytes(
                         await client.read_gatt_char(HERMES_TOKEN_CHARACTERISTIC)
                     )
+                    failure_stage = "credential validation"
                     credential = HermesCredential.from_message(
                         BotToken.FromString(response)
                     )
@@ -374,10 +429,14 @@ async def async_request_bluetooth_credential(
             TimeoutError,
             ValueError,
         ) as err:
+            summary = _safe_bluetooth_error_summary(err)
+            last_failure = f"{failure_stage} failed ({summary})"
             _LOGGER.debug(
-                "Bluetooth credential request failed (%s)",
-                type(err).__name__,
-                exc_info=err,
+                "Matic Bluetooth candidate %s of %s failed during %s (%s)",
+                candidate_number,
+                len(discoveries),
+                failure_stage,
+                summary,
             )
             if _has_adapter_access_error(err):
                 adapter_access_error = err
@@ -390,12 +449,17 @@ async def async_request_bluetooth_credential(
                 except (*BLEAK_RETRY_EXCEPTIONS, OSError) as err:
                     _LOGGER.debug(
                         "Bluetooth disconnect failed (%s)",
-                        type(err).__name__,
-                        exc_info=err,
+                        _safe_bluetooth_error_summary(err),
                     )
 
     if adapter_access_error is not None:
         raise BluetoothAdapterUnavailableError(
-            "Home Assistant's Bluetooth adapter cannot open a connection"
+            "Home Assistant's Bluetooth adapter cannot open a connection "
+            f"({_safe_bluetooth_error_summary(adapter_access_error)})"
         ) from adapter_access_error
-    raise PairingModeRequiredError("Matic Bluetooth credential request failed")
+    # A fresh advertisement was found above, so Pairing mode was on; the
+    # failure happened after discovery and must not be reported as the
+    # pairing window being closed.
+    raise BluetoothPairingIncompleteError(
+        f"Matic Bluetooth credential request failed: {last_failure}"
+    )

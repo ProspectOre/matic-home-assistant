@@ -160,12 +160,14 @@ class MaticRoomPlanEditor extends HTMLElement {
       <style>
         :host { display: block; }
         .intro { color: var(--secondary-text-color); margin: 4px 0 12px; }
-        .list { border: 1px solid var(--divider-color); border-radius: 12px; overflow: hidden; }
-        .room { padding: 12px 10px; background: var(--card-background-color); }
+        .list { border: 1px solid var(--divider-color); border-radius: 16px; overflow: hidden; }
+        .room { padding: 14px 12px; background: var(--card-background-color); transition: background .15s ease; }
+        .room:hover { background: var(--secondary-background-color); }
         .room + .room { border-top: 1px solid var(--divider-color); }
         .room.dragging { opacity: .55; }
         .header { display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto auto; align-items: center; gap: 4px; }
         .name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .room.off .name { color: var(--secondary-text-color); font-weight: 400; }
         .icon-button { display: inline-grid; place-items: center; width: 38px; height: 38px; border: 0; border-radius: 50%; color: var(--secondary-text-color); background: transparent; cursor: pointer; }
         .icon-button:hover:not(:disabled) { background: var(--secondary-background-color); }
         .icon-button:disabled { opacity: .3; cursor: default; }
@@ -177,13 +179,13 @@ class MaticRoomPlanEditor extends HTMLElement {
           .settings { grid-template-columns: 1fr; margin-left: 4px; }
         }
       </style>
-      <div class="intro">${this._localize("room_editor_intro", "Turn on the rooms to include. Drag rooms or use the arrows to set the saved order from top to bottom.")}</div>
+      <div class="intro">${this._localize("room_editor_intro", "Turn on rooms to include them. Drag or use the arrows to set the cleaning order.")}</div>
       <div class="list" role="list"></div>
     `;
     const list = this.shadowRoot.querySelector(".list");
     rows.forEach((row, index) => {
       const container = document.createElement("div");
-      container.className = "room";
+      container.className = row.included ? "room" : "room off";
       container.setAttribute("role", "listitem");
       container.addEventListener("dragover", (event) => event.preventDefault());
       container.addEventListener("drop", (event) => {

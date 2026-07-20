@@ -16,8 +16,7 @@ fingerprint, serial number, and robot-issued local access credential. These are
 needed to reconnect securely and are covered by Home Assistant backups.
 Any six-digit Bluetooth passkey shown on the robot is used only by the active
 pairing attempt; it is not stored in the config entry, logs, diagnostics, or
-rotation history. An existing valid Home Assistant pairing may complete setup
-without a new passkey.
+rotation history.
 
 The entity state machine may contain activity, battery, room names and IDs,
 firmware metadata, current/previous area, preference states, Wi-Fi SSIDs and

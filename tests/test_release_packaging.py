@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.1.0"
+    assert manifest["version"] == "0.1.1"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -104,10 +104,14 @@ def test_ci_inspects_finished_release_archives() -> None:
     workflow = (ROOT / ".github" / "workflows" / "test.yml").read_text()
     build = "python -m build --sdist --wheel"
     inspect = "python scripts/check_release_artifacts.py dist"
+    fresh_install = "python scripts/check_fresh_install.py dist"
 
     assert build in workflow
     assert inspect in workflow
-    assert workflow.index(build) < workflow.index(inspect)
+    assert fresh_install in workflow
+    assert (
+        workflow.index(build) < workflow.index(inspect) < workflow.index(fresh_install)
+    )
 
 
 def test_integration_ships_local_brand_icons() -> None:

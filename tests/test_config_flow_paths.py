@@ -10,6 +10,7 @@ import pytest
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.matic_robot.bluetooth_pairing import (
+    BluetoothPairingIncompleteError,
     BluetoothPairingUnavailableError,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
@@ -43,6 +44,7 @@ ENTRY_DATA = {
     CONF_CERTIFICATE_FINGERPRINT: "00" * 32,
     CONF_HERMES_CREDENTIAL: TEST_CREDENTIAL.to_storage(),
 }
+PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
 
 
 def _info(*, requires_auth: bool = False, serial: str = "synthetic") -> RobotInfo:
@@ -189,7 +191,7 @@ async def test_bluetooth_pairing_starts_after_unauthenticated_client_closes(
         MagicMock(side_effect=[unauthenticated, authenticated]),
     )
 
-    async def request_credential(*_args):
+    async def request_credential(*_args, **_kwargs):
         assert unauthenticated.exited
         return TEST_CREDENTIAL
 
@@ -244,7 +246,10 @@ async def test_pairing_requests_ble_when_unauthenticated_info_is_rejected(
     assert result["type"] is FlowResultType.CREATE_ENTRY
     assert result["data"][CONF_HERMES_CREDENTIAL] == TEST_CREDENTIAL.to_storage()
     request_credential.assert_awaited_once_with(
-        hass, flow._pairing_user_id, flow._passkey_exchange
+        hass,
+        flow._pairing_user_id,
+        flow._passkey_exchange,
+        stage_callback=flow._async_set_pairing_stage,
     )
 
 
@@ -252,6 +257,7 @@ async def test_pairing_requests_ble_when_unauthenticated_info_is_rejected(
     ("credential_error", "expected_error"),
     [
         (BluetoothPairingUnavailableError("adapter"), "bluetooth_unavailable"),
+        (BluetoothPairingIncompleteError("interrupted"), "pairing_incomplete"),
         (PairingModeRequiredError("closed"), "pairing_mode_off"),
     ],
 )
@@ -423,8 +429,15 @@ async def test_invalid_stored_credential_is_rejected_before_network_io(
     fetch.assert_not_awaited()
 
 
+@pytest.mark.parametrize(
+    ("credential_error", "expected_error"),
+    [
+        (PairingModeRequiredError("closed"), "pairing_mode_off"),
+        (BluetoothPairingIncompleteError("interrupted"), "pairing_incomplete"),
+    ],
+)
 async def test_closed_pairing_window_returns_single_recovery_prompt(
-    hass, monkeypatch
+    hass, monkeypatch, credential_error, expected_error
 ) -> None:
     flow = _flow(hass)
     identity = PeerIdentity("00" * 32, "robot.invalid", "synthetic", "robot_server")
@@ -442,7 +455,7 @@ async def test_closed_pairing_window_returns_single_recovery_prompt(
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
-        AsyncMock(side_effect=PairingModeRequiredError("closed")),
+        AsyncMock(side_effect=credential_error),
     )
 
     result = await flow._async_create_or_error(
@@ -450,7 +463,7 @@ async def test_closed_pairing_window_returns_single_recovery_prompt(
     )
 
     assert result["step_id"] == "pair"
-    assert result["errors"] == {"base": "pairing_mode_off"}
+    assert result["errors"] == {"base": expected_error}
     assert flow._pairing_data["hostname"] == "robot.invalid"
 
 
@@ -519,7 +532,7 @@ async def test_reauthentication_replaces_only_the_local_credential(
     )
 
     assert (await flow.async_step_reauth_confirm())["step_id"] == "reauth_confirm"
-    progress = await flow.async_step_reauth_confirm({})
+    progress = await flow.async_step_reauth_confirm(PAIRING_CONFIRMED)
     assert progress["type"] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_task is not None
     await flow._pairing_task
@@ -540,6 +553,16 @@ async def test_reauthentication_replaces_only_the_local_credential(
     assert flow._pairing_task is None
 
 
+async def test_reauthentication_requires_pairing_mode_confirmation(hass) -> None:
+    flow = _flow(hass)
+    flow._get_reauth_entry = lambda: SimpleNamespace(data=ENTRY_DATA)
+
+    result = await flow.async_step_reauth_confirm({"pairing_mode_enabled": False})
+
+    assert result["errors"] == {"base": "pairing_mode_confirmation_required"}
+    assert flow._pairing_task is None
+
+
 async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     hass, monkeypatch
 ) -> None:
@@ -553,7 +576,9 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     )
     received_passkey = None
 
-    async def request_credential(_hass, _user_id, passkey_exchange=None):
+    async def request_credential(
+        _hass, _user_id, passkey_exchange=None, stage_callback=None
+    ):
         nonlocal received_passkey
         assert passkey_exchange is not None
         received_passkey = await passkey_exchange.async_request_passkey()
@@ -570,7 +595,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     )
 
     assert (await flow.async_step_reauth_confirm())["step_id"] == "reauth_confirm"
-    assert (await flow.async_step_reauth_confirm({}))[
+    assert (await flow.async_step_reauth_confirm(PAIRING_CONFIRMED))[
         "type"
     ] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_checkpoint_task is not None
@@ -582,7 +607,15 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
 
     form = await flow.async_step_pairing_code()
     assert form["step_id"] == "pairing_code"
-    result = await flow.async_step_pairing_code({"passkey": "012345"})
+    verifying = await flow.async_step_pairing_code({"passkey": "012345"})
+    assert verifying["type"] is FlowResultType.SHOW_PROGRESS
+    assert flow._pairing_task is not None
+    await flow._pairing_task
+    assert flow._pairing_checkpoint_task is not None
+    await flow._pairing_checkpoint_task
+    done = await flow.async_step_pairing_code()
+    assert done["type"] is FlowResultType.SHOW_PROGRESS_DONE
+    result = await flow.async_step_finish()
 
     assert result["reason"] == "reauth_successful"
     assert received_passkey == 12345
@@ -599,6 +632,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     ("error", "expected"),
     [
         (PairingModeRequiredError("closed"), "pairing_mode_off"),
+        (BluetoothPairingIncompleteError("interrupted"), "pairing_incomplete"),
         (BluetoothPairingUnavailableError("adapter"), "bluetooth_unavailable"),
         (AuthenticationRequiredError("rejected"), "invalid_credential"),
         (CannotConnectError("offline"), "cannot_connect"),
@@ -614,8 +648,12 @@ async def test_reauthentication_errors_are_actionable(
         "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
         AsyncMock(side_effect=error),
     )
+    monkeypatch.setattr("custom_components.matic_robot.config_flow.PAIRING_ATTEMPTS", 1)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
+    )
 
-    assert (await flow.async_step_reauth_confirm({}))[
+    assert (await flow.async_step_reauth_confirm(PAIRING_CONFIRMED))[
         "type"
     ] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_task is not None
@@ -731,3 +769,27 @@ async def test_existing_robot_verification_rejects_changed_serial(
         await flow._async_verify_existing_robot(
             "192.0.2.1", 16320, ENTRY_DATA, TEST_CREDENTIAL
         )
+
+
+async def test_reauth_window_timeout_reports_closed_pairing_mode(
+    hass, monkeypatch
+) -> None:
+    flow = _flow(hass)
+    flow._get_reauth_entry = lambda: SimpleNamespace(data=ENTRY_DATA)
+    never = asyncio.Event()
+
+    async def hang(*_args, **_kwargs):
+        await never.wait()
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        hang,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.PAIRING_TIMEOUT_SECONDS", 0.001
+    )
+
+    await flow._async_reauth()
+
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["errors"] == {"base": "pairing_mode_off"}

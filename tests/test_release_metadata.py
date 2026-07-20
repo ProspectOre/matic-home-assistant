@@ -239,16 +239,18 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         errors = translations["config"]["error"]
         for key in ("pairing_code_expired", "pairing_code_rejected"):
             recovery = errors[key].casefold()
-            assert (
-                recovery.index("turn pairing mode off and back on")
-                < recovery.index("select submit")
-                < recovery.index("enter the new code")
-            )
-            assert "to show a new code" not in recovery
+            # Expired and rejected codes renew automatically: the flow starts
+            # a fresh bond and re-prompts, so the copy must direct the user to
+            # the robot's new code without asking them to resubmit anything.
+            assert "new pairing was started" in recovery
+            assert "enter the new code" in recovery
+            assert "select submit" not in recovery
+            assert "turn pairing mode off" not in recovery
 
         pairing = translations["config"]["step"]["pair"]["description"]
-        assert "Return to Home Assistant and select Submit" in pairing
-        assert "already paired over Bluetooth" in pairing
+        assert "Confirm below only after the pairing window is open" in pairing
+        assert "will display a six-digit code" in pairing
+        assert "without a new code" not in pairing
 
         options = translations["options"]
         assert "Default plan:" in options["step"]["init"]["description"]

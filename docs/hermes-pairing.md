@@ -15,12 +15,14 @@ supported by Matic Robots Inc.
    Matic-signed identity.
 2. In the Matic app, open **Settings → Connectivity → Add another user** and
    enable Pairing mode.
-3. Select **Submit** in Home Assistant. When Home Assistant needs a new Bluetooth
-   pairing, the robot displays a six-digit code and Home Assistant asks for it.
-4. Enter the code when prompted. If this Home Assistant system already has a
-   valid Bluetooth pairing with the robot, setup reuses it and may finish
-   without a new code. Setup creates the entry only after the new local
-   credential and an authenticated robot connection are both verified.
+3. Select **Pairing mode is on**, then **Submit** in Home Assistant. When Home
+   Bluetooth pairing starts, Matic displays a six-digit code and Home Assistant
+   asks for it.
+4. Enter the code when prompted. Bluetooth gives roughly 20 seconds to enter
+   it before the exchange times out, so type it right away; an expired code
+   just means turning Pairing mode off and on and submitting again. Setup
+   creates the entry only after the new local credential and an authenticated
+   robot connection are both verified.
 
 Any displayed code applies only to the current attempt. The integration does
 not log, store, or include it in diagnostics. Routine operation uses the
@@ -40,6 +42,25 @@ Bluetooth proxies are not supported for setup. This is not a signal-strength
 limitation. Home Assistant Container uses the host's Linux BlueZ stack, which is
 why the D-Bus access and container permissions above are required.
 
+## Troubleshooting signatures
+
+Enable debug logging (`custom_components.matic_robot: debug`) and match the
+repeated line during a failing attempt:
+
+- `Found 0 fresh local Matic advertisement(s)` — the robot is not
+  broadcasting. Its pairing window expires silently and its screen shows
+  nothing while the window is open, so turn Pairing mode off and back on in
+  the Matic app and submit again promptly. If toggling never helps and a
+  10-second `bluetoothctl scan on` on the host hears no devices at all, the
+  host's Bluetooth adapter is wedged — reboot the Home Assistant host.
+- `visible only through a remote Bluetooth proxy` — only ESPHome proxies can
+  see the robot; setup needs an adapter built into or attached to the host.
+- `failed during Bluetooth pairing` — the bond itself failed; the robot shows
+  its code only after the bond starts, and each displayed code is valid for
+  roughly 20 seconds.
+- The pairing-timeout warning in Settings → System → Logs always includes the
+  last failing stage, so include it in bug reports.
+
 ## Failure behavior
 
 - Invalid, expired, and rejected codes are never reused.
@@ -49,6 +70,8 @@ why the D-Bus access and container permissions above are required.
 - Certificate, identity, credential, and authenticated-connection failures stop
   setup before an entry is created.
 - A Bluetooth failure directs the user to Home Assistant's Bluetooth repair.
+- A timeout writes a sanitized `matic_robot` entry to **Settings → System →
+  Logs** with the last completed setup result.
 
 ## Removing access
 

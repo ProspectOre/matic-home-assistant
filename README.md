@@ -86,12 +86,11 @@ Assistant's `custom_components`, restart, select the discovered robot under
    automatically; homes with multiple robots choose one from a list.
 2. In the Matic app, open **Settings → Connectivity → Add another user** and
    enable its five-minute pairing window.
-3. Select **Submit** in Home Assistant and keep the setup dialog open. When Home
-   Assistant needs a new Bluetooth pairing, the robot displays a six-digit code
-   and Home Assistant asks for it.
-4. Enter the code when prompted. If this Home Assistant system already has a
-   valid Bluetooth pairing with the robot, setup reuses it and may finish
-   without a new code. In either case, Home Assistant requests its own local
+3. Select **Pairing mode is on**, then **Submit** in Home Assistant and keep the
+   setup dialog open. When Home
+   Bluetooth pairing starts, Matic displays a six-digit code and Home Assistant
+   asks for it.
+4. Enter the code when prompted. Home Assistant then requests its own local
    credential and verifies the robot's pinned TLS identity before saving.
 
 Any displayed six-digit code belongs only to the current pairing attempt and is
@@ -150,11 +149,13 @@ uses the LAN.
   Matter setup codes, and arbitrary raw writes are never exposed.
 - If discovery fails, confirm the robot and Home Assistant share a
   multicast-capable LAN.
-- A new code appears only when Home Assistant needs a Bluetooth pairing. If it
-  is already paired with the robot, setup may finish without displaying one.
+- Every Bluetooth pairing displays a fresh six-digit code on Matic. Enter that
+  code only in the active Home Assistant setup dialog.
 - If a requested code expires or is rejected, turn Pairing mode off and back on
   in the Matic app, select **Submit** again, then enter the fresh code when Home
   Assistant asks.
+- If setup times out, review **Settings → System → Logs** for the sanitized
+  `matic_robot` pairing-timeout entry before retrying.
 - A new Bluetooth pairing deliberately proves physical access: someone at the
   robot must read its displayed code, and Home Assistant must use a Bluetooth
   adapter built into or directly attached to its host for that interactive

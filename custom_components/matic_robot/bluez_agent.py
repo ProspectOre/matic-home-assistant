@@ -27,10 +27,12 @@ _AGENT_MANAGER_INTERFACE = "org.bluez.AgentManager1"
 _DEVICE_INTERFACE = "org.bluez.Device1"
 _PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 _BLUEZ_ALREADY_EXISTS = "org.bluez.Error.AlreadyExists"
-# Advertise both confirmation and passkey support so BlueZ can negotiate the
-# authenticated association method selected by Matic. Every callback remains
-# scoped to the robot chosen by the active config flow.
-_AGENT_CAPABILITY = "KeyboardDisplay"
+_BLUEZ_IN_PROGRESS = "org.bluez.Error.InProgress"
+_PAIRED_POLL_SECONDS = 1.0
+# Matic displays the passkey and Home Assistant enters it. Advertising display
+# support would let BlueZ negotiate a confirmation flow that this headless
+# agent cannot present to the user.
+_AGENT_CAPABILITY = "KeyboardOnly"
 
 DBusObjectPath = Annotated[str, DBusSignature("o")]
 DBusString = Annotated[str, DBusSignature("s")]
@@ -114,16 +116,22 @@ class MaticPairingAgent(ServiceInterface):
     def RequestConfirmation(
         self, device: DBusObjectPath, passkey: DBusUInt32
     ) -> DBusVoid:
-        """Approve numeric confirmation for the selected Matic only."""
+        """Reject a pairing model that cannot show its code in this flow."""
         del passkey
         self._require_matic(device)
-        _LOGGER.debug("Approved numeric confirmation for the selected Matic")
+        raise DBusError(
+            "org.bluez.Error.Rejected",
+            "Matic pairing requires passkey entry",
+        )
 
     @method()
     def RequestAuthorization(self, device: DBusObjectPath) -> DBusVoid:
-        """Authorize the selected Matic only."""
+        """Reject unauthenticated Just Works pairing."""
         self._require_matic(device)
-        _LOGGER.debug("Authorized the selected Matic pairing request")
+        raise DBusError(
+            "org.bluez.Error.Rejected",
+            "Matic pairing requires passkey entry",
+        )
 
     @method()
     def AuthorizeService(self, device: DBusObjectPath, uuid: DBusString) -> DBusVoid:
@@ -161,6 +169,13 @@ class BlueZPairingSession:
         assert_reply(reply)
         return bool(reply.body[0].value)
 
+    async def _async_wait_until_paired(self, device_path: str) -> None:
+        """Wait for a bond that the robot itself initiated to finish."""
+        # Paired lives in bluetoothd, so an in-process event cannot signal it;
+        # the caller's pairing timeout bounds this remote-property poll.
+        while not await self._async_is_paired(device_path):  # noqa: ASYNC110
+            await asyncio.sleep(_PAIRED_POLL_SECONDS)
+
     async def async_pair(self, device_path: str) -> None:
         """Ask BlueZ to bond while this connection's agent is authoritative."""
         if await self._async_is_paired(device_path):
@@ -179,13 +194,19 @@ class BlueZPairingSession:
             assert_reply(reply)
         except BleakDBusError as err:
             # The bond can complete between the property read and Pair call.
-            if (
-                err.dbus_error != _BLUEZ_ALREADY_EXISTS
-                or not await self._async_is_paired(device_path)
+            if err.dbus_error == _BLUEZ_ALREADY_EXISTS and await self._async_is_paired(
+                device_path
             ):
-                raise
-            _LOGGER.debug("Reusing the concurrently completed Matic bond")
-            return
+                _LOGGER.debug("Reusing the concurrently completed Matic bond")
+                return
+            if err.dbus_error == _BLUEZ_IN_PROGRESS:
+                # Matic's own Security Request already started this bond;
+                # wait for it instead of failing the attempt. The caller's
+                # pairing timeout bounds this wait.
+                _LOGGER.debug("Waiting for the Matic-initiated bond to finish")
+                await self._async_wait_until_paired(device_path)
+                return
+            raise
         _LOGGER.debug("BlueZ completed the scoped Matic bond")
 
 

@@ -12,13 +12,20 @@ body:
   - type: input
     attributes:
       label: Integration version
-      placeholder: 0.1.0
+      placeholder: 0.1.1
     validations:
       required: true
   - type: input
     attributes:
       label: Home Assistant version and installation method
       placeholder: 2026.7.2, Home Assistant OS
+    validations:
+      required: true
+  - type: input
+    attributes:
+      label: Bluetooth setup
+      description: Built-in adapter or USB model, and whether ESPHome Bluetooth proxies are present. Pairing needs a local adapter; proxies cannot run setup.
+      placeholder: HA Yellow built-in / TP-Link UB500 USB; 3 ESPHome proxies
     validations:
       required: true
   - type: dropdown
@@ -43,4 +50,11 @@ body:
   - type: textarea
     attributes:
       label: Sanitized diagnostics or logs
-      description: Paste only diagnostics or logs that you reviewed and sanitized. Do not attach raw storage or captures.
+      description: >-
+        For pairing problems, paste the matic_robot warning from Settings →
+        System → Logs (it names the failing stage). For deeper detail, enable
+        debug logging first — Developer tools → Actions → logger.set_level
+        with data `custom_components.matic_robot: debug` — then reproduce and
+        paste the matic_robot lines. The integration never logs codes,
+        addresses, or credentials, but review your paste anyway. Do not attach
+        raw storage or captures.

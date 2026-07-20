@@ -30,6 +30,8 @@ from custom_components.matic_robot.config_flow import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import CleaningPlanManager
 
+PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
+
 
 def _discovery_info(
     address: str = "192.0.2.1", hostname: str = "robot.local."
@@ -476,78 +478,75 @@ async def test_automatic_pairing_retries_until_the_window_opens(monkeypatch) -> 
     assert create.await_count == 2
 
 
-async def test_automatic_pairing_does_not_reuse_an_expired_code(monkeypatch) -> None:
+async def test_expired_code_renews_with_a_fresh_bond_and_exchange(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    flow._passkey_exchange = flow_module.BluetoothPasskeyExchange()
-    passkey_request = asyncio.create_task(
-        flow._passkey_exchange.async_request_passkey()
+    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
+    exchanges = []
+
+    async def fake_create(_data, _step):
+        exchange = flow._passkey_exchange
+        assert exchange is not None
+        exchanges.append(exchange)
+        if len(exchanges) == 1:
+            request = asyncio.create_task(exchange.async_request_passkey())
+            await exchange.async_wait_until_requested()
+            exchange.cancel()
+            await asyncio.gather(request, return_exceptions=True)
+            return {
+                "type": FlowResultType.FORM,
+                "step_id": "pair",
+                "errors": {"base": "pairing_incomplete"},
+            }
+        return expected
+
+    monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
+    monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
     )
-    await flow._passkey_exchange.async_wait_until_requested()
-    create = AsyncMock(
-        return_value={
-            "type": FlowResultType.FORM,
-            "step_id": "pair",
-            "errors": {"base": "pairing_mode_off"},
-        }
-    )
-    monkeypatch.setattr(flow, "_async_create_or_error", create)
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result is not None
-    assert flow._pairing_result["type"] is FlowResultType.FORM
-    assert flow._pairing_result["errors"] == {"base": "pairing_code_expired"}
-    create.assert_awaited_once()
-    passkey_request.cancel()
-    await asyncio.gather(passkey_request, return_exceptions=True)
+    assert flow._pairing_result == expected
+    assert flow._pairing_retry_note == "pairing_code_expired"
+    assert len(exchanges) == 2
+    assert exchanges[0] is not exchanges[1]
 
 
-async def test_cancelled_passkey_is_expired_not_rejected(monkeypatch) -> None:
+async def test_rejected_code_renews_and_notes_the_rejection(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    flow._passkey_exchange = flow_module.BluetoothPasskeyExchange()
-    passkey_request = asyncio.create_task(
-        flow._passkey_exchange.async_request_passkey()
+    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
+    attempts = []
+
+    async def fake_create(_data, _step):
+        exchange = flow._passkey_exchange
+        assert exchange is not None
+        attempts.append(exchange)
+        if len(attempts) == 1:
+            request = asyncio.create_task(exchange.async_request_passkey())
+            await exchange.async_wait_until_requested()
+            exchange.submit(123456)
+            assert await request == 123456
+            return {
+                "type": FlowResultType.FORM,
+                "step_id": "pair",
+                "errors": {"base": "pairing_incomplete"},
+            }
+        return expected
+
+    monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
+    monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
     )
-    await flow._passkey_exchange.async_wait_until_requested()
-    flow._passkey_exchange.cancel()
-    await asyncio.gather(passkey_request, return_exceptions=True)
-    create = AsyncMock(
-        return_value={
-            "type": FlowResultType.FORM,
-            "step_id": "pair",
-            "errors": {"base": "cannot_connect"},
-        }
-    )
-    monkeypatch.setattr(flow, "_async_create_or_error", create)
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result is not None
-    assert flow._pairing_result["errors"] == {"base": "pairing_code_expired"}
-
-
-async def test_automatic_pairing_reports_a_rejected_code(monkeypatch) -> None:
-    flow = MaticRobotConfigFlow()
-    flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    flow._passkey_exchange = flow_module.BluetoothPasskeyExchange()
-    flow._passkey_exchange.submit(123456)
-    create = AsyncMock(
-        return_value={
-            "type": FlowResultType.FORM,
-            "step_id": "pair",
-            "errors": {"base": "cannot_connect"},
-        }
-    )
-    monkeypatch.setattr(flow, "_async_create_or_error", create)
-
-    await flow._async_wait_for_pairing()
-
-    assert flow._pairing_result is not None
-    assert flow._pairing_result["type"] is FlowResultType.FORM
-    assert flow._pairing_result["errors"] == {"base": "pairing_code_rejected"}
-    create.assert_awaited_once()
+    assert flow._pairing_result == expected
+    assert flow._pairing_retry_note == "pairing_code_rejected"
+    assert len(attempts) == 2
 
 
 async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) -> None:
@@ -565,7 +564,7 @@ async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) ->
     monkeypatch.setattr(flow, "_async_wait_for_pairing", finish_pairing)
 
     assert (await flow.async_step_pair())["step_id"] == "pair"
-    progress = await flow.async_step_pair({})
+    progress = await flow.async_step_pair(PAIRING_CONFIRMED)
     assert progress["type"] is FlowResultType.SHOW_PROGRESS
     release.set()
     assert flow._pairing_task is not None
@@ -574,6 +573,20 @@ async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) ->
     await flow._pairing_checkpoint_task
     assert (await flow.async_step_pair({}))["type"] is FlowResultType.SHOW_PROGRESS_DONE
     assert await flow.async_step_finish() == expected
+    assert flow._pairing_task is None
+
+
+async def test_pairing_requires_confirmation_before_starting(hass) -> None:
+    flow = MaticRobotConfigFlow()
+    flow.hass = hass
+    flow.context = {}
+    flow._pairing_data = {"host": "robot.invalid", "port": 16320}
+
+    form = await flow.async_step_pair()
+    unconfirmed = await flow.async_step_pair({"pairing_mode_enabled": False})
+
+    assert set(form["data_schema"].schema) == {"pairing_mode_enabled"}
+    assert unconfirmed["errors"] == {"base": "pairing_mode_confirmation_required"}
     assert flow._pairing_task is None
 
 
@@ -587,6 +600,7 @@ async def test_pairing_pauses_for_the_code_shown_on_matic(hass, monkeypatch) -> 
 
     async def finish_pairing():
         nonlocal received_passkey
+        flow._async_begin_pairing_attempt()
         assert flow._passkey_exchange is not None
         received_passkey = await flow._passkey_exchange.async_request_passkey()
         flow._pairing_result = expected
@@ -594,7 +608,9 @@ async def test_pairing_pauses_for_the_code_shown_on_matic(hass, monkeypatch) -> 
     monkeypatch.setattr(flow, "_async_wait_for_pairing", finish_pairing)
 
     assert (await flow.async_step_pair())["step_id"] == "pair"
-    assert (await flow.async_step_pair({}))["type"] is FlowResultType.SHOW_PROGRESS
+    assert (await flow.async_step_pair(PAIRING_CONFIRMED))[
+        "type"
+    ] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_checkpoint_task is not None
     await flow._pairing_checkpoint_task
 
@@ -608,7 +624,18 @@ async def test_pairing_pauses_for_the_code_shown_on_matic(hass, monkeypatch) -> 
     invalid = await flow.async_step_pairing_code({"passkey": "12345"})
     assert invalid["errors"] == {"passkey": "invalid_passkey"}
 
-    result = await flow.async_step_pairing_code({"passkey": "012345"})
+    verifying = await flow.async_step_pairing_code({"passkey": "012345"})
+    assert verifying["type"] is FlowResultType.SHOW_PROGRESS
+    assert verifying["progress_action"] == "verifying"
+    assert flow._pairing_task is not None
+    await flow._pairing_task
+    assert flow._pairing_checkpoint_task is not None
+    await flow._pairing_checkpoint_task
+    done = await flow.async_step_pairing_code()
+    assert done["type"] is FlowResultType.SHOW_PROGRESS_DONE
+    assert done["step_id"] == "finish"
+
+    result = await flow.async_step_finish()
 
     assert result == expected
     assert received_passkey == 12345
@@ -642,7 +669,15 @@ async def test_pairing_code_resubmission_waits_for_the_live_bond(hass) -> None:
     flow._pairing_task = hass.async_create_task(finish_pairing())
     release.set()
 
-    result = await flow.async_step_pairing_code({"passkey": "654321"})
+    progress = await flow.async_step_pairing_code({"passkey": "654321"})
+    assert progress["type"] is FlowResultType.SHOW_PROGRESS
+    await flow._pairing_task
+    assert flow._pairing_checkpoint_task is not None
+    await flow._pairing_checkpoint_task
+    done = await flow.async_step_pairing_code()
+    assert done["type"] is FlowResultType.SHOW_PROGRESS_DONE
+
+    result = await flow.async_step_finish()
 
     assert result == expected
     assert flow._pairing_task is None
@@ -707,6 +742,48 @@ async def test_pairing_wait_timeout_returns_actionable_abort(monkeypatch) -> Non
     assert flow._pairing_result is not None
     assert flow._pairing_result["type"] is FlowResultType.FORM
     assert flow._pairing_result["errors"] == {"base": "pairing_timeout"}
+
+
+async def test_pairing_timeout_logs_sanitized_bluetooth_detail(
+    monkeypatch, caplog
+) -> None:
+    flow = MaticRobotConfigFlow()
+    flow._pairing_data = {"host": "robot.invalid", "port": 16320}
+    flow._pairing_diagnostic = (
+        "Matic Bluetooth credential request failed: Bluetooth connection and "
+        "pairing failed (BleakConnectionError)"
+    )
+    monkeypatch.setattr(flow_module, "PAIRING_ATTEMPTS", 0)
+
+    await flow._async_wait_for_pairing()
+
+    assert "Bluetooth connection and pairing failed" in caplog.text
+    assert "robot.invalid" not in caplog.text
+
+
+async def test_pairing_progress_uses_elapsed_time(monkeypatch) -> None:
+    flow = MaticRobotConfigFlow()
+    flow._pairing_data = {"host": "robot.invalid", "port": 16320}
+    flow.async_update_progress = MagicMock()
+    monkeypatch.setattr(flow_module, "PAIRING_ATTEMPTS", 1)
+    monkeypatch.setattr(flow_module, "PAIRING_TIMEOUT_SECONDS", 300)
+    monkeypatch.setattr(flow_module, "monotonic", MagicMock(side_effect=[100, 160]))
+    monkeypatch.setattr(flow_module.asyncio, "sleep", AsyncMock())
+    monkeypatch.setattr(
+        flow,
+        "_async_create_or_error",
+        AsyncMock(
+            return_value={
+                "type": FlowResultType.FORM,
+                "step_id": "pair",
+                "errors": {"base": "pairing_mode_off"},
+            }
+        ),
+    )
+
+    await flow._async_wait_for_pairing()
+
+    flow.async_update_progress.assert_called_once_with(0.2)
 
 
 async def test_pairing_wait_deadline_returns_actionable_abort(monkeypatch) -> None:
@@ -946,20 +1023,21 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
     assert "Study" in result["description_placeholders"]["next_rooms"]
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
 
+    result = await _select_menu_step(hass, result, "change_plan")
+    assert result["step_id"] == "manage_plan"
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], {"plan": "away_cleaning"}
+    )
+    assert result["step_id"] == "plan_menu"
+
     result = await _select_menu_step(hass, result, "reset_history")
     result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"all_plans": False, "confirm": False}
-    )
-    assert result["errors"]["base"] == "confirmation_required"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"all_plans": False, "confirm": True}
+        result["flow_id"], {"all_plans": False}
     )
     assert result["type"] is FlowResultType.MENU
 
     result = await _select_menu_step(hass, result, "delete_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"confirm": True}
-    )
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert result["type"] is FlowResultType.MENU
     assert "away_cleaning" not in manager.plans("synthetic-serial")
 
@@ -1010,26 +1088,21 @@ async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> 
     }
 
     result = await _select_menu_step(hass, result, "manage_plan")
-    assert result["step_id"] == "manage_plan"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"plan": "whole_home"}
-    )
+    # A single saved plan needs no chooser: it is scoped automatically.
     assert result["step_id"] == "plan_menu"
     assert result["description_placeholders"]["plan_room_count"] == "2"
+    assert "change_plan" not in result["menu_options"]
 
     result = await _select_menu_step(hass, result, "select_plan")
     assert manager.snapshot("synthetic-serial")["selected_plan"] == ("whole_home")
-    result = await _select_menu_step(hass, result, "change_plan")
-    assert result["step_id"] == "manage_plan"
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"plan": "whole_home"}
-    )
 
     result = await _select_menu_step(hass, result, "delete_plan")
-    result = await hass.config_entries.options.async_configure(
-        result["flow_id"], {"confirm": False}
-    )
-    assert result["errors"]["base"] == "confirmation_required"
+    assert result["type"] is FlowResultType.FORM
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    # Deleting the only plan lands on the creation screen directly.
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "add_plan"
+    assert manager.plans("synthetic-serial") == {}
 
 
 async def test_options_flow_handles_missing_live_floor_plan(hass) -> None:
@@ -1073,8 +1146,12 @@ async def test_options_flow_missing_plan_context_returns_to_chooser(hass) -> Non
         flow.async_step_preview_plan,
         flow.async_step_reset_history,
     ):
+        flow._plan_id = None
         result = await step()
-        assert result["step_id"] == "manage_plan"
+        # The single saved plan is scoped automatically, so every step
+        # recovers to the action menu instead of performing anything.
+        assert result["step_id"] == "plan_menu"
+    assert "whole_home" in _manager.plans("synthetic-serial")
 
 
 async def test_options_flow_edit_and_preview_errors_remain_recoverable(
@@ -1104,3 +1181,28 @@ async def test_options_flow_edit_and_preview_errors_remain_recoverable(
     assert edit["errors"] == {"base": "no_rooms"}
     assert preview["errors"] == {"base": "invalid_plan"}
     assert preview["description_placeholders"]["next_rooms"] == "bad plan"
+
+
+async def test_pairing_code_shows_progress_while_a_new_code_is_prepared(hass) -> None:
+    flow = MaticRobotConfigFlow()
+    flow.hass = hass
+    flow.context = {}
+    flow._passkey_exchange = flow_module.BluetoothPasskeyExchange()
+    request = asyncio.create_task(flow._passkey_exchange.async_request_passkey())
+    await flow._passkey_exchange.async_wait_until_requested()
+    flow._passkey_exchange.cancel()
+    await asyncio.gather(request, return_exceptions=True)
+    never = asyncio.Event()
+
+    async def still_running():
+        await never.wait()
+
+    flow._pairing_task = hass.async_create_task(still_running())
+
+    result = await flow.async_step_pairing_code()
+
+    assert result["type"] is FlowResultType.SHOW_PROGRESS
+    for task in (flow._pairing_checkpoint_task, flow._pairing_task):
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
