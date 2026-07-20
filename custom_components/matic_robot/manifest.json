@@ -1,15 +1,28 @@
 {
   "domain": "matic_robot",
   "name": "Matic (Unofficial)",
-  "after_dependencies": ["frontend"],
-  "codeowners": ["@ProspectOre"],
+  "after_dependencies": [
+    "frontend"
+  ],
+  "codeowners": [
+    "@ProspectOre"
+  ],
   "config_flow": true,
-  "dependencies": ["bluetooth_adapters", "http", "zeroconf"],
+  "dependencies": [
+    "bluetooth_adapters",
+    "http",
+    "zeroconf"
+  ],
   "documentation": "https://github.com/ProspectOre/matic-home-assistant",
   "integration_type": "device",
   "iot_class": "local_polling",
   "issue_tracker": "https://github.com/ProspectOre/matic-home-assistant/issues",
-  "requirements": ["grpclib==0.4.9", "protobuf>=6"],
-  "version": "0.1.1",
-  "zeroconf": ["_matic_hermes._tcp.local."]
+  "requirements": [
+    "grpclib==0.4.9",
+    "protobuf>=6"
+  ],
+  "version": "0.1.2",
+  "zeroconf": [
+    "_matic_hermes._tcp.local."
+  ]
 }
