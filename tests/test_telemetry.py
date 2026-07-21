@@ -199,6 +199,8 @@ def test_decode_wifi_schedule_and_history() -> None:
 def test_decode_auxiliary_states() -> None:
     assert _decode_uploader_state(_bfield(1, b"")) is False
     assert _decode_uploader_state(_bfield(2, _vfield(1, 1))) is True
+    assert _decode_uploader_state(_vfield(2, 1)) is True
+    assert _decode_uploader_state(_vfield(2, 0)) is False
     assert _decode_uploader_state(b"tombstone-value!") is False
     assert _decode_coverage_time(_bfield(3, _vfield(1, 321))) == 321
     assert _decode_coverage_time(b"tombstone-value!") is None

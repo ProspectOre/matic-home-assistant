@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import socket
 import ssl
@@ -10,6 +11,7 @@ import struct
 from collections.abc import AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
+from time import monotonic
 from types import TracebackType
 from typing import cast
 from uuid import UUID
@@ -19,6 +21,7 @@ from grpclib.client import Channel
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
 from grpclib.protocol import H2Protocol
+from h2.exceptions import H2Error
 
 from .auth import HermesCredential
 from .commands import (
@@ -30,10 +33,13 @@ from .commands import (
     encode_user_command,
     encode_user_data,
 )
+from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
+    EndpointUnsupportedError,
     InvalidRobotCertificateError,
+    MaticError,
     PairingModeRequiredError,
 )
 from .floor_plan import decode_floor_plan, decode_pose
@@ -68,8 +74,13 @@ from .tls import (
 )
 from .wire import decode_fields, first_bytes, first_varint
 
+_LOGGER = logging.getLogger(__name__)
+
 HERMES_TARGET_KEY = "hermes-target"
 _RPC_TIMEOUT = 10.0
+# Streamed collection reads have per-message timeouts; this caps the whole
+# read so a slow-dripping stream cannot hold a poll cycle open for minutes.
+_COLLECTION_TIMEOUT = 30.0
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -104,6 +115,18 @@ _WEEKDAYS = (
     "friday",
     "saturday",
 )
+
+
+async def _async_cancel_stream(stream: object) -> None:
+    """Cancel a bounded read without failing on an already-closed stream.
+
+    Live robots reset collection streams on their side once the reader stops
+    consuming; cancellation is cleanup, and the collected data stays valid.
+    """
+    try:
+        await stream.cancel()  # type: ignore[attr-defined]
+    except OSError, StreamTerminatedError, ProtocolError, H2Error:
+        pass
 
 
 def _response_value_bytes(response: CollectionResponse) -> bytes:
@@ -218,6 +241,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self._seconds_from_gmt = seconds_from_gmt
         self._channel: Channel | None = None
         self._connect_lock = asyncio.Lock()
+        self._endpoint_health: dict[str, str] = {}
+        self._command_health: dict[str, str] = {}
 
     async def __aenter__(self) -> MaticHermesClient:
         await self.async_connect()
@@ -288,19 +313,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Map every transport failure onto the Matic error hierarchy.
 
         Besides ``TimeoutError`` and ``GRPCError`` this also catches the plain
-        ``OSError``/``ConnectionResetError`` and grpclib ``StreamTerminatedError``
-        /``ProtocolError`` that a dropped HTTP/2 stream can raise, so no raw
+        ``OSError``/``ConnectionResetError``, grpclib ``StreamTerminatedError``
+        /``ProtocolError``, and raw ``h2`` protocol errors (live robots reset
+        streams mid-conversation, observed as ``StreamClosedError``) so no raw
         transport exception escapes an RPC. Messages stay non-sensitive.
         """
         try:
             yield
         except TimeoutError as err:
             raise CannotConnectError(f"Hermes {description} timed out") from err
-        except (OSError, StreamTerminatedError, ProtocolError) as err:
+        except (OSError, StreamTerminatedError, ProtocolError, H2Error) as err:
             raise CannotConnectError(f"Hermes {description} connection failed") from err
         except GRPCError as err:
             if err.status is Status.UNAUTHENTICATED:
                 raise AuthenticationRequiredError(err.message) from err
+            if err.status in (Status.UNIMPLEMENTED, Status.NOT_FOUND):
+                raise EndpointUnsupportedError(
+                    f"Hermes {description} is not implemented by this firmware"
+                ) from err
             raise CannotConnectError(err.message or err.status.name) from err
 
     async def async_get_info(self) -> RobotInfo:
@@ -506,15 +536,21 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def _async_optional_property(self, name: str) -> bytes | None:
         """Return one optional property without hiding core robot state."""
         try:
-            return await self.async_get_property(name)
-        except AuthenticationRequiredError, CannotConnectError:
+            value = await self.async_get_property(name)
+            self._endpoint_health[name] = "ok"
+            return value
+        except (AuthenticationRequiredError, CannotConnectError) as err:
+            self._endpoint_health[name] = type(err).__name__
             return None
 
     async def _async_optional_collection_count(self, name: str) -> int | None:
         """Return one optional collection count."""
         try:
-            return await self.async_get_collection_count(name)
-        except AuthenticationRequiredError, CannotConnectError:
+            value = await self.async_get_collection_count(name)
+            self._endpoint_health[name] = "ok"
+            return value
+        except (AuthenticationRequiredError, CannotConnectError) as err:
+            self._endpoint_health[name] = type(err).__name__
             return None
 
     async def _async_optional_collection(
@@ -522,8 +558,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     ) -> tuple[HermesCollectionEntry, ...] | None:
         """Return an optional local collection without hiding core state."""
         try:
-            return await self.async_get_collection_entries(name, limit=limit)
-        except AuthenticationRequiredError, CannotConnectError:
+            value = await self.async_get_collection_entries(name, limit=limit)
+            self._endpoint_health[name] = "ok"
+            return value
+        except (AuthenticationRequiredError, CannotConnectError) as err:
+            self._endpoint_health[name] = type(err).__name__
             return None
 
     async def async_get_property(self, collection_name: str) -> bytes:
@@ -580,7 +619,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ) as stream:
                 await stream.send_message(request, end=True)
                 cancel_stream = False
+                deadline = monotonic() + _COLLECTION_TIMEOUT
                 while count < 4096:
+                    if monotonic() >= deadline:
+                        cancel_stream = True
+                        break
                     try:
                         async with asyncio.timeout(3 if count == 0 else 0.15):
                             response = await stream.recv_message()
@@ -594,7 +637,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 if count >= 4096:
                     cancel_stream = True
                 if cancel_stream:
-                    await stream.cancel()
+                    await _async_cancel_stream(stream)
         return count
 
     async def async_get_collection_entries(
@@ -626,7 +669,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ) as stream:
                 await stream.send_message(request, end=True)
                 cancel_stream = False
+                deadline = monotonic() + _COLLECTION_TIMEOUT
                 while len(entries) < limit:
+                    if monotonic() >= deadline:
+                        cancel_stream = True
+                        break
                     try:
                         timeout = first_timeout if not entries else idle_timeout
                         async with asyncio.timeout(timeout):
@@ -645,8 +692,36 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 if len(entries) >= limit:
                     cancel_stream = True
                 if cancel_stream:
-                    await stream.cancel()
+                    await _async_cancel_stream(stream)
         return tuple(entries)
+
+    async def async_inspect_endpoint(
+        self, endpoint_name: str, *, limit: int = 1
+    ) -> tuple[HermesCollectionEntry, ...]:
+        """Read a known endpoint through its evidence-backed transport shape."""
+        try:
+            endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
+        except KeyError:
+            raise ValueError(f"Unknown Hermes endpoint: {endpoint_name}") from None
+        result: tuple[HermesCollectionEntry, ...]
+        try:
+            if endpoint.kind is HermesEndpointKind.PROPERTY:
+                value = await self.async_get_property(endpoint_name)
+                result = (HermesCollectionEntry(b"", value),)
+            else:
+                result = await self.async_get_collection_entries(
+                    endpoint_name, limit=limit
+                )
+        except (AuthenticationRequiredError, CannotConnectError) as err:
+            self._endpoint_health[endpoint_name] = type(err).__name__
+            raise
+        self._endpoint_health[endpoint_name] = "ok"
+        return result
+
+    @property
+    def endpoint_health(self) -> dict[str, str]:
+        """Return non-sensitive read health for observed endpoints."""
+        return dict(self._endpoint_health)
 
     async def async_send_user_command(self, command: UserCommand) -> None:
         """Send one live-verified command through the authenticated user channel."""
@@ -723,12 +798,39 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         metadata = dict(self._metadata or {})
         metadata[HERMES_TARGET_KEY] = channel_name
-        async with self._map_stream_errors("command"), asyncio.timeout(_RPC_TIMEOUT):
-            async with HermesStub(channel).SendToChannel.open(
-                metadata=metadata
-            ) as stream:
-                await stream.send_message(request, end=True)
-                await stream.recv_message()
+        try:
+            async with (
+                self._map_stream_errors("command"),
+                asyncio.timeout(_RPC_TIMEOUT),
+            ):
+                async with HermesStub(channel).SendToChannel.open(
+                    metadata=metadata
+                ) as stream:
+                    await stream.send_message(request, end=True)
+                    response = await stream.recv_message()
+        except MaticError as err:
+            self._command_health[channel_name] = type(err).__name__
+            raise
+        # The response schema is private, so its fields stay unread until
+        # fixture evidence exists; whether the robot acknowledged at all is
+        # transport-level and safe to observe.
+        if response is None:
+            self._command_health[channel_name] = "unacknowledged"
+            _LOGGER.debug(
+                "Hermes %s command stream closed without a response", channel_name
+            )
+        else:
+            self._command_health[channel_name] = "acknowledged"
+            _LOGGER.debug(
+                "Hermes %s command acknowledged with a %d-byte response",
+                channel_name,
+                response.ByteSize(),
+            )
+
+    @property
+    def command_health(self) -> dict[str, str]:
+        """Return non-sensitive acknowledgment health for sent commands."""
+        return dict(self._command_health)
 
     @property
     def _metadata(self) -> dict[str, str] | None:
@@ -968,11 +1070,14 @@ def _decode_uploader_state(payload: object) -> bool | None:
     for field in fields:
         if field.number == 1 and isinstance(field.value, bytes):
             return False
-        if field.number == 2 and isinstance(field.value, bytes):
-            try:
-                return bool(first_varint(field.value, 1))
-            except DecodeError:
-                return False
+        if field.number == 2:
+            if isinstance(field.value, int):
+                return bool(field.value)
+            if isinstance(field.value, bytes):
+                try:
+                    return bool(first_varint(field.value, 1))
+                except DecodeError:
+                    return False
     return None
 
 

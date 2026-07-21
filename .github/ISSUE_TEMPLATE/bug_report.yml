@@ -24,8 +24,8 @@ body:
   - type: input
     attributes:
       label: Bluetooth setup
-      description: Built-in adapter or USB model, and whether ESPHome Bluetooth proxies are present. Pairing needs a local adapter; proxies cannot run setup.
-      placeholder: HA Yellow built-in / TP-Link UB500 USB; 3 ESPHome proxies
+      description: Local adapter model, approximate distance and obstructions to Matic, whether Bluetooth proxies are present, and any other BLE scanner integrations. Pairing needs the local adapter; proxies cannot run setup.
+      placeholder: USB adapter about 5 ft away with clear line of sight; 3 ESPHome proxies; Bermuda installed
     validations:
       required: true
   - type: dropdown

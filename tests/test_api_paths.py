@@ -28,6 +28,7 @@ from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     CertificateMismatchError,
+    EndpointUnsupportedError,
     PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.models import FloorPlan
@@ -530,12 +531,43 @@ async def test_get_collection_entries_stop_at_stream_end_without_cancel(
     assert not hasattr(stream, "cancelled")
 
 
+async def test_endpoint_inspection_routes_properties_collections_and_health() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"version")
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(SimpleNamespace(key=b"key", value=b"zone"),)
+    )
+
+    current = await client.async_inspect_endpoint("current_version")
+    zones = await client.async_inspect_endpoint("zones", limit=2)
+
+    assert current[0].key == b""
+    assert current[0].value == b"version"
+    assert zones[0].value == b"zone"
+    client.async_get_property.assert_awaited_once_with("current_version")
+    client.async_get_collection_entries.assert_awaited_once_with("zones", limit=2)
+    assert client.endpoint_health == {"current_version": "ok", "zones": "ok"}
+
+    client.async_get_property.side_effect = CannotConnectError("offline")
+    with pytest.raises(CannotConnectError):
+        await client.async_inspect_endpoint("current_version")
+    assert client.endpoint_health["current_version"] == "CannotConnectError"
+
+    health = client.endpoint_health
+    health.clear()
+    assert client.endpoint_health
+    with pytest.raises(ValueError, match="Unknown Hermes endpoint"):
+        await client.async_inspect_endpoint("unknown")
+
+
 async def test_get_collection_entries_translates_stream_errors(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._channel = object()
     for error, error_type in (
         (GRPCError(Status.UNAUTHENTICATED, "auth"), AuthenticationRequiredError),
         (GRPCError(Status.INTERNAL, "failed"), CannotConnectError),
+        (GRPCError(Status.UNIMPLEMENTED, "gone"), EndpointUnsupportedError),
+        (GRPCError(Status.NOT_FOUND, "missing"), EndpointUnsupportedError),
     ):
         method = _OpenMethod(_Stream(error=error))
         monkeypatch.setattr(
@@ -544,6 +576,70 @@ async def test_get_collection_entries_translates_stream_errors(monkeypatch) -> N
         )
         with pytest.raises(error_type):
             await client.async_get_collection_entries("history")
+
+
+async def test_raw_h2_stream_errors_map_to_cannot_connect(monkeypatch) -> None:
+    from h2.exceptions import StreamClosedError
+
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    method = _OpenMethod(_Stream(error=StreamClosedError(63)))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    with pytest.raises(CannotConnectError, match="connection failed"):
+        await client.async_get_collection_entries("history")
+
+
+async def test_cancel_of_robot_closed_stream_keeps_collected_data(
+    monkeypatch,
+) -> None:
+    """Live robots reset streams once the reader stops; data must survive."""
+    from h2.exceptions import StreamClosedError
+
+    class _RobotClosedStream(_Stream):
+        async def cancel(self):
+            self.cancelled = True
+            raise StreamClosedError(63)
+
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    stream = _RobotClosedStream(response=_collection_response(direct=b"payload"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+
+    entries = await client.async_get_collection_entries("history", limit=1)
+
+    assert [entry.value for entry in entries] == [b"payload"]
+    assert stream.cancelled
+
+
+async def test_collection_reads_are_wall_clock_bounded(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
+    clock = iter([0.0, 100.0, 0.0, 100.0])
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+    )
+
+    stream = _Stream(response=_collection_response(direct=b"payload"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    assert await client.async_get_collection_entries("history") == ()
+    assert stream.cancelled
+
+    stream = _Stream(response=_collection_response(direct=b"payload"))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    assert await client.async_get_collection_count("history") == 0
+    assert stream.cancelled
 
 
 async def test_optional_telemetry_reads_fail_closed() -> None:
@@ -674,5 +770,32 @@ async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> Non
         )
         with pytest.raises(error_type):
             await client._async_send_channel_payload("user_command", b"payload")
+        assert client.command_health["user_command"] == error_type.__name__
 
     assert MaticHermesClient("robot.invalid", 16320)._metadata is None
+
+
+async def test_send_channel_payload_records_acknowledgment_health(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    acknowledged = _Stream(response=SimpleNamespace(ByteSize=lambda: 4))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(SendToChannel=_OpenMethod(acknowledged)),
+    )
+    await client._async_send_channel_payload("user_command", b"payload")
+    assert client.command_health == {"user_command": "acknowledged"}
+
+    silent = _Stream(response=None)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(SendToChannel=_OpenMethod(silent)),
+    )
+    await client._async_send_channel_payload("voice_enabled_command", b"payload")
+    assert client.command_health == {
+        "user_command": "acknowledged",
+        "voice_enabled_command": "unacknowledged",
+    }

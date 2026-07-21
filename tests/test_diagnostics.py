@@ -35,7 +35,18 @@ async def test_diagnostics_redact_access_material_but_keep_local_context() -> No
             "certificate_fingerprint": "private-fingerprint",
             "hermes_credential": "private-credential",
         },
+        entry_id="synthetic-entry",
         runtime_data=SimpleNamespace(
+            client=SimpleNamespace(
+                endpoint_health={"current_version": "ok", "wifi_status": "failure"},
+                command_health={
+                    "user_command": "acknowledged",
+                    "voice_enabled_command": "unacknowledged",
+                },
+            ),
+            firmware_tracker=SimpleNamespace(
+                summary=lambda entry_id: {"observed_version": "test-version"}
+            ),
             coordinator=SimpleNamespace(
                 data=SimpleNamespace(
                     info=info,
@@ -55,7 +66,7 @@ async def test_diagnostics_redact_access_material_but_keep_local_context() -> No
                     telemetry=RobotTelemetry(software_version="test-version"),
                 ),
                 last_update_success=True,
-            )
+            ),
         ),
     )
 
@@ -71,8 +82,16 @@ async def test_diagnostics_redact_access_material_but_keep_local_context() -> No
         "private-credential",
     ):
         assert private_value not in rendered
-    assert diagnostics["robot"]["name"] == "Private robot name"
-    assert diagnostics["operational"]["current_area"] == "Private bedroom"
-    assert diagnostics["operational"]["previous_area"] == "Private bathroom"
     assert diagnostics["robot"]["hardware_revision"] == "synthetic-hardware"
     assert diagnostics["telemetry"]["software_version"] == "test-version"
+    assert diagnostics["endpoint_health"] == {
+        "observed": 2,
+        "healthy": 1,
+        "failures": {"wifi_status": "failure"},
+    }
+    assert diagnostics["command_health"] == {
+        "observed": 2,
+        "acknowledged": 1,
+        "failures": {"voice_enabled_command": "unacknowledged"},
+    }
+    assert diagnostics["firmware_tracking"]["observed_version"] == "test-version"

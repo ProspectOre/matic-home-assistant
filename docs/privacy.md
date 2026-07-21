@@ -18,12 +18,22 @@ Any six-digit Bluetooth passkey shown on the robot is used only by the active
 pairing attempt; it is not stored in the config entry, logs, diagnostics, or
 rotation history.
 
-The entity state machine may contain activity, battery, room names and IDs,
-firmware metadata, current/previous area, preference states, Wi-Fi SSIDs and
-scan results, schedules, cleaning histories, and diagnostic state. Home
-Assistant's recorder may retain historical entity states according to the
-user's recorder settings. The local map camera renders room geometry and robot
-pose on demand; it contains no optical camera frames.
+The entity state machine contains activity, battery, firmware metadata,
+current/previous Area context, preference state, summary counts, and diagnostic
+state. High-context diagnostic entities are disabled by default. Attributes
+that carry home context — the connected Wi-Fi SSID, schedule definitions, room
+names and IDs, the latest session's rooms and durations, and full plan/history
+records — stay live on the state machine for templates but are declared
+unrecorded, so Home Assistant's recorder never writes them to the history
+database. The neighbor Wi-Fi scan list is not exposed at all. Two exceptions
+are deliberate and opt-in or explicit: the per-room statistics sensors are
+disabled by default and, when a user enables them, record that room's name and
+cleaning durations as long-term statistics; and the
+`matic_robot_cleaning_finished` event includes the finished session's rooms
+and per-room durations in its payload. Home Assistant's recorder retains
+enabled entity states according to the user's recorder settings. The local map
+camera renders room geometry and robot pose on demand; it contains no optical
+camera frames.
 
 The integration does not start camera or microphone recordings, request clip
 bytes or thumbnails, cache media, expose recording metadata, or send vendor
@@ -52,17 +62,16 @@ This section applies only when a user explicitly clicks **Download diagnostics**
 for the integration in Home Assistant. The integration does not generate,
 upload, or send a diagnostic report automatically.
 
-The user-downloaded report never includes the pairing passkey. It redacts the
-stored credential, host and hostname, IP addresses, serial number, and
-certificate fingerprint. It intentionally retains the user-assigned name,
-floor plan, room names/geometry, pose, current/previous areas, Wi-Fi SSIDs/scans,
-schedules, history, and decoded diagnostic state. That local context is often
-the evidence needed to diagnose firmware and mapping behavior. The report does
-not include recording metadata, thumbnails, clip bytes, pairing material,
-Wi-Fi passwords, account tokens, Matter codes, or packet captures.
+The user-downloaded report is constructed from an explicit safe-field allowlist,
+not a best-effort redaction denylist. It omits the pairing passkey, stored
+credential, host/hostname, addresses, serial number, certificate identity,
+user-assigned names, floor geometry, pose, current/previous areas, room data,
+Wi-Fi SSIDs/scans, schedule definitions, session details, and full plan history.
+It retains protocol/build versions, boolean/counter summaries, state/error codes,
+map availability/counts, payload-free endpoint health, and firmware-snapshot
+counts needed to diagnose compatibility.
 
-Treat a diagnostics download, log, or screenshot as private home data and
-inspect it before sharing publicly.
+Still inspect a diagnostics download, log, or screenshot before sharing it.
 
 ## Deauthorization
 

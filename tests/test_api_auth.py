@@ -315,7 +315,7 @@ class FakeSendStream:
         self._requests.append(request)
 
     async def recv_message(self):
-        return SimpleNamespace()
+        return SimpleNamespace(ByteSize=lambda: 0)
 
 
 class FakeSendToChannel:

@@ -22,8 +22,9 @@ Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
 HACS. Compatibility with other Home Assistant releases has not been validated.
 
 The integration has been tested on a real robot and a stock Home Assistant
-Yellow. One robot creates 44 entities: 18 sensors, 12 binary sensors, 4 buttons,
-4 switches, 3 selects, 1 number, 1 camera, and 1 vacuum.
+Yellow. One robot creates 48 fixed entities — 21 sensors, 12 binary sensors,
+4 buttons, 4 switches, 3 selects, 1 number, 1 camera, 1 update, and 1 vacuum —
+plus two opt-in room statistics sensors per mapped room.
 Setup, state, map, cleaning, and settings paths have been exercised on the robot,
 and the integration is covered by automated tests.
 
@@ -37,10 +38,12 @@ and the integration is covered by automated tests.
   optical camera frames.
 - Activity, battery, rooms, hardware/software/protocol, current area, update,
   Wi-Fi, schedule, local cleaning history, dock/sink, Matter-pairing,
-  robot SSH-tunnel permission, and robot diagnostic-upload state.
+  robot SSH-tunnel permission, diagnostic-upload state, and persistent firmware
+  compatibility health.
 - Controls for child lock, pet-waste avoidance, Hey Matic, double-pass mopping,
   and water flow.
-- Bounded raw collection reads for known non-credential Hermes state.
+- Payload-free endpoint inspection and persistent weekly firmware compatibility
+  snapshots for every known non-credential Hermes read surface.
 
 ## Home Assistant capabilities
 
@@ -126,15 +129,19 @@ integration has no telemetry, crash uploader, analytics endpoint, or maintainer
 cloud.
 
 If a user explicitly clicks **Download diagnostics**, Home Assistant generates
-a local report for that user to inspect and share. The report redacts
-credentials, addresses, certificate identity, and serial numbers while retaining
-the user-owned map, room, Wi-Fi, schedule, and protocol state needed for
-technical diagnosis. See [the privacy model](docs/privacy.md).
+a local report from a strict safe-field allowlist. It omits credentials,
+addresses, certificate identity, serial numbers, names, maps, pose, room and Area
+context, Wi-Fi identities, schedules, and session details. See
+[the privacy model](docs/privacy.md).
 
 ## Bluetooth permissions
 
 Home Assistant OS manages supported local Bluetooth adapters; the robot-display
-passkey flow was tested on Home Assistant Yellow. Home Assistant Container
+passkey flow was tested on Home Assistant Yellow. For setup, place the local
+adapter within a few feet of Matic with as little furniture or other obstruction
+between them as practical; receiving a passive advertisement from farther away
+does not prove the adapter can sustain the interactive pairing connection.
+Home Assistant Container
 installations need `NET_ADMIN`, `NET_RAW`, and the read-only host D-Bus socket;
 follow Home Assistant's [Bluetooth container instructions](https://www.home-assistant.io/integrations/bluetooth/#additional-details-for-container).
 If Home Assistant reports the adapter as degraded, fix that repair and restart
@@ -143,8 +150,13 @@ uses the LAN.
 
 ## Limits and troubleshooting
 
-- Firmware changes can require an update because this is an unofficial local
-  protocol integration.
+- Firmware changes can require an integration update because this is an
+  unofficial local protocol integration. Check the
+  [firmware compatibility ledger](docs/firmware-compatibility.md) for observed
+  versions and validation status. A newly observed version emits the
+  `matic_robot_firmware_changed` event; run the **Firmware snapshot** action to
+  compare all known read endpoints with the prior snapshot. A Repair is created
+  only when that comparison finds compatibility drift.
 - Rooms without an exact Area name or unique alias require one manual mapping.
 - The map camera is a local floor-plan rendering. No optical-camera live stream
   has been verified or exposed.
@@ -162,8 +174,12 @@ uses the LAN.
 - A new Bluetooth pairing deliberately proves physical access: someone at the
   robot must read its displayed code, and Home Assistant must use a Bluetooth
   adapter built into or directly attached to its host for that interactive
-  exchange. Bluetooth proxies are not supported for setup. This is not a
-  signal-strength limitation. Routine use is LAN-only after authorization.
+  exchange. Bluetooth proxies are not supported for setup. If a proxy can see
+  Matic but the local adapter cannot, move the local adapter closer and remove
+  obstructions. If pairing fails, temporarily disable Bluetooth proxies while
+  retrying so discovery and pairing stay on the local adapter. If that adapter
+  still misses fresh advertisements, reload its Home Assistant integration or
+  replug it before retrying. Routine use is LAN-only after authorization.
 - For bugs, use the repository's bug-report form after reviewing and sanitizing
   diagnostics. Report vulnerabilities privately as described in
   [SECURITY.md](SECURITY.md). Never attach credentials, maps, captures, backups,

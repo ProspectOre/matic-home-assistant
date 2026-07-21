@@ -180,10 +180,10 @@ move_plan_room:
           max: 100
           mode: box
 
-fetch_hermes_collection:
+inspect_hermes_endpoint:
   target: *vacuum_target
   fields:
-    collection:
+    endpoint:
       required: true
       selector:
         select:
@@ -235,19 +235,6 @@ fetch_hermes_collection:
           min: 1
           max: 256
           mode: box
-    include_payload:
-      default: false
-      selector:
-        boolean:
-    payload_format:
-      default: base64
-      selector:
-        select:
-          options: [base64, hex]
-    max_bytes:
-      default: 65536
-      selector:
-        number:
-          min: 0
-          max: 1048576
-          mode: box
+
+firmware_snapshot:
+  target: *vacuum_target

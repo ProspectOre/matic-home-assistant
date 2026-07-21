@@ -53,4 +53,4 @@ class MaticWaterFlowNumber(MaticEntity, NumberEntity):
     async def async_set_native_value(self, value: float) -> None:
         """Set the robot's official 0.5x to 2.0x water-flow factor."""
         await self.coordinator.client.async_set_water_flow(value)
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()

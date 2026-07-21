@@ -83,6 +83,7 @@ DESCRIPTIONS = (
         key="matter_pairing_mode",
         translation_key="matter_pairing_mode",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.matter_pairing_enabled,
     ),
     MaticBinarySensorDescription(
@@ -95,12 +96,14 @@ DESCRIPTIONS = (
         key="ssh_tunnel_permission",
         translation_key="ssh_tunnel_permission",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.ssh_tunnel_permission,
     ),
     MaticBinarySensorDescription(
         key="diagnostic_upload",
         translation_key="diagnostic_upload",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.uploader_opt_in,
     ),
 )

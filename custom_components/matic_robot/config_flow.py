@@ -200,6 +200,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     """Configure a certificate-pinned local Matic robot."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     @staticmethod
     def async_get_options_flow(

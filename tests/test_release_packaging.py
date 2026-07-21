@@ -9,7 +9,7 @@ from homeassistant.components.automation.config import AUTOMATION_BLUEPRINT_SCHE
 from homeassistant.components.blueprint.models import Blueprint
 from homeassistant.util.yaml import load_yaml
 
-from custom_components.matic_robot.const import HERMES_COLLECTIONS
+from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINT_NAMES
 
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.1.2"
+    assert manifest["version"] == "0.2.0"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -122,11 +122,11 @@ def test_integration_ships_local_brand_icons() -> None:
 
 
 def test_recording_boundary_has_no_runtime_surface() -> None:
-    """Keep externally consequential recording features out of the 0.1 surface."""
+    """Keep externally consequential recording features out of the public surface."""
     manifest = json.loads((INTEGRATION / "manifest.json").read_text())
     strings = json.loads((INTEGRATION / "strings.json").read_text())
     services = load_yaml(INTEGRATION / "services.yaml")
-    collection_options = services["fetch_hermes_collection"]["fields"]["collection"][
+    endpoint_options = services["inspect_hermes_endpoint"]["fields"]["endpoint"][
         "selector"
     ]["select"]["options"]
     entity_keys = {key for platform in strings["entity"].values() for key in platform}
@@ -155,8 +155,8 @@ def test_recording_boundary_has_no_runtime_surface() -> None:
     assert "review_recording" not in services
     assert "review_recording" not in strings["services"]
     assert entity_keys.isdisjoint(recording_entity_keys)
-    assert tuple(collection_options) == HERMES_COLLECTIONS
-    assert recording_collections.isdisjoint(HERMES_COLLECTIONS)
+    assert tuple(endpoint_options) == HERMES_ENDPOINT_NAMES
+    assert recording_collections.isdisjoint(HERMES_ENDPOINT_NAMES)
     assert recording_collections.isdisjoint(json.dumps(services).split('"'))
 
     handwritten_runtime = "\n".join(

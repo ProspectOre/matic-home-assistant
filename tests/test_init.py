@@ -10,6 +10,7 @@ import pytest
 from homeassistant.components import frontend
 
 from custom_components.matic_robot import (
+    async_remove_entry,
     async_setup,
     async_setup_entry,
     async_unload_entry,
@@ -19,6 +20,7 @@ from custom_components.matic_robot.const import (
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
     CONF_SERIAL_NUMBER,
+    DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
     DOMAIN,
     PLATFORMS,
@@ -37,6 +39,7 @@ def _entry() -> SimpleNamespace:
         },
         options={},
         runtime_data=None,
+        entry_id="entry",
     )
 
 
@@ -48,13 +51,20 @@ async def test_setup_registers_services_without_media_view() -> None:
     )
 
     history = SimpleNamespace(async_load=AsyncMock())
-    with patch(
-        "custom_components.matic_robot.services.CleaningPlanManager",
-        return_value=history,
+    firmware = SimpleNamespace(async_load=AsyncMock())
+    with (
+        patch(
+            "custom_components.matic_robot.services.CleaningPlanManager",
+            return_value=history,
+        ),
+        patch(
+            "custom_components.matic_robot.services.FirmwareTracker",
+            return_value=firmware,
+        ),
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 15
+    assert hass.services.async_register.call_count == 16
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
 
@@ -68,8 +78,12 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
     )
 
-    with patch("custom_components.matic_robot.services.CleaningPlanManager") as history:
+    with (
+        patch("custom_components.matic_robot.services.CleaningPlanManager") as history,
+        patch("custom_components.matic_robot.services.FirmwareTracker") as firmware,
+    ):
         history.return_value.async_load = AsyncMock()
+        firmware.return_value.async_load = AsyncMock()
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
@@ -85,7 +99,12 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
-        data={DOMAIN: {DATA_PLAN_MANAGER: MagicMock()}},
+        data={
+            DOMAIN: {
+                DATA_PLAN_MANAGER: MagicMock(),
+                DATA_FIRMWARE_TRACKER: MagicMock(),
+            }
+        },
     )
     entry = _entry()
     client = MagicMock()
@@ -111,13 +130,22 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
         entry, PLATFORMS
     )
     assert entry.runtime_data.client is client
+    assert (
+        entry.runtime_data.firmware_tracker
+        is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
+    )
 
 
 async def test_setup_closes_client_when_first_refresh_fails() -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
-        data={DOMAIN: {DATA_PLAN_MANAGER: MagicMock()}},
+        data={
+            DOMAIN: {
+                DATA_PLAN_MANAGER: MagicMock(),
+                DATA_FIRMWARE_TRACKER: MagicMock(),
+            }
+        },
     )
     entry = _entry()
     entry.data.pop(CONF_HERMES_CREDENTIAL)
@@ -147,7 +175,12 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
                 side_effect=RuntimeError("platform setup failed")
             )
         ),
-        data={DOMAIN: {DATA_PLAN_MANAGER: MagicMock()}},
+        data={
+            DOMAIN: {
+                DATA_PLAN_MANAGER: MagicMock(),
+                DATA_FIRMWARE_TRACKER: MagicMock(),
+            }
+        },
     )
     entry = _entry()
     client = MagicMock()
@@ -179,3 +212,16 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
 
     assert await async_unload_entry(hass, entry) is unload_ok
     assert client.close.called is unload_ok
+
+
+async def test_remove_entry_erases_firmware_history() -> None:
+    tracker = SimpleNamespace(async_remove_robot=AsyncMock())
+    hass = SimpleNamespace(data={DOMAIN: {DATA_FIRMWARE_TRACKER: tracker}})
+    entry = SimpleNamespace(entry_id="entry")
+
+    await async_remove_entry(hass, entry)
+
+    tracker.async_remove_robot.assert_awaited_once_with("entry")
+
+    bare = SimpleNamespace(data={})
+    await async_remove_entry(bare, entry)

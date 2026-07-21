@@ -8,8 +8,9 @@ settings, cleaning, and saved plans.
 
 ## Entity contract
 
-One configured robot creates 44 entities: 18 sensors, 12 binary sensors, 4
-buttons, 4 switches, 3 selects, 1 number, 1 camera, and 1 vacuum.
+One configured robot creates 48 fixed entities — 21 sensors, 12 binary
+sensors, 4 buttons, 4 switches, 3 selects, 1 number, 1 camera, 1 update, and
+1 vacuum — plus two opt-in statistics sensors per mapped room.
 
 - `vacuum`: primary robot state plus start/resume, pause, stop, dock, Area
   cleaning, named-room segments, and supported commands.
@@ -20,8 +21,13 @@ buttons, 4 switches, 3 selects, 1 number, 1 camera, and 1 vacuum.
 - `button`: run the default plan, intelligent-rotation override,
   top-to-bottom override, and stop-plan-and-dock.
 - `sensor`: activity, battery, rooms, cleaning history, active plan, next room,
-  firmware/protocol/update state, current area, Wi-Fi, schedules, local
-  sessions, dock/sink, and coverage.
+  firmware/protocol/update/compatibility state, current area, Wi-Fi state and
+  signal, schedules, local sessions, last run duration, dock/sink, coverage,
+  and two opt-in statistics sensors per mapped room (see
+  [Room statistics](#room-statistics-and-the-recorder)).
+- `update`: a read-only firmware surface in Home Assistant's update UI. The
+  robot manages its own OTA installs and never reports the target version, so
+  a pending update shows with an unknown latest version.
 - `binary_sensor`: cleaning, paused, returning, charging, low charge, fully
   charged, problem, update available, Matter pairing mode, active cleaning
   session, robot SSH tunnel permission, and robot diagnostic upload.
@@ -34,8 +40,10 @@ or action contract. See
 [Recording-related protocol notes](recording-protocol.md) for the observed but
 unavailable protocol semantics.
 
-Home Assistant owns entity IDs and registry customization. Stable unique IDs
-preserve user renames across restarts.
+The integration assigns descriptive canonical IDs such as
+`sensor.matic_software_version` and `camera.matic_map`. Before 1.0, setup migrates
+older numbered IDs to this model when the destination is free. Stable unique IDs
+continue to anchor every registry entity.
 
 **Fully charged** is a plain boolean with explicit `Fully charged` / `Not fully
 charged` states and a battery-check icon. It intentionally does not use Home
@@ -108,32 +116,77 @@ the visible saved order regardless of history.
 Plan actions accept human names or stable IDs where appropriate. Action fields
 are defined in `custom_components/matic_robot/services.yaml`.
 
-## Raw collection reads
+## Payload-free endpoint inspection
 
-`matic_robot.fetch_hermes_collection` returns a bounded snapshot of one
-allowlisted non-credential Hermes collection. It requires exactly one Matic
-robot. Fields:
+`matic_robot.inspect_hermes_endpoint` returns a bounded fingerprint snapshot of
+one allowlisted non-credential Hermes property or collection. It requires
+exactly one Matic robot. Fields:
 
-- `collection` (required): the collection to read, chosen from the allowlist in
+- `endpoint` (required): the property or collection to read, chosen from the allowlist in
   `services.yaml` (for example `wifi_status`, `schedule_events`, or
   `map_semantics`).
 - `limit` (default `32`, range 1–256): maximum entries to return.
-- `include_payload` (default `false`): when false, each entry returns only
-  key/value sizes and their SHA-256 hashes. Enable it to include the raw bytes.
-- `payload_format` (`base64` default, or `hex`): encoding for included payloads.
-- `max_bytes` (default `65536`, range 0–1048576): truncates each included key
-  and value; the response flags any truncation.
 
-The hash-only default limits routine inspection to sizes and hashes. Raw payload
-access requires explicit opt-in and may expose private device or home data.
+The response contains endpoint kind/sensitivity plus key/value sizes and SHA-256
+hashes. Raw bytes are never returned through the public Home Assistant action.
+The typed registry routes single-value properties correctly instead of treating
+every name as a collection stream.
+
+## Firmware snapshots
+
+`matic_robot.firmware_snapshot` checks all 40 known non-credential endpoints
+with four-way bounded concurrency. It stores up to 52 payload-free snapshots in
+Home Assistant and returns:
+
+- firmware and protocol versions;
+- populated, empty, and failed endpoint counts;
+- endpoint kind, sensitivity, status, sizes, and hashes;
+- availability/transport changes separately from ordinary content changes.
+
+When the coordinator observes a new firmware version, the integration fires
+`matic_robot_firmware_changed` with previous and current firmware/protocol
+values. A Home Assistant Repair is created only when the subsequent snapshot
+finds endpoint availability or transport drift; normal weekly OTAs remain
+silent. Snapshotting never promotes a firmware to control-verified; physical
+write validation remains deliberate.
+
+## Room statistics and the recorder
+
+Template-visible attributes and recorded history follow one deliberate model:
+
+- **Live attributes, never recorded.** The vacuum's `rooms` map, the rooms
+  sensor's `room_names`/`segments`, the Wi-Fi sensor's `ssid`, schedule
+  definitions, the latest session's rooms and per-room durations, and full
+  plan/history detail are all available to templates, dashboards, and
+  conditions through `state_attr()`. Every one of these attributes is excluded
+  from Home Assistant's recorder, so home context never accumulates in the
+  history database.
+- **Opt-in room statistics sensors.** Each mapped room gets a
+  `{room} last clean duration` sensor (long-term statistics; compare cleaning
+  time across firmware updates) and a `{room} last cleaned` timestamp sensor.
+  Both are disabled by default because enabling them intentionally records the
+  room's name and cleaning history; enable them per room under the device's
+  entity list when you want durable per-room trends.
+- **Always-recorded run metrics.** The `Last run duration` sensor records
+  numeric long-term statistics for every session without any room context, so
+  whole-run OTA comparisons work out of the box.
 
 ## Events and observability
 
 Room execution emits `matic_robot_room_started`,
 `matic_robot_room_completed`, `matic_robot_room_failed`, and
 `matic_robot_room_cancelled`. The Cleaning history sensor exposes per-room
-completion timestamps, plan history, active plan, interrupted plan, and
-completion/failure/cancellation counts.
+safe completion/failure totals. Exact plan and room details remain available
+through the response-only plan preview and management actions instead of being
+written into recorder-backed attributes.
+
+When the robot finishes a cleaning session the integration fires
+`matic_robot_cleaning_finished` with the session's start/end timestamps,
+duration, completion flag, rooms, per-room durations, the firmware version
+that produced the run, and the `device_id`/`entry_id` of the robot — one
+payload for post-clean notifications or custom logging.
+`matic_robot_firmware_changed` likewise carries `device_id`/`entry_id` so
+multi-robot homes can tell which robot updated.
 
 Use ordinary state triggers and conditions on any telemetry, setting, Activity,
 or binary sensor. This keeps automations composable with schedules, presence,

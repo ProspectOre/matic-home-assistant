@@ -9,7 +9,11 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
-from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINTS
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    MaticError,
+)
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
@@ -45,9 +49,21 @@ async def _registered_services(hass, manager=None):
     replacement = manager or SimpleNamespace(async_load=AsyncMock())
     if manager is not None:
         replacement.async_load = AsyncMock()
-    with patch(
-        "custom_components.matic_robot.services.CleaningPlanManager",
-        return_value=replacement,
+    firmware = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_record_snapshot=AsyncMock(
+            return_value={"baseline": True, "changed_endpoints": []}
+        ),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.CleaningPlanManager",
+            return_value=replacement,
+        ),
+        patch(
+            "custom_components.matic_robot.services.FirmwareTracker",
+            return_value=firmware,
+        ),
     ):
         await async_register_services(hass)
     return services
@@ -476,17 +492,25 @@ async def test_room_crud_rejects_unknown_rooms_membership_and_positions(hass) ->
 
 
 def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
+    """The room map must come from the coordinator, not published attributes.
+
+    0.2.0 removed the vacuum's ``rooms`` state attribute, so this seam
+    deliberately builds the context from the real coordinator floor plan.
+    """
     call = MagicMock()
-    state = SimpleNamespace(attributes={"rooms": {"one": "Kitchen"}})
-    hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=state)))
-    entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(
-            coordinator=SimpleNamespace(
-                data=SimpleNamespace(
-                    info=SimpleNamespace(serial_number="synthetic-serial")
-                )
-            )
+    hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=None)))
+    floor_plan = SimpleNamespace(
+        rooms=(
+            SimpleNamespace(id="one", name="Kitchen"),
+            SimpleNamespace(id="two", name="Study"),
         )
+    )
+    data = SimpleNamespace(
+        info=SimpleNamespace(serial_number="synthetic-serial"),
+        floor_plan=floor_plan,
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(coordinator=SimpleNamespace(data=data))
     )
     with (
         patch(
@@ -500,11 +524,12 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
     ):
         assert _saved_plan_context(hass, call)[2:] == (
             "synthetic-serial",
-            {"one": "Kitchen"},
+            {"one": "Kitchen", "two": "Study"},
         )
-        state.attributes["rooms"] = {}
+        data.floor_plan = None
         with pytest.raises(ServiceValidationError, match="room map"):
             _saved_plan_context(hass, call)
+        assert _saved_plan_context(hass, call, require_rooms=False)[3] == {}
     with (
         patch(
             "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
@@ -513,6 +538,36 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
         pytest.raises(ServiceValidationError, match="exactly one"),
     ):
         _saved_plan_context(hass, call)
+
+
+async def test_saved_plan_context_reads_rooms_the_vacuum_actually_exposes() -> None:
+    """Guard the producer/consumer seam with the real vacuum entity.
+
+    The context and the vacuum entity must agree on the same coordinator
+    floor plan so a state-attribute change can never break plan services.
+    """
+    from custom_components.matic_robot import vacuum as vacuum_platform
+    from tests.test_entities import _entry as entity_entry
+
+    entry = entity_entry()
+    entity = vacuum_platform.MaticVacuum(entry)
+    call = MagicMock()
+    hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock(return_value=None)))
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=entry,
+        ),
+    ):
+        room_map = _saved_plan_context(hass, call)[3]
+
+    assert room_map == entity.extra_state_attributes["rooms"]
+    assert room_map == {"room-1": "Kitchen", "room-2": "Study"}
 
 
 def _resolution_hass(*, loaded: bool = True, available: bool = True):
@@ -588,11 +643,11 @@ def test_action_target_resolution_rejects_non_matic_target() -> None:
         _resolve_loaded_matic_vacuums(hass, call)
 
 
-async def test_fetch_hermes_collection_returns_bounded_raw_snapshot() -> None:
+async def test_inspect_hermes_endpoint_returns_bounded_safe_snapshot() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
     client = SimpleNamespace(
-        async_get_collection_entries=AsyncMock(
+        async_inspect_endpoint=AsyncMock(
             return_value=(HermesCollectionEntry(b"key", b"payload"),)
         )
     )
@@ -600,14 +655,11 @@ async def test_fetch_hermes_collection_returns_bounded_raw_snapshot() -> None:
     call = ServiceCall(
         hass,
         DOMAIN,
-        "fetch_hermes_collection",
+        "inspect_hermes_endpoint",
         {
             "entity_id": ["vacuum.test"],
-            "collection": "wifi_status",
+            "endpoint": "wifi_status",
             "limit": 1,
-            "include_payload": True,
-            "payload_format": "hex",
-            "max_bytes": 4,
         },
     )
     with (
@@ -620,26 +672,25 @@ async def test_fetch_hermes_collection_returns_bounded_raw_snapshot() -> None:
             return_value=entry,
         ),
     ):
-        response = await _registered_handler(services, "fetch_hermes_collection")(call)
-    assert response["entries"][0]["key"] == "6b6579"
-    assert response["entries"][0]["value"] == "7061796c"
-    assert response["entries"][0]["value_truncated"] is True
+        response = await _registered_handler(services, "inspect_hermes_endpoint")(call)
+    assert response["kind"] == "property"
+    assert response["entries"][0]["key_size"] == 3
+    assert response["entries"][0]["value_size"] == 7
+    assert "key" not in response["entries"][0]
+    client.async_inspect_endpoint.assert_awaited_once_with("wifi_status", limit=1)
 
 
-async def test_fetch_hermes_collection_requires_exactly_one_robot() -> None:
+async def test_inspect_hermes_endpoint_requires_exactly_one_robot() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
     call = ServiceCall(
         hass,
         DOMAIN,
-        "fetch_hermes_collection",
+        "inspect_hermes_endpoint",
         {
             "entity_id": ["vacuum.one", "vacuum.two"],
-            "collection": "wifi_status",
+            "endpoint": "wifi_status",
             "limit": 1,
-            "include_payload": False,
-            "payload_format": "base64",
-            "max_bytes": 65536,
         },
     )
     with (
@@ -649,14 +700,14 @@ async def test_fetch_hermes_collection_requires_exactly_one_robot() -> None:
         ),
         pytest.raises(ServiceValidationError, match="exactly one"),
     ):
-        await _registered_handler(services, "fetch_hermes_collection")(call)
+        await _registered_handler(services, "inspect_hermes_endpoint")(call)
 
 
-async def test_fetch_hermes_collection_encodes_base64_payloads() -> None:
+async def test_inspect_hermes_endpoint_fingerprints_payloads() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
     client = SimpleNamespace(
-        async_get_collection_entries=AsyncMock(
+        async_inspect_endpoint=AsyncMock(
             return_value=(HermesCollectionEntry(b"key", b"payload"),)
         )
     )
@@ -664,14 +715,11 @@ async def test_fetch_hermes_collection_encodes_base64_payloads() -> None:
     call = ServiceCall(
         hass,
         DOMAIN,
-        "fetch_hermes_collection",
+        "inspect_hermes_endpoint",
         {
             "entity_id": ["vacuum.test"],
-            "collection": "wifi_status",
+            "endpoint": "wifi_status",
             "limit": 1,
-            "include_payload": True,
-            "payload_format": "base64",
-            "max_bytes": 64,
         },
     )
     with (
@@ -684,11 +732,88 @@ async def test_fetch_hermes_collection_encodes_base64_payloads() -> None:
             return_value=entry,
         ),
     ):
-        response = await _registered_handler(services, "fetch_hermes_collection")(call)
-    assert response["entries"][0]["key"] == "a2V5"
-    assert response["entries"][0]["value"] == "cGF5bG9hZA=="
-    assert response["entries"][0]["key_truncated"] is False
-    assert response["entries"][0]["value_truncated"] is False
+        response = await _registered_handler(services, "inspect_hermes_endpoint")(call)
+    assert response["entries"][0]["key_sha256"] == (
+        "2c70e12b7a0646f92279f427c7b38e7334d8e5389cff167a1dc30e73f826b683"
+    )
+    assert response["entries"][0]["value_sha256"] == (
+        "239f59ed55e737c77147cf55ad0c1b030b6d7ee748a7426952f9b852d5a935e5"
+    )
+
+
+async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
+    hass = SimpleNamespace(data={})
+    services = await _registered_services(hass)
+
+    async def inspect(name: str, *, limit: int):
+        assert limit == 1
+        if name == "zones":
+            return ()
+        if name == "map_integrated":
+            raise CannotConnectError("synthetic failure with private context")
+        return (HermesCollectionEntry(b"key", b"value"),)
+
+    client = SimpleNamespace(async_inspect_endpoint=AsyncMock(side_effect=inspect))
+    state = SimpleNamespace(
+        telemetry=SimpleNamespace(software_version="v168.11", protocol_version=25),
+        operational=SimpleNamespace(software_version="fallback"),
+    )
+    entry = SimpleNamespace(
+        entry_id="entry",
+        runtime_data=SimpleNamespace(
+            client=client, coordinator=SimpleNamespace(data=state)
+        ),
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_snapshot",
+        {"entity_id": ["vacuum.test"]},
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.matic_robot.firmware.snapshot_timestamp",
+            return_value="timestamp",
+        ),
+    ):
+        response = await _registered_handler(services, "firmware_snapshot")(call)
+
+    assert response["endpoint_count"] == len(HERMES_ENDPOINTS)
+    assert response["populated_endpoints"] == len(HERMES_ENDPOINTS) - 2
+    assert response["empty_endpoints"] == 1
+    assert response["failed_endpoints"] == 1
+    failed = next(item for item in response["endpoints"] if item["status"] == "error")
+    assert failed["error_type"] == "CannotConnectError"
+    assert "synthetic failure" not in repr(response)
+    tracker = hass.data[DOMAIN]["firmware_tracker"]
+    tracker.async_record_snapshot.assert_awaited_once()
+
+
+async def test_firmware_snapshot_requires_exactly_one_robot() -> None:
+    hass = SimpleNamespace(data={})
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "firmware_snapshot",
+        {"entity_id": ["vacuum.one", "vacuum.two"]},
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.one", "vacuum.two"],
+        ),
+        pytest.raises(ServiceValidationError, match="exactly one"),
+    ):
+        await _registered_handler(services, "firmware_snapshot")(call)
 
 
 async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> None:
