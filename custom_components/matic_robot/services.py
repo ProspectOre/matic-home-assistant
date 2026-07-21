@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import asyncio
-import base64
-import hashlib
 from copy import deepcopy
 from typing import Any
 
@@ -35,8 +33,18 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import slugify
 
 from .client.commands import CleaningMode, CoverageSetting
+from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
-from .const import DATA_PLAN_MANAGER, DOMAIN, HERMES_COLLECTIONS
+from .const import (
+    DATA_FIRMWARE_TRACKER,
+    DATA_PLAN_MANAGER,
+    DOMAIN,
+)
+from .firmware import (
+    FirmwareTracker,
+    async_build_firmware_snapshot,
+    fingerprint_entry,
+)
 from .plans import CleaningPlanManager, CleaningRoom, resolve_rooms
 
 SERVICE_CLEAN = "clean"
@@ -53,7 +61,8 @@ SERVICE_SELECT_PLAN = "select_plan"
 SERVICE_SAVE_PLAN_ROOM = "save_plan_room"
 SERVICE_DELETE_PLAN_ROOM = "delete_plan_room"
 SERVICE_MOVE_PLAN_ROOM = "move_plan_room"
-SERVICE_FETCH_HERMES_COLLECTION = "fetch_hermes_collection"
+SERVICE_INSPECT_HERMES_ENDPOINT = "inspect_hermes_endpoint"
+SERVICE_FIRMWARE_SNAPSHOT = "firmware_snapshot"
 TARGET_KEYS = (
     ATTR_ENTITY_ID,
     ATTR_DEVICE_ID,
@@ -150,19 +159,16 @@ MOVE_PLAN_ROOM_SCHEMA = cv.make_entity_service_schema(
     }
 )
 
-FETCH_COLLECTION_SERVICE_SCHEMA = cv.make_entity_service_schema(
+INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Required("collection"): vol.In(HERMES_COLLECTIONS),
+        vol.Required("endpoint"): vol.In(HERMES_ENDPOINT_NAMES),
         vol.Optional("limit", default=32): vol.All(
             vol.Coerce(int), vol.Range(min=1, max=256)
         ),
-        vol.Optional("include_payload", default=False): cv.boolean,
-        vol.Optional("payload_format", default="base64"): vol.In(("base64", "hex")),
-        vol.Optional("max_bytes", default=65536): vol.All(
-            vol.Coerce(int), vol.Range(min=0, max=1048576)
-        ),
     }
 )
+
+FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
 
 
 async def async_register_services(hass: HomeAssistant) -> None:
@@ -171,6 +177,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
     manager = CleaningPlanManager(hass)
     await manager.async_load()
     hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
+    firmware_tracker = FirmwareTracker(hass)
+    await firmware_tracker.async_load()
+    hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker
 
     async def async_clean(call: ServiceCall) -> None:
         """Route the complete verified cleaning matrix to selected vacuums."""
@@ -549,54 +558,58 @@ async def async_register_services(hass: HomeAssistant) -> None:
         supports_response=SupportsResponse.OPTIONAL,
     )
 
-    async def async_fetch_collection(call: ServiceCall) -> dict[str, Any]:
-        """Return a bounded snapshot from the non-credential Hermes allowlist."""
+    async def async_inspect_endpoint(call: ServiceCall) -> dict[str, Any]:
+        """Return payload-free fingerprints from the Hermes allowlist."""
         entity_ids = _resolve_loaded_matic_vacuums(hass, call)
         if len(entity_ids) != 1:
             raise _validation_error(
-                "Raw Hermes inspection requires exactly one Matic robot",
+                "Hermes endpoint inspection requires exactly one Matic robot",
                 "single_robot_required",
             )
         entry = _entry_for_entity(hass, entity_ids[0])
-        collection = call.data["collection"]
-        values = await entry.runtime_data.client.async_get_collection_entries(
-            collection, limit=call.data["limit"]
+        endpoint_name = call.data["endpoint"]
+        endpoint = HERMES_ENDPOINT_MAP[endpoint_name]
+        values = await entry.runtime_data.client.async_inspect_endpoint(
+            endpoint_name, limit=call.data["limit"]
         )
-        include = call.data["include_payload"]
-        maximum = call.data["max_bytes"]
-        encoding = call.data["payload_format"]
-        response_entries: list[dict[str, Any]] = []
-        for value in values:
-            item: dict[str, Any] = {
-                "key_size": len(value.key),
-                "value_size": len(value.value),
-                "key_sha256": hashlib.sha256(value.key).hexdigest(),
-                "value_sha256": hashlib.sha256(value.value).hexdigest(),
-            }
-            if include:
-                key = value.key[:maximum]
-                payload = value.value[:maximum]
-                if encoding == "hex":
-                    item["key"] = key.hex()
-                    item["value"] = payload.hex()
-                else:
-                    item["key"] = base64.b64encode(key).decode()
-                    item["value"] = base64.b64encode(payload).decode()
-                item["key_truncated"] = len(key) < len(value.key)
-                item["value_truncated"] = len(payload) < len(value.value)
-            response_entries.append(item)
         return {
-            "collection": collection,
+            "endpoint": endpoint_name,
+            "kind": endpoint.kind,
+            "sensitivity": endpoint.sensitivity,
             "entry_count": len(values),
             "limit": call.data["limit"],
-            "entries": response_entries,
+            "entries": [fingerprint_entry(value) for value in values],
         }
 
     hass.services.async_register(
         DOMAIN,
-        SERVICE_FETCH_HERMES_COLLECTION,
-        async_fetch_collection,
-        schema=FETCH_COLLECTION_SERVICE_SCHEMA,
+        SERVICE_INSPECT_HERMES_ENDPOINT,
+        async_inspect_endpoint,
+        schema=INSPECT_ENDPOINT_SERVICE_SCHEMA,
+        supports_response=SupportsResponse.ONLY,
+    )
+
+    async def async_firmware_snapshot(call: ServiceCall) -> dict[str, Any]:
+        """Capture and persist one payload-free compatibility snapshot."""
+        entity_ids = _resolve_loaded_matic_vacuums(hass, call)
+        if len(entity_ids) != 1:
+            raise _validation_error(
+                "Firmware snapshots require exactly one Matic robot",
+                "single_robot_required",
+            )
+        entry = _entry_for_entity(hass, entity_ids[0])
+        state = entry.runtime_data.coordinator.data
+        snapshot = await async_build_firmware_snapshot(entry.runtime_data.client, state)
+        comparison = await firmware_tracker.async_record_snapshot(
+            entry.entry_id, snapshot
+        )
+        return {**snapshot, "comparison": comparison}
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_FIRMWARE_SNAPSHOT,
+        async_firmware_snapshot,
+        schema=FIRMWARE_SNAPSHOT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
 
@@ -816,9 +829,13 @@ def _saved_plan_context(
         )
     entity_id = entity_ids[0]
     entry = _entry_for_entity(hass, entity_id)
-    serial_number = entry.runtime_data.coordinator.data.info.serial_number
-    state = hass.states.get(entity_id)
-    room_map = state.attributes.get("rooms", {}) if state is not None else {}
+    data = entry.runtime_data.coordinator.data
+    serial_number = data.info.serial_number
+    room_map = (
+        {room.id: room.name for room in data.floor_plan.rooms}
+        if data.floor_plan is not None
+        else {}
+    )
     if require_rooms and not room_map:
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"

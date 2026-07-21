@@ -35,6 +35,8 @@ class MaticMapCamera(MaticEntity, Camera):
         Camera.__init__(self)
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
+        self._cached_image_key: tuple[object, ...] | None = None
+        self._cached_image: bytes | None = None
 
     async def async_camera_image(
         self,
@@ -45,7 +47,18 @@ class MaticMapCamera(MaticEntity, Camera):
         data = self.coordinator.data
         requested_width = min(max(width or 1024, 256), 2048)
         requested_height = min(max(height or 1024, 256), 2048)
-        return await self.hass.async_add_executor_job(
+        # The floor plan object is cached by the coordinator between map
+        # refreshes, so identity is stable; the pose is re-fetched every
+        # cycle and must be compared by value.
+        cache_key = (
+            id(data.floor_plan),
+            data.pose,
+            requested_width,
+            requested_height,
+        )
+        if cache_key == self._cached_image_key and self._cached_image is not None:
+            return self._cached_image
+        image = await self.hass.async_add_executor_job(
             partial(
                 render_floor_plan,
                 data.floor_plan,
@@ -54,3 +67,6 @@ class MaticMapCamera(MaticEntity, Camera):
                 height=requested_height,
             )
         )
+        self._cached_image_key = cache_key
+        self._cached_image = image
+        return image

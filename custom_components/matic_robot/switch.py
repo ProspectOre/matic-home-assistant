@@ -113,4 +113,4 @@ class MaticSettingSwitch(MaticEntity, SwitchEntity):
                 setting,
                 enabled,
             )
-        await self.coordinator.async_request_refresh()
+        await self.coordinator.async_request_full_refresh()

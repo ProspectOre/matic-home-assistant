@@ -38,9 +38,12 @@ by Home Assistant, followed by a container restart.
 A new Bluetooth pairing deliberately proves physical access: someone at the
 robot must read its displayed code. Home Assistant must use a Bluetooth adapter
 built into or directly attached to its host for that interactive exchange;
-Bluetooth proxies are not supported for setup. This is not a signal-strength
-limitation. Home Assistant Container uses the host's Linux BlueZ stack, which is
-why the D-Bus access and container permissions above are required.
+Bluetooth proxies are not supported for setup. Put the local adapter within a
+few feet of Matic with a clear path when possible. Passive advertisement range
+can be longer than reliable interactive-connection range, so a proxy seeing the
+robot does not prove the local adapter is close enough. Home Assistant Container
+uses the host's Linux BlueZ stack, which is why the D-Bus access and container
+permissions above are required.
 
 ## Troubleshooting signatures
 
@@ -48,18 +51,30 @@ Enable debug logging (`custom_components.matic_robot: debug`) and match the
 repeated line during a failing attempt:
 
 - `Found 0 fresh local Matic advertisement(s)` — the robot is not
-  broadcasting. Its pairing window expires silently and its screen shows
-  nothing while the window is open, so turn Pairing mode off and back on in
-  the Matic app and submit again promptly. If toggling never helps and a
-  10-second `bluetoothctl scan on` on the host hears no devices at all, the
-  host's Bluetooth adapter is wedged — reboot the Home Assistant host.
+  reaching the local adapter during that scan. Turn Pairing mode off and back
+  on, put the adapter within a few feet of Matic with minimal obstruction, and
+  submit again promptly. If the local adapter still misses fresh advertisements,
+  reload its Home Assistant integration or replug it. If a 10-second
+  `bluetoothctl scan on` on the host hears no devices at all, the host's
+  Bluetooth adapter is wedged — reboot the Home Assistant host.
 - `visible only through a remote Bluetooth proxy` — only ESPHome proxies can
-  see the robot; setup needs an adapter built into or attached to the host.
+  see the robot. Temporarily disable all Bluetooth proxies while retrying, and
+  move or extend the adapter built into or attached to the host closer to
+  Matic; only that local adapter can complete setup.
 - `failed during Bluetooth pairing` — the bond itself failed; the robot shows
   its code only after the bond starts, and each displayed code is valid for
   roughly 20 seconds.
 - The pairing-timeout warning in Settings → System → Logs always includes the
   last failing stage, so include it in bug reports.
+
+Home Assistant integrations using its supported Bluetooth API share the same
+scanner, and concurrent active-scan requests are deduplicated. Temporarily
+disabling another BLE integration can be a useful diagnostic, but a successful
+retry does not by itself prove that integration caused the failure; first rule
+out distance, obstruction, a stale pairing window, and an adapter that needs a
+reload, replug, or host reboot. Bluetooth proxies are the exception: disable
+them temporarily during a troubled pairing attempt so the local adapter is the
+only Bluetooth path presented to setup.
 
 ## Failure behavior
 

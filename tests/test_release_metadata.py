@@ -25,6 +25,7 @@ IMPORT_ROOT_TO_DISTRIBUTION = {
     "dbus_fast": "dbus-fast",
     "google": "protobuf",
     "grpclib": "grpclib",
+    "h2": "h2",
     "voluptuous": "voluptuous",
     "zeroconf": "zeroconf",
 }
@@ -306,11 +307,16 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         )
         assert "room map" in exceptions["room_plan_unavailable"]["message"]
         assert "reported an error" in exceptions["robot_error"]["message"]
+        inspection = services["inspect_hermes_endpoint"]
+        assert "payload-free" in inspection["description"]
+        assert set(inspection["fields"]) == {"endpoint", "limit"}
         assert (
-            "private device or home data"
-            in services["fetch_hermes_collection"]["fields"]["include_payload"][
-                "description"
-            ]
+            "weekly compatibility record"
+            in services["firmware_snapshot"]["description"]
+        )
+        assert (
+            "Review the **Firmware snapshot** response"
+            in translations["issues"]["firmware_regression"]["description"]
         )
 
 

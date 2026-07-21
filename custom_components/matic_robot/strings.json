@@ -35,8 +35,8 @@
       "pairing_code_rejected": "The robot did not accept that code, so a new pairing was started. Enter the new code the robot is showing right away.",
       "pairing_incomplete": "Pairing started but did not finish. Keep the robot near Home Assistant's Bluetooth adapter, turn Pairing mode off and on, then try again.",
       "pairing_mode_confirmation_required": "Turn on Pairing mode first, then check the box to continue.",
-      "pairing_mode_off": "The robot is not accepting new users right now. Turn on Pairing mode in the Matic app, then try again.",
-      "pairing_timeout": "Pairing did not finish within five minutes. Turn Pairing mode off and on, keep the robot near Home Assistant's Bluetooth adapter, and try again. Details are in Settings → System → Logs."
+      "pairing_mode_off": "Home Assistant's local Bluetooth adapter did not receive a fresh pairing advertisement. Turn Pairing mode off and on, put the adapter within a few feet of Matic with minimal obstruction, temporarily disable Bluetooth proxies, then try again.",
+      "pairing_timeout": "Pairing did not finish within five minutes. Turn Pairing mode off and on, put Home Assistant's local Bluetooth adapter within a few feet of Matic, temporarily disable Bluetooth proxies, and try again. If it still misses the robot, reload or replug the adapter. Details are in Settings → System → Logs."
     },
     "step": {
       "discovery_failed": {
@@ -63,7 +63,7 @@
         "title": "Enter the robot's address"
       },
       "pair": {
-        "description": "In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it.",
+        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it.",
         "data": {
           "pairing_mode_enabled": "Pairing mode is on"
         },
@@ -80,7 +80,7 @@
         "title": "Enter the code shown on Matic"
       },
       "reauth_confirm": {
-        "description": "In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it before replacing its local access.",
+        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it before replacing its local access.",
         "data": {
           "pairing_mode_enabled": "Pairing mode is on"
         },
@@ -376,6 +376,16 @@
       "software_version": {
         "name": "Software version"
       },
+      "firmware_compatibility": {
+        "name": "Firmware compatibility",
+        "state": {
+          "pending": "Checking",
+          "baseline": "Baseline recorded",
+          "compatible": "Compatible",
+          "regression": "Regression detected",
+          "current": "Current"
+        }
+      },
       "sink_summon_locations": {
         "name": "Sink summon locations"
       },
@@ -406,6 +416,18 @@
       },
       "next_cleaning_room": {
         "name": "Next room to clean"
+      },
+      "room_clean_duration": {
+        "name": "{room} last clean duration"
+      },
+      "room_last_cleaned": {
+        "name": "{room} last cleaned"
+      },
+      "last_run_duration": {
+        "name": "Last run duration"
+      },
+      "wifi_signal": {
+        "name": "Wi-Fi signal"
       }
     },
     "switch": {
@@ -420,6 +442,11 @@
       },
       "voice_assistant": {
         "name": "Hey Matic"
+      }
+    },
+    "update": {
+      "firmware": {
+        "name": "Firmware"
       }
     }
   },
@@ -471,6 +498,16 @@
     },
     "unsupported_command": {
       "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, or return_home."
+    }
+  },
+  "issues": {
+    "firmware_regression": {
+      "title": "Matic firmware compatibility changed",
+      "description": "After Matic updated from {previous} to {current}, {count} Hermes endpoint(s) changed availability or transport status. Review the **Firmware snapshot** response and compatibility ledger."
+    },
+    "robot_identity_changed": {
+      "title": "Matic robot identity changed",
+      "description": "The device at the configured Matic address presented a TLS certificate that does not match the pinned robot identity. Communication is blocked until the certificate matches again. If the robot was factory reset or replaced, re-pair it through **Settings > Devices & Services > Matic Robot > Reconfigure**."
     }
   },
   "services": {
@@ -668,31 +705,23 @@
         }
       }
     },
-    "fetch_hermes_collection": {
-      "name": "Fetch Hermes collection",
-      "description": "Reads a size-limited snapshot from a supported local Hermes collection. Credential collections are blocked.",
+    "inspect_hermes_endpoint": {
+      "name": "Inspect Hermes endpoint",
+      "description": "Reads payload-free sizes and SHA-256 fingerprints from a supported local Hermes endpoint. Credential endpoints are blocked.",
       "fields": {
-        "collection": {
-          "name": "Collection",
+        "endpoint": {
+          "name": "Endpoint",
           "description": "Local Hermes property or collection to inspect."
         },
         "limit": {
           "name": "Entry limit",
           "description": "Maximum collection entries to return."
-        },
-        "include_payload": {
-          "name": "Include payload",
-          "description": "Include size-limited raw key/value bytes in the response. Raw payloads may contain private device or home data."
-        },
-        "payload_format": {
-          "name": "Payload format",
-          "description": "Encoding used when raw payloads are included."
-        },
-        "max_bytes": {
-          "name": "Maximum bytes",
-          "description": "Maximum bytes included from each key and value."
         }
       }
+    },
+    "firmware_snapshot": {
+      "name": "Firmware snapshot",
+      "description": "Checks every known non-credential Hermes endpoint, stores a payload-free weekly compatibility record, and reports changes from the prior snapshot."
     }
   }
 }

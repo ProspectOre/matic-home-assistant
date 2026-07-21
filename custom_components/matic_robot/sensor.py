@@ -4,19 +4,29 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Any
 
 from homeassistant.components.sensor import (
+    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
+    SensorStateClass,
 )
-from homeassistant.const import PERCENTAGE, EntityCategory
+from homeassistant.const import (
+    PERCENTAGE,
+    SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+    EntityCategory,
+    UnitOfTime,
+)
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.util import dt as dt_util
+from homeassistant.util import slugify
 
 from . import MaticConfigEntry
-from .client.models import RobotState
+from .client.models import RobotState, Room
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -65,6 +75,28 @@ SOFTWARE_DESCRIPTION = SensorEntityDescription(
     entity_category=EntityCategory.DIAGNOSTIC,
 )
 
+FIRMWARE_COMPATIBILITY_DESCRIPTION = SensorEntityDescription(
+    key="firmware_compatibility",
+    translation_key="firmware_compatibility",
+    entity_category=EntityCategory.DIAGNOSTIC,
+)
+
+ROOM_DURATION_DESCRIPTION = SensorEntityDescription(
+    key="room_clean_duration",
+    translation_key="room_clean_duration",
+    device_class=SensorDeviceClass.DURATION,
+    native_unit_of_measurement=UnitOfTime.SECONDS,
+    state_class=SensorStateClass.MEASUREMENT,
+    entity_registry_enabled_default=False,
+)
+
+ROOM_LAST_CLEANED_DESCRIPTION = SensorEntityDescription(
+    key="room_last_cleaned",
+    translation_key="room_last_cleaned",
+    device_class=SensorDeviceClass.TIMESTAMP,
+    entity_registry_enabled_default=False,
+)
+
 
 @dataclass(frozen=True, kw_only=True)
 class MaticStateSensorDescription(SensorEntityDescription):
@@ -103,36 +135,64 @@ STATE_DESCRIPTIONS = (
         key="wifi_state",
         translation_key="wifi_state",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.wifi_state,
     ),
     MaticStateSensorDescription(
         key="scheduled_cleanings",
         translation_key="scheduled_cleanings",
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.scheduled_cleanings,
     ),
     MaticStateSensorDescription(
         key="local_cleaning_sessions",
         translation_key="local_cleaning_sessions",
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.local_cleaning_sessions,
     ),
     MaticStateSensorDescription(
         key="dock_detections",
         translation_key="dock_detections",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.dock_detections,
     ),
     MaticStateSensorDescription(
         key="sink_summon_locations",
         translation_key="sink_summon_locations",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.sink_summon_locations,
     ),
     MaticStateSensorDescription(
         key="coverage_time",
         translation_key="coverage_time",
         entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
         native_unit_of_measurement="s",
         value_fn=lambda state: state.telemetry.coverage_time_seconds,
+    ),
+    MaticStateSensorDescription(
+        key="last_run_duration",
+        translation_key="last_run_duration",
+        device_class=SensorDeviceClass.DURATION,
+        native_unit_of_measurement=UnitOfTime.SECONDS,
+        state_class=SensorStateClass.MEASUREMENT,
+        value_fn=lambda state: (
+            state.telemetry.latest_session.duration_seconds
+            if state.telemetry.latest_session is not None
+            else None
+        ),
+    ),
+    MaticStateSensorDescription(
+        key="wifi_signal",
+        translation_key="wifi_signal",
+        device_class=SensorDeviceClass.SIGNAL_STRENGTH,
+        native_unit_of_measurement=SIGNAL_STRENGTH_DECIBELS_MILLIWATT,
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        entity_registry_enabled_default=False,
+        value_fn=lambda state: state.telemetry.wifi_signal_dbm,
     ),
 )
 
@@ -143,6 +203,25 @@ async def async_setup_entry(
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
     """Set up Matic diagnostic sensors."""
+    coordinator = entry.runtime_data.coordinator
+    known_rooms: set[str] = set()
+
+    def _new_room_entities() -> list[SensorEntity]:
+        """Build opt-in statistics sensors for rooms not yet seen."""
+        floor_plan = coordinator.data.floor_plan
+        if floor_plan is None:
+            return []
+        new_rooms = [room for room in floor_plan.rooms if room.id not in known_rooms]
+        known_rooms.update(room.id for room in new_rooms)
+        return [
+            entity
+            for room in new_rooms
+            for entity in (
+                MaticRoomDurationSensor(entry, room),
+                MaticRoomLastCleanedSensor(entry, room),
+            )
+        ]
+
     async_add_entities(
         [
             MaticActivitySensor(entry),
@@ -153,12 +232,22 @@ async def async_setup_entry(
             MaticActiveCleaningPlanSensor(entry),
             MaticNextCleaningRoomSensor(entry),
             MaticSoftwareVersionSensor(entry),
+            MaticFirmwareCompatibilitySensor(entry),
             *(
                 MaticStateSensor(entry, description)
                 for description in STATE_DESCRIPTIONS
             ),
+            *_new_room_entities(),
         ]
     )
+
+    @callback
+    def _async_add_new_rooms() -> None:
+        """Add statistics sensors when the floor plan grows a room."""
+        if new_entities := _new_room_entities():
+            async_add_entities(new_entities)
+
+    entry.async_on_unload(coordinator.async_add_listener(_async_add_new_rooms))
 
 
 class MaticHardwareRevisionSensor(MaticEntity, SensorEntity):
@@ -237,6 +326,8 @@ class MaticSoftwareVersionSensor(MaticEntity, SensorEntity):
         state = self.coordinator.data
         return state.telemetry.software_version or state.operational.software_version
 
+    _unrecorded_attributes = frozenset({"timezone"})
+
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose safe build metadata for update-aware automations."""
@@ -250,10 +341,55 @@ class MaticSoftwareVersionSensor(MaticEntity, SensorEntity):
         }
 
 
+class MaticFirmwareCompatibilitySensor(MaticEntity, SensorEntity):
+    """Persistent firmware and endpoint compatibility state."""
+
+    entity_description = FIRMWARE_COMPATIBILITY_DESCRIPTION
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._entry_id = entry.entry_id
+        self._tracker = entry.runtime_data.firmware_tracker
+        self._attr_unique_id = (
+            f"{self.coordinator.data.info.serial_number}_firmware_compatibility"
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to background snapshot completion."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._tracker.async_add_listener(
+                self._entry_id, self._async_firmware_updated
+            )
+        )
+
+    @callback
+    def _async_firmware_updated(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def available(self) -> bool:
+        """Keep persisted compatibility visible while the robot is offline."""
+        return True
+
+    @property
+    def native_value(self) -> str:
+        """Return pending, baseline, compatible, or regression."""
+        return str(self._tracker.summary(self._entry_id)["compatibility_status"])
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Return only payload-free snapshot counts and versions."""
+        return self._tracker.summary(self._entry_id)
+
+
 class MaticStateSensor(MaticEntity, SensorEntity):
     """A safe, independently addressable local telemetry field."""
 
     entity_description: MaticStateSensorDescription
+    _unrecorded_attributes = frozenset(
+        {"ssid", "schedules", "latest_rooms", "latest_room_durations"}
+    )
 
     def __init__(
         self,
@@ -287,15 +423,6 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                     network.known for network in telemetry.wifi_networks
                 ),
                 "visible_networks": len(telemetry.wifi_networks),
-                "networks": [
-                    {
-                        "ssid": network.ssid,
-                        "signal_dbm": network.signal_dbm,
-                        "connected": network.connected,
-                        "known": network.known,
-                    }
-                    for network in telemetry.wifi_networks
-                ],
             }
         if key == "scheduled_cleanings":
             room_names = (
@@ -345,6 +472,7 @@ class MaticRoomsSensor(MaticEntity, SensorEntity):
     """Expose the active floor's room inventory."""
 
     entity_description = ROOMS_DESCRIPTION
+    _unrecorded_attributes = frozenset({"room_names", "segments"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
@@ -372,6 +500,17 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
     """Expose durable managed-plan outcomes for advanced automations."""
 
     entity_description = HISTORY_DESCRIPTION
+    _unrecorded_attributes = frozenset(
+        {
+            "last_completed_by_room",
+            "plans",
+            "plan_history",
+            "selected_plan",
+            "selected_plan_name",
+            "active_plan",
+            "last_interrupted_plan",
+        }
+    )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
@@ -405,7 +544,12 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Return per-room timestamps, rotation records, and active plan."""
-        return self._history.snapshot(self._serial_number)
+        snapshot = self._history.snapshot(self._serial_number)
+        return {
+            **snapshot,
+            "plan_count": len(snapshot["plans"]),
+            "plan_running": snapshot["active_plan"] is not None,
+        }
 
 
 class _MaticPlanSensor(MaticEntity, SensorEntity):
@@ -439,6 +583,7 @@ class MaticActiveCleaningPlanSensor(_MaticPlanSensor):
     """Expose the running plan and exact active room."""
 
     entity_description = ACTIVE_PLAN_DESCRIPTION
+    _unrecorded_attributes = frozenset({"active"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
@@ -454,13 +599,14 @@ class MaticActiveCleaningPlanSensor(_MaticPlanSensor):
     def extra_state_attributes(self) -> dict[str, object] | None:
         """Return the active room and start time."""
         active = self._history.snapshot(self._serial_number)["active_plan"]
-        return dict(active) if active else None
+        return {"active": dict(active)} if active else None
 
 
 class MaticNextCleaningRoomSensor(_MaticPlanSensor):
     """Preview the next room due in the selected saved plan."""
 
     entity_description = NEXT_ROOM_DESCRIPTION
+    _unrecorded_attributes = frozenset({"preview"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
@@ -489,4 +635,106 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
     @property
     def extra_state_attributes(self) -> dict[str, object] | None:
         """Return the complete dry-run preview for automation templates."""
-        return self._preview()
+        preview = self._preview()
+        return {"preview": preview} if preview else None
+
+
+class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
+    """Opt-in, restore-backed statistics for one named room.
+
+    Values persist across restarts and robot outages so long-term
+    statistics survive sessions the robot completes while HA is down.
+    """
+
+    def __init__(self, entry: MaticConfigEntry, room: Room) -> None:
+        super().__init__(entry)
+        self._room_id = room.id
+        self._attr_translation_placeholders = {"room": room.name}
+        self._suggested_suffix = room.name
+
+    @property
+    def suggested_object_id(self) -> str | None:
+        """Name the entity after the room, not its opaque identifier."""
+        suffix = self.entity_description.key.removeprefix("room_")
+        return slugify(f"{self._suggested_suffix}_{suffix}")
+
+    @property
+    def available(self) -> bool:
+        """Keep historical room facts visible while the robot is offline."""
+        return True
+
+    def _room_session_value(self) -> tuple[str, int] | None:
+        """Return this room's (ended_at, seconds) from the latest session."""
+        state = self.coordinator.data
+        session = state.telemetry.latest_session
+        if session is None or session.ended_at is None or state.floor_plan is None:
+            return None
+        room = next(
+            (item for item in state.floor_plan.rooms if item.id == self._room_id),
+            None,
+        )
+        if room is None:
+            return None
+        durations = dict(session.room_durations)
+        if room.name not in durations:
+            return None
+        return session.ended_at, durations[room.name]
+
+    @callback
+    def _async_apply_session(self) -> None:
+        """Apply the latest finished session that included this room."""
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        self._async_apply_session()
+        super()._handle_coordinator_update()
+
+
+class MaticRoomDurationSensor(_MaticRoomStatisticsSensor):
+    """How long the robot spent in one room during its latest visit."""
+
+    entity_description = ROOM_DURATION_DESCRIPTION
+
+    def __init__(self, entry: MaticConfigEntry, room: Room) -> None:
+        super().__init__(entry, room)
+        self._attr_unique_id = f"{self._matic_serial}_room_{room.id}_clean_duration"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known duration, then apply any newer session."""
+        await super().async_added_to_hass()
+        data = await self.async_get_last_sensor_data()
+        if data is not None and isinstance(data.native_value, (int, float)):
+            self._attr_native_value = int(data.native_value)
+        self._async_apply_session()
+
+    @callback
+    def _async_apply_session(self) -> None:
+        """Apply the latest finished session that included this room."""
+        if (value := self._room_session_value()) is not None:
+            self._attr_native_value = value[1]
+
+
+class MaticRoomLastCleanedSensor(_MaticRoomStatisticsSensor):
+    """When the robot last finished a session that covered one room."""
+
+    entity_description = ROOM_LAST_CLEANED_DESCRIPTION
+
+    def __init__(self, entry: MaticConfigEntry, room: Room) -> None:
+        super().__init__(entry, room)
+        self._attr_unique_id = f"{self._matic_serial}_room_{room.id}_last_cleaned"
+
+    async def async_added_to_hass(self) -> None:
+        """Restore the last known timestamp, then apply any newer session."""
+        await super().async_added_to_hass()
+        data = await self.async_get_last_sensor_data()
+        if data is not None and isinstance(data.native_value, datetime):
+            self._attr_native_value = data.native_value
+        self._async_apply_session()
+
+    @callback
+    def _async_apply_session(self) -> None:
+        """Apply the latest finished session that included this room."""
+        if (value := self._room_session_value()) is not None:
+            ended_at = dt_util.parse_datetime(value[0])
+            if ended_at is not None:
+                self._attr_native_value = dt_util.as_utc(ended_at)

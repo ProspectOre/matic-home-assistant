@@ -15,6 +15,10 @@ the integration so instructions and behavior stay aligned with each release.
   understand Bluetooth requirements, and recover from pairing failures.
 - [Limits and troubleshooting](../README.md#limits-and-troubleshooting) — Check
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
+- [Firmware compatibility](firmware-compatibility.md) — Track observed robot
+  versions, validation status, regressions, and newly discovered capabilities.
+- [Release notes — 0.2.0](release-notes-0.2.0.md) — What's new and what to
+  check when upgrading from 0.1.x.
 
 ## Use and automate
 
@@ -57,5 +61,6 @@ and the relevant guide above. If the problem remains:
 - [Request a feature](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=feature_request.yml)
 
 Home Assistant diagnostics are created only when you click **Download
-diagnostics**. Inspect the file before sharing it because the redacted report
-still contains home-specific map, room, Wi-Fi, schedule, and protocol context.
+diagnostics**. The report uses a strict safe-field allowlist and omits map, room,
+Wi-Fi identity, schedule, session, credential, address, and certificate context;
+inspect it before sharing anyway.

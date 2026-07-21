@@ -58,6 +58,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     """Authenticated local Matic vacuum controls."""
 
     _attr_supported_features = SUPPORTED_FEATURES
+    _unrecorded_attributes = frozenset({"rooms"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)

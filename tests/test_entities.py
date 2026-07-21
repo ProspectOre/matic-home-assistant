@@ -18,6 +18,7 @@ from custom_components.matic_robot import (
     select,
     sensor,
     switch,
+    update,
     vacuum,
 )
 from custom_components.matic_robot.client.commands import (
@@ -144,6 +145,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         cleaning_mode=CleaningMode.BOTH,
         coverage_setting=CoverageSetting.STANDARD,
         async_request_refresh=AsyncMock(),
+        async_request_full_refresh=AsyncMock(),
+        async_add_listener=MagicMock(return_value=MagicMock()),
         last_update_success=True,
     )
     history = SimpleNamespace(
@@ -187,14 +190,30 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
     )
+    firmware = SimpleNamespace(
+        summary=MagicMock(
+            return_value={
+                "compatibility_status": "baseline",
+                "observed_version": "v-test",
+                "endpoint_count": 40,
+                "failed_endpoints": 0,
+            }
+        ),
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
     return SimpleNamespace(
-        runtime_data=SimpleNamespace(coordinator=coordinator, cleaning_plans=history),
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            cleaning_plans=history,
+            firmware_tracker=firmware,
+        ),
         options={},
         entry_id="entry",
+        async_on_unload=MagicMock(),
     )
 
 
-async def test_platform_setups_create_forty_four_entities(hass) -> None:
+async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     entry = _entry()
     entities: list[object] = []
     platform_counts: dict[str, int] = {}
@@ -212,25 +231,192 @@ async def test_platform_setups_create_forty_four_entities(hass) -> None:
     await add_platform("camera", camera.async_setup_entry)
     await add_platform("number", number.async_setup_entry)
     await add_platform("switch", switch.async_setup_entry)
+    await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
+    # 48 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 12,
         "button": 4,
         "camera": 1,
         "number": 1,
         "select": 3,
-        "sensor": 18,
+        "sensor": 25,
         "switch": 4,
+        "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 44
-    assert len({entity.unique_id for entity in entities}) == 44
+    assert len(entities) == 52
+    assert len({entity.unique_id for entity in entities}) == 52
     assert all(entity.device_info["manufacturer"] == "Matic" for entity in entities)
+
+
+async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    added: list[object] = []
+
+    await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
+
+    room_entities = [
+        entity
+        for entity in added
+        if isinstance(
+            entity, (sensor.MaticRoomDurationSensor, sensor.MaticRoomLastCleanedSensor)
+        )
+    ]
+    assert len(room_entities) == 4
+    assert all(
+        entity.entity_description.entity_registry_enabled_default is False
+        for entity in room_entities
+    )
+    assert room_entities[0].suggested_object_id == "kitchen_clean_duration"
+
+    # The coordinator listener adds sensors for rooms that appear later.
+    listener = coordinator.async_add_listener.call_args.args[0]
+    added.clear()
+    listener()
+    assert added == []
+
+    new_room = Room("room-3", "Hall", "protocol-3", b"three", ((2, 2), (3, 3)))
+    coordinator.data = replace(
+        coordinator.data,
+        floor_plan=replace(
+            coordinator.data.floor_plan,
+            rooms=(*coordinator.data.floor_plan.rooms, new_room),
+        ),
+    )
+    listener()
+    assert len(added) == 2
+
+
+async def test_room_sensors_wait_for_a_floor_plan(hass) -> None:
+    entry = _entry(with_floor_plan=False)
+    added: list[object] = []
+
+    await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
+
+    assert not [
+        entity
+        for entity in added
+        if isinstance(
+            entity, (sensor.MaticRoomDurationSensor, sensor.MaticRoomLastCleanedSensor)
+        )
+    ]
+
+
+async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
+    entry = _entry()
+    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
+    study = entry.runtime_data.coordinator.data.floor_plan.rooms[1]
+
+    duration = sensor.MaticRoomDurationSensor(entry, kitchen)
+    last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, kitchen)
+    with (
+        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
+        patch.object(
+            sensor.MaticRoomDurationSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            sensor.MaticRoomLastCleanedSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await duration.async_added_to_hass()
+        await last_cleaned.async_added_to_hass()
+
+    assert duration.available is True
+    assert duration.native_value == 600
+    assert last_cleaned.native_value is not None
+    assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
+
+    # A room the latest session did not include keeps its restored value.
+    stored = SimpleNamespace(native_value=120)
+    stored_when = SimpleNamespace(
+        native_value=sensor.dt_util.parse_datetime("2025-12-31T10:00:00+00:00")
+    )
+    study_duration = sensor.MaticRoomDurationSensor(entry, study)
+    study_last = sensor.MaticRoomLastCleanedSensor(entry, study)
+    with (
+        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
+        patch.object(
+            sensor.MaticRoomDurationSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=stored),
+        ),
+        patch.object(
+            sensor.MaticRoomLastCleanedSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=stored_when),
+        ),
+    ):
+        await study_duration.async_added_to_hass()
+        await study_last.async_added_to_hass()
+
+    assert study_duration.native_value == 120
+    assert study_last.native_value == stored_when.native_value
+
+    # Coordinator updates re-apply the latest session.
+    fresh = sensor.MaticRoomDurationSensor(entry, kitchen)
+    fresh.async_write_ha_state = MagicMock()
+    fresh._handle_coordinator_update()
+    assert fresh.native_value == 600
+
+
+def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
+    entry = _entry(with_floor_plan=False)
+    room = _floor_plan().rooms[0]
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    removed = replace(
+        coordinator.data,
+        floor_plan=replace(coordinator.data.floor_plan, rooms=()),
+    )
+    coordinator.data = removed
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(coordinator.data.telemetry, latest_session=None),
+    )
+    assert sensor.MaticRoomDurationSensor(entry, room)._room_session_value() is None
+
+    entry = _entry()
+    study = entry.runtime_data.coordinator.data.floor_plan.rooms[1]
+    entity = sensor.MaticRoomLastCleanedSensor(entry, study)
+    entity._async_apply_session()
+    assert entity.native_value is None
+
+
+async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
+    entry = _entry()
+    entity = update.MaticFirmwareUpdate(entry)
+
+    assert entity.installed_version == "v-test"
+    assert entity.latest_version == "v-test"
+    assert entity.extra_state_attributes == {
+        "update_state": "idle",
+        "update_channel": "stable",
+    }
+
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(coordinator.data.telemetry, update_state="available"),
+    )
+    assert entity.latest_version is None
 
 
 def test_sensor_and_binary_sensor_values() -> None:
     entry = _entry()
+    assert MaticEntity(entry).suggested_object_id is None
     fully_charged = next(
         description
         for description in binary_sensor.DESCRIPTIONS
@@ -251,6 +437,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         "test-hardware",
         2,
     ]
+    assert sensors[1].suggested_object_id == "battery"
     assert sensors[0].extra_state_attributes == {
         "hermes_state_codes": [1, 2],
         "hermes_error_codes": [],
@@ -262,16 +449,21 @@ def test_sensor_and_binary_sensor_values() -> None:
         "room_names": ["Kitchen", "Study"],
         "segments": {"room-1": "Kitchen", "room-2": "Study"},
     }
+    assert "room_names" in sensor.MaticRoomsSensor._unrecorded_attributes
     history = sensor.MaticCleaningHistorySensor(entry)
     assert history.available is True
     assert history.native_value == 0
-    assert history.extra_state_attributes["active_plan"] is None
+    assert history.extra_state_attributes["plan_running"] is False
+    assert history.extra_state_attributes["last_completed_by_room"] == {}
+    assert "plans" in sensor.MaticCleaningHistorySensor._unrecorded_attributes
     active_plan = sensor.MaticActiveCleaningPlanSensor(entry)
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     assert active_plan.native_value is None
     assert active_plan.extra_state_attributes is None
     assert next_room.native_value == "Kitchen"
-    assert next_room.extra_state_attributes["valid"] is True
+    next_preview = next_room.extra_state_attributes
+    assert next_preview is not None
+    assert next_preview["preview"]["rooms"][0]["name"] == "Kitchen"
     assert [
         binary_sensor.MaticBinarySensor(entry, description).is_on
         for description in binary_sensor.DESCRIPTIONS
@@ -289,12 +481,36 @@ def test_sensor_and_binary_sensor_values() -> None:
         None,
         None,
     ]
+    assert {
+        description.key
+        for description in sensor.STATE_DESCRIPTIONS
+        if description.entity_registry_enabled_default is False
+    } == {
+        "wifi_state",
+        "scheduled_cleanings",
+        "local_cleaning_sessions",
+        "dock_detections",
+        "sink_summon_locations",
+        "coverage_time",
+        "wifi_signal",
+    }
+    assert vacuum.MaticVacuum(entry).suggested_object_id is None
 
     no_map = sensor.MaticRoomsSensor(_entry(with_floor_plan=False))
     assert no_map.native_value is None
     assert no_map.extra_state_attributes is None
     no_map_next = sensor.MaticNextCleaningRoomSensor(_entry(with_floor_plan=False))
     assert no_map_next.native_value is None
+    no_map_schedules = sensor.MaticStateSensor(
+        _entry(with_floor_plan=False),
+        next(
+            description
+            for description in sensor.STATE_DESCRIPTIONS
+            if description.key == "scheduled_cleanings"
+        ),
+    ).extra_state_attributes
+    assert no_map_schedules is not None
+    assert no_map_schedules["schedules"][0]["rooms"] == []
 
     software = sensor.MaticSoftwareVersionSensor(entry)
     assert software.native_value == "v-test"
@@ -305,10 +521,14 @@ def test_sensor_and_binary_sensor_values() -> None:
         "supports_easter_event": True,
         "timezone": "Etc/UTC",
     }
+    compatibility = sensor.MaticFirmwareCompatibilitySensor(entry)
+    assert compatibility.native_value == "baseline"
+    assert compatibility.available is True
+    assert compatibility.extra_state_attributes["endpoint_count"] == 40
     assert [
         sensor.MaticStateSensor(entry, description).native_value
         for description in sensor.STATE_DESCRIPTIONS
-    ] == [25, None, "stable", "idle", "connected", 3, 7, 4, 1, 600]
+    ] == [25, None, "stable", "idle", "connected", 3, 7, 4, 1, 600, 600, -45]
 
     state_sensors = {
         description.key: sensor.MaticStateSensor(entry, description)
@@ -319,14 +539,29 @@ def test_sensor_and_binary_sensor_values() -> None:
     }
     wifi = state_sensors["wifi_state"].extra_state_attributes
     assert wifi is not None
-    assert wifi["ssid"] == "Test LAN"
     assert wifi["known_networks"] == 1
-    assert len(wifi["networks"]) == 2
+    assert wifi["ssid"] == "Test LAN"
+    assert "networks" not in wifi
+    assert "ssid" in sensor.MaticStateSensor._unrecorded_attributes
     schedules = state_sensors["scheduled_cleanings"].extra_state_attributes
-    assert schedules is not None
-    assert schedules["schedules"][0]["rooms"] == ["Kitchen"]
+    assert schedules == {
+        "schedules": [
+            {
+                "name": "Morning",
+                "weekdays": ["monday"],
+                "time": "08:30",
+                "timezone": "Etc/UTC",
+                "ordered": True,
+                "enabled": True,
+                "rooms": ["Kitchen"],
+                "room_ids": ["protocol-1"],
+            }
+        ]
+    }
     sessions = state_sensors["local_cleaning_sessions"].extra_state_attributes
     assert sessions is not None
+    assert sessions["latest_duration_seconds"] == 600
+    assert sessions["latest_rooms"] == ["Kitchen"]
     assert sessions["latest_room_durations"] == {"Kitchen": 600}
     assert state_sensors["protocol_version"].extra_state_attributes is None
 
@@ -384,6 +619,21 @@ async def test_storage_backed_sensors_track_history_and_stay_available() -> None
     assert plan_sensor.available is True
 
 
+async def test_firmware_sensor_tracks_background_snapshot_completion() -> None:
+    entry = _entry()
+    tracker = entry.runtime_data.firmware_tracker
+    entity = sensor.MaticFirmwareCompatibilitySensor(entry)
+    entity.async_write_ha_state = MagicMock()
+
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        await entity.async_added_to_hass()
+
+    robot_id, listener = tracker.async_add_listener.call_args.args
+    assert robot_id == "entry"
+    listener()
+    entity.async_write_ha_state.assert_called_once()
+
+
 async def test_verified_setting_entities_write_and_refresh() -> None:
     entry = _entry()
     coordinator = entry.runtime_data.coordinator
@@ -417,7 +667,7 @@ async def test_verified_setting_entities_write_and_refresh() -> None:
     assert water_flow.available is True
     await water_flow.async_set_native_value(1.4)
     coordinator.client.async_set_water_flow.assert_awaited_once_with(1.4)
-    assert coordinator.async_request_refresh.await_count == 5
+    assert coordinator.async_request_full_refresh.await_count == 5
 
 
 async def test_saved_plan_select_and_native_button() -> None:
@@ -553,8 +803,11 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
         return_value=b"synthetic-png",
     ) as render:
         image = await entity.async_camera_image(width=1, height=9999)
+        cached = await entity.async_camera_image(width=1, height=9999)
 
     assert image == b"synthetic-png"
+    assert cached == image
+    assert render.call_count == 1
     assert render.call_args.kwargs == {"width": 256, "height": 2048}
 
 
@@ -662,6 +915,7 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
         "problem": False,
         "rooms": {"room-1": "Kitchen", "room-2": "Study"},
     }
+    assert vacuum.MaticVacuum._unrecorded_attributes == frozenset({"rooms"})
 
     bare = vacuum.MaticVacuum(_entry(with_floor_plan=False))
     assert bare.extra_state_attributes == {

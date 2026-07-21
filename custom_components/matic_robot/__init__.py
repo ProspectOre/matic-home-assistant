@@ -21,14 +21,19 @@ from .const import (
     CONF_HERMES_CREDENTIAL,
     CONF_HOSTNAME,
     CONF_SERIAL_NUMBER,
+    DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
     DOMAIN,
     PLATFORMS,
 )
 from .coordinator import MaticCoordinator
+from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor
+from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import async_register_services
+
+__all__ = ["async_migrate_entry"]
 
 
 @dataclass(slots=True)
@@ -38,6 +43,7 @@ class MaticRuntimeData:
     client: MaticHermesClient
     coordinator: MaticCoordinator
     cleaning_plans: CleaningPlanManager
+    firmware_tracker: FirmwareTracker
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -67,6 +73,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
     try:
+        firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
             hass,
             client,
@@ -77,10 +84,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             coverage_setting=CoverageSetting(
                 entry.options.get(CONF_COVERAGE_SETTING, CoverageSetting.STANDARD)
             ),
+            firmware_tracker=firmware_tracker,
         )
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
-        entry.runtime_data = MaticRuntimeData(client, coordinator, plans)
+        entry.runtime_data = MaticRuntimeData(
+            client, coordinator, plans, firmware_tracker
+        )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
         client.close()
@@ -93,3 +103,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         entry.runtime_data.client.close()
     return unload_ok
+
+
+async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
+    """Erase the removed robot's persisted firmware history and repairs."""
+    tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
+        DATA_FIRMWARE_TRACKER
+    )
+    if tracker is not None:
+        await tracker.async_remove_robot(entry.entry_id)

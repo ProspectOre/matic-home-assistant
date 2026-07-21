@@ -21,5 +21,9 @@ class AuthenticationRequiredError(MaticError):
     """The requested operation requires a Hermes credential."""
 
 
+class EndpointUnsupportedError(MaticError):
+    """The robot's current firmware does not implement this endpoint."""
+
+
 class PairingModeRequiredError(MaticError):
     """The robot is not accepting a new local Hermes user."""
