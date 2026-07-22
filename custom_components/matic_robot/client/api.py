@@ -308,6 +308,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             self._channel.close()
             self._channel = None
 
+    async def _async_reconnect_after_read_failure(
+        self, failed_channel: Channel | None
+    ) -> None:
+        """Replace one failed read channel without racing concurrent readers."""
+        async with self._connect_lock:
+            # Another concurrent read may already have replaced the failed
+            # channel. Reuse that fresh pinned session instead of closing it.
+            if self._channel is not failed_channel and self._channel is not None:
+                return
+            self.close()
+            await self._async_connect_locked()
+
     @asynccontextmanager
     async def _map_stream_errors(self, description: str) -> AsyncIterator[None]:
         """Map every transport failure onto the Matic error hierarchy.
@@ -420,7 +432,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_get_state(self) -> RobotOperationalState:
         """Read one authenticated snapshot from the ``kabuki_state`` property."""
-        payload = await self.async_get_property("kabuki_state")
+        # The robot closes an otherwise healthy long-lived HTTP/2 session about
+        # once an hour. grpclib reports that closure on the next stream read;
+        # replace the pinned channel and retry this idempotent snapshot once so
+        # a routine transport rollover does not mark every HA entity unavailable.
+        await self.async_connect()
+        failed_channel = self._channel
+        try:
+            payload = await self.async_get_property("kabuki_state")
+        except CannotConnectError:
+            _LOGGER.debug("Retrying Hermes state read on a fresh pinned channel")
+            await self._async_reconnect_after_read_failure(failed_channel)
+            payload = await self.async_get_property("kabuki_state")
 
         try:
             return _decode_operational_state(payload)

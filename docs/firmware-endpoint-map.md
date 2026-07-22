@@ -24,14 +24,14 @@ real robot actually returned after an OTA.
 | --- | --- | --- |
 | `kabuki_state` | Battery, state/error codes, activity, firmware fallback, channel/profile, current/previous area | Vacuum; activity, battery and current-area sensors; seven operational binary sensors; attributes |
 | `coverage_plan` | Mission, partition, named room IDs and geometry | Rooms sensor, map camera, vacuum segments/Areas, cleaning target |
-| `latest_pose` | Robot position and heading | Map camera |
+| `latest_pose` | Robot position and heading across both verified wire layouts; payload-free vector paths in endpoint inspection | Map camera |
 | `current_version` | Software/profile, protocol version, feature flag | Software and protocol sensors; software attributes |
 | `update_config` | Update channel | Update-channel sensor |
 | `update_state` | Update lifecycle | Update-state sensor and update-available binary sensor |
 | `wifi_status` | State, SSID, signal and visible/known networks | Wi-Fi state/signal/count summary; identities excluded from attributes |
 | `time_zone` | Robot timezone | Internal decoded telemetry; excluded from recorder attributes |
 | `schedule_events` | Local schedules, weekdays, time, rooms, ordering and enabled state | Scheduled-cleanings count; definitions excluded from attributes |
-| `coverage_session_history` | Local session count and latest session summary | Local-cleaning-session count and non-room summary |
+| `coverage_session_history` | Local session count and native latest-session summary | Local-cleaning-session count; newer stale-firmware sessions are reconstructed from verified HA cleaning/area history |
 | `dock_detections` | Collection count | Dock-detections sensor |
 | `sink_summon_locations` | Collection count | Sink-summon-locations sensor |
 | `coverage_time` | Accumulated coverage seconds | Coverage-time sensor |

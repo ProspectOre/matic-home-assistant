@@ -34,65 +34,6 @@ class RobotActivity(StrEnum):
     READY = "ready"
 
 
-KABUKI_ERROR_NAMES = (
-    "agent_missing",
-    "bag_full",
-    "bag_missing",
-    "battery_overtemperature",
-    "bms_permanent_failure",
-    "brush_roll_dislodged",
-    "brush_roll_jammed",
-    "brush_roll_maintenance",
-    "brush_roll_missing",
-    "bucha_daemon_missing",
-    "calibration_timeout",
-    "camera_fault",
-    "cant_undock",
-    "charger_ic_error",
-    "destination_unreachable",
-    "disk_full",
-    "dock_not_found",
-    "dock_not_reachable",
-    "docking_approach_failed",
-    "duct_clog",
-    "duct_flap_stuck_closed",
-    "duct_flap_stuck_open",
-    "guid_missing",
-    "head_actuation_failure",
-    "imu_fault",
-    "insufficient_solvent",
-    "lid_malfunction",
-    "lid_not_sealed",
-    "lid_open",
-    "lifted",
-    "lifted_uncleared",
-    "lost",
-    "lost_during_coverage",
-    "low_charge_docking_failed",
-    "mcu_failure",
-    "mop_roll_detached",
-    "mop_roll_jammed",
-    "mop_roll_malfunction",
-    "mop_roll_worn_out",
-    "no_path_found",
-    "path_blocked",
-    "pump_malfunction",
-    "side_brush_malfunction",
-    "snorkel_clog",
-    "solvent_descaling_needed",
-    "solvent_low",
-    "solvent_unavailable",
-    "stuck_critical",
-    "stuck_once",
-    "tilted",
-    "tilted_uncleared",
-    "unknown_error",
-    "vacuum_filter_clogged",
-    "vacuum_filter_missing",
-    "wet_lid",
-)
-
-
 @dataclass(frozen=True, slots=True)
 class RobotOperationalState:
     """Verified fields from the local ``kabuki_state`` property."""
@@ -141,13 +82,13 @@ class RobotOperationalState:
 
     @property
     def error_names(self) -> tuple[str, ...]:
-        """Return stable official names while preserving unknown future codes."""
-        return tuple(
-            KABUKI_ERROR_NAMES[code]
-            if 0 <= code < len(KABUKI_ERROR_NAMES)
-            else f"unknown_{code}"
-            for code in self.error_codes
-        )
+        """Return truthful automation-safe labels for raw robot error codes.
+
+        The app's public enum ordering is not the numeric Hermes wire mapping;
+        live firmware uses values such as 207 and 304. Preserve those values
+        without guessing a human meaning until a numeric mapping is verified.
+        """
+        return tuple(f"error_code_{code}" for code in self.error_codes)
 
 
 @dataclass(frozen=True, slots=True)

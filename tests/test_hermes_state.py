@@ -42,7 +42,7 @@ def test_subscription_config_preserves_verified_uint64_field() -> None:
 def test_decode_verified_kabuki_state_fields() -> None:
     payload = KabukiOutputWire(
         states=[106, 120, 206],
-        errors=[7],
+        errors=[207],
         battery_fraction=0.734,
     ).SerializeToString()
 
@@ -50,7 +50,7 @@ def test_decode_verified_kabuki_state_fields() -> None:
 
     assert state.battery_percentage == 73
     assert state.state_codes == (106, 120, 206)
-    assert state.error_codes == (7,)
+    assert state.error_codes == (207,)
     assert state.charging_idle is True
     assert state.charging is False
     assert state.low_charge is True
@@ -58,7 +58,7 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.cleaning is False
     assert state.returning is False
     assert state.activity is RobotActivity.ERROR
-    assert state.error_names == ("brush_roll_maintenance",)
+    assert state.error_names == ("error_code_207",)
 
 
 def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
@@ -119,12 +119,16 @@ def test_decode_verified_build_and_area_fields() -> None:
     assert state.is_fully_charged is True
 
 
-def test_unknown_error_codes_remain_automation_safe() -> None:
+def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> None:
     state = _decode_operational_state(
-        KabukiOutputWire(errors=[1, 54, 999]).SerializeToString()
+        KabukiOutputWire(errors=[207, 304, 999]).SerializeToString()
     )
 
-    assert state.error_names == ("bag_full", "wet_lid", "unknown_999")
+    assert state.error_names == (
+        "error_code_207",
+        "error_code_304",
+        "error_code_999",
+    )
 
 
 def test_schedule_without_minute_of_day_has_no_wall_clock_time() -> None:

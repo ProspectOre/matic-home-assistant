@@ -765,6 +765,44 @@ async def test_inspect_hermes_endpoint_fingerprints_payloads() -> None:
     )
 
 
+async def test_inspect_pose_endpoint_returns_only_safe_vector_paths() -> None:
+    hass = SimpleNamespace(data={})
+    services = await _registered_services(hass)
+    client = SimpleNamespace(
+        async_inspect_endpoint=AsyncMock(
+            return_value=(HermesCollectionEntry(b"", b"synthetic"),)
+        )
+    )
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(client=client))
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "inspect_hermes_endpoint",
+        {
+            "entity_id": ["vacuum.test"],
+            "endpoint": "latest_pose",
+            "limit": 1,
+        },
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=entry,
+        ),
+        patch(
+            "custom_components.matic_robot.services.pose_vector_paths",
+            return_value=((2, 1, 1),),
+        ),
+    ):
+        response = await _registered_handler(services, "inspect_hermes_endpoint")(call)
+
+    assert response["pose_vector_paths"] == [[2, 1, 1]]
+
+
 async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
     hass = SimpleNamespace(data={})
     services = await _registered_services(hass)
