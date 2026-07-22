@@ -17,8 +17,8 @@ the integration so instructions and behavior stay aligned with each release.
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
 - [Firmware compatibility](firmware-compatibility.md) — Track observed robot
   versions, validation status, regressions, and newly discovered capabilities.
-- [Release notes — 0.2.0](release-notes-0.2.0.md) — What's new and what to
-  check when upgrading from 0.1.x.
+- [Release notes — 0.2.1](release-notes-0.2.1.md) — Plan-editor reliability
+  fixes and configurable finish-current-room stopping.
 
 ## Use and automate
 

@@ -22,7 +22,7 @@
     "h2>=4",
     "protobuf>=6"
   ],
-  "version": "0.2.0",
+  "version": "0.2.1",
   "zeroconf": [
     "_matic_hermes._tcp.local."
   ]
