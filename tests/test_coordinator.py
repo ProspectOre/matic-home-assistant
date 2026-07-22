@@ -360,6 +360,9 @@ async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:
             )
         ],
     }
+    recorder = SimpleNamespace(
+        async_add_executor_job=AsyncMock(side_effect=lambda target: target())
+    )
 
     with (
         patch(
@@ -370,6 +373,10 @@ async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:
             "homeassistant.components.recorder.history.get_significant_states",
             return_value=recorded,
         ) as get_history,
+        patch(
+            "homeassistant.helpers.recorder.get_instance",
+            return_value=recorder,
+        ),
     ):
         state = await _coordinator(hass, client)._async_update_data()
 
@@ -377,6 +384,7 @@ async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:
     assert state.telemetry.latest_session.started_at == start.isoformat()
     assert state.telemetry.latest_session.room_durations == (("Living Room", 300),)
     get_history.assert_called_once()
+    recorder.async_add_executor_job.assert_awaited_once()
 
 
 async def test_recorder_recovery_failure_does_not_break_updates(hass) -> None:
@@ -386,7 +394,7 @@ async def test_recorder_recovery_failure_does_not_break_updates(hass) -> None:
     registry.async_get_or_create("sensor", "matic_robot", "synthetic_current_area")
 
     with patch(
-        "homeassistant.components.recorder.history.get_significant_states",
+        "homeassistant.helpers.recorder.get_instance",
         side_effect=RuntimeError("recorder unavailable"),
     ):
         state = await _coordinator(hass, client)._async_update_data()

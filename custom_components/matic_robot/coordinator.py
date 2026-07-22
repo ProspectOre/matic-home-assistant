@@ -226,8 +226,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return
         try:
             from homeassistant.components.recorder import history
+            from homeassistant.helpers.recorder import get_instance
 
-            states = await self.hass.async_add_executor_job(
+            states = await get_instance(self.hass).async_add_executor_job(
                 partial(
                     history.get_significant_states,
                     self.hass,
