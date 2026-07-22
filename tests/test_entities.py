@@ -811,6 +811,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert cached == image
     assert render.call_count == 1
     assert render.call_args.kwargs == {"width": 256, "height": 2048}
+    assert entity.extra_state_attributes == {"robot_location_source": "exact_pose"}
 
 
 async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:

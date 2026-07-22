@@ -9,7 +9,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.floor_plan import render_floor_plan
+from .client.floor_plan import render_floor_plan, resolve_robot_map_position
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -53,6 +53,7 @@ class MaticMapCamera(MaticEntity, Camera):
         cache_key = (
             id(data.floor_plan),
             data.pose,
+            data.operational.current_area,
             requested_width,
             requested_height,
         )
@@ -63,6 +64,7 @@ class MaticMapCamera(MaticEntity, Camera):
                 render_floor_plan,
                 data.floor_plan,
                 data.pose,
+                data.operational.current_area,
                 width=requested_width,
                 height=requested_height,
             )
@@ -70,3 +72,16 @@ class MaticMapCamera(MaticEntity, Camera):
         self._cached_image_key = cache_key
         self._cached_image = image
         return image
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose whether the marker is exact or a room-level fallback."""
+        data = self.coordinator.data
+        position = resolve_robot_map_position(
+            data.floor_plan, data.pose, data.operational.current_area
+        )
+        return {
+            "robot_location_source": position[2]
+            if position is not None
+            else "unavailable"
+        }

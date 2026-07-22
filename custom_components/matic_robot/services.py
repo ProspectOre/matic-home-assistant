@@ -35,6 +35,7 @@ from homeassistant.util import slugify
 from .client.commands import CleaningMode, CoverageSetting
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
+from .client.floor_plan import pose_vector_paths
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
@@ -581,7 +582,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         values = await entry.runtime_data.client.async_inspect_endpoint(
             endpoint_name, limit=call.data["limit"]
         )
-        return {
+        response: dict[str, Any] = {
             "endpoint": endpoint_name,
             "kind": endpoint.kind,
             "sensitivity": endpoint.sensitivity,
@@ -589,6 +590,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "limit": call.data["limit"],
             "entries": [fingerprint_entry(value) for value in values],
         }
+        if endpoint_name == "latest_pose":
+            response["pose_vector_paths"] = [
+                list(path)
+                for value in values
+                for path in pose_vector_paths(value.value)
+            ]
+        return response
 
     hass.services.async_register(
         DOMAIN,

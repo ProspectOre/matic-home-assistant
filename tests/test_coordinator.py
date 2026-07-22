@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.exceptions import ConfigEntryAuthFailed
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
 
 from custom_components.matic_robot.client.exceptions import (
@@ -15,10 +17,12 @@ from custom_components.matic_robot.client.exceptions import (
     MaticError,
 )
 from custom_components.matic_robot.client.models import (
+    CleaningSession,
     FloorPlan,
     RobotInfo,
     RobotOperationalState,
     RobotTelemetry,
+    Room,
 )
 from custom_components.matic_robot.coordinator import MaticCoordinator
 
@@ -98,6 +102,25 @@ async def test_optional_telemetry_failure_does_not_hide_core_state(hass) -> None
 
     assert state.info.name == "Test"
     assert state.telemetry == RobotTelemetry()
+
+
+async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> None:
+    client = _client()
+    fault = replace(client.async_get_state.return_value, error_codes=(207,))
+    client.async_get_state.return_value = fault
+    coordinator = _coordinator(hass, client)
+
+    first = await coordinator._async_update_data()
+    second = await coordinator._async_update_data()
+    client.async_get_state.return_value = replace(fault, error_codes=())
+    cleared = await coordinator._async_update_data()
+    client.async_get_state.return_value = fault
+    repeated_once = await coordinator._async_update_data()
+
+    assert first.operational.error_codes == ()
+    assert second.operational.error_codes == (207,)
+    assert cleared.operational.error_codes == ()
+    assert repeated_once.operational.error_codes == ()
 
 
 async def test_rejected_credential_starts_home_assistant_reauthentication(hass) -> None:
@@ -248,7 +271,6 @@ async def test_transient_sweep_failures_defer_then_record_degraded(hass) -> None
 async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
-    from custom_components.matic_robot.client.models import CleaningSession
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
 
     def _session(suffix: str) -> CleaningSession:
@@ -302,6 +324,74 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     await coordinator._async_update_data()
     await hass.async_block_till_done()
     assert len(events) == 1
+
+
+async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:
+    client = _client()
+    room = Room("room", "Living Room", "protocol", b"room", ())
+    client.async_get_floor_plan.return_value = FloorPlan(
+        1, "partition", b"partition", (room,)
+    )
+    old_session = CleaningSession(
+        "2026-07-14T01:00:00+00:00",
+        "2026-07-14T01:01:00+00:00",
+        60,
+        ("Living Room",),
+        (),
+        True,
+    )
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=old_session)
+    registry = er.async_get(hass)
+    cleaning_entity = registry.async_get_or_create(
+        "binary_sensor", "matic_robot", "synthetic_cleaning"
+    ).entity_id
+    area_entity = registry.async_get_or_create(
+        "sensor", "matic_robot", "synthetic_current_area"
+    ).entity_id
+    start = datetime(2026, 7, 21, 4, tzinfo=UTC)
+    recorded = {
+        cleaning_entity: [
+            SimpleNamespace(state="on", last_updated=start),
+            SimpleNamespace(state="off", last_updated=start + timedelta(minutes=5)),
+        ],
+        area_entity: [
+            SimpleNamespace(
+                state="the Living Room", last_updated=start - timedelta(seconds=1)
+            )
+        ],
+    }
+
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.dt_util.utcnow",
+            return_value=start + timedelta(minutes=10),
+        ),
+        patch(
+            "homeassistant.components.recorder.history.get_significant_states",
+            return_value=recorded,
+        ) as get_history,
+    ):
+        state = await _coordinator(hass, client)._async_update_data()
+
+    assert state.telemetry.latest_session is not None
+    assert state.telemetry.latest_session.started_at == start.isoformat()
+    assert state.telemetry.latest_session.room_durations == (("Living Room", 300),)
+    get_history.assert_called_once()
+
+
+async def test_recorder_recovery_failure_does_not_break_updates(hass) -> None:
+    client = _client()
+    registry = er.async_get(hass)
+    registry.async_get_or_create("binary_sensor", "matic_robot", "synthetic_cleaning")
+    registry.async_get_or_create("sensor", "matic_robot", "synthetic_current_area")
+
+    with patch(
+        "homeassistant.components.recorder.history.get_significant_states",
+        side_effect=RuntimeError("recorder unavailable"),
+    ):
+        state = await _coordinator(hass, client)._async_update_data()
+
+    assert state.info.serial_number == "synthetic"
 
 
 async def test_identity_mismatch_raises_repair_until_recovery(hass) -> None:

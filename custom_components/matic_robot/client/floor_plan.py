@@ -15,6 +15,7 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 from .models import FloorPlan, RobotPose, Room
 from .wire import (
     bytes_fields,
+    decode_fields,
     first_bytes,
     first_varint,
     packed_floats,
@@ -105,16 +106,52 @@ def decode_floor_plan(payload: bytes) -> FloorPlan:
 
 
 def decode_pose(payload: bytes) -> RobotPose:
-    """Decode the latest local robot translation."""
-    add_message = first_bytes(payload, 2)
-    pose_info = first_bytes(add_message, 1)
-    translation = packed_floats(first_bytes(pose_info, 1), 3)
+    """Decode the latest local robot translation across verified layouts."""
+    try:
+        add_message = first_bytes(payload, 2)
+        pose_info = first_bytes(add_message, 1)
+        translation = packed_floats(first_bytes(pose_info, 1), 3)
+    except DecodeError:
+        # Current v168 firmware stores the same three-float translation under
+        # field 5 -> field 1. Keep the original layout for older fixtures and
+        # accept only this second live-verified path rather than scanning for a
+        # plausible vector and risking a quaternion or unrelated map value.
+        pose_info = first_bytes(payload, 5)
+        translation = packed_floats(first_bytes(pose_info, 1), 3)
     return RobotPose(x=translation[0], y=translation[1], z=translation[2])
+
+
+def pose_vector_paths(
+    payload: bytes, *, max_depth: int = 8
+) -> tuple[tuple[int, ...], ...]:
+    """Return schema paths to finite packed three-float vectors, without values."""
+    paths: list[tuple[int, ...]] = []
+
+    def walk(data: bytes, path: tuple[int, ...], depth: int) -> None:
+        if depth > max_depth:
+            return
+        try:
+            fields = decode_fields(data)
+        except DecodeError:
+            return
+        for field in fields:
+            if field.wire_type != 2 or not isinstance(field.value, bytes):
+                continue
+            field_path = (*path, field.number)
+            if len(field.value) == 12:
+                values = packed_floats(field.value, 3)
+                if all(math.isfinite(value) for value in values):
+                    paths.append(field_path)
+            walk(field.value, field_path, depth + 1)
+
+    walk(payload, (), 0)
+    return tuple(paths)
 
 
 def render_floor_plan(
     floor_plan: FloorPlan | None,
     pose: RobotPose | None,
+    current_area: str | None = None,
     *,
     width: int = 1024,
     height: int = 1024,
@@ -203,10 +240,11 @@ def render_floor_plan(
         )
     image = Image.alpha_composite(image, labels_layer)
 
-    if pose is not None and all(math.isfinite(value) for value in (pose.x, pose.y)):
+    robot_position = resolve_robot_map_position(floor_plan, pose, current_area)
+    if robot_position is not None:
         robot_layer = Image.new("RGBA", (width, height), (0, 0, 0, 0))
         robot_draw = ImageDraw.Draw(robot_layer)
-        robot_x, robot_y = project((pose.x, pose.y))
+        robot_x, robot_y = project((robot_position[0], robot_position[1]))
         radius = max(8, min(width, height) // 60)
         robot_draw.ellipse(
             (
@@ -224,7 +262,7 @@ def render_floor_plan(
                 robot_x + radius,
                 robot_y + radius,
             ),
-            fill="#FFFFFF",
+            fill="#FFFFFF" if robot_position[2] == "exact_pose" else "#F6C85F",
             outline="#10151D",
             width=3,
         )
@@ -240,6 +278,47 @@ def render_floor_plan(
         )
         image = Image.alpha_composite(image, robot_layer)
     return _png(image)
+
+
+def resolve_robot_map_position(
+    floor_plan: FloorPlan | None,
+    pose: RobotPose | None,
+    current_area: str | None,
+) -> tuple[float, float, str] | None:
+    """Return an exact pose or a truthful room-level fallback for the map."""
+    if floor_plan is None or not floor_plan.rooms:
+        return None
+    all_points = [point for room in floor_plan.rooms for point in room.boundary]
+    min_x = min(point[0] for point in all_points)
+    max_x = max(point[0] for point in all_points)
+    min_y = min(point[1] for point in all_points)
+    max_y = max(point[1] for point in all_points)
+    if (
+        pose is not None
+        and all(math.isfinite(value) for value in (pose.x, pose.y))
+        and min_x <= pose.x <= max_x
+        and min_y <= pose.y <= max_y
+    ):
+        return pose.x, pose.y, "exact_pose"
+    area_key = _room_name_key(current_area)
+    if area_key is None:
+        return None
+    room = next(
+        (item for item in floor_plan.rooms if _room_name_key(item.name) == area_key),
+        None,
+    )
+    if room is None:
+        return None
+    x, y = _polygon_center(room.boundary)
+    return x, y, "current_area"
+
+
+def _room_name_key(value: str | None) -> str | None:
+    """Normalize the article and spacing used by the firmware's area phrase."""
+    if value is None:
+        return None
+    normalized = " ".join(value.strip().casefold().split()).removeprefix("the ")
+    return normalized or None
 
 
 def _layout_room_labels(

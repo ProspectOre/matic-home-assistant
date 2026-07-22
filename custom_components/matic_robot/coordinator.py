@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timedelta
+from dataclasses import replace
+from datetime import datetime, timedelta
+from functools import partial
 from time import monotonic
+from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import device_registry as dr
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
+from homeassistant.util import dt as dt_util
 
 from .client.api import MaticHermesClient
 from .client.commands import CleaningMode, CoverageSetting
@@ -22,7 +27,14 @@ from .client.exceptions import (
     InvalidRobotCertificateError,
     MaticError,
 )
-from .client.models import FloorPlan, RobotInfo, RobotPose, RobotState, RobotTelemetry
+from .client.models import (
+    FloorPlan,
+    RobotInfo,
+    RobotOperationalState,
+    RobotPose,
+    RobotState,
+    RobotTelemetry,
+)
 from .const import (
     DOMAIN,
     EVENT_CLEANING_FINISHED,
@@ -31,6 +43,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
+from .session_tracking import CleaningSessionTracker
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -39,6 +52,7 @@ _LOGGER = logging.getLogger(__name__)
 SNAPSHOT_FAILURE_THRESHOLD = 8
 SNAPSHOT_RETRY_SECONDS = 900
 SNAPSHOT_MAX_ATTEMPTS = 3
+ERROR_CONFIRMATION_POLLS = 2
 
 
 class MaticCoordinator(DataUpdateCoordinator[RobotState]):
@@ -79,6 +93,10 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
         self._last_session_key: tuple[str | None, str] | None = None
+        self._session_tracker = CleaningSessionTracker()
+        self._session_history_recovered = False
+        self._pending_error_codes: tuple[int, ...] = ()
+        self._pending_error_polls = 0
         self._identity_issue_active = False
 
     async def _async_update_data(self) -> RobotState:
@@ -90,6 +108,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_pose(),
                 self._async_optional_telemetry(),
             )
+            operational = self._async_confirm_robot_errors(operational)
             state = RobotState(
                 info=info,
                 operational=operational,
@@ -97,6 +116,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 pose=pose,
                 telemetry=telemetry,
             )
+            state = await self._async_track_cleaning_session(state)
             version = telemetry.software_version or operational.software_version
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
@@ -140,6 +160,94 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             raise UpdateFailed(str(err)) from err
         finally:
             self._force_full_refresh = False
+
+    @callback
+    def _async_confirm_robot_errors(
+        self, state: RobotOperationalState
+    ) -> RobotOperationalState:
+        """Suppress one-poll firmware error pulses while preserving real faults."""
+        codes = state.error_codes
+        if not codes:
+            self._pending_error_codes = ()
+            self._pending_error_polls = 0
+            return state
+        if codes != self._pending_error_codes:
+            self._pending_error_codes = codes
+            self._pending_error_polls = 1
+        else:
+            self._pending_error_polls += 1
+        if self._pending_error_polls < ERROR_CONFIRMATION_POLLS:
+            _LOGGER.debug(
+                "Waiting for a second poll before exposing robot error codes %s",
+                codes,
+            )
+            return replace(state, error_codes=())
+        return state
+
+    async def _async_track_cleaning_session(self, state: RobotState) -> RobotState:
+        """Merge fresh HA-side run tracking with robot-native session history."""
+        room_names = (
+            tuple(room.name for room in state.floor_plan.rooms)
+            if state.floor_plan is not None
+            else ()
+        )
+        now = dt_util.utcnow()
+        if not self._session_history_recovered:
+            self._session_history_recovered = True
+            await self._async_recover_session_history(
+                state.info.serial_number, room_names, now
+            )
+        self._session_tracker.update(
+            cleaning=state.operational.cleaning,
+            current_area=state.operational.current_area,
+            room_names=room_names,
+            now=now,
+        )
+        latest = self._session_tracker.preferred_session(state.telemetry.latest_session)
+        if latest is state.telemetry.latest_session:
+            return state
+        return replace(state, telemetry=replace(state.telemetry, latest_session=latest))
+
+    async def _async_recover_session_history(
+        self,
+        serial_number: str,
+        room_names: tuple[str, ...],
+        now: datetime,
+    ) -> None:
+        """Recover the most recent local run from retained Recorder states."""
+        registry = er.async_get(self.hass)
+        cleaning_entity = registry.async_get_entity_id(
+            "binary_sensor", DOMAIN, f"{serial_number}_cleaning"
+        )
+        area_entity = registry.async_get_entity_id(
+            "sensor", DOMAIN, f"{serial_number}_current_area"
+        )
+        if cleaning_entity is None or area_entity is None:
+            return
+        try:
+            from homeassistant.components.recorder import history
+
+            states = await self.hass.async_add_executor_job(
+                partial(
+                    history.get_significant_states,
+                    self.hass,
+                    now - timedelta(days=7),
+                    now,
+                    [cleaning_entity, area_entity],
+                    include_start_time_state=True,
+                    significant_changes_only=False,
+                    no_attributes=True,
+                )
+            )
+        except Exception as err:  # Recorder is optional and may not be ready yet.
+            _LOGGER.debug("Unable to recover Matic cleaning history: %s", err)
+            return
+        self._session_tracker.recover(
+            cast(Any, states.get(cleaning_entity, [])),
+            cast(Any, states.get(area_entity, [])),
+            room_names,
+            now=now,
+        )
 
     async def _async_info(self) -> RobotInfo:
         """Read immutable identity once per coordinator lifetime."""

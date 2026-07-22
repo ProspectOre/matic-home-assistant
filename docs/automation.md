@@ -181,7 +181,12 @@ Template-visible attributes and recorded history follow one deliberate model:
   entity list when you want durable per-room trends.
 - **Always-recorded run metrics.** The `Last run duration` sensor records
   numeric long-term statistics for every session without any room context, so
-  whole-run OTA comparisons work out of the box.
+  whole-run OTA comparisons work out of the box. Some robot firmware leaves
+  its native session-history collection stale; the integration therefore
+  reconstructs newer runs from the verified Cleaning and Current area states.
+  Brief disconnects are ignored, firmware phrases such as `the Living Room`
+  are matched to the mapped room name, and an active run is recovered from
+  Recorder after an integration or Home Assistant restart.
 
 ## Events and observability
 
@@ -217,7 +222,9 @@ Each blueprint calls the saved-plan actions and can be edited after import.
 ## Fault semantics
 
 The Activity sensor preserves numeric `hermes_state_codes` and
-`hermes_error_codes` while also exposing normalized snake-case `errors` and
-`primary_error` attributes such as `bag_full`, `brush_roll_jammed`,
-`mop_roll_worn_out`, `solvent_low`, or `vacuum_filter_clogged`. Unknown future
-codes remain available as `unknown_<code>` instead of being dropped.
+`hermes_error_codes` while also exposing automation-safe `errors` and
+`primary_error` attributes such as `error_code_207`. These labels preserve the
+exact robot value without guessing a meaning from the app's unrelated enum
+ordering. A code must appear in two consecutive 30-second polls before the
+Activity and Problem entities expose it; one-poll firmware pulses stay in debug
+logs instead of creating misleading Logbook error entries.

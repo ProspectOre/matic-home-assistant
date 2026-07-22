@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import call as mock_call
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -31,8 +32,9 @@ from custom_components.matic_robot.client.exceptions import (
     EndpointUnsupportedError,
     PairingModeRequiredError,
 )
-from custom_components.matic_robot.client.models import FloorPlan
+from custom_components.matic_robot.client.models import FloorPlan, RobotActivity
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
+from custom_components.matic_robot.client.proto.hermes_pb2 import KabukiOutputWire
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -356,6 +358,48 @@ async def test_handshake_guards_and_errors(monkeypatch) -> None:
             await client._async_handshake()
 
 
+async def test_state_read_reconnects_and_retries_stale_channel() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    failed_channel = SimpleNamespace(close=MagicMock())
+    fresh_channel = object()
+    client._channel = failed_channel
+
+    async def connect_fresh_channel() -> None:
+        client._channel = fresh_channel
+
+    client._async_connect_locked = AsyncMock(side_effect=connect_fresh_channel)
+    payload = KabukiOutputWire(states=[106]).SerializeToString()
+    client.async_get_property = AsyncMock(
+        side_effect=[CannotConnectError("stale stream"), payload]
+    )
+
+    state = await client.async_get_state()
+
+    assert state.activity is RobotActivity.DOCKED
+    assert client._channel is fresh_channel
+    assert client.async_get_property.await_args_list == [
+        mock_call("kabuki_state"),
+        mock_call("kabuki_state"),
+    ]
+    client._async_connect_locked.assert_awaited_once_with()
+    failed_channel.close.assert_called_once_with()
+
+
+async def test_stale_reader_reuses_channel_replaced_by_concurrent_reader() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    failed_channel = SimpleNamespace(close=MagicMock())
+    fresh_channel = SimpleNamespace(close=MagicMock())
+    client._channel = fresh_channel
+    client._async_connect_locked = AsyncMock()
+
+    await client._async_reconnect_after_read_failure(failed_channel)
+
+    assert client._channel is fresh_channel
+    client._async_connect_locked.assert_not_awaited()
+    failed_channel.close.assert_not_called()
+    fresh_channel.close.assert_not_called()
+
+
 @pytest.mark.parametrize(
     ("response", "expected"),
     [
@@ -659,6 +703,7 @@ async def test_optional_telemetry_reads_fail_closed() -> None:
 
 async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
+    client._channel = object()
     client.async_get_property = AsyncMock(return_value=b"bad")
 
     monkeypatch.setattr(

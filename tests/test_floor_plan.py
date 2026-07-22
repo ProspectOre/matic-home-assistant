@@ -21,8 +21,11 @@ from custom_components.matic_robot.client.floor_plan import (
     _polygon_center,
     decode_floor_plan,
     decode_pose,
+    pose_vector_paths,
     render_floor_plan,
+    resolve_robot_map_position,
 )
+from custom_components.matic_robot.client.models import FloorPlan, RobotPose
 from tests.wire_builders import _field, _fixed32, _fixed64, _varint_field
 
 PARTITION_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -84,9 +87,55 @@ def test_decode_pose_and_render_local_png() -> None:
     )
 
     assert (pose.x, pose.y, pose.z) == (2.0, 1.0, 0.0)
+    assert pose_vector_paths(pose_payload) == ((2, 1, 1),)
     with Image.open(BytesIO(image_bytes)) as image:
         assert image.format == "PNG"
         assert image.size == (512, 384)
+
+    current_payload = _field(5, _field(1, struct.pack("<3f", 3, 2, 1)))
+    assert decode_pose(current_payload) == RobotPose(3, 2, 1)
+
+
+def test_pose_vector_path_inspection_is_bounded_and_ignores_invalid_data() -> None:
+    too_deep = struct.pack("<3f", 1, 2, 3)
+    for _ in range(10):
+        too_deep = _field(1, too_deep)
+    payload = (
+        _varint_field(4, 1)
+        + _field(1, b"bad")
+        + _field(2, struct.pack("<3f", float("nan"), 2, 3))
+        + _field(3, too_deep)
+    )
+
+    assert pose_vector_paths(payload) == ()
+
+
+def test_robot_position_falls_back_to_the_current_room() -> None:
+    floor_plan = decode_floor_plan(_floor_plan_payload())
+
+    assert resolve_robot_map_position(floor_plan, RobotPose(2, 1, 0), "Test room") == (
+        2,
+        1,
+        "exact_pose",
+    )
+    fallback = resolve_robot_map_position(
+        floor_plan, RobotPose(float("nan"), 999, 0), "the  Test room"
+    )
+    assert fallback is not None
+    assert fallback[2] == "current_area"
+    assert resolve_robot_map_position(floor_plan, None, "Garage") is None
+    assert resolve_robot_map_position(floor_plan, None, "   ") is None
+    assert resolve_robot_map_position(None, None, "Test room") is None
+    assert (
+        resolve_robot_map_position(FloorPlan(1, "partition", b"", ()), None, None)
+        is None
+    )
+
+    without_marker = render_floor_plan(floor_plan, None, width=256, height=256)
+    fallback_marker = render_floor_plan(
+        floor_plan, None, "the Test room", width=256, height=256
+    )
+    assert fallback_marker != without_marker
 
 
 def test_decode_rejects_plan_without_standard_partition() -> None:
