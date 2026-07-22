@@ -151,12 +151,16 @@
           "name": "Plan name",
           "run_behavior": "Cleaning order",
           "room_editor": "Rooms",
+          "finish_current_room": "Finish the current room when stopping",
+          "finish_current_room_threshold": "Finish-room progress threshold",
           "return_to_base": "Return to dock when finished"
         },
         "data_description": {
           "name": "Shown in dashboards and automations — for example Away, Weekdays, or Deep clean.",
           "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
+          "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
+          "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
           "return_to_base": "Dock the robot after the plan finishes."
         }
       },
@@ -168,6 +172,8 @@
           "run_behavior": "Cleaning order",
           "room_editor": "Rooms",
           "enabled": "Plan enabled",
+          "finish_current_room": "Finish the current room when stopping",
+          "finish_current_room_threshold": "Finish-room progress threshold",
           "return_to_base": "Return to dock when finished"
         },
         "data_description": {
@@ -175,6 +181,8 @@
           "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
           "enabled": "Disabled plans stay saved but cannot start.",
+          "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
+          "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
           "return_to_base": "Dock the robot after the plan finishes."
         }
       },
@@ -575,7 +583,7 @@
     },
     "stop_intelligent_cleaning": {
       "name": "Stop cleaning plan",
-      "description": "Stops the plan, leaves the current room due, and sends the robot to its dock.",
+      "description": "Stops the plan using its saved finish-current-room policy, never starts another room, and sends the robot to its dock.",
       "fields": {}
     },
     "reset_plan_history": {
@@ -624,6 +632,14 @@
         "return_to_base": {
           "name": "Return to dock when finished",
           "description": "Send the robot to its dock after all selected rooms finish successfully."
+        },
+        "finish_current_room": {
+          "name": "Finish the current room when stopping",
+          "description": "Allow the active room to finish when its estimated progress meets the threshold. The next room never starts."
+        },
+        "finish_current_room_threshold": {
+          "name": "Finish-room progress threshold",
+          "description": "Below this estimated percentage, stop immediately. At or above it, finish the room. The estimate learns from successful managed runs with the same room settings."
         },
         "select": {
           "name": "Use as default plan",

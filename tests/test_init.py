@@ -87,10 +87,13 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    from custom_components.matic_robot.frontend import MANIFEST_VERSION
+    from custom_components.matic_robot.frontend import (
+        MANIFEST_VERSION,
+        ROOM_PLAN_EDITOR_VERSION,
+    )
 
     assert (
-        f"/matic_robot/room-plan-editor.js?v={MANIFEST_VERSION}"
+        f"/matic_robot/room-plan-editor.js?v={MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}"
         in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     )
 

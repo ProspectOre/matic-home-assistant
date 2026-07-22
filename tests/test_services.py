@@ -207,6 +207,30 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         context=stop.context,
     )
 
+    plan = manager.plan("serial", "upstairs")
+    plan_id = plan.pop("id")
+    plan["finish_current_room"] = True
+    plan["finish_current_room_threshold"] = 50
+    await manager.async_save_plan("serial", plan_id, plan, select=False)
+    services.async_call.reset_mock()
+    await lock.acquire()
+    manager.prepare_run("serial")
+    await manager.async_mark_started(
+        "serial",
+        "upstairs",
+        CleaningRoom("room-study", "Study", "vacuum", "quick"),
+    )
+    try:
+        with patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ):
+            await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        services.async_call.assert_not_awaited()
+        assert manager.finish_room_event("serial").is_set()
+    finally:
+        lock.release()
+
     reset = ServiceCall(
         hass,
         DOMAIN,
@@ -1068,6 +1092,7 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set() -> None
     manager = SimpleNamespace(
         lock=MagicMock(return_value=asyncio.Lock()),
         prepare_run=MagicMock(return_value=cancel_event),
+        finish_room_event=MagicMock(return_value=asyncio.Event()),
     )
     hass = SimpleNamespace()
     call = ServiceCall(

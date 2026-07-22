@@ -14,6 +14,7 @@ import json
 import re
 import shutil
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
@@ -102,6 +103,39 @@ def test_static_path_serves_the_editor_file() -> None:
     """The registered static path must point at this exact module file."""
     assert frontend.ROOM_PLAN_EDITOR_PATH.endswith(".js")
     assert Path(frontend.__file__).with_name("room_plan_editor.js") == _EDITOR_PATH
+
+
+def test_nested_select_change_does_not_escape_as_the_editor_value() -> None:
+    """A scalar dropdown event must not replace the form's full room list."""
+    listener = _JS[_JS.index('field.addEventListener("value-changed"') :]
+    listener = listener[: listener.index("return field;")]
+    assert listener.index("event.stopPropagation();") < listener.index(
+        "onChange(event.detail.value);"
+    )
+
+
+def test_hass_refresh_does_not_rebuild_an_open_editor() -> None:
+    """Routine HA state refreshes must not destroy an open dropdown's DOM."""
+    setter = _JS[_JS.index("set hass(value)") : _JS.index("set selector(value)")]
+    assert "previousLanguage" in setter
+    assert "languageChanged" in setter
+    assert "if (!hadHass || languageChanged" in setter
+    assert 'querySelectorAll("ha-selector")' in setter
+    assert setter.count("this._render();") == 1
+
+
+def test_room_list_does_not_clip_dropdown_menus() -> None:
+    """Room list styling must leave nested selector popups visible."""
+    styles = _JS[_JS.index("<style>") : _JS.index("</style>")]
+    list_rule = styles[styles.index(".list {") :]
+    list_rule = list_rule[: list_rule.index("}")]
+    assert "overflow: hidden" not in list_rule
+
+
+def test_editor_cache_buster_tracks_javascript_content() -> None:
+    """A frontend-only fix must load even before the next version bump."""
+    expected = sha256(_EDITOR_PATH.read_bytes()).hexdigest()[:12]
+    assert frontend.ROOM_PLAN_EDITOR_VERSION == expected
 
 
 def test_node_syntax_check() -> None:

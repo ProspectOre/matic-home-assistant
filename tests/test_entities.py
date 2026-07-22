@@ -39,6 +39,7 @@ from custom_components.matic_robot.client.models import (
     WifiNetwork,
 )
 from custom_components.matic_robot.entity import MaticEntity
+from custom_components.matic_robot.plans import PlanStopDecision
 
 
 def _state(
@@ -189,6 +190,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_select_plan=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
+        request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
     )
     firmware = SimpleNamespace(
         summary=MagicMock(
@@ -840,7 +842,8 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     ]
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
-    assert plans.cancel.call_count == 2
+    assert plans.request_stop.call_count == 1
+    assert plans.cancel.call_count == 1
 
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args
@@ -851,6 +854,19 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "ordered": False,
     }
     assert coordinator.async_request_refresh.await_count == 5
+
+
+async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
+    entry = _entry()
+    entity = vacuum.MaticVacuum(entry)
+    plans = entry.runtime_data.cleaning_plans
+    plans.request_stop.return_value = PlanStopDecision("after_room", 75, 50)
+
+    await entity.async_stop()
+    await entity.async_send_command("stop")
+
+    assert plans.request_stop.call_count == 2
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
 
 
 async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
@@ -957,6 +973,8 @@ async def test_vacuum_named_commands_and_validation() -> None:
     entity = vacuum.MaticVacuum(entry)
 
     await entity.async_send_command("return home")
+    await entity.async_send_command("pause")
+    await entity.async_send_command("resume")
     await entity.async_send_command(
         "clean_rooms",
         {

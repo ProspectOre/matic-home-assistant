@@ -152,8 +152,10 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         await self._async_command(UserCommand.PAUSE)
 
     async def async_stop(self, **kwargs: object) -> None:
-        """Stop the current task and any managed plan driving it."""
-        self._async_cancel_managed_plan()
+        """Stop now or finish the active room according to the plan policy."""
+        decision = self._plans.request_stop(self.coordinator.data.info.serial_number)
+        if decision.behavior == "after_room":
+            return
         await self._async_command(UserCommand.STOP)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
@@ -233,12 +235,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Expose safe named commands for scripts and advanced dashboards."""
         normalized = command.strip().lower().replace("-", "_").replace(" ", "_")
+        if normalized == "stop":
+            await self.async_stop()
+            return
+        if normalized in {"dock", "return_home"}:
+            await self.async_return_to_base()
+            return
         simple_commands = {
             "pause": UserCommand.PAUSE,
             "resume": UserCommand.RESUME,
-            "stop": UserCommand.STOP,
-            "dock": UserCommand.DOCK,
-            "return_home": UserCommand.DOCK,
         }
         if normalized in simple_commands:
             await self._async_command(simple_commands[normalized])

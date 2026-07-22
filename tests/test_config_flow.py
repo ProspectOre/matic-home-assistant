@@ -941,6 +941,8 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
         "name",
         "run_behavior",
         "room_editor",
+        "finish_current_room",
+        "finish_current_room_threshold",
         "return_to_base",
     ]
     room_marker = list(result["data_schema"].schema)[2]
@@ -967,6 +969,8 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
                 ("room-1", True, "vacuum_and_mop", "standard"),
                 ("room-2", False, "vacuum", "standard"),
             ),
+            "finish_current_room": True,
+            "finish_current_room_threshold": 50,
             "return_to_base": True,
         },
     )
@@ -983,6 +987,12 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
         "room-1",
         "room-2",
     ]
+    assert (
+        manager.plan("synthetic-serial", "away_cleaning")[
+            "finish_current_room_threshold"
+        ]
+        == 50
+    )
 
     result = await _select_menu_step(hass, result, "edit_plan")
     assert [marker.schema for marker in result["data_schema"].schema] == [
@@ -990,6 +1000,8 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
         "run_behavior",
         "room_editor",
         "enabled",
+        "finish_current_room",
+        "finish_current_room_threshold",
         "return_to_base",
     ]
     assert list(result["data_schema"].schema)[2].default()[0]["room_id"] == "room-1"
@@ -1003,6 +1015,8 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
                 ("room-1", False, "vacuum", "standard"),
             ),
             "enabled": True,
+            "finish_current_room": True,
+            "finish_current_room_threshold": 75,
             "return_to_base": False,
         },
     )
@@ -1010,6 +1024,8 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
     updated = manager.plan("synthetic-serial", "away_cleaning")
     assert updated["return_to_base"] is False
     assert updated["run_behavior"] == "ordered"
+    assert updated["finish_current_room"] is True
+    assert updated["finish_current_room_threshold"] == 75
     assert updated["room_order"] == ["room-2", "room-1"]
     assert updated["rooms"] == [
         {

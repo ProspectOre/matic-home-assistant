@@ -79,7 +79,9 @@ rooms are selected until the user chooses them:
 3. Leave unwanted rooms off; turn on rooms to reveal mode and coverage
    dropdowns, defaulting to Vacuum and Standard.
 4. Drag rooms or use arrow buttons to save the exact top-to-bottom order.
-5. Submit once; the same screen edits every room and plan setting later.
+5. Optionally enable **Finish the current room when stopping** and choose its
+   estimated progress threshold.
+6. Submit once; the same screen edits every room and plan setting later.
 
 A plan defines **what** to clean. Home Assistant schedules, presence
 automations, buttons, and scripts decide **when** it runs.
@@ -93,6 +95,15 @@ saved room order breaks ties. Failed, cancelled, timed-out, or
 restart-interrupted rooms remain due because history advances only after
 verified completion.
 
+The finish-current-room policy estimates progress from elapsed time versus
+successful managed runs of the same room with the same cleaning settings. A
+stop below the configured threshold remains immediate; at or above it, the
+current room completes, the next room is never started, and the robot docks.
+Until the plan has learned a duration for that room, enabling the policy means
+the current room finishes. Set the threshold to `0%` to always finish it. This
+is a time-based estimate because the robot does not expose live mapped-area
+completion percentage.
+
 Use **Run all — top to bottom** when every selected room should always clean in
 the visible saved order regardless of history.
 
@@ -104,7 +115,8 @@ the visible saved order regardless of history.
   override.
 - `matic_robot.clean_entire_plan`: clean every selected room in saved order as a
   per-run override.
-- `matic_robot.stop_intelligent_cleaning`: leave the active room due and dock.
+- `matic_robot.stop_intelligent_cleaning`: apply the plan's immediate-or-finish
+  stop policy, never start another room, and dock.
 - `matic_robot.preview_plan`: return the exact next order and per-room settings
   without sending a robot command or changing history.
 - `matic_robot.reset_plan_history`: clear successful-room tracking without

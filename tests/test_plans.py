@@ -1,17 +1,22 @@
 """Durable intelligent cleaning behavior."""
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import ServiceValidationError
+from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
+    PlanStopDecision,
+    _elapsed_seconds,
+    _estimated_progress,
     resolve_rooms,
 )
 from custom_components.matic_robot.services import (
@@ -182,6 +187,93 @@ async def test_listener_lock_and_cancel_lifecycle(hass) -> None:
         "serial", "away", _room("Kitchen", "one"), "cancelled"
     )
     listener.assert_called_once()
+
+
+async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> None:
+    """A stop finishes only rooms at or above the plan's learned threshold."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "enabled": True,
+            "finish_current_room": True,
+            "finish_current_room_threshold": 50,
+            "rooms": [],
+        },
+    )
+    room = _room("Kitchen", "room-kitchen")
+    lock = manager.lock("serial")
+    await lock.acquire()
+    try:
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        manager._data["robots"]["serial"]["plans"]["away"]["finish_current_room"] = (
+            False
+        )
+        assert manager.request_stop("serial") == PlanStopDecision("immediate")
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        plan = manager._data["robots"]["serial"]["plans"]["away"]
+        plan["finish_current_room"] = True
+        plan["finish_current_room_threshold"] = "invalid"
+        assert manager.request_stop("serial") == PlanStopDecision(
+            "after_room", None, 50
+        )
+        plan["finish_current_room_threshold"] = 50
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        assert manager.request_stop("serial") == PlanStopDecision(
+            "after_room", None, 50
+        )
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        manager._data["robots"]["serial"]["active_plan"]["started"] = (
+            dt_util.utcnow() - timedelta(seconds=100)
+        ).isoformat()
+        await manager.async_mark_completed("serial", "away", room)
+        record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][
+            "room-kitchen"
+        ]
+        assert record["average_duration_seconds"] == 100
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        manager._data["robots"]["serial"]["active_plan"]["started"] = (
+            dt_util.utcnow() - timedelta(seconds=40)
+        ).isoformat()
+        assert manager.request_stop("serial") == PlanStopDecision("immediate", 40, 50)
+        assert manager.cancellation_event("serial").is_set()
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        manager._data["robots"]["serial"]["active_plan"]["started"] = (
+            dt_util.utcnow() - timedelta(seconds=60)
+        ).isoformat()
+        assert manager.request_stop("serial") == PlanStopDecision("after_room", 60, 50)
+        assert manager.finish_room_event("serial").is_set()
+        assert not manager.cancellation_event("serial").is_set()
+
+        changed = CleaningRoom("room-kitchen", "Kitchen", "mop", "standard")
+        await manager.async_mark_started("serial", "away", changed)
+        changed_record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][
+            "room-kitchen"
+        ]
+        assert "average_duration_seconds" not in changed_record
+    finally:
+        lock.release()
+
+
+def test_progress_estimate_rejects_missing_and_malformed_start_times() -> None:
+    now = dt_util.utcnow()
+    assert _elapsed_seconds(None, now) is None
+    assert _elapsed_seconds("not-a-timestamp", now) is None
+    assert _estimated_progress("not-a-timestamp", 100) is None
 
 
 async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> None:
@@ -403,6 +495,46 @@ async def test_execute_rooms_rejects_overlap_handles_cancel_and_returns_home(
             [room],
             intelligent=False,
         )
+    run.assert_awaited_once()
+    service_call.assert_awaited_once_with(
+        "vacuum",
+        "return_to_base",
+        {"entity_id": "vacuum.matic"},
+        blocking=True,
+        context=call.context,
+    )
+
+
+async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) -> None:
+    """A graceful stop never dispatches the next room and always returns home."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    service_call = AsyncMock()
+    fake_hass = SimpleNamespace(
+        services=SimpleNamespace(async_call=service_call),
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="idle"))
+        ),
+    )
+    call = _call(fake_hass, return_to_base=False)
+
+    async def finish_then_stop(*_args, **_kwargs) -> None:
+        manager.finish_room_event("serial").set()
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_room",
+        AsyncMock(side_effect=finish_then_stop),
+    ) as run:
+        await _async_execute_rooms(
+            fake_hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "one"), _room("Study", "two")],
+            intelligent=False,
+        )
+
     run.assert_awaited_once()
     service_call.assert_awaited_once_with(
         "vacuum",

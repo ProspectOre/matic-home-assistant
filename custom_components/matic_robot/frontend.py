@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from hashlib import sha256
 from pathlib import Path
 
 from homeassistant.components import frontend
@@ -11,11 +12,14 @@ from homeassistant.core import HomeAssistant
 
 ROOM_PLAN_EDITOR_PATH = "/matic_robot/room-plan-editor.js"
 
-# Tie the cache-buster to the packaged manifest so it can never drift from the
-# shipped version. Loaded once at import time, off the event loop.
+# Include both the packaged version and the editor content in the cache-buster.
+# Both are loaded once at import time, off the event loop.
 MANIFEST_VERSION = json.loads(
     Path(__file__).with_name("manifest.json").read_text(encoding="utf-8")
 )["version"]
+ROOM_PLAN_EDITOR_VERSION = sha256(
+    Path(__file__).with_name("room_plan_editor.js").read_bytes()
+).hexdigest()[:12]
 
 
 async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
@@ -26,4 +30,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     await hass.http.async_register_static_paths(
         [StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True)]
     )
-    frontend.add_extra_js_url(hass, f"{ROOM_PLAN_EDITOR_PATH}?v={MANIFEST_VERSION}")
+    frontend.add_extra_js_url(
+        hass,
+        f"{ROOM_PLAN_EDITOR_PATH}?v={MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}",
+    )

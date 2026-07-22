@@ -6,7 +6,8 @@ import asyncio
 from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from typing import Any, cast
+from datetime import datetime
+from typing import Any, Literal, cast
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers.storage import Store
@@ -28,6 +29,15 @@ class CleaningRoom:
     coverage_setting: str
 
 
+@dataclass(frozen=True, slots=True)
+class PlanStopDecision:
+    """How an active managed plan should respond to a stop request."""
+
+    behavior: Literal["not_running", "immediate", "after_room"]
+    estimated_progress: int | None = None
+    threshold: int | None = None
+
+
 class CleaningPlanManager:
     """Persist room-native plans, outcomes, selection, and recovery state."""
 
@@ -38,6 +48,7 @@ class CleaningPlanManager:
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
+        self._finish_room_events: dict[str, asyncio.Event] = {}
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -80,11 +91,16 @@ class CleaningPlanManager:
         """Return the cancellation signal for the current managed run."""
         return self._cancel_events.setdefault(serial_number, asyncio.Event())
 
+    def finish_room_event(self, serial_number: str) -> asyncio.Event:
+        """Return the graceful-stop signal for the current managed run."""
+        return self._finish_room_events.setdefault(serial_number, asyncio.Event())
+
     @callback
     def prepare_run(self, serial_number: str) -> asyncio.Event:
         """Clear and return the cancellation signal for a new managed run."""
         event = self.cancellation_event(serial_number)
         event.clear()
+        self.finish_room_event(serial_number).clear()
         return event
 
     @callback
@@ -92,8 +108,47 @@ class CleaningPlanManager:
         """Request cancellation and report whether a plan is active."""
         if not self.lock(serial_number).locked():
             return False
+        self.finish_room_event(serial_number).clear()
         self.cancellation_event(serial_number).set()
         return True
+
+    @callback
+    def request_stop(self, serial_number: str) -> PlanStopDecision:
+        """Apply the active plan's immediate-or-after-room stop policy."""
+        if not self.lock(serial_number).locked():
+            return PlanStopDecision("not_running")
+
+        robot = self._robot(serial_number)
+        active = robot.get("active_plan")
+        if active is None:
+            self.cancel(serial_number)
+            return PlanStopDecision("immediate")
+        plan = robot["plans"].get(active["plan_id"], {})
+        if not plan.get("finish_current_room", False):
+            self.cancel(serial_number)
+            return PlanStopDecision("immediate")
+
+        try:
+            threshold = max(
+                0, min(100, int(plan.get("finish_current_room_threshold", 50)))
+            )
+        except TypeError, ValueError:
+            threshold = 50
+        record = (
+            robot["rotations"]
+            .get(active["plan_id"], {})
+            .get("rooms", {})
+            .get(active["room_id"], {})
+        )
+        expected = record.get("average_duration_seconds")
+        progress = _estimated_progress(active.get("started"), expected)
+        if progress is not None and progress < threshold:
+            self.cancel(serial_number)
+            return PlanStopDecision("immediate", progress, threshold)
+
+        self.cancellation_event(serial_number).clear()
+        self.finish_room_event(serial_number).set()
+        return PlanStopDecision("after_room", progress, threshold)
 
     @callback
     def async_add_listener(
@@ -202,6 +257,10 @@ class CleaningPlanManager:
             "rooms": [asdict(room) for room in chosen],
             "room_count": len(chosen),
             "return_to_base": bool(plan.get("return_to_base", True)),
+            "finish_current_room": bool(plan.get("finish_current_room", False)),
+            "finish_current_room_threshold": int(
+                plan.get("finish_current_room_threshold", 50)
+            ),
             "start_timeout": int(plan.get("start_timeout", 120)),
             "completion_timeout": int(plan.get("completion_timeout", 21600)),
         }
@@ -247,8 +306,25 @@ class CleaningPlanManager:
         self, serial_number: str, plan_id: str, room: CleaningRoom
     ) -> None:
         """Advance room history only after the room finishes."""
-        now = dt_util.utcnow().isoformat()
+        now_value = dt_util.utcnow()
+        now = now_value.isoformat()
         record = self._room(serial_number, plan_id, room)
+        active = self._robot(serial_number).get("active_plan")
+        duration = (
+            _elapsed_seconds(active.get("started"), now_value)
+            if active is not None
+            and active.get("plan_id") == plan_id
+            and active.get("room_id") == room.room_id
+            else None
+        )
+        if duration is not None:
+            samples = int(record.get("duration_samples", 0))
+            average = float(record.get("average_duration_seconds", duration))
+            record["last_duration_seconds"] = duration
+            record["average_duration_seconds"] = round(
+                ((average * samples) + duration) / (samples + 1)
+            )
+            record["duration_samples"] = samples + 1
         record["last_completed"] = now
         record["last_result"] = "completed"
         record["completed_runs"] = int(record.get("completed_runs", 0)) + 1
@@ -371,6 +447,16 @@ class CleaningPlanManager:
     ) -> dict[str, Any]:
         records = self._rotation(serial_number, plan_id)["rooms"]
         record = records.setdefault(room.room_id, {})
+        if any(
+            record.get(key) is not None and record.get(key) != getattr(room, key)
+            for key in ("cleaning_mode", "coverage_setting")
+        ):
+            for key in (
+                "last_duration_seconds",
+                "average_duration_seconds",
+                "duration_samples",
+            ):
+                record.pop(key, None)
         record.update(asdict(room))
         return cast(dict[str, Any], record)
 
@@ -378,6 +464,26 @@ class CleaningPlanManager:
         await self._store.async_save(self._data)
         for listener in tuple(self._listeners.get(serial_number, ())):
             listener()
+
+
+def _elapsed_seconds(started: object, now: datetime) -> int | None:
+    """Return positive elapsed wall-clock seconds from a stored ISO timestamp."""
+    if not isinstance(started, str):
+        return None
+    parsed = dt_util.parse_datetime(started)
+    if parsed is None:
+        return None
+    return max(1, round((now - parsed).total_seconds()))
+
+
+def _estimated_progress(started: object, expected: object) -> int | None:
+    """Estimate current room completion from its learned successful duration."""
+    if not isinstance(expected, int | float) or expected <= 0:
+        return None
+    elapsed = _elapsed_seconds(started, dt_util.utcnow())
+    if elapsed is None:
+        return None
+    return max(0, min(100, round((elapsed / expected) * 100)))
 
 
 def resolve_rooms(
