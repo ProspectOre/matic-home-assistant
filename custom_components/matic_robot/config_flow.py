@@ -1102,6 +1102,32 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             ] = selector.BooleanSelector()
         schema[
             vol.Required(
+                "finish_current_room",
+                default=defaults.get(
+                    "finish_current_room",
+                    (plan or {}).get("finish_current_room", False),
+                ),
+            )
+        ] = selector.BooleanSelector()
+        schema[
+            vol.Required(
+                "finish_current_room_threshold",
+                default=defaults.get(
+                    "finish_current_room_threshold",
+                    (plan or {}).get("finish_current_room_threshold", 50),
+                ),
+            )
+        ] = selector.NumberSelector(
+            selector.NumberSelectorConfig(
+                min=0,
+                max=100,
+                step=5,
+                mode=selector.NumberSelectorMode.BOX,
+                unit_of_measurement="%",
+            )
+        )
+        schema[
+            vol.Required(
                 "return_to_base",
                 default=defaults.get(
                     "return_to_base", (plan or {}).get("return_to_base", True)
@@ -1246,6 +1272,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                                 str(room["room_id"])
                                 for room in user_input["room_editor"]
                             ],
+                            "finish_current_room": bool(
+                                user_input.get("finish_current_room", False)
+                            ),
+                            "finish_current_room_threshold": int(
+                                user_input.get("finish_current_room_threshold", 50)
+                            ),
                             "return_to_base": user_input["return_to_base"],
                             "start_timeout": 120,
                             "completion_timeout": 21600,
@@ -1281,6 +1313,18 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     "room_order": [
                         str(room["room_id"]) for room in user_input["room_editor"]
                     ],
+                    "finish_current_room": bool(
+                        user_input.get(
+                            "finish_current_room",
+                            plan.get("finish_current_room", False),
+                        )
+                    ),
+                    "finish_current_room_threshold": int(
+                        user_input.get(
+                            "finish_current_room_threshold",
+                            plan.get("finish_current_room_threshold", 50),
+                        )
+                    ),
                     "return_to_base": user_input["return_to_base"],
                 }
                 updated.pop("id", None)

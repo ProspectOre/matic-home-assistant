@@ -51,7 +51,9 @@ The integration adds Home Assistant-native planning and automation:
 
 - **Saved cleaning plans.** Named, reusable plans with a per-room cleaning
   mode and coverage level, include toggles, and drag-orderable room lists,
-  managed in one Configure screen with live preview.
+  managed in one Configure screen with live preview. Each plan can stop
+  immediately or finish a sufficiently progressed current room without
+  starting the next one.
 - **Least-recently-cleaned rotation.** A plan run can start with the rooms
   that have waited longest, using the saved order to break ties — no manual
   bookkeeping of what was cleaned last.

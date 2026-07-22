@@ -95,6 +95,19 @@ save_plan:
       default: true
       selector:
         boolean:
+    finish_current_room:
+      default: false
+      selector:
+        boolean:
+    finish_current_room_threshold:
+      default: 50
+      selector:
+        number:
+          min: 0
+          max: 100
+          step: 5
+          unit_of_measurement: "%"
+          mode: box
     select:
       default: true
       selector:

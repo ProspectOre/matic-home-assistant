@@ -8,8 +8,18 @@ class MaticRoomPlanEditor extends HTMLElement {
   }
 
   set hass(value) {
+    const hadHass = this._hass !== undefined;
+    const previousLanguage = this._hass?.locale?.language;
     this._hass = value;
-    this._render();
+    const languageChanged =
+      hadHass && previousLanguage !== value?.locale?.language;
+    if (!hadHass || languageChanged || !this.shadowRoot?.hasChildNodes()) {
+      this._render();
+      return;
+    }
+    this.shadowRoot.querySelectorAll("ha-selector").forEach((field) => {
+      field.hass = value;
+    });
   }
 
   set selector(value) {
@@ -123,9 +133,13 @@ class MaticRoomPlanEditor extends HTMLElement {
     field.selector = { select: { options, mode: "dropdown" } };
     field.value = value;
     field.disabled = this._disabled;
-    field.addEventListener("value-changed", (event) =>
-      onChange(event.detail.value),
-    );
+    field.addEventListener("value-changed", (event) => {
+      // The config form also listens for this generic event. Let only the
+      // editor's list-valued event escape or the scalar selection replaces the
+      // entire room list and makes every room appear excluded.
+      event.stopPropagation();
+      onChange(event.detail.value);
+    });
     return field;
   }
 
@@ -160,8 +174,11 @@ class MaticRoomPlanEditor extends HTMLElement {
       <style>
         :host { display: block; }
         .intro { color: var(--secondary-text-color); margin: 4px 0 12px; }
-        .list { border: 1px solid var(--divider-color); border-radius: 16px; overflow: hidden; }
+        .list { border: 1px solid var(--divider-color); border-radius: 16px; }
         .room { padding: 14px 12px; background: var(--card-background-color); transition: background .15s ease; }
+        .room:first-child { border-radius: 15px 15px 0 0; }
+        .room:last-child { border-radius: 0 0 15px 15px; }
+        .room:only-child { border-radius: 15px; }
         .room:hover { background: var(--secondary-background-color); }
         .room + .room { border-top: 1px solid var(--divider-color); }
         .room.dragging { opacity: .55; }

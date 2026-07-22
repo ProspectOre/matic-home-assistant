@@ -121,6 +121,10 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
             cv.ensure_list, [SAVED_ROOM_SCHEMA], vol.Length(min=1, max=100)
         ),
         vol.Optional("return_to_base", default=True): cv.boolean,
+        vol.Optional("finish_current_room", default=False): cv.boolean,
+        vol.Optional("finish_current_room_threshold", default=50): vol.All(
+            vol.Coerce(int), vol.Range(min=0, max=100)
+        ),
         vol.Optional("start_timeout", default=120): vol.All(
             vol.Coerce(int), vol.Range(min=10, max=600)
         ),
@@ -324,12 +328,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
     )
 
     async def async_stop_intelligent_cleaning(call: ServiceCall) -> None:
-        """Stop the active managed run and send the robot home."""
+        """Apply the active plan's stop policy and send the robot home."""
         entity_id, _entry, serial_number, _room_map = _saved_plan_context(hass, call)
-        if not manager.cancel(serial_number):
+        decision = manager.request_stop(serial_number)
+        if decision.behavior == "not_running":
             raise _validation_error(
                 "No managed Matic cleaning plan is running", "plan_not_running"
             )
+        if decision.behavior == "after_room":
+            return
         await hass.services.async_call(
             VACUUM_DOMAIN,
             "return_to_base",
@@ -407,6 +414,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "rooms": rooms,
             "room_order": [room["room_id"] for room in rooms],
             "return_to_base": call.data["return_to_base"],
+            "finish_current_room": call.data["finish_current_room"],
+            "finish_current_room_threshold": call.data["finish_current_room_threshold"],
             "start_timeout": call.data["start_timeout"],
             "completion_timeout": call.data["completion_timeout"],
         }
@@ -780,6 +789,7 @@ async def _async_execute_rooms(
         )
     async with lock:
         cancel_event = manager.prepare_run(serial_number)
+        finish_room_event = manager.finish_room_event(serial_number)
         chosen = (
             manager.choose(serial_number, call.data["plan_id"], rooms)
             if intelligent
@@ -798,10 +808,12 @@ async def _async_execute_rooms(
                     room,
                     cancel_event,
                 )
+                if finish_room_event.is_set():
+                    break
         except PlanCancelledError:
             return
         if (
-            call.data["return_to_base"]
+            (call.data["return_to_base"] or finish_room_event.is_set())
             and (current := hass.states.get(entity_id)) is not None
             and current.state not in {"docked", "returning"}
         ):
