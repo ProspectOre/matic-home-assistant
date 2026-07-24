@@ -90,7 +90,11 @@ DESCRIPTIONS = (
         key="active_cleaning_session",
         translation_key="active_cleaning_session",
         device_class=BinarySensorDeviceClass.RUNNING,
-        value_fn=lambda state: state.telemetry.active_cleaning_session,
+        value_fn=lambda state: (
+            state.operational.cleaning
+            or state.operational.paused
+            or state.operational.returning
+        ),
     ),
     MaticBinarySensorDescription(
         key="ssh_tunnel_permission",

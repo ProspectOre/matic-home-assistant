@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any
 
 from homeassistant.components.sensor import (
@@ -649,6 +649,8 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     def __init__(self, entry: MaticConfigEntry, room: Room) -> None:
         super().__init__(entry)
         self._room_id = room.id
+        self._history = entry.runtime_data.cleaning_plans
+        self._serial_number = self.coordinator.data.info.serial_number
         self._attr_translation_placeholders = {"room": room.name}
         self._suggested_suffix = room.name
 
@@ -665,20 +667,32 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
 
     def _room_session_value(self) -> tuple[str, int] | None:
         """Return this room's (ended_at, seconds) from the latest session."""
+        return self._room_session_result()[1]
+
+    def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
+        """Return whether a managed run owns the session and its room result."""
         state = self.coordinator.data
         session = state.telemetry.latest_session
         if session is None or session.ended_at is None or state.floor_plan is None:
-            return None
+            return False, None
         room = next(
             (item for item in state.floor_plan.rooms if item.id == self._room_id),
             None,
         )
         if room is None:
-            return None
+            return False, None
+        managed, managed_value = _managed_room_session_value(
+            self._history.snapshot(self._serial_number),
+            self._room_id,
+            session.started_at,
+            session.ended_at,
+        )
+        if managed:
+            return True, managed_value
         durations = dict(session.room_durations)
         if room.name not in durations:
-            return None
-        return session.ended_at, durations[room.name]
+            return False, None
+        return False, (session.ended_at, durations[room.name])
 
     @callback
     def _async_apply_session(self) -> None:
@@ -710,8 +724,11 @@ class MaticRoomDurationSensor(_MaticRoomStatisticsSensor):
     @callback
     def _async_apply_session(self) -> None:
         """Apply the latest finished session that included this room."""
-        if (value := self._room_session_value()) is not None:
+        managed, value = self._room_session_result()
+        if value is not None:
             self._attr_native_value = value[1]
+        elif managed:
+            self._attr_native_value = None
 
 
 class MaticRoomLastCleanedSensor(_MaticRoomStatisticsSensor):
@@ -734,7 +751,63 @@ class MaticRoomLastCleanedSensor(_MaticRoomStatisticsSensor):
     @callback
     def _async_apply_session(self) -> None:
         """Apply the latest finished session that included this room."""
-        if (value := self._room_session_value()) is not None:
+        managed, value = self._room_session_result()
+        if value is not None:
             ended_at = dt_util.parse_datetime(value[0])
             if ended_at is not None:
                 self._attr_native_value = dt_util.as_utc(ended_at)
+        elif managed:
+            self._attr_native_value = None
+
+
+def _managed_room_session_value(
+    snapshot: dict[str, Any],
+    room_id: str,
+    started_at: str | None,
+    ended_at: str,
+) -> tuple[bool, tuple[str, int] | None]:
+    """Use exact plan outcomes when a managed run overlaps the session."""
+    started = dt_util.parse_datetime(started_at) if started_at is not None else None
+    ended = dt_util.parse_datetime(ended_at)
+    if started is None or ended is None:
+        return False, None
+
+    records: list[dict[str, Any]] = []
+    relevant: list[dict[str, Any]] = []
+    for rotation in snapshot.get("plan_history", {}).values():
+        for record in rotation.get("rooms", {}).values():
+            records.append(record)
+            raw_started = record.get("last_started")
+            room_started = (
+                dt_util.parse_datetime(raw_started)
+                if isinstance(raw_started, str)
+                else None
+            )
+            if (
+                room_started is not None
+                and started - timedelta(seconds=120) <= room_started <= ended
+            ):
+                relevant.append(record)
+    if not relevant:
+        return False, None
+
+    matching = [record for record in relevant if record.get("room_id") == room_id]
+    if matching:
+        record = max(matching, key=lambda item: str(item.get("last_started", "")))
+        duration = record.get("last_duration_seconds")
+        completed = record.get("last_completed")
+        if (
+            record.get("last_result") == "completed"
+            and isinstance(completed, str)
+            and isinstance(duration, int | float)
+        ):
+            return True, (completed, max(0, round(duration)))
+
+    historical = [
+        (completed, max(0, round(duration)))
+        for record in records
+        if record.get("room_id") == room_id
+        and isinstance((completed := record.get("last_completed")), str)
+        and isinstance((duration := record.get("last_duration_seconds")), int | float)
+    ]
+    return True, max(historical, default=None, key=lambda item: item[0])

@@ -366,7 +366,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
 
     with patch(
         "custom_components.matic_robot.services._async_wait_for_vacuum_state",
-        AsyncMock(side_effect=["cleaning", "docked"]),
+        AsyncMock(side_effect=["cleaning", "returning"]),
     ) as wait:
         await _async_run_room(
             hass, _call(hass), manager, "vacuum.matic", "serial", room
@@ -383,6 +383,7 @@ async def test_room_execution_uses_its_individual_settings() -> None:
         },
     }
     assert wait.await_count == 2
+    assert wait.await_args_list[1].args[2] == {"returning", "docked", "idle"}
     manager.async_mark_completed.assert_awaited_once()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_completed"
 

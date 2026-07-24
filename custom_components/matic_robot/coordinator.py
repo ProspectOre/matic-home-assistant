@@ -208,6 +208,11 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return state
         return replace(state, telemetry=replace(state.telemetry, latest_session=latest))
 
+    @callback
+    def async_discard_current_room(self) -> None:
+        """Keep an interrupted room out of local completed-room statistics."""
+        self._session_tracker.discard_current_room()
+
     async def _async_recover_session_history(
         self,
         serial_number: str,

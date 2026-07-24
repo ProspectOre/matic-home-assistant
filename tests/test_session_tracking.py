@@ -104,6 +104,35 @@ def test_live_tracking_handles_room_changes_and_idle_updates() -> None:
     )
 
 
+def test_transit_rooms_and_interrupted_room_are_not_completed() -> None:
+    start = datetime(2026, 7, 21, 2, tzinfo=UTC)
+    tracker = CleaningSessionTracker()
+    tracker.update(
+        cleaning=True,
+        current_area="Hallway",
+        room_names=("Hallway", "Kitchen"),
+        now=start,
+    )
+    tracker.update(
+        cleaning=True,
+        current_area="Kitchen",
+        room_names=("Hallway", "Kitchen"),
+        now=start + timedelta(seconds=30),
+    )
+    tracker.discard_current_room()
+    result = tracker.update(
+        cleaning=False,
+        current_area="Kitchen",
+        room_names=("Hallway", "Kitchen"),
+        now=start + timedelta(minutes=3),
+    )
+
+    assert result is not None
+    assert result.rooms == ()
+    assert result.room_durations == ()
+    tracker.discard_current_room()
+
+
 def test_recovers_active_run_across_restart_without_double_counting() -> None:
     start = datetime(2026, 7, 21, 3, tzinfo=UTC)
     tracker = CleaningSessionTracker()
@@ -181,4 +210,4 @@ def test_helpers_reject_non_rooms_and_handle_timestamp_edges() -> None:
         ["Office", "Missing"],
     )
     assert reversed_session.duration_seconds == 0
-    assert reversed_session.room_durations == (("Office", 0),)
+    assert reversed_session.room_durations == ()

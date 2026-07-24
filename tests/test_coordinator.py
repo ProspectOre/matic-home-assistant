@@ -62,6 +62,17 @@ def _coordinator(hass, client) -> MaticCoordinator:
     return MaticCoordinator(hass, client, config_entry=_tracking_entry())
 
 
+def test_discard_current_room_delegates_to_session_tracker(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+
+    with patch(
+        "custom_components.matic_robot.coordinator.CleaningSessionTracker.discard_current_room"
+    ) as discard:
+        coordinator.async_discard_current_room()
+
+    discard.assert_called_once_with()
+
+
 async def test_update_combines_required_and_optional_local_state(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)

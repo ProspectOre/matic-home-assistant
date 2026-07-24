@@ -157,7 +157,12 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"room-study": "Study"})
+    coordinator = SimpleNamespace(
+        async_request_refresh=AsyncMock(),
+        async_discard_current_room=MagicMock(),
+    )
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -180,6 +185,9 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
 
     assert execute.await_count == 3
     assert execute.await_args_list[0].kwargs["intelligent"] is True
+    assert execute.await_args_list[0].kwargs["refresh"] is (
+        coordinator.async_request_refresh
+    )
     assert execute.await_args_list[1].kwargs["intelligent"] is False
     assert execute.await_args_list[2].kwargs["intelligent"] is False
     assert preview["plan_name"] == "Upstairs"
@@ -198,6 +206,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     ):
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
     assert manager.cancellation_event("serial").is_set()
+    coordinator.async_discard_current_room.assert_called_once_with()
     lock.release()
     services.async_call.assert_awaited_with(
         "vacuum",
@@ -244,7 +253,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         await _registered_handler(services, "reset_plan_history")(reset)
 
 
-async def test_managed_actions_report_missing_plan_and_inactive_run(hass) -> None:
+async def test_managed_actions_ignore_inactive_stop(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     await manager.async_save_plan(
@@ -287,8 +296,8 @@ async def test_managed_actions_report_missing_plan_and_inactive_run(hass) -> Non
             await _registered_handler(services, "reset_plan_history")(reset_missing)
         with pytest.raises(ServiceValidationError, match="disabled"):
             await _registered_handler(services, "preview_plan")(disabled)
-        with pytest.raises(ServiceValidationError, match="No managed"):
-            await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+        await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+    services.async_call.assert_not_awaited()
 
 
 async def test_room_native_plan_crud_is_complete(hass) -> None:
@@ -1057,6 +1066,44 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     manager.async_mark_cancelled.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
+
+
+async def test_room_completes_on_returning_without_waiting_for_dock(hass) -> None:
+    """Dispatch the next room as soon as a completed task starts returning."""
+
+    async def send_command(*_args, **_kwargs) -> None:
+        hass.states.async_set("vacuum.test", "cleaning")
+
+        async def finish_room() -> None:
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            hass.states.async_set("vacuum.test", "returning")
+
+        hass.async_create_task(finish_room(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_failed=AsyncMock(),
+    )
+    refresh = AsyncMock()
+
+    with patch("custom_components.matic_robot.services.ROOM_STATUS_REFRESH_SECONDS", 0):
+        await _async_run_room(
+            hass,
+            _execution_call(hass),
+            manager,
+            "vacuum.test",
+            "serial",
+            CleaningRoom("room-study", "Study", "vacuum", "quick"),
+            refresh=refresh,
+        )
+
+    assert hass.states.get("vacuum.test").state == "returning"
+    refresh.assert_awaited()
+    manager.async_mark_completed.assert_awaited_once()
+    manager.async_mark_failed.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

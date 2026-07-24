@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
 from typing import Any
 
@@ -71,6 +72,7 @@ TARGET_KEYS = (
     ATTR_FLOOR_ID,
     ATTR_LABEL_ID,
 )
+ROOM_STATUS_REFRESH_SECONDS = 5
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
@@ -222,7 +224,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_run_saved_plan(call: ServiceCall, *, intelligent: bool) -> None:
         """Resolve and run every room in a saved plan."""
-        entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        entity_id, entry, serial_number, room_map = _saved_plan_context(hass, call)
         try:
             plan, rooms = manager.rooms_for_plan(
                 serial_number, room_map, call.data.get("plan")
@@ -254,6 +256,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             serial_number,
             rooms,
             intelligent=intelligent,
+            refresh=entry.runtime_data.coordinator.async_request_refresh,
         )
 
     async def async_intelligent_clean(call: ServiceCall) -> None:
@@ -330,14 +333,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_stop_intelligent_cleaning(call: ServiceCall) -> None:
         """Apply the active plan's stop policy and send the robot home."""
-        entity_id, _entry, serial_number, _room_map = _saved_plan_context(hass, call)
+        entity_id, entry, serial_number, _room_map = _saved_plan_context(hass, call)
         decision = manager.request_stop(serial_number)
         if decision.behavior == "not_running":
-            raise _validation_error(
-                "No managed Matic cleaning plan is running", "plan_not_running"
-            )
+            return
         if decision.behavior == "after_room":
             return
+        entry.runtime_data.coordinator.async_discard_current_room()
         await hass.services.async_call(
             VACUUM_DOMAIN,
             "return_to_base",
@@ -639,6 +641,7 @@ async def _async_run_room(
     serial_number: str,
     room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
+    refresh: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Run one mapped room and advance history only after completion."""
     event_data = {
@@ -675,13 +678,23 @@ async def _async_run_room(
             call.data["start_timeout"],
             cancel_event,
         )
-        await _async_wait_for_vacuum_state(
-            hass,
-            entity_id,
-            {"docked", "idle"},
-            call.data["completion_timeout"],
-            cancel_event,
+        refresh_task = (
+            asyncio.create_task(_async_periodic_refresh(refresh))
+            if refresh is not None
+            else None
         )
+        try:
+            await _async_wait_for_vacuum_state(
+                hass,
+                entity_id,
+                {"returning", "docked", "idle"},
+                call.data["completion_timeout"],
+                cancel_event,
+            )
+        finally:
+            if refresh_task is not None:
+                refresh_task.cancel()
+                await asyncio.gather(refresh_task, return_exceptions=True)
     except PlanCancelledError:
         await manager.async_mark_cancelled(serial_number, call.data["plan_id"], room)
         hass.bus.async_fire(
@@ -709,6 +722,15 @@ async def _async_run_room(
 
     await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
     hass.bus.async_fire(f"{DOMAIN}_room_completed", event_data, context=call.context)
+
+
+async def _async_periodic_refresh(
+    refresh: Callable[[], Awaitable[None]],
+) -> None:
+    """Poll operational state quickly enough to intercept a return to dock."""
+    while True:
+        await asyncio.sleep(ROOM_STATUS_REFRESH_SECONDS)
+        await refresh()
 
 
 async def _async_wait_for_vacuum_state(
@@ -788,6 +810,7 @@ async def _async_execute_rooms(
     rooms: list[CleaningRoom],
     *,
     intelligent: bool,
+    refresh: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -815,6 +838,7 @@ async def _async_execute_rooms(
                     serial_number,
                     room,
                     cancel_event,
+                    refresh,
                 )
                 if finish_room_event.is_set():
                     break
