@@ -1,4 +1,4 @@
-"""Register the configuration-only cleaning-plan editor frontend module."""
+"""Register the cleaning-plan editor and optional local map workspace."""
 
 from __future__ import annotations
 
@@ -10,8 +10,6 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
-ROOM_PLAN_EDITOR_PATH = "/matic_robot/room-plan-editor.js"
-
 # Include both the packaged version and the editor content in the cache-buster.
 # Both are loaded once at import time, off the event loop.
 MANIFEST_VERSION = json.loads(
@@ -20,6 +18,10 @@ MANIFEST_VERSION = json.loads(
 ROOM_PLAN_EDITOR_VERSION = sha256(
     Path(__file__).with_name("room_plan_editor.js").read_bytes()
 ).hexdigest()[:12]
+ROOM_PLAN_EDITOR_PATH = (
+    f"/matic_robot/{MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}/room-plan-editor.js"
+)
+MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-0"
 
 
 async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
@@ -32,5 +34,21 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     )
     frontend.add_extra_js_url(
         hass,
-        f"{ROOM_PLAN_EDITOR_PATH}?v={MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}",
+        ROOM_PLAN_EDITOR_PATH,
     )
+    # Registering a custom panel only writes frontend metadata; panel_custom is
+    # deliberately not a manifest dependency. The integration must remain
+    # usable for config-flow tests and headless Home Assistant installs where
+    # the frontend's optional Python package is unavailable.
+    from homeassistant.components.panel_custom import async_register_panel
+
+    if "matic-map" not in hass.data.get(frontend.DATA_PANELS, {}):
+        await async_register_panel(
+            hass,
+            frontend_url_path="matic-map",
+            webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
+            sidebar_title="Matic Map",
+            sidebar_icon="mdi:robot-vacuum",
+            module_url=ROOM_PLAN_EDITOR_PATH,
+            require_admin=True,
+        )

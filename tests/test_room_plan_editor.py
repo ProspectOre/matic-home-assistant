@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 from custom_components.matic_robot import frontend
+from custom_components.matic_robot.area_selector import MaticAreaSelector
 from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.room_plan_selector import MaticRoomPlanSelector
 
@@ -35,6 +36,10 @@ def test_registers_ha_selector_for_python_selector_type() -> None:
     assert match.group(1) == expected
     # The guard that avoids redefining the element must use the same name.
     assert f'customElements.get("{expected}")' in _JS
+
+    area_element = f"ha-selector-{MaticAreaSelector.selector_type}"
+    assert f'customElements.define("{area_element}"' in _JS
+    assert f'customElements.get("{area_element}")' in _JS
 
 
 def test_editor_reads_the_selector_config_rooms_shape() -> None:
@@ -114,6 +119,117 @@ def test_nested_select_change_does_not_escape_as_the_editor_value() -> None:
     )
 
 
+def test_area_editor_keeps_coordinates_private_and_bounds_marks() -> None:
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert "512" in area
+    assert "detail: { value: this._cloneValue() }" in area
+    assert "count.textContent = `${this._value.length}" in area
+    assert "group.append(mark)" in area
+    assert "this._updateControls();" in area
+    assert "async_call" not in area
+    assert "fetch(" not in area
+
+
+def test_area_editor_has_labeled_zoomable_draw_and_pan_map() -> None:
+    """The area tool must provide precise navigation without mixing it with drawing."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert 'class="room-label"' not in area  # Labels are created safely as text nodes.
+    assert 'label.setAttribute("class", "room-label")' in area
+    assert "label.textContent = room.name" in area
+    assert 'data-tool="draw"' in area
+    assert 'data-tool="pan"' in area
+    assert 'class="zoom zoom-out"' in area
+    assert 'class="zoom zoom-in"' in area
+    assert 'class="fit"' in area
+    assert 'svg.addEventListener("wheel"' in area
+    assert "this._setViewBox(svg" in area
+
+
+def test_area_editor_buttons_do_not_rebuild_or_escape_to_the_form() -> None:
+    """Undo/Clear keep focus in the editor and emit only the selector value."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    guard = area[area.index("_guardButton(") : area.index("_mapPoint(")]
+    assert 'event.addEventListener("pointerdown"' not in guard
+    assert 'button.addEventListener("pointerdown"' in guard
+    assert "event.preventDefault();" in guard
+    assert "event.stopImmediatePropagation();" in guard
+    undo = area[area.index("_undo()") : area.index("_redo()")]
+    assert "this._undoStack.pop()" in undo
+    assert "this._setValue(previous, { record: false });" in undo
+    assert "this._syncMarks();" in area
+    clear = area[area.index('querySelector(".clear")') :]
+    assert "this._setValue([]);" in clear
+
+
+def test_area_editor_is_a_true_fullscreen_workspace() -> None:
+    """The map must fill the viewport and return cleanly to HA's save form."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert '<dialog class="workspace' in area
+    assert ".workspace.expanded { width: 100vw; height: 100dvh;" in area
+    assert "workspace.showModal();" in area
+    assert "workspace.close();" in area
+    assert 'document.body.style.overflow = "hidden";' in area
+    assert "this._restorePageScroll();" in area
+    assert 'this._localize("done_editing"' in area
+    assert 'event.key === "Escape"' in area
+
+
+def test_area_editor_has_recoverable_history_and_keyboard_controls() -> None:
+    """Clear remains reversible and standard editor shortcuts are available."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert "this._undoStack.push(this._cloneValue());" in area
+    assert "this._redoStack.push(this._cloneValue());" in area
+    assert 'class="redo"' in area
+    assert 'event.key.toLowerCase() === "z"' in area
+    assert 'event.key === "0"' in area
+
+
+def test_area_editor_rejects_marks_started_off_the_floor_plan() -> None:
+    """The browser and Python validator share the mapped-room safety boundary."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert "_pointInPolygon(x, y, boundary)" in area
+    assert "if (!this._pointIsMapped(circle.x, circle.y))" in area
+    assert 'this._localize("area_outside_map"' in area
+
+
+def test_area_editor_does_not_rebuild_during_ha_refresh_or_value_echo() -> None:
+    """Polling and Home Assistant's same-value echo must not cancel gestures."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    hass_setter = area[
+        area.index("set hass(value)") : area.index("set selector(value)")
+    ]
+    assert "previousLanguage" in hass_setter
+    assert "languageChanged" in hass_setter
+    assert hass_setter.count("this._render();") == 1
+    value_setter = area[area.index("set value(value)") : area.index("get value()")]
+    assert "const unchanged" in value_setter
+    assert "if (unchanged) return;" in value_setter
+    assert "this._syncMarks();" in value_setter
+
+
+def test_area_editor_drag_creates_one_circle_with_a_preview() -> None:
+    """One center-to-edge gesture commits one bounded cleaning circle."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert 'class="preview"' in area
+    assert "_updateDraft(svg, event)" in area
+    assert "_commitDraft()" in area
+    assert "Math.max(0.1, Math.min(2.5, distance))" in area
+
+
+def test_map_panel_has_private_live_navigation_controls() -> None:
+    """The sidebar map supports bounded zoom/pan, refresh, and keyboard use."""
+    panel = _JS[_JS.index("class MaticMapPanel") :]
+    assert "private and live" in panel
+    assert "Math.max(1, Math.min(10" in panel
+    assert 'class="refresh"' in panel
+    assert 'viewport.addEventListener("keydown"' in panel
+    assert 'viewport.addEventListener("dblclick"' in panel
+    assert "viewport.releasePointerCapture" in panel
+    assert ".empty[hidden] { display: none; }" in panel
+    assert 'empty.style.display = "none";' in panel
+    assert 'empty.style.display = "grid";' in panel
+
+
 def test_hass_refresh_does_not_rebuild_an_open_editor() -> None:
     """Routine HA state refreshes must not destroy an open dropdown's DOM."""
     setter = _JS[_JS.index("set hass(value)") : _JS.index("set selector(value)")]
@@ -136,6 +252,8 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     """A frontend-only fix must load even before the next version bump."""
     expected = sha256(_EDITOR_PATH.read_bytes()).hexdigest()[:12]
     assert frontend.ROOM_PLAN_EDITOR_VERSION == expected
+    assert expected in frontend.ROOM_PLAN_EDITOR_PATH
+    assert 'customElements.get("matic-map-panel-v0-3-0")' in _JS
 
 
 def test_node_syntax_check() -> None:

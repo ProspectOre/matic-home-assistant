@@ -20,7 +20,8 @@
       "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" }
     },
     "camera": {
-      "map": { "default": "mdi:floor-plan" }
+      "map": { "default": "mdi:floor-plan" },
+      "photorealistic_map": { "default": "mdi:home-map-marker" }
     },
     "number": {
       "water_flow": { "default": "mdi:water-percent" }

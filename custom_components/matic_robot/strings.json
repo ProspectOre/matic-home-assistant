@@ -1,17 +1,40 @@
 {
   "common": {
+    "area_added": "Cleaning area added.",
+    "area_draw_help": "Drag from the center to the edge of the area. Add more circles if needed.",
+    "area_editor_intro": "Draw one or more cleaning circles over the map. Switch to Move map whenever you need to pan or zoom.",
+    "area_editor_title": "Custom area studio",
+    "area_map": "Custom cleaning area map",
+    "area_map_controls": "Map controls",
+    "area_marks": "area marks",
+    "area_outside_map": "Start the circle inside a mapped room.",
+    "area_pan_help": "Drag the map to move around. Use + and − to zoom.",
+    "brush_size": "Tap size",
+    "clear": "Clear",
     "cleaning_mode": "Cleaning mode",
     "coverage": "Coverage",
+    "draw": "Draw circle",
+    "done_editing": "Done editing",
     "drag_room": "Drag {room}",
+    "fit_map": "Fit map",
+    "focus_room": "Focus room",
+    "all_rooms": "All rooms",
+    "expand_map": "Full screen",
+    "exit_fullscreen": "Close full screen",
     "include_room": "Include {room}",
     "mop": "Mop",
+    "move_map": "Move map",
     "move_room_down": "Move {room} down",
     "move_room_up": "Move {room} up",
     "quick": "Quick",
+    "redo": "Redo",
     "room_editor_intro": "Turn on rooms to include them. Drag or use the arrows to set the cleaning order.",
     "standard": "Standard",
+    "undo": "Undo",
     "vacuum": "Vacuum",
-    "vacuum_and_mop": "Vacuum + mop"
+    "vacuum_and_mop": "Vacuum + mop",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out"
   },
   "config": {
     "abort": {
@@ -108,18 +131,85 @@
     "error": {
       "confirmation_required": "Check the confirmation box to continue.",
       "duplicate_plan": "Use a unique plan name with at least one letter or number.",
+      "duplicate_area": "Use a unique area name with at least one letter or number.",
+      "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
       "no_rooms": "Turn on at least one room."
     },
     "step": {
       "init": {
         "title": "Cleaning plans",
-        "description": "Reusable room plans for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}.",
+        "description": "Reusable room plans and drawn areas for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}. Saved areas: {area_count}.",
         "menu_options": {
           "manage_plan": "Manage a plan",
           "add_plan": "Create a plan",
+          "manage_areas": "Custom cleaning areas",
           "finish": "Done"
         }
+      },
+      "manage_areas": {
+        "title": "Custom cleaning areas",
+        "description": "Saved areas: {area_count}. Draw a small area once, then use its name in automations.",
+        "menu_options": {
+          "choose_area": "Manage an area",
+          "add_area": "Draw a new area",
+          "finish": "Done"
+        }
+      },
+      "choose_area": {
+        "title": "Choose a custom area",
+        "data": {
+          "area": "Area"
+        },
+        "data_description": {
+          "area": "Choose the saved area to edit or delete."
+        }
+      },
+      "area_menu": {
+        "title": "Manage custom area",
+        "description": "{area_name}",
+        "menu_options": {
+          "edit_area": "Edit area",
+          "delete_area": "Delete area",
+          "manage_areas": "Back to custom areas",
+          "finish": "Done"
+        }
+      },
+      "add_area": {
+        "title": "Draw a custom cleaning area",
+        "description": "Draw only where Matic should clean. The map and coordinates stay inside Home Assistant.",
+        "data": {
+          "name": "Area name",
+          "area_editor": "Area",
+          "cleaning_mode": "Cleaning mode",
+          "coverage_setting": "Coverage"
+        },
+        "data_description": {
+          "name": "For example, Litter box or Kitchen table.",
+          "area_editor": "Drag over the map to paint the cleaning area. Overlapping marks form one task.",
+          "cleaning_mode": "Saved default for this area; an automation can override it.",
+          "coverage_setting": "Saved default for this area; an automation can override it."
+        }
+      },
+      "edit_area": {
+        "title": "Edit custom cleaning area",
+        "description": "Changes apply after you save.",
+        "data": {
+          "name": "Area name",
+          "area_editor": "Area",
+          "cleaning_mode": "Cleaning mode",
+          "coverage_setting": "Coverage"
+        },
+        "data_description": {
+          "name": "The exact name used by dashboards and automations.",
+          "area_editor": "Drag over the map to replace or extend the saved cleaning area.",
+          "cleaning_mode": "Saved default for this area; an automation can override it.",
+          "coverage_setting": "Saved default for this area; an automation can override it."
+        }
+      },
+      "delete_area": {
+        "title": "Delete custom area",
+        "description": "Submitting permanently deletes {area_name}."
       },
       "manage_plan": {
         "title": "Choose a plan",
@@ -308,6 +398,9 @@
     "camera": {
       "map": {
         "name": "Map"
+      },
+      "photorealistic_map": {
+        "name": "3D photo map"
       }
     },
     "number": {
@@ -459,6 +552,9 @@
     }
   },
   "exceptions": {
+    "invalid_area": {
+      "message": "The saved custom area is invalid: {error}"
+    },
     "invalid_cleaning_option": {
       "message": "The cleaning option is invalid: {error}"
     },
@@ -504,6 +600,9 @@
     "unknown_plan": {
       "message": "Unknown Matic cleaning plan: {plan}"
     },
+    "unknown_area": {
+      "message": "Unknown Matic custom area: {area}"
+    },
     "unsupported_command": {
       "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, or return_home."
     }
@@ -519,6 +618,24 @@
     }
   },
   "services": {
+    "clean_area": {
+      "name": "Clean custom area",
+      "description": "Cleans a named area drawn on the local map. Coordinates stay private inside Home Assistant.",
+      "fields": {
+        "area": {
+          "name": "Custom area",
+          "description": "Exact saved area name or stable ID."
+        },
+        "cleaning_mode": {
+          "name": "Cleaning mode",
+          "description": "Override the mode saved with this area."
+        },
+        "coverage_setting": {
+          "name": "Coverage",
+          "description": "Override the coverage saved with this area."
+        }
+      }
+    },
     "clean": {
       "name": "Clean",
       "description": "Starts a cleaning run with the selected rooms, mode, coverage, and order.",

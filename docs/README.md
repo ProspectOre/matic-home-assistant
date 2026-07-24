@@ -17,6 +17,8 @@ the integration so instructions and behavior stay aligned with each release.
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
 - [Firmware compatibility](firmware-compatibility.md) — Track observed robot
   versions, validation status, regressions, and newly discovered capabilities.
+- [Release notes — 0.3.0](release-notes-0.3.0.md) — Private 3D SLAM map and
+  full-screen custom-area studio
 - [Release notes — 0.2.3](release-notes-0.2.3.md) — Room-to-room plans and
   accurate interrupted-run history
 - [Release notes — 0.2.2](release-notes-0.2.2.md) — Connection, session-history,

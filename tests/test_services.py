@@ -9,15 +9,17 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 
+from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.endpoints import HERMES_ENDPOINTS
 from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     MaticError,
 )
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
 from custom_components.matic_robot.services import (
+    CLEAN_AREA_SERVICE_SCHEMA,
     DELETE_PLAN_ROOM_SCHEMA,
     MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
@@ -134,6 +136,106 @@ async def test_clean_action_without_rooms_targets_entire_floor() -> None:
     ):
         await _registered_handler(services, "clean")(call)
     assert services.async_call.await_args.args[2]["command"] == "clean_all"
+
+
+async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_area(
+        "serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    services = await _registered_services(hass, manager)
+    floor_plan = FloorPlan(42, "partition", b"partition", ())
+    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+    )
+    context = ("vacuum.test", entry, "serial", {"office": "Office"})
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_area",
+        CLEAN_AREA_SERVICE_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "area": "Litter box",
+                "coverage_setting": "quick",
+            }
+        ),
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        result = await _registered_handler(services, "clean_area")(call)
+
+    assert result is None
+    assert call.data["area"] == "Litter box"
+    assert "circles" not in call.data
+    client.async_start_custom_coverage.assert_awaited_once_with(
+        floor_plan,
+        [(1.0, 2.0, 0.35)],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+    )
+    coordinator.async_request_refresh.assert_awaited_once()
+
+
+async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_area(
+        "serial",
+        "broken",
+        {"name": "Broken", "circles": [{}]},
+    )
+    services = await _registered_services(hass, manager)
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=FloorPlan(1, "partition", b"", ())),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=SimpleNamespace(async_start_custom_coverage=AsyncMock()),
+            coordinator=coordinator,
+        )
+    )
+    context = ("vacuum.test", entry, "serial", {"office": "Office"})
+
+    async def invoke(area: str) -> None:
+        call = ServiceCall(
+            hass,
+            DOMAIN,
+            "clean_area",
+            CLEAN_AREA_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "area": area}),
+        )
+        await _registered_handler(services, "clean_area")(call)
+
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        with pytest.raises(ServiceValidationError) as unknown:
+            await invoke("Missing")
+        assert unknown.value.translation_key == "unknown_area"
+        with pytest.raises(ServiceValidationError) as invalid:
+            await invoke("Broken")
+        assert invalid.value.translation_key == "invalid_area"
+        coordinator.data.floor_plan = None
+        with pytest.raises(ServiceValidationError) as no_map:
+            await invoke("Broken")
+        assert no_map.value.translation_key == "room_plan_unavailable"
 
 
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:

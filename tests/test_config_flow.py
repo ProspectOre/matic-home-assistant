@@ -836,8 +836,8 @@ async def _options_entry(hass):
         partition_protocol_id="partition",
         partition_id_wire=b"partition",
         rooms=(
-            Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 1))),
-            Room("room-2", "Study", "two", b"two", ((1, 1), (2, 2))),
+            Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 0), (1, 1))),
+            Room("room-2", "Study", "two", b"two", ((1, 0), (2, 0), (2, 1))),
         ),
     )
     await manager.async_save_plan(
@@ -1094,10 +1094,103 @@ async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None
     assert result["errors"]["name"] == "duplicate_plan"
 
 
+async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    assert result["step_id"] == "add_area"
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    assert result["step_id"] == "area_menu"
+    saved = manager.area("synthetic-serial", "Litter box")
+    assert saved["circles"] == [{"x": 0.5, "y": 0.5, "radius": 0.35}]
+
+    result = await _select_menu_step(hass, result, "edit_area")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter station",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        },
+    )
+    assert manager.area("synthetic-serial", "litter_box")["name"] == ("Litter station")
+
+    result = await _select_menu_step(hass, result, "delete_area")
+    assert result["step_id"] == "delete_area"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "add_area"
+    assert manager.areas("synthetic-serial") == {}
+
+
+async def test_options_flow_rejects_duplicate_custom_area_name(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    result = await _start_options_step(hass, entry, "manage_areas")
+    result = await _select_menu_step(hass, result, "add_area")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    assert result["errors"]["name"] == "duplicate_area"
+
+
+async def test_custom_area_flow_chooser_and_missing_context_recover(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+
+    chooser = await flow.async_step_choose_area()
+    assert chooser["step_id"] == "choose_area"
+    menu = await flow.async_step_choose_area({"area": "litter_box"})
+    assert menu["step_id"] == "area_menu"
+
+    for step in (
+        flow.async_step_area_menu,
+        flow.async_step_edit_area,
+        flow.async_step_delete_area,
+    ):
+        flow._area_id = None
+        recovered = await step()
+        assert recovered["step_id"] == "choose_area"
+
+
 async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> None:
     entry, manager = await _options_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["description_placeholders"] == {
+        "area_count": "0",
         "plan_count": "1",
         "room_count": "2",
         "selected_plan": "Whole home",
@@ -1115,9 +1208,9 @@ async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> 
     result = await _select_menu_step(hass, result, "delete_plan")
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    # Deleting the only plan lands on the creation screen directly.
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "add_plan"
+    # Drawn areas remain available even when no room plan exists.
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
     assert manager.plans("synthetic-serial") == {}
 
 

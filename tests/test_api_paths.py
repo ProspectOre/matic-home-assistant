@@ -32,7 +32,11 @@ from custom_components.matic_robot.client.exceptions import (
     EndpointUnsupportedError,
     PairingModeRequiredError,
 )
-from custom_components.matic_robot.client.models import FloorPlan, RobotActivity
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    HermesCollectionEntry,
+    RobotActivity,
+)
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
 from custom_components.matic_robot.client.proto.hermes_pb2 import KabukiOutputWire
 from tests.wire_builders import _bfield, _fixed64, _vfield
@@ -793,11 +797,48 @@ async def test_command_wrappers_encode_and_route(monkeypatch) -> None:
         cleaning_mode=CleaningMode.BOTH,
         coverage_setting=CoverageSetting.STANDARD,
     )
-    assert client._async_send_channel_payload.await_count == 2
+    await client.async_start_custom_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        [(0.0, 0.0, 0.35)],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+    )
+    assert client._async_send_channel_payload.await_count == 3
     assert all(
         call.args[0] == "user_command"
         for call in client._async_send_channel_payload.await_args_list
     )
+
+
+async def test_get_slam_tile_entry_reads_one_rgb_map_entry() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"key", b"synthetic-image"),)
+    )
+
+    assert await client.async_get_slam_tile_entry() == HermesCollectionEntry(
+        b"key", b"synthetic-image"
+    )
+    client.async_get_collection_entries.assert_awaited_once_with(
+        "map_compressed_rgb", limit=1
+    )
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [(), (HermesCollectionEntry(b"key", b""),)],
+)
+async def test_get_slam_tile_entry_rejects_empty_maps(entries) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_collection_entries = AsyncMock(return_value=entries)
+
+    with pytest.raises(CannotConnectError):
+        await client.async_get_slam_tile_entry()
 
 
 async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> None:

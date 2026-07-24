@@ -96,6 +96,29 @@ def test_rooms_reject_unknown_or_duplicate_mapped_rooms(identifier) -> None:
         resolve_rooms(raw, {"room-kitchen": "Kitchen"})
 
 
+async def test_custom_areas_round_trip_by_id_and_name_without_snapshot(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    saved = {
+        "name": "Litter box",
+        "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+
+    await manager.async_save_area("serial", "litter_box", saved)
+
+    assert manager.area("serial", "litter_box") == {"id": "litter_box", **saved}
+    assert manager.area("serial", "LITTER BOX") == {"id": "litter_box", **saved}
+    assert manager.areas("serial") == {"litter_box": saved}
+    assert "areas" not in manager.snapshot("serial")
+    with pytest.raises(KeyError):
+        manager.area("serial", "missing")
+
+    await manager.async_delete_area("serial", "litter_box")
+    assert manager.areas("serial") == {}
+
+
 async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

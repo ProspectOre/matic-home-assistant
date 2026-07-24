@@ -168,6 +168,33 @@ class CleaningPlanManager:
         """Return a copy of all saved plan definitions."""
         return deepcopy(self._robot(serial_number)["plans"])
 
+    def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
+        """Return a private copy of locally saved drawn areas."""
+        return deepcopy(self._robot(serial_number)["areas"])
+
+    def area(self, serial_number: str, reference: str) -> dict[str, Any]:
+        """Return one locally saved area by stable ID or exact name."""
+        areas = self._robot(serial_number)["areas"]
+        if reference in areas:
+            return {"id": reference, **deepcopy(areas[reference])}
+        folded = reference.casefold()
+        for key, value in areas.items():
+            if str(value.get("name", key)).casefold() == folded:
+                return {"id": key, **deepcopy(value)}
+        raise KeyError(reference)
+
+    async def async_save_area(
+        self, serial_number: str, area_id: str, area: Mapping[str, Any]
+    ) -> None:
+        """Create or replace a private local drawn-area definition."""
+        self._robot(serial_number)["areas"][area_id] = deepcopy(dict(area))
+        await self._async_save_and_notify(serial_number)
+
+    async def async_delete_area(self, serial_number: str, area_id: str) -> None:
+        """Delete one local drawn area."""
+        self._robot(serial_number)["areas"].pop(area_id, None)
+        await self._async_save_and_notify(serial_number)
+
     def plan(self, serial_number: str, plan_id: str | None = None) -> dict[str, Any]:
         """Return one saved plan by ID, name, or current selection."""
         robot = self._robot(serial_number)
@@ -427,6 +454,7 @@ class CleaningPlanManager:
         robot.setdefault("rotations", {})
         robot.setdefault("rooms", {})
         robot.setdefault("plans", {})
+        robot.setdefault("areas", {})
         robot.setdefault("selected_plan", next(iter(robot["plans"]), None))
         robot.setdefault("active_plan", None)
 

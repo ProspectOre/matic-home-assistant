@@ -86,6 +86,40 @@ rooms are selected until the user chooses them:
 A plan defines **what** to clean. Home Assistant schedules, presence
 automations, buttons, and scripts decide **when** it runs.
 
+## Drawn custom areas
+
+Open the integration's **Configure** flow, choose **Custom cleaning areas**, and
+draw over the exact part of the local map that should be cleaned. A saved area
+can cross room boundaries and keeps its own cleaning mode and coverage default.
+Home Assistant stores the geometry locally and the action accepts only its
+name.
+
+For example, after saving an area named `Litter box`, this automation cleans
+only that footprint when a litter box reports that its cycle completed:
+
+```yaml
+alias: Clean around litter box after cycle
+triggers:
+  - trigger: state
+    entity_id: binary_sensor.litter_box_cycle
+    from: "on"
+    to: "off"
+conditions: []
+actions:
+  - action: matic_robot.clean_area
+    target:
+      entity_id: vacuum.matic
+    data:
+      area: Litter box
+mode: single
+```
+
+Replace the two entity IDs with the entities from the litter box and Matic
+devices. If the litter box exposes a dedicated “cycle completed” event instead
+of an on/off sensor, use that as the trigger and keep the action unchanged.
+Optional `cleaning_mode` and `coverage_setting` fields override the defaults
+saved with the area for that run.
+
 ## Intelligent rotation
 
 Use **Intelligent rotation** for large plans and short or unpredictable cleaning

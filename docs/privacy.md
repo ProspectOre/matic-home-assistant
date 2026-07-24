@@ -49,7 +49,12 @@ Managed rotation history is stored in Home Assistant's local `.storage`
 directory. It contains selected room IDs/names, individual room preferences,
 completion timestamps, and failure summaries. The integration does not
 transmit this history. Home Assistant backups may include it according to the
-user's backup configuration.
+user’s backup configuration.
+
+Named custom cleaning areas are stored in that same local integration storage.
+Their map coordinates are omitted from entity state, events, action calls,
+Logbook-facing service data, and downloaded diagnostics; automations refer to a
+saved area by name.
 
 ## Data never sent to this project
 

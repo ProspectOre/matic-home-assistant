@@ -71,6 +71,13 @@ The integration adds Home Assistant-native planning and automation:
   Area-to-room mapping.
 - **A dashboard map.** The live floor-plan camera renders rooms, labels,
   and robot pose on any dashboard with a standard Picture Entity card.
+- **A private 3D map workspace.** The Matic Map sidebar panel renders the
+  robot's local color SLAM tiles, with a labeled-room fallback, smooth bounded
+  pan and zoom, refresh controls, and no vendor or third-party map upload.
+- **Drawn custom areas.** Paint a reusable subset of one or more rooms in
+  **Configure**, save it by name, and clean only that footprint from an
+  automation. Geometry stays in Home Assistant; action calls contain only the
+  saved name.
 
 Camera and microphone recording, clip retrieval and caching, recording metadata,
 and vendor share or discard decisions are not included because these
@@ -115,6 +122,15 @@ with a Picture Entity card. Each plan is created or edited on one room-aware
 **Configure** screen: plan name, cleaning order, return-to-dock, every mapped
 room, include toggles, per-room mode/coverage dropdowns, and saved top-to-bottom
 order.
+
+The same **Configure** flow includes **Custom cleaning areas**. Draw over the
+local room map, choose the saved mode and coverage, and name the result (for
+example, `Litter box`). Automations call `matic_robot.clean_area` with that
+name, so coordinates never appear in automation YAML, Logbook service data, or
+diagnostics. The editor opens as a full-screen workspace with room labels,
+room focus, separate Draw and Pan modes, cursor-centered zoom, Undo/Redo,
+reversible Clear, keyboard controls, and a clear return to Home Assistant's
+name/settings form.
 
 Use **Intelligent rotation** when cleaning windows vary: it starts with rooms
 that have waited longest and uses the saved list order to break ties. Use

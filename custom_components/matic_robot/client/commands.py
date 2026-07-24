@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+import struct
 from collections.abc import Callable, Sequence
 from enum import StrEnum
 from uuid import UUID, uuid4
@@ -131,6 +133,79 @@ def encode_coverage_command(
     return _field(15, _field(1, _field(3, coverage)))
 
 
+def encode_custom_coverage_command(
+    *,
+    mission_id: int,
+    circles: Sequence[tuple[float, float, float]],
+    cleaning_mode: CleaningMode = CleaningMode.BOTH,
+    coverage_setting: CoverageSetting = CoverageSetting.STANDARD,
+    command_id_factory: Callable[[], UUID] = uuid4,
+) -> bytes:
+    """Encode an official-app-compatible drawn-circle coverage command.
+
+    Circle coordinates use the same robot map coordinate system as room
+    boundaries. A fresh synthetic partition ID is required by the custom-area
+    target and contains no robot identity.
+    """
+    if not 0 <= mission_id <= 0xFFFFFFFF:
+        raise ValueError("mission_id must fit in an unsigned 32-bit integer")
+    if not circles:
+        raise ValueError("at least one circle is required")
+    if len(circles) > 512:
+        raise ValueError("at most 512 circles are supported")
+
+    normalized: list[tuple[float, float, float]] = []
+    for circle in circles:
+        if len(circle) != 3:
+            raise ValueError("each circle must contain x, y, and radius")
+        x, y, radius = (float(value) for value in circle)
+        if not all(math.isfinite(value) for value in (x, y, radius)):
+            raise ValueError("circle values must be finite")
+        if not 0.05 <= radius <= 2.5:
+            raise ValueError("circle radius must be between 0.05 and 2.5 meters")
+        normalized.append((x, y, radius))
+
+    setting_value = {
+        CoverageSetting.STANDARD: 1,
+        CoverageSetting.QUICK: 2,
+    }[coverage_setting]
+    custom_partition_id = str(command_id_factory())
+    circles_message = b"".join(
+        _field(
+            1,
+            _field(1, _float_field(1, x) + _float_field(2, y))
+            + _float_field(2, radius),
+        )
+        for x, y, radius in normalized
+    )
+    drawn_area = _field(2, circles_message)
+    target = (
+        _field(1, _field(1, _wrapped_uuid(custom_partition_id)))
+        + _field(2, _field(3, drawn_area))
+        + _field(3, _field(2, b""))
+    )
+    goals = b"".join(
+        _field(
+            2,
+            _field(
+                6,
+                _field(1, _field(2, _wrapped_uuid(str(command_id_factory()))))
+                + _field(3, spec),
+            )
+            + _field(7, target),
+        )
+        for spec in _coverage_specs(cleaning_mode, setting_value)
+    )
+    coverage = (
+        _field(2, _field(2, _field(1, b"")))
+        + _field(3, _fixed32(2, mission_id))
+        + _field(5, goals)
+        + _field(6, _field(2, _wrapped_uuid(str(command_id_factory()))))
+        + _field(7, _field(1, _wrapped_uuid(str(command_id_factory()))))
+    )
+    return _field(15, _field(1, _field(3, coverage)))
+
+
 def _coverage_specs(
     cleaning_mode: CleaningMode, setting_value: int
 ) -> tuple[bytes, ...]:
@@ -192,6 +267,13 @@ def _varint_field(number: int, value: int) -> bytes:
 
 def _fixed32(number: int, value: int) -> bytes:
     return _varint((number << 3) | 5) + value.to_bytes(4, "little")
+
+
+def _float_field(number: int, value: float) -> bytes:
+    """Encode protobuf float while matching official omission of zero."""
+    if value == 0:
+        return b""
+    return _fixed32(number, struct.unpack("<I", struct.pack("<f", value))[0])
 
 
 def _fixed64(number: int, value: int) -> bytes:

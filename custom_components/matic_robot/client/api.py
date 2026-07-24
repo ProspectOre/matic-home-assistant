@@ -30,6 +30,7 @@ from .commands import (
     HermesConnectionKind,
     UserCommand,
     encode_coverage_command,
+    encode_custom_coverage_command,
     encode_user_command,
     encode_user_data,
 )
@@ -457,6 +458,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed floor plan") from err
 
+    async def async_get_slam_tile_entry(self) -> HermesCollectionEntry:
+        """Read the current local photorealistic SLAM tile."""
+        entries = await self.async_get_collection_entries("map_compressed_rgb", limit=1)
+        if not entries or not entries[0].key or not entries[0].value:
+            raise CannotConnectError("Hermes returned no photorealistic SLAM tile")
+        return entries[0]
+
     async def async_get_pose(self) -> RobotPose:
         """Read and decode the latest local map pose."""
         try:
@@ -768,6 +776,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 cleaning_mode=cleaning_mode,
                 coverage_setting=coverage_setting,
                 ordered=ordered,
+            )
+        )
+
+    async def async_start_custom_coverage(
+        self,
+        floor_plan: FloorPlan,
+        circles: list[tuple[float, float, float]],
+        *,
+        cleaning_mode: CleaningMode,
+        coverage_setting: CoverageSetting,
+    ) -> None:
+        """Start an official drawn-circle custom-area coverage command."""
+        await self._async_send_user_payload(
+            encode_custom_coverage_command(
+                mission_id=floor_plan.mission_id,
+                circles=circles,
+                cleaning_mode=cleaning_mode,
+                coverage_setting=coverage_setting,
             )
         )
 

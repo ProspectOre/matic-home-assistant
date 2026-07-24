@@ -23,6 +23,7 @@ from homeassistant.util import slugify
 from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
+from .area_selector import MaticAreaSelector
 from .bluetooth_pairing import (
     BluetoothPairingIncompleteError,
     BluetoothPairingUnavailableError,
@@ -31,6 +32,7 @@ from .bluetooth_pairing import (
 )
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential, new_hermes_user_id
+from .client.commands import CleaningMode, CoverageSetting
 from .client.discovery import decode_bot_information
 from .client.exceptions import (
     AuthenticationRequiredError,
@@ -971,6 +973,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
 
     def __init__(self) -> None:
         self._plan_id: str | None = None
+        self._area_id: str | None = None
 
     @property
     def _serial_number(self) -> str:
@@ -1000,6 +1003,54 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             )
             for plan_id, plan in self._manager.plans(self._serial_number).items()
         ]
+
+    def _area_options(self) -> list[selector.SelectOptionDict]:
+        return [
+            selector.SelectOptionDict(
+                value=area_id,
+                label=str(area.get("name", area_id)),
+            )
+            for area_id, area in self._manager.areas(self._serial_number).items()
+        ]
+
+    def _area_editor_schema(self, defaults: Mapping[str, Any]) -> vol.Schema:
+        floor_plan = self.config_entry.runtime_data.coordinator.data.floor_plan
+        rooms = (
+            [
+                {
+                    "room_id": room.id,
+                    "name": room.name,
+                    "boundary": [list(point) for point in room.boundary],
+                }
+                for room in floor_plan.rooms
+            ]
+            if floor_plan is not None
+            else []
+        )
+        return vol.Schema(
+            {
+                vol.Required("name", default=defaults.get("name", "")): str,
+                vol.Required(
+                    "area_editor", default=defaults.get("circles", [])
+                ): MaticAreaSelector({"rooms": rooms}),
+                vol.Required(
+                    "cleaning_mode",
+                    default=defaults.get("cleaning_mode", CleaningMode.VACUUM.value),
+                ): self._select(
+                    [value.value for value in CleaningMode],
+                    translation_key="cleaning_mode",
+                ),
+                vol.Required(
+                    "coverage_setting",
+                    default=defaults.get(
+                        "coverage_setting", CoverageSetting.STANDARD.value
+                    ),
+                ): self._select(
+                    [value.value for value in CoverageSetting],
+                    translation_key="coverage_setting",
+                ),
+            }
+        )
 
     def _room_editor_value(
         self, plan: Mapping[str, Any] | None = None
@@ -1146,6 +1197,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             "plan_count": str(len(plans)),
             "room_count": str(len(self._room_options())),
             "selected_plan": str(selected_name),
+            "area_count": str(len(self._manager.areas(self._serial_number))),
         }
 
     def _plan_summary(self) -> dict[str, str]:
@@ -1181,13 +1233,125 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         if self.config_entry.state is not config_entries.ConfigEntryState.LOADED:
             return self.async_abort(reason="entry_not_loaded")
         self._plan_id = None
-        if not self._manager.plans(self._serial_number):
-            # Nothing to manage yet; open the creation screen directly.
-            return await self.async_step_add_plan()
+        self._area_id = None
+        menu_options = []
+        if self._manager.plans(self._serial_number):
+            menu_options.append("manage_plan")
+        menu_options.append("add_plan")
+        menu_options.append("manage_areas")
+        menu_options.append("finish")
         return self.async_show_menu(
             step_id="init",
-            menu_options=["manage_plan", "add_plan", "finish"],
+            menu_options=menu_options,
             description_placeholders=self._summary(),
+        )
+
+    async def async_step_manage_areas(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Choose a saved area or start drawing the first one."""
+        areas = self._manager.areas(self._serial_number)
+        if not areas:
+            return await self.async_step_add_area()
+        return self.async_show_menu(
+            step_id="manage_areas",
+            menu_options=["choose_area", "add_area", "finish"],
+            description_placeholders={"area_count": str(len(areas))},
+        )
+
+    async def async_step_choose_area(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Choose one drawn area to edit or delete."""
+        if user_input is not None:
+            self._area_id = user_input["area"]
+            return await self.async_step_area_menu()
+        return self.async_show_form(
+            step_id="choose_area",
+            data_schema=vol.Schema(
+                {vol.Required("area"): self._select(self._area_options())}
+            ),
+        )
+
+    async def async_step_area_menu(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Show operations for one saved custom area."""
+        if self._area_id is None:
+            return await self.async_step_choose_area()
+        area = self._manager.area(self._serial_number, self._area_id)
+        return self.async_show_menu(
+            step_id="area_menu",
+            menu_options=["edit_area", "delete_area", "manage_areas", "finish"],
+            description_placeholders={"area_name": str(area["name"])},
+        )
+
+    async def async_step_add_area(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Draw and save a named local custom area."""
+        errors: dict[str, str] = {}
+        if user_input is not None:
+            area_id = slugify(user_input["name"])
+            if not area_id or area_id in self._manager.areas(self._serial_number):
+                errors["name"] = "duplicate_area"
+            else:
+                self._area_id = area_id
+                await self._manager.async_save_area(
+                    self._serial_number,
+                    area_id,
+                    {
+                        "name": user_input["name"],
+                        "circles": user_input["area_editor"],
+                        "cleaning_mode": user_input["cleaning_mode"],
+                        "coverage_setting": user_input["coverage_setting"],
+                    },
+                )
+                return await self.async_step_area_menu()
+        return self.async_show_form(
+            step_id="add_area",
+            data_schema=self._area_editor_schema(user_input or {}),
+            errors=errors,
+        )
+
+    async def async_step_edit_area(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Edit a saved local custom area."""
+        if self._area_id is None:
+            return await self.async_step_choose_area()
+        area = self._manager.area(self._serial_number, self._area_id)
+        if user_input is not None:
+            await self._manager.async_save_area(
+                self._serial_number,
+                self._area_id,
+                {
+                    "name": user_input["name"],
+                    "circles": user_input["area_editor"],
+                    "cleaning_mode": user_input["cleaning_mode"],
+                    "coverage_setting": user_input["coverage_setting"],
+                },
+            )
+            return await self.async_step_area_menu()
+        return self.async_show_form(
+            step_id="edit_area", data_schema=self._area_editor_schema(area)
+        )
+
+    async def async_step_delete_area(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Delete a saved area after explicit confirmation."""
+        if self._area_id is None:
+            return await self.async_step_choose_area()
+        area = self._manager.area(self._serial_number, self._area_id)
+        if user_input is not None:
+            await self._manager.async_delete_area(self._serial_number, self._area_id)
+            self._area_id = None
+            return await self.async_step_manage_areas()
+        return self.async_show_form(
+            step_id="delete_area",
+            data_schema=vol.Schema({}),
+            description_placeholders={"area_name": str(area["name"])},
         )
 
     async def async_step_finish(

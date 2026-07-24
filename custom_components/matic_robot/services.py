@@ -50,6 +50,7 @@ from .firmware import (
 from .plans import CleaningPlanManager, CleaningRoom, resolve_rooms
 
 SERVICE_CLEAN = "clean"
+SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_INTELLIGENT_CLEAN = "intelligent_clean"
 SERVICE_CLEAN_ENTIRE_PLAN = "clean_entire_plan"
 SERVICE_RUN_SELECTED_PLAN = "run_selected_plan"
@@ -82,6 +83,16 @@ CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
             [value.value for value in CoverageSetting]
         ),
         vol.Optional("ordered", default=False): cv.boolean,
+    }
+)
+
+CLEAN_AREA_SERVICE_SCHEMA = cv.make_entity_service_schema(
+    {
+        vol.Required("area"): vol.All(cv.string, vol.Length(min=1, max=128)),
+        vol.Optional("cleaning_mode"): vol.In([value.value for value in CleaningMode]),
+        vol.Optional("coverage_setting"): vol.In(
+            [value.value for value in CoverageSetting]
+        ),
     }
 )
 
@@ -220,6 +231,52 @@ async def async_register_services(hass: HomeAssistant) -> None:
         SERVICE_CLEAN,
         async_clean,
         schema=CLEAN_SERVICE_SCHEMA,
+    )
+
+    async def async_clean_area(call: ServiceCall) -> None:
+        """Clean one private saved area without putting coordinates in the call."""
+        _entity_id, entry, serial_number, _room_map = _saved_plan_context(hass, call)
+        try:
+            area = manager.area(serial_number, call.data["area"])
+        except KeyError as err:
+            raise _validation_error(
+                f"Unknown Matic custom area: {call.data['area']}",
+                "unknown_area",
+                {"area": str(call.data["area"])},
+            ) from err
+        floor_plan = entry.runtime_data.coordinator.data.floor_plan
+        if floor_plan is None:
+            raise _validation_error(
+                "The robot's room map is unavailable", "room_plan_unavailable"
+            )
+        try:
+            circles = [
+                (float(item["x"]), float(item["y"]), float(item["radius"]))
+                for item in area["circles"]
+            ]
+            mode = CleaningMode(call.data.get("cleaning_mode", area["cleaning_mode"]))
+            coverage = CoverageSetting(
+                call.data.get("coverage_setting", area["coverage_setting"])
+            )
+            await entry.runtime_data.client.async_start_custom_coverage(
+                floor_plan,
+                circles,
+                cleaning_mode=mode,
+                coverage_setting=coverage,
+            )
+        except (KeyError, TypeError, ValueError) as err:
+            raise _validation_error(
+                "The saved custom area is invalid",
+                "invalid_area",
+                {"error": str(err)},
+            ) from err
+        await entry.runtime_data.coordinator.async_request_refresh()
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAN_AREA,
+        async_clean_area,
+        schema=CLEAN_AREA_SERVICE_SCHEMA,
     )
 
     async def async_run_saved_plan(call: ServiceCall, *, intelligent: bool) -> None:

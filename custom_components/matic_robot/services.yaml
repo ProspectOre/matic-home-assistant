@@ -24,6 +24,25 @@ clean:
       selector:
         boolean:
 
+clean_area:
+  target: *vacuum_target
+  fields:
+    area:
+      required: true
+      example: Litter box
+      selector:
+        text:
+    cleaning_mode:
+      selector:
+        select:
+          translation_key: cleaning_mode
+          options: [vacuum, mop, vacuum_and_mop]
+    coverage_setting:
+      selector:
+        select:
+          translation_key: coverage_setting
+          options: [quick, standard]
+
 intelligent_clean:
   target: *vacuum_target
   fields: &optional_plan

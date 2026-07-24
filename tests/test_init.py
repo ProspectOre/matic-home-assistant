@@ -64,7 +64,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 16
+    assert hass.services.async_register.call_count == 17
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
 
@@ -74,6 +74,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
         ),
+        bus=SimpleNamespace(async_fire=MagicMock()),
         services=SimpleNamespace(async_register=MagicMock()),
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
     )
@@ -89,13 +90,18 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     hass.http.async_register_static_paths.assert_awaited_once()
     from custom_components.matic_robot.frontend import (
         MANIFEST_VERSION,
+        MATIC_MAP_PANEL_ELEMENT,
+        ROOM_PLAN_EDITOR_PATH,
         ROOM_PLAN_EDITOR_VERSION,
     )
 
-    assert (
-        f"/matic_robot/room-plan-editor.js?v={MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}"
-        in hass.data[frontend.DATA_EXTRA_MODULE_URL]
-    )
+    assert MANIFEST_VERSION in ROOM_PLAN_EDITOR_PATH
+    assert ROOM_PLAN_EDITOR_VERSION in ROOM_PLAN_EDITOR_PATH
+    assert ROOM_PLAN_EDITOR_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
+    panel = hass.data[frontend.DATA_PANELS]["matic-map"]
+    assert panel.require_admin is True
+    assert panel.config_panel_domain is None
+    assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
 
 
 async def test_setup_refreshes_before_forwarding_platforms() -> None:
@@ -112,6 +118,7 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     entry = _entry()
     client = MagicMock()
     coordinator = SimpleNamespace(async_config_entry_first_refresh=AsyncMock())
+    slam_map = SimpleNamespace(async_load=AsyncMock())
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
@@ -120,6 +127,7 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
             return_value=coordinator,
         ),
         patch("custom_components.matic_robot.HermesCredential.from_storage") as decode,
+        patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.dt_util.now",
             return_value=datetime(2026, 7, 14, tzinfo=UTC),
@@ -133,6 +141,8 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
         entry, PLATFORMS
     )
     assert entry.runtime_data.client is client
+    assert entry.runtime_data.slam_map is slam_map
+    slam_map.async_load.assert_awaited_once()
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -188,6 +198,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     entry = _entry()
     client = MagicMock()
     coordinator = SimpleNamespace(async_config_entry_first_refresh=AsyncMock())
+    slam_map = SimpleNamespace(async_load=AsyncMock())
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
@@ -196,6 +207,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
             return_value=coordinator,
         ),
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
+        patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         pytest.raises(RuntimeError, match="platform setup failed"),
     ):
         await async_setup_entry(hass, entry)
@@ -221,10 +233,14 @@ async def test_remove_entry_erases_firmware_history() -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
     hass = SimpleNamespace(data={DOMAIN: {DATA_FIRMWARE_TRACKER: tracker}})
     entry = SimpleNamespace(entry_id="entry")
+    slam_map = SimpleNamespace(async_remove=AsyncMock())
 
-    await async_remove_entry(hass, entry)
+    with patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map):
+        await async_remove_entry(hass, entry)
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
+    slam_map.async_remove.assert_awaited_once()
 
     bare = SimpleNamespace(data={})
-    await async_remove_entry(bare, entry)
+    with patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map):
+        await async_remove_entry(bare, entry)

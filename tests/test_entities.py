@@ -26,10 +26,12 @@ from custom_components.matic_robot.client.commands import (
     CoverageSetting,
     UserCommand,
 )
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
     CleaningSession,
     FloorPlan,
+    HermesCollectionEntry,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -137,6 +139,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     coordinator = SimpleNamespace(
         data=_state(paused=paused, idle=idle, floor_plan=floor_plan),
         client=SimpleNamespace(
+            async_get_slam_tile_entry=AsyncMock(
+                side_effect=CannotConnectError("synthetic unavailable")
+            ),
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
             async_set_binary_setting=AsyncMock(),
@@ -204,11 +209,18 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         ),
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
+    slam_map = SimpleNamespace(
+        async_add=AsyncMock(),
+        decoded_tiles=MagicMock(return_value=()),
+        tile_count=0,
+        revision=0,
+    )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
             coordinator=coordinator,
             cleaning_plans=history,
             firmware_tracker=firmware,
+            slam_map=slam_map,
         ),
         options={},
         entry_id="entry",
@@ -237,11 +249,11 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 48 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 49 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 12,
         "button": 4,
-        "camera": 1,
+        "camera": 2,
         "number": 1,
         "select": 3,
         "sensor": 25,
@@ -249,8 +261,8 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 52
-    assert len({entity.unique_id for entity in entities}) == 52
+    assert len(entities) == 53
+    assert len({entity.unique_id for entity in entities}) == 53
     assert all(entity.device_info["manufacturer"] == "Matic" for entity in entities)
 
 
@@ -908,6 +920,55 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert render.call_count == 1
     assert render.call_args.kwargs == {"width": 256, "height": 2048}
     assert entity.extra_state_attributes == {"robot_location_source": "exact_pose"}
+
+
+async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
+    entry = _entry()
+    image_read = entry.runtime_data.coordinator.client.async_get_slam_tile_entry
+    image_read.side_effect = None
+    image_read.return_value = HermesCollectionEntry(b"key", b"value")
+    store = entry.runtime_data.slam_map
+    store.decoded_tiles.return_value = ("synthetic-tile",)
+    store.tile_count = 1
+    store.revision = 1
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+    with patch(
+        "custom_components.matic_robot.camera.render_slam_map",
+        return_value=b"photorealistic-png",
+    ) as render:
+        image = await entity.async_camera_image()
+        cached = await entity.async_camera_image()
+
+    assert image == b"photorealistic-png"
+    assert cached == image
+    render.assert_called_once()
+    store.async_add.assert_awaited_once_with(HermesCollectionEntry(b"key", b"value"))
+    image_read.assert_awaited_once()
+    assert entity.extra_state_attributes == {
+        "cached_tiles": 1,
+        "source": "local_robot_slam",
+    }
+
+
+async def test_photorealistic_camera_polling_is_throttled_and_fault_tolerant(
+    hass,
+) -> None:
+    entry = _entry()
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+    image_read = entry.runtime_data.coordinator.client.async_get_slam_tile_entry
+
+    with patch("custom_components.matic_robot.camera.monotonic", return_value=10):
+        await entity.async_update()
+        await entity.async_update()
+    image_read.assert_awaited_once()
+
+    image_read.reset_mock()
+    image_read.side_effect = CannotConnectError("synthetic unavailable")
+    with patch("custom_components.matic_robot.camera.monotonic", return_value=50):
+        await entity.async_update()
+    image_read.assert_awaited_once()
 
 
 async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:

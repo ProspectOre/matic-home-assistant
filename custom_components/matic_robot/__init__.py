@@ -32,6 +32,7 @@ from .frontend import async_register_room_plan_editor
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import async_register_services
+from .slam_map_store import SlamMapStore
 
 __all__ = ["async_migrate_entry"]
 
@@ -44,6 +45,7 @@ class MaticRuntimeData:
     coordinator: MaticCoordinator
     cleaning_plans: CleaningPlanManager
     firmware_tracker: FirmwareTracker
+    slam_map: SlamMapStore
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -88,8 +90,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
+        slam_map = SlamMapStore(hass, entry.entry_id)
+        await slam_map.async_load()
         entry.runtime_data = MaticRuntimeData(
-            client, coordinator, plans, firmware_tracker
+            client, coordinator, plans, firmware_tracker, slam_map
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     except BaseException:
@@ -112,3 +116,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     )
     if tracker is not None:
         await tracker.async_remove_robot(entry.entry_id)
+    slam_map = SlamMapStore(hass, entry.entry_id)
+    await slam_map.async_remove()

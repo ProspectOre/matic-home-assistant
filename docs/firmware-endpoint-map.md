@@ -76,7 +76,7 @@ credentials, arbitrary names, and raw payload output are deliberately excluded.
 | --- | --- | --- |
 | `user_data` | Local client identity, timezone and connection kind | Internal session setup |
 | `user_command` | Stop, pause, resume, dock | Vacuum actions and `send_command` |
-| `user_command` | Full-floor/room coverage; vacuum, mop or both; quick/standard; ordered/unordered | Vacuum start/Area/segment cleaning; `matic_robot.clean`; saved plans |
+| `user_command` | Full-floor/room coverage and official drawn-circle custom coverage; vacuum, mop or both; quick/standard; ordered/unordered | Vacuum start/Area/segment cleaning; `matic_robot.clean`; `matic_robot.clean_area`; saved plans and areas |
 | `child_lock_enabled_command` | Boolean | Child-lock switch |
 | `petwaste_enabled_command` | Boolean | Pet-waste-avoidance switch |
 | `voice_enabled_command` | Boolean | Voice-assistant switch |
