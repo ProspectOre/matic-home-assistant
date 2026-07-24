@@ -95,6 +95,11 @@ saved room order breaks ties. Failed, cancelled, timed-out, or
 restart-interrupted rooms remain due because history advances only after
 verified completion.
 
+Each room is complete when the robot reports that it is returning from that
+room. The integration checks that transition every five seconds and sends the
+next room before the robot reaches the dock. Only the final room returns all
+the way to the dock, and learned room durations exclude that return trip.
+
 The finish-current-room policy estimates progress from elapsed time versus
 successful managed runs of the same room with the same cleaning settings. A
 stop below the configured threshold remains immediate; at or above it, the

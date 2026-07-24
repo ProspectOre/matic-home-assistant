@@ -156,6 +156,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         decision = self._plans.request_stop(self.coordinator.data.info.serial_number)
         if decision.behavior == "after_room":
             return
+        self.coordinator.async_discard_current_room()
         await self._async_command(UserCommand.STOP)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
@@ -165,6 +166,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             # The robot treats docking mid-task as recharge-and-resume and
             # heads back out afterwards; stop the task first so a
             # user-requested dock is final.
+            self.coordinator.async_discard_current_room()
             await self._async_command(UserCommand.STOP)
         await self._async_command(UserCommand.DOCK)
 

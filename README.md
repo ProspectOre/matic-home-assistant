@@ -53,7 +53,9 @@ The integration adds Home Assistant-native planning and automation:
   mode and coverage level, include toggles, and drag-orderable room lists,
   managed in one Configure screen with live preview. Each plan can stop
   immediately or finish a sufficiently progressed current room without
-  starting the next one.
+  starting the next one. During an uninterrupted plan, the next room starts
+  as soon as the current room finishes; the robot docks only after the final
+  room.
 - **Least-recently-cleaned rotation.** A plan run can start with the rooms
   that have waited longest, using the saved order to break ties — no manual
   bookkeeping of what was cleaned last.

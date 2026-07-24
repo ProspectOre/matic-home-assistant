@@ -60,10 +60,10 @@ class RobotOperationalState:
             return RobotActivity.ERROR
         if self.paused:
             return RobotActivity.PAUSED
-        if self.cleaning:
-            return RobotActivity.CLEANING
         if self.returning:
             return RobotActivity.RETURNING
+        if self.cleaning:
+            return RobotActivity.CLEANING
         if self.charging:
             return RobotActivity.CHARGING
         if self.charging_idle:

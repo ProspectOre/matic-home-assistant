@@ -13,6 +13,8 @@ from typing import Protocol
 
 from .client.models import CleaningSession
 
+MIN_CLEANED_ROOM_SECONDS = 60
+
 
 class _HistoryState(Protocol):
     """The small part of a recorder State used for recovery."""
@@ -114,6 +116,16 @@ class CleaningSessionTracker:
         ):
             return native_session
         return tracked
+
+    def discard_current_room(self) -> None:
+        """Exclude an interrupted room from the finished session summary."""
+        room = self._current_room
+        if room is None:
+            return
+        self._room_durations.pop(room, None)
+        self._rooms = [item for item in self._rooms if item != room]
+        self._current_room = None
+        self._room_started_at = None
 
     def _restore_active(
         self,
@@ -220,15 +232,16 @@ def _build_session(
     rooms: list[str],
 ) -> CleaningSession:
     """Create one immutable public session from local tracking values."""
+    cleaned_rooms = [
+        room for room in rooms if durations.get(room, 0.0) >= MIN_CLEANED_ROOM_SECONDS
+    ]
     return CleaningSession(
         started_at=started_at.isoformat(),
         ended_at=ended_at.isoformat(),
         duration_seconds=max(0, round((ended_at - started_at).total_seconds())),
-        rooms=tuple(rooms),
+        rooms=tuple(cleaned_rooms),
         room_durations=tuple(
-            (room, max(0, round(durations[room])))
-            for room in rooms
-            if room in durations
+            (room, max(0, round(durations[room]))) for room in cleaned_rooms
         ),
         completed=True,
     )

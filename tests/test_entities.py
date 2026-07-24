@@ -109,7 +109,7 @@ def _state(
                 ),
             ),
             latest_session=CleaningSession(
-                "2026-01-01T08:00:00+00:00",
+                "2026-01-01T08:00:01+00:00",
                 "2026-01-01T08:10:00+00:00",
                 600,
                 ("Kitchen",),
@@ -147,6 +147,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         coverage_setting=CoverageSetting.STANDARD,
         async_request_refresh=AsyncMock(),
         async_request_full_refresh=AsyncMock(),
+        async_discard_current_room=MagicMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
         last_update_success=True,
     )
@@ -368,6 +369,101 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     assert fresh.native_value == 600
 
 
+def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    history = entry.runtime_data.cleaning_plans
+    history.snapshot.return_value["plan_history"] = {
+        "handoff": {
+            "rooms": {
+                "retired": {"room_id": "retired"},
+                "room-1": {
+                    "room_id": "room-1",
+                    "last_started": "2026-01-01T08:00:00+00:00",
+                    "last_completed": "2026-01-01T08:06:00+00:00",
+                    "last_duration_seconds": 360,
+                    "last_result": "completed",
+                },
+                "room-2": {
+                    "room_id": "room-2",
+                    "last_started": "2026-01-01T08:06:00+00:00",
+                    "last_result": "cancelled",
+                },
+            }
+        }
+    }
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                "2026-01-01T08:00:00+00:00",
+                "2026-01-01T08:10:00+00:00",
+                600,
+                ("Kitchen", "Study"),
+                (("Kitchen", 400), ("Study", 200)),
+                True,
+            ),
+        ),
+    )
+
+    kitchen = coordinator.data.floor_plan.rooms[0]
+    study = coordinator.data.floor_plan.rooms[1]
+    assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() == (
+        "2026-01-01T08:06:00+00:00",
+        360,
+    )
+    study_duration = sensor.MaticRoomDurationSensor(entry, study)
+    study_last = sensor.MaticRoomLastCleanedSensor(entry, study)
+    study_duration._attr_native_value = 200
+    study_last._attr_native_value = sensor.dt_util.parse_datetime(
+        "2026-01-01T08:10:00+00:00"
+    )
+    study_duration._async_apply_session()
+    study_last._async_apply_session()
+    assert study_duration.native_value is None
+    assert study_last.native_value is None
+
+
+def test_managed_room_statistics_validate_session_and_unmatched_room() -> None:
+    snapshot = {
+        "plan_history": {
+            "handoff": {
+                "rooms": {
+                    "room-1": {
+                        "room_id": "room-1",
+                        "last_started": "2026-01-01T08:00:00+00:00",
+                        "last_completed": "2026-01-01T08:06:00+00:00",
+                        "last_duration_seconds": 360,
+                        "last_result": "completed",
+                    }
+                }
+            },
+            "older": {
+                "rooms": {
+                    "room-2": {
+                        "room_id": "room-2",
+                        "last_started": "2025-12-31T07:00:00+00:00",
+                        "last_completed": "2025-12-31T07:05:00+00:00",
+                        "last_duration_seconds": 300,
+                        "last_result": "completed",
+                    }
+                }
+            },
+        }
+    }
+
+    assert sensor._managed_room_session_value(
+        snapshot, "room-1", "invalid", "2026-01-01T08:10:00+00:00"
+    ) == (False, None)
+    assert sensor._managed_room_session_value(
+        snapshot,
+        "room-2",
+        "2026-01-01T07:59:00+00:00",
+        "2026-01-01T08:10:00+00:00",
+    ) == (True, ("2025-12-31T07:05:00+00:00", 300))
+
+
 def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     entry = _entry(with_floor_plan=False)
     room = _floor_plan().rooms[0]
@@ -479,7 +575,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         False,
         False,
         False,
-        None,
+        True,
         None,
         None,
     ]

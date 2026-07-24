@@ -80,6 +80,7 @@ def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
         ([106, 119], RobotActivity.CLEANING),
         ([109, 200, 119], RobotActivity.PAUSED),
         ([104, 105], RobotActivity.RETURNING),
+        ([104, 105, 106, 119], RobotActivity.RETURNING),
         ([106], RobotActivity.DOCKED),
         ([], RobotActivity.READY),
     ],
