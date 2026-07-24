@@ -96,6 +96,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             client, coordinator, plans, firmware_tracker, slam_map
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        entry.async_create_background_task(
+            hass,
+            slam_map.async_collect(client),
+            f"{DOMAIN} photographic map collector",
+        )
     except BaseException:
         client.close()
         raise

@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
+from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import SlamMapStore
 from tests.test_slam_map import synthetic_slam_entry
@@ -101,3 +106,45 @@ async def test_slam_map_store_evicts_over_limit(hass) -> None:
         await store.async_add(synthetic_slam_entry())
 
     assert store.tile_count == 0
+
+
+async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> None:
+    store = SlamMapStore(hass, "live-entry")
+    await store.async_load()
+
+    async def live_entries(name):
+        assert name == "map_compressed_rgb"
+        yield synthetic_slam_entry()
+        yield HermesCollectionEntry(b"bad", b"bad")
+        raise asyncio.CancelledError
+
+    client = SimpleNamespace(async_subscribe_collection_entries=live_entries)
+
+    with pytest.raises(asyncio.CancelledError):
+        await store.async_collect(client)
+    assert store.tile_count == 1
+
+
+@pytest.mark.parametrize("fail_stream", [True, False])
+async def test_slam_map_store_retries_failed_or_finished_streams(
+    hass, fail_stream
+) -> None:
+    store = SlamMapStore(hass, "retry-entry")
+
+    async def entries(name):
+        if fail_stream:
+            raise CannotConnectError("synthetic disconnect")
+        if False:
+            yield HermesCollectionEntry(b"", b"")
+
+    client = SimpleNamespace(async_subscribe_collection_entries=entries)
+
+    with (
+        patch(
+            "custom_components.matic_robot.slam_map_store.asyncio.sleep",
+            side_effect=asyncio.CancelledError,
+        ) as sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await store.async_collect(client)
+    sleep.assert_awaited_once()

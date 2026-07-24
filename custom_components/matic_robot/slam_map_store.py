@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import base64
 from typing import Any
 
@@ -9,6 +10,8 @@ from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
+from .client.api import MaticHermesClient
+from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry
 from .client.slam_map import SlamTile, decode_slam_tile
 from .const import DOMAIN
@@ -16,6 +19,7 @@ from .const import DOMAIN
 STORAGE_VERSION = 1
 MAX_TILES = 1024
 MAX_STORED_BYTES = 16 * 1024 * 1024
+STREAM_RETRY_SECONDS = 5
 
 
 class SlamMapStore:
@@ -84,6 +88,24 @@ class SlamMapStore:
         if changed:
             self._revision += 1
         return tile
+
+    async def async_collect(self, client: MaticHermesClient) -> None:
+        """Continuously collect map pages from the robot's live stream."""
+        while True:
+            try:
+                async for entry in client.async_subscribe_collection_entries(
+                    "map_compressed_rgb"
+                ):
+                    try:
+                        await self.async_add(entry)
+                    except DecodeError:
+                        continue
+            except asyncio.CancelledError:
+                raise
+            except MaticError:
+                await asyncio.sleep(STREAM_RETRY_SECONDS)
+            else:
+                await asyncio.sleep(STREAM_RETRY_SECONDS)
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
         """Return all currently valid tiles for local rendering."""

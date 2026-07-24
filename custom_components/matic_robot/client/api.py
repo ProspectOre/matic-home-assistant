@@ -726,6 +726,38 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     await _async_cancel_stream(stream)
         return tuple(entries)
 
+    async def async_subscribe_collection_entries(
+        self, collection_name: str
+    ) -> AsyncIterator[HermesCollectionEntry]:
+        """Yield the initial snapshot and later updates from a collection.
+
+        Unlike bounded diagnostic reads, this keeps the robot's server stream
+        open. Map collections publish new pages on that stream rather than
+        returning their complete history to every fresh snapshot reader.
+        """
+        if self._channel is None:
+            await self.async_connect()
+        channel = self._channel
+        if channel is None:
+            raise CannotConnectError("Hermes channel did not open")
+        request = CollectionRequest(
+            initial_request=InitialRequest(
+                collection_name=collection_name,
+                config=SubscriptionServiceConfig(),
+            )
+        )
+        async with self._map_stream_errors(f"{collection_name} subscription"):
+            async with HermesStub(channel).FetchCollection.open(
+                metadata=self._metadata
+            ) as stream:
+                await stream.send_message(request, end=True)
+                while (response := await stream.recv_message()) is not None:
+                    if not response.HasField("value"):
+                        continue
+                    yield HermesCollectionEntry(
+                        bytes(response.key_bytes), _response_value_bytes(response)
+                    )
+
     async def async_inspect_endpoint(
         self, endpoint_name: str, *, limit: int = 1
     ) -> tuple[HermesCollectionEntry, ...]:

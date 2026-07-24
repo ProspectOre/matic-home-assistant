@@ -558,6 +558,44 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
         (b"two", b"second"),
     ]
     assert stream.cancelled is True
+
+
+async def test_subscribe_collection_entries_yields_snapshot_and_updates(
+    monkeypatch,
+) -> None:
+    stream = _SequenceStream(
+        [
+            SimpleNamespace(HasField=lambda field: False),
+            _collection_response(direct=b"first", key=b"one"),
+            _collection_response(fast=b"second", key=b"two"),
+            None,
+        ]
+    )
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    entries = [
+        entry async for entry in client.async_subscribe_collection_entries("live_map")
+    ]
+
+    assert [(entry.key, entry.value) for entry in entries] == [
+        (b"one", b"first"),
+        (b"two", b"second"),
+    ]
+    assert stream.request.initial_request.collection_name == "live_map"
+
+
+async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_connect = AsyncMock()
+
+    with pytest.raises(CannotConnectError, match="channel did not open"):
+        await anext(client.async_subscribe_collection_entries("live_map"))
     with pytest.raises(ValueError, match="between"):
         await client.async_get_collection_entries("history", limit=0)
 

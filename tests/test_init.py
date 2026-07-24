@@ -28,6 +28,9 @@ from custom_components.matic_robot.const import (
 
 
 def _entry() -> SimpleNamespace:
+    def close_background_coroutine(hass, target, name):
+        target.close()
+
     return SimpleNamespace(
         data={
             "host": "192.0.2.1",
@@ -40,6 +43,7 @@ def _entry() -> SimpleNamespace:
         options={},
         runtime_data=None,
         entry_id="entry",
+        async_create_background_task=MagicMock(side_effect=close_background_coroutine),
     )
 
 
@@ -118,7 +122,7 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     entry = _entry()
     client = MagicMock()
     coordinator = SimpleNamespace(async_config_entry_first_refresh=AsyncMock())
-    slam_map = SimpleNamespace(async_load=AsyncMock())
+    slam_map = SimpleNamespace(async_load=AsyncMock(), async_collect=MagicMock())
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
@@ -143,6 +147,8 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     assert entry.runtime_data.client is client
     assert entry.runtime_data.slam_map is slam_map
     slam_map.async_load.assert_awaited_once()
+    slam_map.async_collect.assert_called_once_with(client)
+    entry.async_create_background_task.assert_called_once()
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -198,7 +204,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     entry = _entry()
     client = MagicMock()
     coordinator = SimpleNamespace(async_config_entry_first_refresh=AsyncMock())
-    slam_map = SimpleNamespace(async_load=AsyncMock())
+    slam_map = SimpleNamespace(async_load=AsyncMock(), async_collect=MagicMock())
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
