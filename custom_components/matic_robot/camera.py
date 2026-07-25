@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
-from time import monotonic
 
-from google.protobuf.message import DecodeError
 from homeassistant.components.camera import Camera
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.exceptions import MaticError
 from .client.floor_plan import render_floor_plan, resolve_robot_map_position
-from .client.slam_map import render_slam_map
-from .const import UPDATE_INTERVAL_SECONDS
+from .client.models import HermesCollectionEntry, RobotState
+from .client.slam_map import (
+    decode_slam_structure_tile,
+    decode_slam_tile,
+    render_slam_map,
+)
 from .entity import MaticEntity
 
 PARALLEL_UPDATES = 0
@@ -99,9 +101,9 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             f"{self.coordinator.data.info.serial_number}_photorealistic_map"
         )
         self._store = entry.runtime_data.slam_map
-        self._refresh_due = 0.0
         self._cached_key: tuple[int, int, int] | None = None
         self._cached_image: bytes | None = None
+        self._render_lock = asyncio.Lock()
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
@@ -109,46 +111,61 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         """Fetch one current tile and render the accumulated isometric map."""
         requested_width = min(max(width or 1024, 256), 2048)
         requested_height = min(max(height or 1024, 256), 2048)
-        now = monotonic()
-        if now >= self._refresh_due:
-            self._refresh_due = now + UPDATE_INTERVAL_SECONDS
-            await self._async_refresh_tile()
-
         key = (self._store.revision, requested_width, requested_height)
         if key == self._cached_key and self._cached_image is not None:
             return self._cached_image
-        tiles = self._store.decoded_tiles()
-        image = await self.hass.async_add_executor_job(
-            partial(
-                render_slam_map,
-                tiles,
-                width=requested_width,
-                height=requested_height,
+        async with self._render_lock:
+            key = (self._store.revision, requested_width, requested_height)
+            if key == self._cached_key and self._cached_image is not None:
+                return self._cached_image
+            data = self.coordinator.data
+            entries = self._store.entries()
+            structure_entries = self._store.structure_entries()
+            image = await self.hass.async_add_executor_job(
+                partial(
+                    _render_photorealistic_entries,
+                    entries,
+                    structure_entries,
+                    data,
+                    width=requested_width,
+                    height=requested_height,
+                )
             )
-        )
-        self._cached_key = key
-        self._cached_image = image
-        return image
-
-    async def async_update(self) -> None:
-        """Accumulate the latest tile while Home Assistant polls the camera."""
-        now = monotonic()
-        if now < self._refresh_due:
-            return
-        self._refresh_due = now + UPDATE_INTERVAL_SECONDS
-        await self._async_refresh_tile()
-
-    async def _async_refresh_tile(self) -> None:
-        try:
-            entry = await self.coordinator.client.async_get_slam_tile_entry()
-            await self._store.async_add(entry)
-        except DecodeError, MaticError:
-            pass
+            self._cached_key = key
+            self._cached_image = image
+            return image
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose cache readiness without exposing private map content."""
         return {
             "cached_tiles": self._store.tile_count,
+            "structural_tiles": self._store.structure_tile_count,
+            "map_complete": self._store.map_complete,
+            "map_revision": self._store.revision,
             "source": "local_robot_slam",
         }
+
+
+def _render_photorealistic_entries(
+    entries: tuple[HermesCollectionEntry, ...],
+    structure_entries: tuple[HermesCollectionEntry, ...],
+    state: RobotState,
+    *,
+    width: int,
+    height: int,
+) -> bytes:
+    """Decode and render the full private map away from the event loop."""
+    tiles = tuple(decode_slam_tile(entry) for entry in entries)
+    structures = tuple(decode_slam_structure_tile(entry) for entry in structure_entries)
+    position = resolve_robot_map_position(
+        state.floor_plan, state.pose, state.operational.current_area
+    )
+    return render_slam_map(
+        tiles,
+        structure_tiles=structures,
+        floor_plan=state.floor_plan,
+        robot_position=position,
+        width=width,
+        height=height,
+    )

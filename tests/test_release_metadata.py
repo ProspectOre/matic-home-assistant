@@ -26,6 +26,7 @@ IMPORT_ROOT_TO_DISTRIBUTION = {
     "google": "protobuf",
     "grpclib": "grpclib",
     "h2": "h2",
+    "numpy": "numpy",
     "voluptuous": "voluptuous",
     "zeroconf": "zeroconf",
 }

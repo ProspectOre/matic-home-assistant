@@ -9,11 +9,16 @@ import pytest
 from google.protobuf.message import DecodeError
 from PIL import Image
 
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    HermesCollectionEntry,
+    Room,
+)
 from custom_components.matic_robot.client.slam_map import (
     FLOOR_RGBA_BYTES,
     SURFACE_BYTES,
     SlamTile,
+    decode_slam_structure_tile,
     decode_slam_tile,
     render_slam_map,
 )
@@ -36,6 +41,10 @@ def _varint_field(number: int, value: int) -> bytes:
     return _varint(number << 3) + _varint(value)
 
 
+def _sint32(value: int) -> int:
+    return (value << 1) ^ (value >> 31)
+
+
 def synthetic_slam_entry(
     *,
     page_x: int = 2,
@@ -46,9 +55,7 @@ def synthetic_slam_entry(
     with_rgb: bool = True,
 ) -> HermesCollectionEntry:
     """Build a byte-for-byte synthetic equivalent of the observed tile shape."""
-    page = _varint_field(1, page_x & ((1 << 64) - 1)) + _varint_field(
-        2, page_y & ((1 << 64) - 1)
-    )
+    page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
     key = _bytes_field(1, page) + _bytes_field(2, mission)
 
     dimensions = b"".join(
@@ -96,6 +103,40 @@ def synthetic_slam_entry(
     return HermesCollectionEntry(key, value)
 
 
+def synthetic_structure_entry(
+    *,
+    page_x: int = 2,
+    page_y: int = -1,
+    mission: bytes = b"synthetic-mission",
+    malformed: str | None = None,
+) -> HermesCollectionEntry:
+    """Build a synthetic equivalent of an observed integrated-map page."""
+    page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
+    key = _bytes_field(1, page) + _bytes_field(2, mission)
+    dimensions = b"".join(
+        _varint_field(number, value)
+        for number, value in enumerate((1, 32, 32, 24), start=1)
+    )
+    if malformed == "dimensions":
+        dimensions = dimensions[:-1] + b"\x17"
+    surface = bytes(SURFACE_BYTES - (1 if malformed == "surface" else 0))
+    surface_envelope = _bytes_field(2, dimensions) + _bytes_field(
+        3, _bytes_field(1, surface)
+    )
+    occupancy = bytearray(b"\x11" * 512)
+    occupancy[-1] = 0x30
+    if malformed == "plane":
+        occupancy.pop()
+    return HermesCollectionEntry(
+        key,
+        _bytes_field(5, surface_envelope)
+        + _bytes_field(6, mission)
+        + _bytes_field(7, _bytes_field(1, bytes(occupancy)))
+        + _bytes_field(8, _bytes_field(1, b"\x22" * 512))
+        + _bytes_field(9, _bytes_field(1, bytes(512))),
+    )
+
+
 def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
     tile = decode_slam_tile(synthetic_slam_entry())
 
@@ -105,6 +146,22 @@ def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
     assert len(tile.floor_rgba) == 32 * 32 * 4
     assert len(tile.voxels) == 1
     assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (95, -1, 0)
+
+
+def test_decode_slam_tile_transposes_floor_texture_axes() -> None:
+    entry = synthetic_slam_entry()
+    value = bytearray(entry.value)
+    floor_marker = value.find(struct.pack("<e", 12.0) * (32 * 32))
+    assert floor_marker >= 0
+    red = [float(row * 32 + column) for row in range(32) for column in range(32)]
+    value[floor_marker : floor_marker + 2048] = struct.pack("<1024e", *red)
+
+    tile = decode_slam_tile(HermesCollectionEntry(entry.key, bytes(value)))
+    pixels = Image.frombytes("RGBA", (32, 32), tile.floor_rgba)
+
+    # Tensor source [row=1, column=2] becomes image [x=1, y=2].
+    assert pixels.getpixel((1, 2))[0] == 34
+    assert pixels.getpixel((2, 1))[0] == 65
 
 
 def test_decode_slam_tile_decodes_visible_rgb_voxel() -> None:
@@ -156,6 +213,32 @@ def test_decode_slam_tile_uses_neutral_color_when_rgb_is_absent() -> None:
     assert tile.voxels[0].color == (96, 112, 128)
 
 
+def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None:
+    tile = decode_slam_structure_tile(synthetic_structure_entry())
+
+    assert (tile.page_x, tile.page_y) == (2, -1)
+    assert len(tile.mission_token) == 64
+    assert tile.occupancy[:4] == bytes((3, 0, 1, 1))
+    assert tile.semantics == bytes((2,)) * (32 * 32)
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [HermesCollectionEntry(b"", b"value"), HermesCollectionEntry(b"key", b"")],
+)
+def test_decode_integrated_slam_tile_rejects_empty_entries(
+    entry: HermesCollectionEntry,
+) -> None:
+    with pytest.raises(DecodeError):
+        decode_slam_structure_tile(entry)
+
+
+@pytest.mark.parametrize("malformed", ["dimensions", "surface", "plane"])
+def test_decode_integrated_slam_tile_rejects_malformed_shapes(malformed: str) -> None:
+    with pytest.raises(DecodeError):
+        decode_slam_structure_tile(synthetic_structure_entry(malformed=malformed))
+
+
 def test_render_slam_map_produces_requested_local_png() -> None:
     tile = decode_slam_tile(synthetic_slam_entry())
     result = render_slam_map((tile,), width=320, height=240)
@@ -166,10 +249,74 @@ def test_render_slam_map_produces_requested_local_png() -> None:
         assert image.getpixel((160, 120)) != (11, 17, 24)
 
 
+def test_render_slam_map_combines_structure_rooms_labels_and_robot() -> None:
+    tile = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    structure = decode_slam_structure_tile(
+        synthetic_structure_entry(page_x=0, page_y=0)
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room-1",
+                "Kitchen",
+                "protocol-1",
+                b"room",
+                ((0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
+            ),
+        ),
+    )
+
+    result = render_slam_map(
+        (tile,),
+        structure_tiles=(structure,),
+        floor_plan=floor_plan,
+        robot_position=(0.15, 0.15, "exact_pose"),
+        width=320,
+        height=240,
+    )
+
+    with Image.open(BytesIO(result)) as image:
+        assert image.format == "PNG"
+        assert image.size == (320, 240)
+
+
+def test_render_slam_map_handles_empty_and_below_floor_voxel_batches() -> None:
+    empty_surfaces = SlamTile(
+        0,
+        0,
+        "mission",
+        bytes((12, 34, 56, 255)) * (32 * 32),
+        bytes(SURFACE_BYTES),
+        b"",
+    )
+    below_floor = decode_slam_tile(
+        synthetic_slam_entry(page_x=1, page_y=0, surface_height=6)
+    )
+
+    result = render_slam_map((empty_surfaces, below_floor), width=256, height=256)
+
+    with Image.open(BytesIO(result)) as image:
+        assert image.format == "PNG"
+
+
+def test_render_slam_map_rejects_fully_transparent_content() -> None:
+    tile = SlamTile(0, 0, "mission", bytes(4096), bytes(SURFACE_BYTES), b"")
+
+    with pytest.raises(DecodeError, match="no visible content"):
+        render_slam_map((tile,))
+
+
 def test_render_slam_map_rejects_empty_or_unbounded_cache() -> None:
     with pytest.raises(DecodeError):
         render_slam_map(())
 
-    tile = SlamTile(0, 0, "mission", bytes(4096), ())
+    tile = SlamTile(0, 0, "mission", bytes(4096), bytes(SURFACE_BYTES), b"")
     with pytest.raises(DecodeError):
         render_slam_map((tile,) * 1025)
+
+    structure = decode_slam_structure_tile(synthetic_structure_entry())
+    with pytest.raises(DecodeError):
+        render_slam_map((tile,), structure_tiles=(structure,) * 1025)

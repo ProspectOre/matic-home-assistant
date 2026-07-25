@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -212,7 +213,11 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
     slam_map = SimpleNamespace(
         async_add=AsyncMock(),
         decoded_tiles=MagicMock(return_value=()),
+        entries=MagicMock(return_value=()),
+        structure_entries=MagicMock(return_value=()),
         tile_count=0,
+        structure_tile_count=0,
+        map_complete=False,
         revision=0,
     )
     return SimpleNamespace(
@@ -924,17 +929,17 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
 
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
     entry = _entry()
-    image_read = entry.runtime_data.coordinator.client.async_get_slam_tile_entry
-    image_read.side_effect = None
-    image_read.return_value = HermesCollectionEntry(b"key", b"value")
     store = entry.runtime_data.slam_map
-    store.decoded_tiles.return_value = ("synthetic-tile",)
+    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    store.structure_entries.return_value = ()
     store.tile_count = 1
+    store.structure_tile_count = 1
+    store.map_complete = True
     store.revision = 1
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
     with patch(
-        "custom_components.matic_robot.camera.render_slam_map",
+        "custom_components.matic_robot.camera._render_photorealistic_entries",
         return_value=b"photorealistic-png",
     ) as render:
         image = await entity.async_camera_image()
@@ -943,32 +948,48 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     assert image == b"photorealistic-png"
     assert cached == image
     render.assert_called_once()
-    store.async_add.assert_awaited_once_with(HermesCollectionEntry(b"key", b"value"))
-    image_read.assert_awaited_once()
     assert entity.extra_state_attributes == {
         "cached_tiles": 1,
+        "structural_tiles": 1,
+        "map_complete": True,
+        "map_revision": 1,
         "source": "local_robot_slam",
     }
 
 
-async def test_photorealistic_camera_polling_is_throttled_and_fault_tolerant(
-    hass,
-) -> None:
+async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> None:
     entry = _entry()
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
-    image_read = entry.runtime_data.coordinator.client.async_get_slam_tile_entry
+    await entity._render_lock.acquire()
+    task = hass.async_create_task(entity.async_camera_image())
+    await asyncio.sleep(0)
+    entity._cached_key = (0, 1024, 1024)
+    entity._cached_image = b"finished-by-first-request"
+    entity._render_lock.release()
 
-    with patch("custom_components.matic_robot.camera.monotonic", return_value=10):
-        await entity.async_update()
-        await entity.async_update()
-    image_read.assert_awaited_once()
+    assert await task == b"finished-by-first-request"
 
-    image_read.reset_mock()
-    image_read.side_effect = CannotConnectError("synthetic unavailable")
-    with patch("custom_components.matic_robot.camera.monotonic", return_value=50):
-        await entity.async_update()
-    image_read.assert_awaited_once()
+
+def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
+    from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
+
+    with patch(
+        "custom_components.matic_robot.camera.render_slam_map",
+        return_value=b"rendered",
+    ) as render:
+        result = camera._render_photorealistic_entries(
+            (synthetic_slam_entry(),),
+            (synthetic_structure_entry(),),
+            _state(floor_plan=_floor_plan()),
+            width=640,
+            height=480,
+        )
+
+    assert result == b"rendered"
+    assert len(render.call_args.args[0]) == 1
+    assert len(render.call_args.kwargs["structure_tiles"]) == 1
+    assert render.call_args.kwargs["robot_position"] == (1, 2, "exact_pose")
 
 
 async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:

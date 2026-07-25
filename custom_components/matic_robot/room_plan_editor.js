@@ -1051,7 +1051,10 @@ class MaticMapPanel extends HTMLElement {
     this._offsetX = 0;
     this._offsetY = 0;
     this._drag = undefined;
+    this._pointers = new Map();
+    this._pinch = undefined;
     this._lastImageEntity = undefined;
+    this._lastImageVersion = undefined;
     this._imageRequest = 0;
   }
 
@@ -1068,7 +1071,7 @@ class MaticMapPanel extends HTMLElement {
 
   connectedCallback() {
     if (!this.shadowRoot.hasChildNodes()) this._render();
-    this._refreshTimer = window.setInterval(() => this._update(true), 30000);
+    this._refreshTimer = window.setInterval(() => this._update(true), 10000);
     this._update(true);
   }
 
@@ -1171,20 +1174,29 @@ class MaticMapPanel extends HTMLElement {
     empty.style.display = "none";
     image.hidden = false;
     const token = state.attributes?.access_token;
-    if (force || entityId !== this._lastImageEntity) {
+    const version = state.attributes?.map_revision ?? state.last_updated;
+    if (force || entityId !== this._lastImageEntity || version !== this._lastImageVersion) {
+      const hasRenderedImage = image.complete && image.naturalWidth > 0;
       const query = new URLSearchParams({ t: String(Date.now()) });
       if (token) query.set("token", token);
       image.src = `/api/camera_proxy/${entityId}?${query}`;
       this._lastImageEntity = entityId;
+      this._lastImageVersion = version;
       this._imageRequest += 1;
       image.dataset.request = String(this._imageRequest);
-      this.shadowRoot.querySelector(".viewport").classList.add("loading");
+      this.shadowRoot
+        .querySelector(".viewport")
+        .classList.toggle("loading", !hasRenderedImage);
     }
     const photoState = entities.photo?.[1];
     const count = Number(photoState?.attributes?.cached_tiles || 0);
+    const structureCount = Number(photoState?.attributes?.structural_tiles || 0);
+    const complete = photoState?.attributes?.map_complete === true;
     this.shadowRoot.querySelector(".status").textContent = this._view === "photo"
       ? selected === entities.photo
-        ? `${count} local SLAM ${count === 1 ? "tile" : "tiles"} · private and live`
+        ? complete
+          ? `Full local map ready · ${count} photo + ${structureCount} structure pages · private and live`
+          : `Building full map · ${count} photo + ${structureCount} structure pages`
         : "3D map is gathering data · showing labeled rooms"
       : "Live labeled room map";
   }
@@ -1249,6 +1261,7 @@ class MaticMapPanel extends HTMLElement {
           <button class="zoom-in" aria-label="Zoom in">+</button>
           <button class="reset">Fit</button>
           <button class="refresh">Refresh</button>
+          <button class="fullscreen">Full screen</button>
           <a href="/config/integrations/integration/matic_robot">Cleaning areas</a>
         </header>
         <div class="viewport" tabindex="0" role="application" aria-label="Interactive local Matic map. Drag to pan; use the mouse wheel or plus and minus keys to zoom.">
@@ -1263,6 +1276,10 @@ class MaticMapPanel extends HTMLElement {
     this._guardButton(this.shadowRoot.querySelector(".zoom-in"), () => this._zoom(1.2));
     this._guardButton(this.shadowRoot.querySelector(".reset"), () => this._resetView());
     this._guardButton(this.shadowRoot.querySelector(".refresh"), () => this._update(true));
+    this._guardButton(this.shadowRoot.querySelector(".fullscreen"), () => {
+      if (document.fullscreenElement) document.exitFullscreen();
+      else this.shadowRoot.querySelector(".shell").requestFullscreen();
+    });
     const viewport = this.shadowRoot.querySelector(".viewport");
     viewport.addEventListener("keydown", (event) => this._handleKeyDown(event));
     viewport.addEventListener("wheel", (event) => {
@@ -1270,29 +1287,65 @@ class MaticMapPanel extends HTMLElement {
       this._zoom(event.deltaY < 0 ? 1.1 : 0.9, event.clientX, event.clientY);
     }, { passive: false });
     viewport.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0 || event.isPrimary === false || this._drag) return;
+      if (event.pointerType === "mouse" && event.button !== 0) return;
       event.preventDefault();
       event.stopImmediatePropagation();
       viewport.setPointerCapture(event.pointerId);
-      this._drag = {
-        pointerId: event.pointerId,
-        x: event.clientX,
-        y: event.clientY,
-        offsetX: this._offsetX,
-        offsetY: this._offsetY,
-      };
+      this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this._pointers.size === 1) {
+        this._drag = {
+          pointerId: event.pointerId,
+          x: event.clientX,
+          y: event.clientY,
+          offsetX: this._offsetX,
+          offsetY: this._offsetY,
+        };
+      } else if (this._pointers.size === 2) {
+        const [first, second] = [...this._pointers.values()];
+        this._drag = undefined;
+        this._pinch = {
+          distance: Math.hypot(second.x - first.x, second.y - first.y),
+          centerX: (first.x + second.x) / 2,
+          centerY: (first.y + second.y) / 2,
+          scale: this._scale,
+          offsetX: this._offsetX,
+          offsetY: this._offsetY,
+        };
+      }
       viewport.classList.add("dragging");
     });
     viewport.addEventListener("pointermove", (event) => {
-      if (event.pointerId !== this._drag?.pointerId) return;
-      this._offsetX = this._drag.offsetX + event.clientX - this._drag.x;
-      this._offsetY = this._drag.offsetY + event.clientY - this._drag.y;
+      if (!this._pointers.has(event.pointerId)) return;
+      this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      if (this._pinch && this._pointers.size >= 2) {
+        const [first, second] = [...this._pointers.values()];
+        const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+        const centerX = (first.x + second.x) / 2;
+        const centerY = (first.y + second.y) / 2;
+        const rect = viewport.getBoundingClientRect();
+        this._scale = Math.max(1, Math.min(10, this._pinch.scale * distance / Math.max(1, this._pinch.distance)));
+        const ratio = this._scale / this._pinch.scale;
+        this._offsetX = centerX - rect.left - (this._pinch.centerX - rect.left - this._pinch.offsetX) * ratio;
+        this._offsetY = centerY - rect.top - (this._pinch.centerY - rect.top - this._pinch.offsetY) * ratio;
+      } else if (event.pointerId === this._drag?.pointerId) {
+        this._offsetX = this._drag.offsetX + event.clientX - this._drag.x;
+        this._offsetY = this._drag.offsetY + event.clientY - this._drag.y;
+      }
       this._applyTransform();
     });
     const finish = (event) => {
-      if (event.pointerId !== this._drag?.pointerId) return;
-      this._drag = undefined;
-      viewport.classList.remove("dragging");
+      if (!this._pointers.has(event.pointerId)) return;
+      this._pointers.delete(event.pointerId);
+      this._pinch = undefined;
+      const remaining = [...this._pointers.entries()][0];
+      this._drag = remaining ? {
+        pointerId: remaining[0],
+        x: remaining[1].x,
+        y: remaining[1].y,
+        offsetX: this._offsetX,
+        offsetY: this._offsetY,
+      } : undefined;
+      if (!remaining) viewport.classList.remove("dragging");
       if (viewport.hasPointerCapture(event.pointerId)) viewport.releasePointerCapture(event.pointerId);
     };
     viewport.addEventListener("pointerup", finish);
@@ -1316,6 +1369,11 @@ class MaticMapPanel extends HTMLElement {
       empty.hidden = false;
       empty.style.display = "grid";
       empty.textContent = "The local map could not be loaded. Refresh after the robot reconnects.";
+    });
+    document.addEventListener("fullscreenchange", () => {
+      const button = this.shadowRoot.querySelector(".fullscreen");
+      if (button) button.textContent = document.fullscreenElement ? "Exit full screen" : "Full screen";
+      this._applyTransform();
     });
     this._applyTransform();
   }

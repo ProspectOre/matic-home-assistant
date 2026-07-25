@@ -18,6 +18,7 @@ dependencies = [
   "grpclib==0.4.9",
   "h2>=4",
   "Pillow>=11",
+  "numpy==2.3.2",
   "protobuf>=6",
 ]
 

@@ -27,15 +27,24 @@ Home Assistant while exposing saved areas to automations by name.
 ## Private 3D SLAM map
 
 - A new photorealistic camera decodes the robot's local color SLAM tiles and
-  accumulates them in a size-bounded private Home Assistant store.
-- A lifecycle-managed tracked Hermes subscription keeps the bidirectional
-  stream open and acknowledges every server sequence so every map page can
-  advance into the private cache; short camera snapshots remain only as a
-  fallback.
+  integrated structural pages, accumulates both layers by the current
+  firmware's signed page coordinates, and persists them in a size-bounded
+  private Home Assistant store.
+- A lifecycle-managed tracked Hermes subscription keeps both bidirectional
+  streams open and acknowledges every server sequence so the complete map and
+  later refinements advance into the private cache.
+- The renderer transposes the robot's channel-major floor tensor into map space
+  before compositing pages. Neighboring live edges are continuous, eliminating
+  the repeated 32-by-32 texture squares caused by flat raster reversal.
+- Vectorized voxel projection and bounded PNG compression keep the Home
+  Assistant event loop responsive while rendering the full map. Concurrent
+  camera requests share one render, and ordinary live refinements replace the
+  image without covering the existing map with a loading spinner.
 - The admin-only **Matic Map** panel provides a one-screen Photo/Rooms toggle,
   smooth bounded pan and zoom, fit, refresh, double-click zoom, arrow-key pan,
-  loading/error feedback, and an automatic labeled-room fallback while SLAM
-  tiles are not available.
+  full-screen mode, loading/error feedback, room labels, and an exact live robot
+  marker, with an automatic labeled-room fallback while SLAM tiles are not
+  available.
 - Map images are served through Home Assistant's authenticated camera proxy.
   No cloud, analytics, telemetry, or third-party map service is involved.
 - Removing the config entry also removes its private accumulated tile store.

@@ -95,6 +95,30 @@ def test_decode_pose_and_render_local_png() -> None:
     current_payload = _field(5, _field(1, struct.pack("<3f", 3, 2, 1)))
     assert decode_pose(current_payload) == RobotPose(3, 2, 1)
 
+    repeated_components = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<f", -4.5))
+            + _field(1, struct.pack("<f", 2.25))
+            + _field(1, struct.pack("<f", 0.0)),
+        ),
+    )
+    assert decode_pose(repeated_components) == RobotPose(-4.5, 2.25, 0.0)
+
+
+def test_decode_pose_rejects_incomplete_repeated_translation() -> None:
+    payload = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<f", 1.0)) + _field(1, struct.pack("<f", 2.0)),
+        ),
+    )
+
+    with pytest.raises(DecodeError):
+        decode_pose(payload)
+
 
 def test_pose_vector_path_inspection_is_bounded_and_ignores_invalid_data() -> None:
     too_deep = struct.pack("<3f", 1, 2, 3)
