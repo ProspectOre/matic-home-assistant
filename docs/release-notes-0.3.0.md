@@ -28,8 +28,10 @@ Home Assistant while exposing saved areas to automations by name.
 
 - A new photorealistic camera decodes the robot's local color SLAM tiles and
   accumulates them in a size-bounded private Home Assistant store.
-- A lifecycle-managed live Hermes subscription collects later map pages as the
-  robot publishes them; short camera snapshots remain only as a fallback.
+- A lifecycle-managed tracked Hermes subscription keeps the bidirectional
+  stream open and acknowledges every server sequence so every map page can
+  advance into the private cache; short camera snapshots remain only as a
+  fallback.
 - The admin-only **Matic Map** panel provides a one-screen Photo/Rooms toggle,
   smooth bounded pan and zoom, fit, refresh, double-click zoom, arrow-key pan,
   loading/error feedback, and an automatic labeled-room fallback while SLAM

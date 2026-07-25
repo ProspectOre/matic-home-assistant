@@ -750,13 +750,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             async with HermesStub(channel).FetchCollection.open(
                 metadata=self._metadata
             ) as stream:
-                await stream.send_message(request, end=True)
+                # FetchCollection is a tracked bidirectional subscription.  The
+                # server sends one update, then waits for its sequence id to be
+                # acknowledged before advancing to the next cached or live item.
+                await stream.send_message(request, end=False)
                 while (response := await stream.recv_message()) is not None:
-                    if not response.HasField("value"):
-                        continue
-                    yield HermesCollectionEntry(
-                        bytes(response.key_bytes), _response_value_bytes(response)
-                    )
+                    entry = None
+                    if response.HasField("value"):
+                        entry = HermesCollectionEntry(
+                            bytes(response.key_bytes),
+                            _response_value_bytes(response),
+                        )
+                    if response.HasField("sequence_id"):
+                        await stream.send_message(
+                            CollectionRequest(sequence_id=response.sequence_id),
+                            end=False,
+                        )
+                    if entry is not None:
+                        yield entry
 
     async def async_inspect_endpoint(
         self, endpoint_name: str, *, limit: int = 1

@@ -38,7 +38,10 @@ from custom_components.matic_robot.client.models import (
     RobotActivity,
 )
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
-from custom_components.matic_robot.client.proto.hermes_pb2 import KabukiOutputWire
+from custom_components.matic_robot.client.proto.hermes_pb2 import (
+    KabukiOutputWire,
+    SequenceId,
+)
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -81,6 +84,16 @@ class _SequenceStream(_Stream):
         return next(self.responses)
 
 
+class _BidirectionalSequenceStream(_SequenceStream):
+    def __init__(self, responses) -> None:
+        super().__init__(responses)
+        self.requests = []
+
+    async def send_message(self, request, *, end):
+        assert end is False
+        self.requests.append(request)
+
+
 class _TimeoutStream(_Stream):
     async def recv_message(self):
         raise TimeoutError
@@ -102,6 +115,7 @@ def _collection_response(
     deprecated: bytes = b"",
     fast: bytes | None = None,
     key: bytes = b"key",
+    sequence_id: SequenceId | None = None,
 ):
     value = SimpleNamespace(
         value_bytes=direct,
@@ -110,7 +124,12 @@ def _collection_response(
         HasField=lambda field: field == "fast_bytes" and fast is not None,
     )
     return SimpleNamespace(
-        HasField=lambda field: field == "value", value=value, key_bytes=key
+        HasField=lambda field: (
+            field == "value" or (field == "sequence_id" and sequence_id is not None)
+        ),
+        value=value,
+        key_bytes=key,
+        sequence_id=sequence_id,
     )
 
 
@@ -563,11 +582,21 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
 async def test_subscribe_collection_entries_yields_snapshot_and_updates(
     monkeypatch,
 ) -> None:
-    stream = _SequenceStream(
+    first_sequence = SequenceId(start_ts_nanos=10, sequence_no=1)
+    second_sequence = SequenceId(start_ts_nanos=10, sequence_no=2)
+    checkpoint_sequence = SequenceId(start_ts_nanos=10, sequence_no=3)
+    stream = _BidirectionalSequenceStream(
         [
-            SimpleNamespace(HasField=lambda field: False),
-            _collection_response(direct=b"first", key=b"one"),
-            _collection_response(fast=b"second", key=b"two"),
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id",
+                sequence_id=checkpoint_sequence,
+            ),
+            _collection_response(
+                direct=b"first", key=b"one", sequence_id=first_sequence
+            ),
+            _collection_response(
+                fast=b"second", key=b"two", sequence_id=second_sequence
+            ),
             None,
         ]
     )
@@ -587,7 +616,10 @@ async def test_subscribe_collection_entries_yields_snapshot_and_updates(
         (b"one", b"first"),
         (b"two", b"second"),
     ]
-    assert stream.request.initial_request.collection_name == "live_map"
+    assert stream.requests[0].initial_request.collection_name == "live_map"
+    assert stream.requests[1].sequence_id == checkpoint_sequence
+    assert stream.requests[2].sequence_id == first_sequence
+    assert stream.requests[3].sequence_id == second_sequence
 
 
 async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:
