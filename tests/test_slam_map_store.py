@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import defaultdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -201,8 +202,9 @@ async def test_slam_map_store_validates_integrated_cache_on_load(hass) -> None:
 
     await store.async_load()
 
-    assert store.tile_count == 0
-    assert store.structure_tile_count == 1
+    assert store.tile_count == 1
+    assert store.structure_tile_count == 0
+    assert store.entries() == (photo,)
 
     bounded = SlamMapStore(hass, "structure-load-entry")
     with patch("custom_components.matic_robot.slam_map_store.MAX_STORED_BYTES", 1):
@@ -418,6 +420,36 @@ async def test_slam_map_store_shutdown_resolves_delayed_private_write(hass) -> N
     restored = SlamMapStore(hass, "shutdown-entry")
     await restored.async_load()
     assert restored.tile_count == 0
+
+
+async def test_slam_map_store_shutdown_prevents_stream_reconnect(hass) -> None:
+    store = SlamMapStore(hass, "collector-shutdown-entry")
+    release = asyncio.Event()
+    subscribed = asyncio.Event()
+    calls: dict[str, int] = defaultdict(int)
+
+    async def entries(name):
+        calls[name] += 1
+        if len(calls) == 2:
+            subscribed.set()
+        await release.wait()
+        if False:
+            yield HermesCollectionEntry(b"", b"")
+
+    client = SimpleNamespace(async_subscribe_collection_entries=entries)
+    collector = asyncio.create_task(store.async_collect(client))
+    await subscribed.wait()
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.asyncio.sleep",
+        new_callable=AsyncMock,
+    ) as sleep:
+        await store.async_shutdown()
+        release.set()
+        await asyncio.wait_for(collector, 0.5)
+
+    assert calls == {"map_compressed_rgb": 1, "map_integrated": 1}
+    sleep.assert_not_awaited()
 
 
 async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> None:

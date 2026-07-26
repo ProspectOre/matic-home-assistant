@@ -270,7 +270,7 @@ class SlamMapStore:
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
     ) -> None:
-        while True:
+        while not self._closed:
             self._set_stream_state(name, "connecting")
             try:
                 async for entry in client.async_subscribe_collection_entries(name):
@@ -290,6 +290,8 @@ class SlamMapStore:
                 self._set_stream_state(name, "retrying")
             else:
                 self._set_stream_state(name, "retrying")
+            if self._closed:
+                return
             await asyncio.sleep(STREAM_RETRY_SECONDS)
 
     def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
@@ -577,6 +579,14 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                 dirty = True
                 continue
             if mission_token not in (None, tile.mission_token):
+                if structural and entries:
+                    # A delayed structural page from an older/newer mission
+                    # must never erase a usable photographic scene during
+                    # legacy-cache repair. Keep the photo mission and discard
+                    # only the mismatched supporting page; a later matching
+                    # page can still complete the pair.
+                    dirty = True
+                    continue
                 entries.clear()
                 structure_entries.clear()
                 truncated = False

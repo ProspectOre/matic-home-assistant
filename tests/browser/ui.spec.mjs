@@ -104,8 +104,15 @@ async function loadStudio(page, states = {}) {
     studio.panel = {};
     studio.hass = {
       states: syntheticStates,
-      auth: { data: { access_token: "synthetic-token" } },
+      auth: { data: { access_token: "stale-token-must-not-be-used" } },
       hassUrl: (path) => path,
+      fetchWithAuth: (path, init = {}) => fetch(path, {
+        ...init,
+        headers: {
+          ...(init.headers || {}),
+          Authorization: "Bearer synthetic-token",
+        },
+      }),
     };
     document.body.append(studio);
     window.__studio = studio;
@@ -358,6 +365,70 @@ test.describe("map studio", () => {
     await expect(studio.locator(".map-image")).toBeVisible();
     await expect(studio.locator(".scene-canvas")).toBeHidden();
     await expect(studio.locator(".resolution-value")).toHaveText("640 × 480");
+  });
+
+  test("coalesces repeated room-map updates while an image is loading", async ({ page }) => {
+    await installBrowserDoubles(page);
+    await page.addInitScript(() => {
+      window.__imageRequests = [];
+      window.__pendingImages = [];
+      class PendingImage extends EventTarget {
+        naturalWidth = 0;
+        naturalHeight = 0;
+        complete = false;
+
+        get src() {
+          return this._src || "";
+        }
+
+        set src(value) {
+          this._src = value;
+          if (value) {
+            window.__imageRequests.push(value);
+            window.__pendingImages.push(this);
+          }
+        }
+      }
+      window.Image = PendingImage;
+    });
+    const studio = await loadStudio(page);
+    await page.evaluate(() => {
+      window.__studio._view = "rooms";
+      window.__studio.hass = {
+        states: {
+          "camera.synthetic_rooms": {
+            state: "idle",
+            last_updated: "2026-01-01T00:00:00Z",
+            attributes: { robot_location_source: "exact_pose" },
+          },
+        },
+        auth: { data: { access_token: "synthetic-token" } },
+        hassUrl: (path) => path,
+      };
+    });
+    await expect.poll(() => page.evaluate(() => window.__imageRequests.length)).toBe(1);
+    await page.evaluate(async () => {
+      await window.__studio._update();
+      await window.__studio._update();
+      await window.__studio._update();
+    });
+    expect(await page.evaluate(() => window.__imageRequests.length)).toBe(1);
+    const dimensions = await page.evaluate(() => {
+      const url = new URL(window.__imageRequests[0], window.location.href);
+      return [Number(url.searchParams.get("width")), Number(url.searchParams.get("height"))];
+    });
+    expect(dimensions[0]).toBeLessThanOrEqual(2048);
+    expect(dimensions[1]).toBeLessThanOrEqual(2048);
+    await expect(studio.locator(".viewport")).toHaveAttribute("aria-busy", "true");
+    await page.evaluate(() => {
+      const image = window.__pendingImages[0];
+      image.naturalWidth = 1600;
+      image.naturalHeight = 1200;
+      image.complete = true;
+      image.dispatchEvent(new Event("load"));
+    });
+    await expect(studio.locator(".map-image")).not.toHaveAttribute("hidden", "");
+    await expect(studio.locator(".viewport")).toHaveAttribute("aria-busy", "false");
   });
 
   test("enters and exits browser full screen from the studio control", async ({ page }) => {

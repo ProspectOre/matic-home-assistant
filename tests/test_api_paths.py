@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import call as mock_call
@@ -92,6 +93,27 @@ class _BidirectionalSequenceStream(_SequenceStream):
     async def send_message(self, request, *, end):
         assert end is False
         self.requests.append(request)
+
+
+class _BlockingBidirectionalStream(_Stream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.receiving = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __aexit__(self, *args):
+        await self.cancelled.wait()
+
+    async def send_message(self, request, *, end):
+        assert end is False
+        self.request = request
+
+    async def recv_message(self):
+        self.receiving.set()
+        await asyncio.Event().wait()
+
+    async def cancel(self):
+        self.cancelled.set()
 
 
 class _TimeoutStream(_Stream):
@@ -620,6 +642,29 @@ async def test_subscribe_collection_entries_yields_snapshot_and_updates(
     assert stream.requests[1].sequence_id == checkpoint_sequence
     assert stream.requests[2].sequence_id == first_sequence
     assert stream.requests[3].sequence_id == second_sequence
+
+
+async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
+    monkeypatch,
+) -> None:
+    stream = _BlockingBidirectionalStream()
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    receive = asyncio.create_task(
+        anext(client.async_subscribe_collection_entries("live_map"))
+    )
+    await stream.receiving.wait()
+    receive.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(receive, 0.5)
+    assert stream.cancelled.is_set()
 
 
 async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:

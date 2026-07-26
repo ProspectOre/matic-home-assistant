@@ -109,6 +109,7 @@ class MaticMapStudio extends HTMLElement {
     this._poseLoading = false;
     this._fallbackVersion = undefined;
     this._fallbackLoader = undefined;
+    this._fallbackLoadingVersion = undefined;
     this._catalogEntries = [];
     this._catalogLoading = false;
     this._pointers = new Map();
@@ -201,7 +202,7 @@ class MaticMapStudio extends HTMLElement {
     window.clearTimeout(this._preferencesSaveTimer);
     this._savePreferences();
     this._resizeObserver?.disconnect();
-    if (this._fallbackLoader) this._fallbackLoader.src = "";
+    this._cancelFallbackLoad();
     document.removeEventListener("fullscreenchange", this._fullscreenHandler);
     this._reducedMotionQuery?.removeEventListener?.(
       "change",
@@ -335,8 +336,7 @@ class MaticMapStudio extends HTMLElement {
     if (this._catalogLoading) return;
     this._catalogLoading = true;
     try {
-      const response = await fetch(this._absoluteUrl(MATIC_MAP_CATALOG_URL), {
-        headers: this._authHeaders(),
+      const response = await this._authenticatedFetch(MATIC_MAP_CATALOG_URL, {
         cache: "no-store",
       });
       if (!response.ok) return;
@@ -387,8 +387,23 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _authHeaders() {
-    const token = this._hass?.auth?.data?.access_token;
+    const token = this._hass?.auth?.accessToken
+      || this._hass?.auth?.data?.access_token;
     return token ? { Authorization: `Bearer ${token}` } : {};
+  }
+
+  _authenticatedFetch(path, init = {}) {
+    const url = this._absoluteUrl(path);
+    if (typeof this._hass?.fetchWithAuth === "function") {
+      return this._hass.fetchWithAuth(url, init);
+    }
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...this._authHeaders(),
+        ...(init.headers || {}),
+      },
+    });
   }
 
   _absoluteUrl(path) {
@@ -694,9 +709,9 @@ class MaticMapStudio extends HTMLElement {
     this._sceneLoading = true;
     this._setLoading(true);
     try {
-      const headers = this._authHeaders();
+      const headers = {};
       if (this._sceneEtag && !force) headers["If-None-Match"] = this._sceneEtag;
-      const response = await fetch(this._absoluteUrl(url), {
+      const response = await this._authenticatedFetch(url, {
         headers,
         cache: "no-store",
       });
@@ -749,8 +764,7 @@ class MaticMapStudio extends HTMLElement {
     if (!url || this._poseLoading || !this._scene) return;
     this._poseLoading = true;
     try {
-      const response = await fetch(this._absoluteUrl(url), {
-        headers: this._authHeaders(),
+      const response = await this._authenticatedFetch(url, {
         cache: "no-store",
       });
       if (!response.ok) return;
@@ -853,6 +867,8 @@ class MaticMapStudio extends HTMLElement {
     canvas.hidden = true;
     overlays.hidden = true;
     if (!selected) {
+      this._cancelFallbackLoad();
+      this._setLoading(false);
       image.hidden = true;
       this._setEmpty(
         this._localize(
@@ -864,20 +880,42 @@ class MaticMapStudio extends HTMLElement {
     }
     const [entityId, state] = selected;
     const version = `${entityId}:${state.last_updated}:${state.attributes?.map_revision || "rooms"}`;
+    const viewport = this.shadowRoot.querySelector(".viewport");
+    const pixelRatio = maticClamp(window.devicePixelRatio || 1, 1, 2);
+    const requestedWidth = maticClamp(
+      Math.ceil(viewport.clientWidth * pixelRatio),
+      1024,
+      2048,
+    );
+    const requestedHeight = maticClamp(
+      Math.ceil(viewport.clientHeight * pixelRatio),
+      1024,
+      2048,
+    );
+    const loadingVersion = `${version}:${requestedWidth}x${requestedHeight}`;
     if (!force && version === this._fallbackVersion && image.naturalWidth > 0) {
       image.hidden = false;
+      this._setLoading(false);
       this._setEmpty();
       return;
     }
+    if (
+      this._fallbackLoader
+      && loadingVersion === this._fallbackLoadingVersion
+    ) {
+      return;
+    }
+    this._cancelFallbackLoad();
     const token = state.attributes?.access_token;
     const query = new URLSearchParams({
-      width: "4096",
-      height: "4096",
+      width: String(requestedWidth),
+      height: String(requestedHeight),
       t: String(Date.now()),
     });
     if (token) query.set("token", token);
     const loader = new Image();
     this._fallbackLoader = loader;
+    this._fallbackLoadingVersion = loadingVersion;
     this._setLoading(true);
     loader.addEventListener("load", () => {
       if (this._fallbackLoader !== loader) return;
@@ -885,6 +923,7 @@ class MaticMapStudio extends HTMLElement {
       image.hidden = false;
       this._fallbackVersion = version;
       this._fallbackLoader = undefined;
+      this._fallbackLoadingVersion = undefined;
       this._setLoading(false);
       this._setEmpty();
       this.shadowRoot.querySelector(".resolution-value").textContent =
@@ -893,6 +932,7 @@ class MaticMapStudio extends HTMLElement {
     loader.addEventListener("error", () => {
       if (this._fallbackLoader !== loader) return;
       this._fallbackLoader = undefined;
+      this._fallbackLoadingVersion = undefined;
       this._setLoading(false);
       if (!(image.complete && image.naturalWidth > 0)) {
         image.hidden = true;
@@ -918,11 +958,20 @@ class MaticMapStudio extends HTMLElement {
 
   _showSpatialScene() {
     if (!this._scene || this._view === "rooms") return;
+    this._cancelFallbackLoad();
+    this._setLoading(false);
     this.shadowRoot.querySelector(".scene-canvas").hidden = false;
     this.shadowRoot.querySelector(".spatial-overlays").hidden = false;
     this.shadowRoot.querySelector(".map-image").hidden = true;
     this._setEmpty();
     this._requestRender();
+  }
+
+  _cancelFallbackLoad() {
+    const loader = this._fallbackLoader;
+    this._fallbackLoader = undefined;
+    this._fallbackLoadingVersion = undefined;
+    if (loader) loader.src = "";
   }
 
   _setEmpty(message) {

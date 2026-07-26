@@ -32,8 +32,10 @@ Home Assistant while exposing saved areas to automations by name.
   private Home Assistant store.
 - A lifecycle-managed tracked Hermes subscription keeps both bidirectional
   streams open and acknowledges every server sequence so emitted map pages and
-  later refinements advance into the private cache. A settled/balanced health
-  signal is not proof that every physical surface was scanned.
+  later refinements advance into the private cache. Streams are explicitly
+  cancelled at unload, and a closed collector cannot reconnect during restart.
+  A settled/balanced health signal is not proof that every physical surface was
+  scanned.
 - The renderer transposes the robot's channel-major floor tensor into map space
   before compositing pages. Neighboring live edges are continuous, eliminating
   the repeated 32-by-32 texture squares caused by flat raster reversal.
@@ -45,7 +47,10 @@ Home Assistant while exposing saved areas to automations by name.
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
   twist, tilt, fit, refresh, keyboard access, full-screen mode, loading/error
   feedback, room labels, and a live robot marker, with an automatic room-map
-  fallback while SLAM pages are unavailable.
+  fallback while SLAM pages are unavailable. Private requests use Home
+  Assistant's authenticated frontend transport. Room images are sized to the
+  display (up to 2048 pixels) and coalesced while rendering so periodic updates
+  cannot cancel and restart the same expensive image request.
 - The photographic camera is disabled by default. Scene and pose endpoints
   require an administrator and use `private, no-store` responses. In-memory
   encoded scenes are purged on unload and removal. No cloud, analytics,
@@ -57,6 +62,8 @@ Home Assistant while exposing saved areas to automations by name.
   after relevant changes; a guaranteed last-scanned timestamp, point-cloud
   deltas, and historical timelines are not part of 0.3.
 - Removing the config entry also removes its private accumulated tile store.
+- Legacy mixed-mission cache repair retains a usable photographic layer instead
+  of allowing a mismatched structural page to erase the 3D scene.
 
 ## Named custom-area actions
 
@@ -92,8 +99,9 @@ Home Assistant while exposing saved areas to automations by name.
 
 ## Verification posture
 
-Before publication, the local candidate must pass the complete test suite at
-100% coverage, JavaScript/browser validation, strict typing, lint and format
-checks, privacy inspection, release-artifact validation, and private real Home
-Assistant/Safari proof. This document does not by itself claim those final gates
-have passed.
+The unpublished local candidate passed 678 tests / 6,579 statements at 100%
+coverage, 10 real-browser UI tests, strict typing, lint/format, privacy,
+wheel/source parity, and clean-wheel import. Live Home Assistant/Safari proof
+covered maximum-detail 3D, exact pose, orbit, top-down, labeled Rooms, forced
+refresh, repeated updates, and a second clean restart with no Matic task leak,
+authentication failure, or traceback. No push, PR, tag, or release was made.

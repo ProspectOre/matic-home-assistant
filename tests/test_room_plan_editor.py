@@ -249,7 +249,11 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert "response.arrayBuffer()" in panel
     assert "response.status === 304" in panel
     assert "Authorization: `Bearer ${token}`" in panel
-    assert 'width: "4096"' in panel
+    assert 'typeof this._hass?.fetchWithAuth === "function"' in panel
+    assert "this._hass.fetchWithAuth(url, init)" in panel
+    assert "viewport.clientWidth * pixelRatio" in panel
+    assert "viewport.clientHeight * pixelRatio" in panel
+    assert "this._fallbackLoadingVersion" in panel
     assert "const loader = new Image();" in panel
     assert "new ResizeObserver" in panel
     assert "viewport.releasePointerCapture" in panel
