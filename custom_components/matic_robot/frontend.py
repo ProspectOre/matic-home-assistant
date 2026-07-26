@@ -10,6 +10,8 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
+from .slam_scene import MaticSlamPoseView, MaticSlamSceneView
+
 # Include both the packaged version and the editor content in the cache-buster.
 # Both are loaded once at import time, off the event loop.
 MANIFEST_VERSION = json.loads(
@@ -21,6 +23,12 @@ ROOM_PLAN_EDITOR_VERSION = sha256(
 ROOM_PLAN_EDITOR_PATH = (
     f"/matic_robot/{MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}/room-plan-editor.js"
 )
+MATIC_MAP_STUDIO_VERSION = sha256(
+    Path(__file__).with_name("matic_map_studio.js").read_bytes()
+).hexdigest()[:12]
+MATIC_MAP_STUDIO_PATH = (
+    f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_VERSION}/matic-map-studio.js"
+)
 MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-0"
 
 
@@ -29,9 +37,17 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     path = Path(__file__).with_name("room_plan_editor.js")
+    studio_path = Path(__file__).with_name("matic_map_studio.js")
     await hass.http.async_register_static_paths(
-        [StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True)]
+        [
+            StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True),
+            StaticPathConfig(
+                MATIC_MAP_STUDIO_PATH, str(studio_path), cache_headers=True
+            ),
+        ]
     )
+    hass.http.register_view(MaticSlamSceneView)
+    hass.http.register_view(MaticSlamPoseView)
     frontend.add_extra_js_url(
         hass,
         ROOM_PLAN_EDITOR_PATH,
@@ -49,6 +65,6 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
             sidebar_title="Matic Map",
             sidebar_icon="mdi:robot-vacuum",
-            module_url=ROOM_PLAN_EDITOR_PATH,
+            module_url=MATIC_MAP_STUDIO_PATH,
             require_admin=True,
         )

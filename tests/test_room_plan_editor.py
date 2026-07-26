@@ -26,6 +26,8 @@ from custom_components.matic_robot.room_plan_selector import MaticRoomPlanSelect
 
 _EDITOR_PATH = Path(frontend.__file__).with_name("room_plan_editor.js")
 _JS = _EDITOR_PATH.read_text(encoding="utf-8")
+_STUDIO_PATH = Path(frontend.__file__).with_name("matic_map_studio.js")
+_STUDIO_JS = _STUDIO_PATH.read_text(encoding="utf-8")
 
 
 def test_registers_ha_selector_for_python_selector_type() -> None:
@@ -108,6 +110,8 @@ def test_static_path_serves_the_editor_file() -> None:
     """The registered static path must point at this exact module file."""
     assert frontend.ROOM_PLAN_EDITOR_PATH.endswith(".js")
     assert Path(frontend.__file__).with_name("room_plan_editor.js") == _EDITOR_PATH
+    assert frontend.MATIC_MAP_STUDIO_PATH.endswith(".js")
+    assert Path(frontend.__file__).with_name("matic_map_studio.js") == _STUDIO_PATH
 
 
 def test_nested_select_change_does_not_escape_as_the_editor_value() -> None:
@@ -217,17 +221,41 @@ def test_area_editor_drag_creates_one_circle_with_a_preview() -> None:
 
 
 def test_map_panel_has_private_live_navigation_controls() -> None:
-    """The sidebar map supports bounded zoom/pan, refresh, and keyboard use."""
-    panel = _JS[_JS.index("class MaticMapPanel") :]
-    assert "private and live" in panel
-    assert "Math.max(1, Math.min(10" in panel
+    """The studio renders true bounded 3D geometry with native-style gestures."""
+    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
+    assert "Full local SLAM · private inside Home Assistant" in panel
+    assert 'canvas.getContext("webgl2"' in panel
+    assert "gl_PointCoord" in panel
+    assert "vertexAttribIPointer" in panel
+    assert "MATIC_SCENE_MAX_POINTS" in _STUDIO_JS
+    assert 'data-view="three"' in panel
+    assert 'data-view="top"' in panel
+    assert "maticOrthographic" in _STUDIO_JS
+    assert "maticPerspective" in _STUDIO_JS
     assert 'class="refresh"' in panel
+    assert 'class="zoom-slider"' in panel
+    assert 'class="resolution-value"' in panel
     assert 'viewport.addEventListener("keydown"' in panel
     assert 'viewport.addEventListener("dblclick"' in panel
+    assert 'viewport.addEventListener("gesturestart"' in panel
+    assert 'viewport.addEventListener("gesturechange"' in panel
+    assert "event.rotation" in panel
+    assert "centerY - this._pinch.centerY" in panel
+    assert "maticAngleDelta(angle - this._pinch.angle)" in panel
+    assert "_startInertia" in panel
+    assert "this._panBy(-event.deltaX, -event.deltaY)" in panel
+    assert "Math.PI / 2 - 0.018" in panel
+    assert 'headers["If-None-Match"]' in panel
+    assert "response.arrayBuffer()" in panel
+    assert "response.status === 304" in panel
+    assert "Authorization: `Bearer ${token}`" in panel
+    assert 'width: "4096"' in panel
+    assert "const loader = new Image();" in panel
+    assert "new ResizeObserver" in panel
     assert "viewport.releasePointerCapture" in panel
-    assert ".empty[hidden] { display: none; }" in panel
-    assert 'empty.style.display = "none";' in panel
-    assert 'empty.style.display = "grid";' in panel
+    assert 'class="room-labels"' in panel
+    assert 'class="robot-marker"' in panel
+    assert "label.textContent = room.name" in panel
 
 
 def test_hass_refresh_does_not_rebuild_an_open_editor() -> None:
@@ -253,7 +281,11 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     expected = sha256(_EDITOR_PATH.read_bytes()).hexdigest()[:12]
     assert frontend.ROOM_PLAN_EDITOR_VERSION == expected
     assert expected in frontend.ROOM_PLAN_EDITOR_PATH
-    assert 'customElements.get("matic-map-panel-v0-3-0")' in _JS
+
+    studio_expected = sha256(_STUDIO_PATH.read_bytes()).hexdigest()[:12]
+    assert frontend.MATIC_MAP_STUDIO_VERSION == studio_expected
+    assert studio_expected in frontend.MATIC_MAP_STUDIO_PATH
+    assert 'customElements.get("matic-map-panel-v0-3-0")' in _STUDIO_JS
 
 
 def test_node_syntax_check() -> None:
@@ -261,10 +293,11 @@ def test_node_syntax_check() -> None:
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not available on PATH")
-    result = subprocess.run(
-        [node, "--check", str(_EDITOR_PATH)],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    assert result.returncode == 0, result.stderr
+    for path in (_EDITOR_PATH, _STUDIO_PATH):
+        result = subprocess.run(
+            [node, "--check", str(path)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr

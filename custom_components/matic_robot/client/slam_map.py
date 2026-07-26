@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import math
+import struct
 from collections.abc import Iterator
 from dataclasses import dataclass
 from io import BytesIO
 
 import numpy as np
 from google.protobuf.message import DecodeError
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .models import FloorPlan, HermesCollectionEntry
 from .wire import first_bytes, first_varint
@@ -21,6 +24,12 @@ FLOOR_RGBA_BYTES = TILE_SIDE * TILE_SIDE * 4 * 2
 # Each page covers 32 x 32 cells at the robot's verified 1.5 cm map resolution.
 VOXEL_SCALE_METERS = 0.015
 _MAX_TILES = 1024
+SCENE_MAGIC = b"MATIC3D\x00"
+SCENE_VERSION = 1
+SCENE_POINT_STRIDE = 8
+MAX_SCENE_POINTS = 1_500_000
+MAX_SCENE_SPAN = 65_536
+_SCENE_HEADER = struct.Struct("<8sHHIII")
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +68,158 @@ class SlamStructureTile:
     mission_token: str
     occupancy: bytes
     semantics: bytes
+
+
+def encode_slam_scene(
+    tiles: tuple[SlamTile, ...],
+    *,
+    floor_plan: FloorPlan | None = None,
+    max_points: int = MAX_SCENE_POINTS,
+) -> bytes:
+    """Encode the private color point cloud for the local WebGL studio.
+
+    Positions use two unsigned 16-bit map-local coordinates, one unsigned
+    8-bit height, and RGB bytes. The compact fixed stride avoids transferring
+    JSON for more than a million points and is decoded without copies by
+    WebGL. Deterministic sampling keeps pathological maps bounded.
+    """
+    if not tiles:
+        raise DecodeError("no photorealistic SLAM tiles are cached")
+    if len(tiles) > _MAX_TILES or max_points < 1:
+        raise DecodeError("invalid photorealistic SLAM scene bounds")
+    min_cell_x = min(tile.page_x * TILE_SIDE for tile in tiles)
+    min_cell_y = min(tile.page_y * TILE_SIDE for tile in tiles)
+    max_cell_x = max(tile.page_x * TILE_SIDE + TILE_SIDE - 1 for tile in tiles)
+    max_cell_y = max(tile.page_y * TILE_SIDE + TILE_SIDE - 1 for tile in tiles)
+    span_x = max_cell_x - min_cell_x + 1
+    span_y = max_cell_y - min_cell_y + 1
+    if span_x > MAX_SCENE_SPAN or span_y > MAX_SCENE_SPAN:
+        raise DecodeError("photorealistic SLAM scene is too wide")
+
+    floor_counts: list[int] = []
+    surface_counts: list[int] = []
+    for tile in tiles:
+        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
+            TILE_SIDE, TILE_SIDE, 4
+        )
+        floor_counts.append(int(np.count_nonzero(floor[:, :, 3])))
+        surfaces = np.unpackbits(
+            np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
+        ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
+        surface_counts.append(int(np.count_nonzero(surfaces[:, :, 7:])))
+    total_points = sum(floor_counts) + sum(surface_counts)
+    if total_points == 0:
+        raise DecodeError("photorealistic SLAM scene has no visible content")
+    sample_step = max(1, math.ceil(total_points / max_points))
+
+    point_dtype = np.dtype(
+        [
+            ("x", "<u2"),
+            ("y", "<u2"),
+            ("z", "u1"),
+            ("red", "u1"),
+            ("green", "u1"),
+            ("blue", "u1"),
+        ]
+    )
+    floor_chunks: list[bytes] = []
+    surface_chunks: list[bytes] = []
+    floor_point_count = 0
+    surface_point_count = 0
+    global_ordinal = 0
+
+    for tile, count in zip(tiles, floor_counts, strict=True):
+        floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
+            TILE_SIDE, TILE_SIDE, 4
+        )
+        local_y, local_x = np.nonzero(floor[:, :, 3])
+        keep = (global_ordinal + np.arange(count)) % sample_step == 0
+        global_ordinal += count
+        local_x = local_x[keep]
+        local_y = local_y[keep]
+        colors = floor[:, :, :3][floor[:, :, 3] != 0][keep]
+        points = np.empty(len(local_x), dtype=point_dtype)
+        points["x"] = tile.page_x * TILE_SIDE + local_x - min_cell_x
+        points["y"] = tile.page_y * TILE_SIDE + local_y - min_cell_y
+        points["z"] = 0
+        points["red"] = colors[:, 0]
+        points["green"] = colors[:, 1]
+        points["blue"] = colors[:, 2]
+        floor_chunks.append(points.tobytes())
+        floor_point_count += len(points)
+
+    for tile, count in zip(tiles, surface_counts, strict=True):
+        surfaces = np.unpackbits(
+            np.frombuffer(tile.surface_bits, dtype=np.uint8), bitorder="big"
+        ).reshape(TILE_SIDE, TILE_SIDE, TILE_HEIGHT)
+        local_x, local_y, levels = np.nonzero(surfaces)
+        if tile.rgb_data:
+            colors = np.frombuffer(tile.rgb_data, dtype=np.uint8).reshape(-1, 3)
+        else:
+            colors = np.full((len(levels), 3), (96, 112, 128), dtype=np.uint8)
+        visible = levels >= 7
+        local_x = local_x[visible]
+        local_y = local_y[visible]
+        colors = colors[visible]
+        levels = levels[visible] - 7
+        keep = (global_ordinal + np.arange(count)) % sample_step == 0
+        global_ordinal += count
+        local_x = local_x[keep]
+        local_y = local_y[keep]
+        colors = colors[keep]
+        levels = levels[keep]
+        points = np.empty(len(local_x), dtype=point_dtype)
+        points["x"] = tile.page_x * TILE_SIDE + local_x - min_cell_x
+        points["y"] = tile.page_y * TILE_SIDE + local_y - min_cell_y
+        points["z"] = levels
+        points["red"] = colors[:, 0]
+        points["green"] = colors[:, 1]
+        points["blue"] = colors[:, 2]
+        surface_chunks.append(points.tobytes())
+        surface_point_count += len(points)
+
+    rooms: list[dict[str, object]] = []
+    if floor_plan is not None:
+        for room in floor_plan.rooms:
+            if not room.boundary:
+                continue
+            boundary = [
+                [
+                    x / VOXEL_SCALE_METERS - min_cell_x,
+                    y / VOXEL_SCALE_METERS - min_cell_y,
+                ]
+                for x, y in room.boundary
+            ]
+            rooms.append(
+                {
+                    "name": room.name,
+                    "boundary": boundary,
+                    "center": [
+                        sum(point[0] for point in boundary) / len(boundary),
+                        sum(point[1] for point in boundary) / len(boundary),
+                    ],
+                }
+            )
+    metadata = json.dumps(
+        {
+            "meters_per_cell": VOXEL_SCALE_METERS,
+            "origin_cells": [min_cell_x, min_cell_y],
+            "span_cells": [span_x, span_y],
+            "sample_step": sample_step,
+            "rooms": rooms,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode()
+    header = _SCENE_HEADER.pack(
+        SCENE_MAGIC,
+        SCENE_VERSION,
+        SCENE_POINT_STRIDE,
+        len(metadata),
+        floor_point_count,
+        surface_point_count,
+    )
+    return b"".join((header, metadata, *floor_chunks, *surface_chunks))
 
 
 def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
@@ -291,6 +452,16 @@ def render_slam_map(
             robot_position[1] / VOXEL_SCALE_METERS,
             2,
         )
+
+    # Matic's app presents the isometric scene from the opposite side of the
+    # house from the raw x-y projection above. Mirror the finished geometry,
+    # then mirror only the pending overlay coordinates so labels themselves
+    # remain readable and the robot marker stays exact.
+    scene = ImageOps.mirror(scene)
+    mirror_x = scene.width - 1
+    labels = [(name, mirror_x - x, y) for name, x, y in labels]
+    if robot_marker is not None:
+        robot_marker = (mirror_x - robot_marker[0], robot_marker[1])
 
     bounds = scene.getbbox()
     if bounds is None:

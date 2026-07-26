@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import struct
 from io import BytesIO
+from unittest.mock import patch
 
 import pytest
 from google.protobuf.message import DecodeError
-from PIL import Image
+from PIL import Image, ImageOps
 
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -16,10 +18,14 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_map import (
     FLOOR_RGBA_BYTES,
+    SCENE_MAGIC,
+    SCENE_POINT_STRIDE,
+    SCENE_VERSION,
     SURFACE_BYTES,
     SlamTile,
     decode_slam_structure_tile,
     decode_slam_tile,
+    encode_slam_scene,
     render_slam_map,
 )
 
@@ -214,6 +220,111 @@ def test_decode_slam_tile_uses_neutral_color_when_rgb_is_absent() -> None:
     assert tile.voxels[0].color == (96, 112, 128)
 
 
+def test_encode_slam_scene_packs_floor_surface_rooms_and_neutral_color() -> None:
+    tile = decode_slam_tile(
+        synthetic_slam_entry(
+            page_x=-2,
+            page_y=3,
+            surface_height=8,
+            surface_outer=1,
+            surface_inner=2,
+            with_rgb=False,
+        )
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room-1",
+                "Synthetic room",
+                "protocol-1",
+                b"room",
+                ((-0.96, 1.44), (-0.48, 1.44), (-0.48, 1.92), (-0.96, 1.92)),
+            ),
+            Room("empty", "Ignored", "empty", b"empty", ()),
+        ),
+    )
+
+    scene = encode_slam_scene((tile,), floor_plan=floor_plan)
+    header = struct.unpack_from("<8sHHIII", scene)
+    magic, version, stride, metadata_size, floor_count, surface_count = header
+    assert (magic, version, stride) == (
+        SCENE_MAGIC,
+        SCENE_VERSION,
+        SCENE_POINT_STRIDE,
+    )
+    assert (floor_count, surface_count) == (1024, 1)
+    metadata_start = struct.calcsize("<8sHHIII")
+    metadata = json.loads(
+        scene[metadata_start : metadata_start + metadata_size].decode()
+    )
+    assert metadata == {
+        "meters_per_cell": 0.015,
+        "origin_cells": [-64, 96],
+        "span_cells": [32, 32],
+        "sample_step": 1,
+        "rooms": [
+            {
+                "name": "Synthetic room",
+                "boundary": [[0.0, 0.0], [32.0, 0.0], [32.0, 32.0], [0.0, 32.0]],
+                "center": [16.0, 16.0],
+            }
+        ],
+    }
+    points_start = metadata_start + metadata_size
+    assert struct.unpack_from("<HHBBBB", scene, points_start) == (0, 0, 0, 12, 34, 56)
+    surface_start = points_start + floor_count * SCENE_POINT_STRIDE
+    assert struct.unpack_from("<HHBBBB", scene, surface_start) == (
+        1,
+        2,
+        1,
+        96,
+        112,
+        128,
+    )
+    assert len(scene) == surface_start + SCENE_POINT_STRIDE
+
+
+def test_encode_slam_scene_deterministically_bounds_point_count() -> None:
+    tile = decode_slam_tile(synthetic_slam_entry())
+
+    scene = encode_slam_scene((tile,), max_points=2)
+
+    _, _, _, metadata_size, floor_count, surface_count = struct.unpack_from(
+        "<8sHHIII", scene
+    )
+    metadata_start = struct.calcsize("<8sHHIII")
+    metadata = json.loads(
+        scene[metadata_start : metadata_start + metadata_size].decode()
+    )
+    assert metadata["sample_step"] == 513
+    assert floor_count + surface_count == 2
+
+
+def test_encode_slam_scene_rejects_empty_unbounded_or_invisible_data() -> None:
+    tile = SlamTile(0, 0, "mission", bytes(4096), bytes(SURFACE_BYTES), b"")
+    with pytest.raises(DecodeError, match="no photorealistic"):
+        encode_slam_scene(())
+    with pytest.raises(DecodeError, match="invalid photorealistic"):
+        encode_slam_scene((tile,) * 1025)
+    with pytest.raises(DecodeError, match="invalid photorealistic"):
+        encode_slam_scene((tile,), max_points=0)
+    with pytest.raises(DecodeError, match="no visible"):
+        encode_slam_scene((tile,))
+    far_tile = SlamTile(
+        2048,
+        0,
+        tile.mission_token,
+        tile.floor_rgba,
+        tile.surface_bits,
+        tile.rgb_data,
+    )
+    with pytest.raises(DecodeError, match="too wide"):
+        encode_slam_scene((tile, far_tile))
+
+
 def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None:
     tile = decode_slam_structure_tile(synthetic_structure_entry())
 
@@ -244,7 +355,13 @@ def test_decode_integrated_slam_tile_rejects_malformed_shapes(malformed: str) ->
 
 def test_render_slam_map_produces_requested_local_png() -> None:
     tile = decode_slam_tile(synthetic_slam_entry())
-    result = render_slam_map((tile,), width=320, height=240)
+    with patch(
+        "custom_components.matic_robot.client.slam_map.ImageOps.mirror",
+        wraps=ImageOps.mirror,
+    ) as mirror:
+        result = render_slam_map((tile,), width=320, height=240)
+
+    mirror.assert_called_once()
 
     with Image.open(BytesIO(result)) as image:
         assert image.format == "PNG"

@@ -923,7 +923,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert image == b"synthetic-png"
     assert cached == image
     assert render.call_count == 1
-    assert render.call_args.kwargs == {"width": 256, "height": 2048}
+    assert render.call_args.kwargs == {"width": 256, "height": 4096}
     assert entity.extra_state_attributes == {"robot_location_source": "exact_pose"}
 
 
@@ -942,18 +942,22 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "custom_components.matic_robot.camera._render_photorealistic_entries",
         return_value=b"photorealistic-png",
     ) as render:
-        image = await entity.async_camera_image()
-        cached = await entity.async_camera_image()
+        image = await entity.async_camera_image(width=5000, height=3000)
+        cached = await entity.async_camera_image(width=5000, height=3000)
 
     assert image == b"photorealistic-png"
     assert cached == image
     render.assert_called_once()
+    assert render.call_args.kwargs["width"] == 4096
+    assert render.call_args.kwargs["height"] == 3000
     assert entity.extra_state_attributes == {
         "cached_tiles": 1,
         "structural_tiles": 1,
         "map_complete": True,
         "map_revision": 1,
         "source": "local_robot_slam",
+        "scene_url": "/api/matic_robot/slam_scene/entry",
+        "pose_url": "/api/matic_robot/slam_pose/entry",
     }
 
 
@@ -964,7 +968,15 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     await entity._render_lock.acquire()
     task = hass.async_create_task(entity.async_camera_image())
     await asyncio.sleep(0)
-    entity._cached_key = (0, 1024, 1024)
+    data = entry.runtime_data.coordinator.data
+    entity._cached_key = (
+        entry.runtime_data.slam_map.revision,
+        id(data.floor_plan),
+        data.pose,
+        data.operational.current_area,
+        1024,
+        1024,
+    )
     entity._cached_image = b"finished-by-first-request"
     entity._render_lock.release()
 

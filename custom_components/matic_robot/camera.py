@@ -18,8 +18,10 @@ from .client.slam_map import (
     render_slam_map,
 )
 from .entity import MaticEntity
+from .slam_scene import pose_api_url, scene_api_url
 
 PARALLEL_UPDATES = 0
+MAX_CAMERA_DIMENSION = 4096
 
 
 async def async_setup_entry(
@@ -49,8 +51,8 @@ class MaticMapCamera(MaticEntity, Camera):
     ) -> bytes:
         """Return the current labeled room map."""
         data = self.coordinator.data
-        requested_width = min(max(width or 1024, 256), 2048)
-        requested_height = min(max(height or 1024, 256), 2048)
+        requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
+        requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         cache_key = (
             id(data.floor_plan),
             data.pose,
@@ -101,7 +103,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             f"{self.coordinator.data.info.serial_number}_photorealistic_map"
         )
         self._store = entry.runtime_data.slam_map
-        self._cached_key: tuple[int, int, int] | None = None
+        self._cached_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
         self._render_lock = asyncio.Lock()
 
@@ -109,16 +111,31 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         self, width: int | None = None, height: int | None = None
     ) -> bytes:
         """Fetch one current tile and render the accumulated isometric map."""
-        requested_width = min(max(width or 1024, 256), 2048)
-        requested_height = min(max(height or 1024, 256), 2048)
-        key = (self._store.revision, requested_width, requested_height)
+        requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
+        requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
+        data = self.coordinator.data
+        key = (
+            self._store.revision,
+            id(data.floor_plan),
+            data.pose,
+            data.operational.current_area,
+            requested_width,
+            requested_height,
+        )
         if key == self._cached_key and self._cached_image is not None:
             return self._cached_image
         async with self._render_lock:
-            key = (self._store.revision, requested_width, requested_height)
+            data = self.coordinator.data
+            key = (
+                self._store.revision,
+                id(data.floor_plan),
+                data.pose,
+                data.operational.current_area,
+                requested_width,
+                requested_height,
+            )
             if key == self._cached_key and self._cached_image is not None:
                 return self._cached_image
-            data = self.coordinator.data
             entries = self._store.entries()
             structure_entries = self._store.structure_entries()
             image = await self.hass.async_add_executor_job(
@@ -144,6 +161,8 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
             "source": "local_robot_slam",
+            "scene_url": scene_api_url(self._config_entry.entry_id),
+            "pose_url": pose_api_url(self._config_entry.entry_id),
         }
 
 

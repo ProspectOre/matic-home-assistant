@@ -92,9 +92,11 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
+    assert hass.http.register_view.call_count == 2
     from custom_components.matic_robot.frontend import (
         MANIFEST_VERSION,
         MATIC_MAP_PANEL_ELEMENT,
+        MATIC_MAP_STUDIO_PATH,
         ROOM_PLAN_EDITOR_PATH,
         ROOM_PLAN_EDITOR_VERSION,
     )
@@ -106,6 +108,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert panel.require_admin is True
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
+    assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_PATH
 
 
 async def test_setup_refreshes_before_forwarding_platforms() -> None:

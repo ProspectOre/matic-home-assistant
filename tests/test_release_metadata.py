@@ -19,6 +19,7 @@ REPOSITORY_URL = "https://github.com/ProspectOre/matic-home-assistant"
 # the manifest requirements or by Home Assistant core's own constraints.
 IMPORT_ROOT_TO_DISTRIBUTION = {
     "PIL": "Pillow",
+    "aiohttp": "aiohttp",
     "bleak": "bleak",
     "bleak_retry_connector": "bleak-retry-connector",
     "cryptography": "cryptography",
