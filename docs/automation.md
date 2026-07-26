@@ -145,11 +145,14 @@ three views use the same local map coordinate system:
 release; touch retains momentum. Camera targets remain bounded so the house
 cannot be stranded off-screen, and a transient refresh failure keeps the last
 good 3D scene visible while the viewer reconnects. Full-screen, pointer, touch,
-and keyboard controls are also available. Clicking, dragging, or scrolling the
-map gives it keyboard focus, so the arrow keys and shortcuts work immediately
-after mouse navigation without an extra click. During startup or a live map
-update, the studio serves a coherent captured scene and advances on the next
-poll; it does not wait for the collector to become completely idle.
+and keyboard controls are also available. If WebGL is unavailable or its
+context is lost, the labeled local camera map stays visible across refreshes;
+the retained 3D scene returns without another download when rendering recovers.
+Clicking, dragging, or scrolling the map gives it keyboard focus, so the arrow
+keys and shortcuts work immediately after mouse navigation without an extra
+click. During startup or a live map update, the studio serves a coherent
+captured scene and advances on the next poll; it does not wait for the collector
+to become completely idle.
 Robot pose updates and map-page updates have different cadences, so a marker or
 scene can briefly lag the physical robot. A content revision or health change
 asks the viewer to reload a bounded scene; 0.3 does not send point-level deltas

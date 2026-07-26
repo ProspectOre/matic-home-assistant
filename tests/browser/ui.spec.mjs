@@ -519,7 +519,7 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__glCalls.some(([name]) => name === "bufferData"))).toBe(true);
   });
 
-  test("falls back to the local camera image after WebGL context loss", async ({ page }) => {
+  test("uses the local camera map when WebGL 2 is unavailable", async ({ page }) => {
     await installBrowserDoubles(page, { images: true });
     const studio = await loadStudio(page, {
       "camera.synthetic_map": {
@@ -528,10 +528,58 @@ test.describe("map studio", () => {
         attributes: { source: "local_robot_slam", map_revision: 1 },
       },
     });
-    await studio.locator(".scene-canvas").dispatchEvent("webglcontextlost");
     await expect(studio.locator(".map-image")).toBeVisible();
     await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText("3D rendering paused");
+    await expect(studio.locator(".status")).toHaveAttribute("data-tone", "warning");
     await expect(studio.locator(".resolution-value")).toHaveText("640 × 480");
+  });
+
+  test("keeps the fallback stable and restores 3D after WebGL context loss", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true, images: true });
+    let sceneRequests = 0;
+    await page.route("**/synthetic-scene", (route) => {
+      sceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene(),
+        headers: { "Content-Type": "application/octet-stream", ETag: '"synthetic-context-1"' },
+      });
+    });
+    const studio = await loadStudio(page, {
+      "camera.synthetic_map": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_robot_slam",
+          scene_url: "/synthetic-scene",
+          map_revision: 1,
+          map_complete: true,
+        },
+      },
+    });
+    const canvas = studio.locator(".scene-canvas");
+    await expect(canvas).toBeVisible();
+    expect(sceneRequests).toBe(1);
+
+    await canvas.dispatchEvent("webglcontextlost", { cancelable: true });
+    await expect(studio.locator(".map-image")).toBeVisible();
+    await expect(canvas).toBeHidden();
+    await expect(studio.locator(".status")).toContainText("3D rendering paused");
+
+    await page.evaluate(() => window.__studio._update(true));
+    await expect(studio.locator(".map-image")).toBeVisible();
+    await expect(canvas).toBeHidden();
+    expect(sceneRequests).toBe(1);
+
+    await canvas.dispatchEvent("webglcontextrestored");
+    await expect(canvas).toBeVisible();
+    await expect(studio.locator(".map-image")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText("Full local 3D scene");
+    expect(sceneRequests).toBe(1);
+    expect(await page.evaluate(() => window.__glCalls.some(
+      ([name]) => name === "bufferData",
+    ))).toBe(true);
   });
 
   test("coalesces repeated room-map updates while an image is loading", async ({ page }) => {

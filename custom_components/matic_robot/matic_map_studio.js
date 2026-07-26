@@ -889,11 +889,15 @@ class MaticMapStudio extends HTMLElement {
     if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
     } else if (photoState) {
-      this._fetchScene(photoState, force);
-      this._fetchPose(photoState);
-      if (this._scene) {
-        this._showSpatialScene();
-        this._updateSceneStatus(photoState);
+      if (!this._webglAvailable) {
+        this._showRenderingFallback(entities.rooms || entities.photo, force);
+      } else {
+        this._fetchScene(photoState, force);
+        this._fetchPose(photoState);
+        if (this._scene) {
+          this._showSpatialScene();
+          this._updateSceneStatus(photoState);
+        }
       }
     } else if (this._scene) {
       this._showRetainedScene();
@@ -1005,7 +1009,7 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _showSpatialScene() {
-    if (!this._scene || this._view === "rooms") return;
+    if (!this._scene || !this._webglAvailable || this._view === "rooms") return;
     this._cancelFallbackLoad();
     this._setLoading(false);
     this.shadowRoot.querySelector(".scene-canvas").hidden = false;
@@ -1013,6 +1017,17 @@ class MaticMapStudio extends HTMLElement {
     this.shadowRoot.querySelector(".map-image").hidden = true;
     this._setEmpty();
     this._requestRender();
+  }
+
+  _showRenderingFallback(selected, force = false) {
+    this._showFallback(selected, force);
+    this._setStatus(
+      this._localize(
+        "map_status_rendering_fallback",
+        "3D rendering paused · showing the local map",
+      ),
+      "warning",
+    );
   }
 
   _showRetainedScene() {
@@ -1419,7 +1434,12 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _renderScene() {
-    if (!this._gl || !this._scene || this._view === "rooms") return;
+    if (
+      !this._webglAvailable
+      || !this._gl
+      || !this._scene
+      || this._view === "rooms"
+    ) return;
     this._resizeCanvas();
     const canvas = this.shadowRoot.querySelector(".scene-canvas");
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
@@ -2035,13 +2055,41 @@ class MaticMapStudio extends HTMLElement {
     const canvas = this.shadowRoot.querySelector(".scene-canvas");
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
+      this._cancelMotion();
+      window.cancelAnimationFrame(this._renderFrame);
+      this._renderFrame = undefined;
       this._webglAvailable = false;
-      this._showFallback(this._entities().rooms || this._entities().photo);
+      this._gl = undefined;
+      this._showRenderingFallback(
+        this._entities().rooms || this._entities().photo,
+      );
     });
     canvas.addEventListener("webglcontextrestored", () => {
       this._initWebGL();
-      if (this._scene) this._uploadScene(this._scene);
+      if (!this._webglAvailable) {
+        this._showRenderingFallback(
+          this._entities().rooms || this._entities().photo,
+        );
+        return;
+      }
+      if (this._view === "rooms") {
+        this._showFallback(
+          this._entities().rooms || this._entities().photo,
+          true,
+        );
+        return;
+      }
+      if (!this._scene) {
+        this._update(true);
+        return;
+      }
+      this._uploadScene(this._scene);
+      this._rebuildOverlays();
+      this._resizeCanvas();
       this._showSpatialScene();
+      this._updateSceneStatus(
+        this._catalogState() || this._entities().photo?.[1],
+      );
     });
     this._resizeObserver = new ResizeObserver(() => {
       this._resizeCanvas();
