@@ -393,10 +393,13 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _authenticatedFetch(path, init = {}) {
-    const url = this._absoluteUrl(path);
     if (typeof this._hass?.fetchWithAuth === "function") {
-      return this._hass.fetchWithAuth(url, init);
+      // Home Assistant prepends its own base URL and refreshes expired tokens.
+      // Passing hassUrl(path) would create a malformed double URL instead of
+      // using that supported authenticated request path.
+      return this._hass.fetchWithAuth(path, init);
     }
+    const url = this._absoluteUrl(path);
     return fetch(url, {
       ...init,
       headers: {

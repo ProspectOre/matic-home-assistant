@@ -48,9 +48,11 @@ Home Assistant while exposing saved areas to automations by name.
   twist, tilt, fit, refresh, keyboard access, full-screen mode, loading/error
   feedback, room labels, and a live robot marker, with an automatic room-map
   fallback while SLAM pages are unavailable. Private requests use Home
-  Assistant's authenticated frontend transport. Room images are sized to the
-  display (up to 2048 pixels) and coalesced while rendering so periodic updates
-  cannot cancel and restart the same expensive image request.
+  Assistant's authenticated frontend transport with its automatic token
+  refresh, so a long-lived studio cannot fall back after a session expires.
+  Room images are sized to the display (up to 2048 pixels) and coalesced while
+  rendering so periodic updates cannot cancel and restart the same expensive
+  image request.
 - The photographic camera is disabled by default. Scene and pose endpoints
   require an administrator and use `private, no-store` responses. In-memory
   encoded scenes are purged on unload and removal. No cloud, analytics,
@@ -103,5 +105,6 @@ The unpublished local candidate passed 678 tests / 6,579 statements at 100%
 coverage, 10 real-browser UI tests, strict typing, lint/format, privacy,
 wheel/source parity, and clean-wheel import. Live Home Assistant/Safari proof
 covered maximum-detail 3D, exact pose, orbit, top-down, labeled Rooms, forced
-refresh, repeated updates, and a second clean restart with no Matic task leak,
-authentication failure, or traceback. No push, PR, tag, or release was made.
+refresh, repeated updates, expired-session recovery, and a second clean restart
+with no Matic task leak, authentication failure, or traceback. No push, PR,
+tag, or release was made.

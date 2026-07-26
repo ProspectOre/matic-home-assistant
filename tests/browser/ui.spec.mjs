@@ -100,19 +100,26 @@ async function loadStudio(page, states = {}) {
   await page.goto("/");
   await page.addScriptTag({ url: "/matic_map_studio.js" });
   await page.evaluate((syntheticStates) => {
+    window.__authenticatedPaths = [];
     const studio = document.createElement("matic-map-panel-v0-3-0");
     studio.panel = {};
     studio.hass = {
       states: syntheticStates,
       auth: { data: { access_token: "stale-token-must-not-be-used" } },
       hassUrl: (path) => path,
-      fetchWithAuth: (path, init = {}) => fetch(path, {
-        ...init,
-        headers: {
-          ...(init.headers || {}),
-          Authorization: "Bearer synthetic-token",
-        },
-      }),
+      fetchWithAuth: (path, init = {}) => {
+        window.__authenticatedPaths.push(path);
+        if (!path.startsWith("/")) {
+          throw new Error(`authenticated path must be relative: ${path}`);
+        }
+        return fetch(path, {
+          ...init,
+          headers: {
+            ...(init.headers || {}),
+            Authorization: "Bearer synthetic-token",
+          },
+        });
+      },
     };
     document.body.append(studio);
     window.__studio = studio;
@@ -323,6 +330,11 @@ test.describe("map studio", () => {
     const studio = await loadStudio(page);
     await expect.poll(() => page.evaluate(() => window.__studio._catalogEntries.length)).toBe(1);
     expect(authorization).toBe("Bearer synthetic-token");
+    expect(
+      await page.evaluate(() => window.__authenticatedPaths.every(
+        (path) => path.startsWith("/"),
+      )),
+    ).toBe(true);
     expect(await page.evaluate(() => window.__studio._catalogState().attributes.map_revision)).toBe(4);
     await expect(studio.locator(".status")).toContainText("1 points");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
