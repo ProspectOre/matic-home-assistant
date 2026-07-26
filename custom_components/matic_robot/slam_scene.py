@@ -149,8 +149,11 @@ class MaticSlamSceneView(HomeAssistantView):
                             status=HTTPStatus.NOT_FOUND,
                             headers=PRIVATE_NO_STORE_HEADERS,
                         )
-                    if not _scene_snapshot_is_current(runtime, revision, floor_plan):
-                        continue
+                    # The immutable entries and floor plan captured above are a
+                    # coherent scene even if the live collector advances while
+                    # encoding. Serve that snapshot now and let the next poll
+                    # advance the cache instead of returning a conflict forever
+                    # on an actively changing map.
                     cached = _CachedScene(key, encoded.payload, encoded.etag)
                     self._cache[entry_id] = cached
                     break

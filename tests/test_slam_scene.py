@@ -149,10 +149,11 @@ async def test_scene_view_serves_and_etag_caches_compact_private_payload() -> No
 
 
 @pytest.mark.parametrize("change", ["revision", "floor"])
-async def test_scene_reencodes_when_revision_or_floor_identity_changes(
+async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
     change: str,
 ) -> None:
     runtime = _runtime()
+    captured_floor_plan = runtime.coordinator.data.floor_plan
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
     calls = 0
@@ -173,14 +174,11 @@ async def test_scene_reencodes_when_revision_or_floor_identity_changes(
     response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
-    assert calls == 2
-    assert view._cache["entry"].key == (
-        runtime.slam_map.revision,
-        id(runtime.coordinator.data.floor_plan),
-    )
+    assert calls == 1
+    assert view._cache["entry"].key == (7, id(captured_floor_plan))
 
 
-async def test_scene_never_returns_continuously_obsolete_encoding() -> None:
+async def test_scene_advances_coherent_snapshots_during_continuous_updates() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
@@ -192,10 +190,14 @@ async def test_scene_never_returns_continuously_obsolete_encoding() -> None:
 
     hass.async_add_executor_job.side_effect = mutate_every_encode
 
-    response = await view.get(_request(hass), "entry")
+    first = await view.get(_request(hass), "entry")
+    second = await view.get(_request(hass), "entry")
 
-    assert response.status == HTTPStatus.CONFLICT
-    assert view._cache == {}
+    assert first.status == HTTPStatus.OK
+    assert second.status == HTTPStatus.OK
+    assert hass.async_add_executor_job.await_count == 2
+    assert view._cache["entry"].key[0] == 8
+    assert runtime.slam_map.revision == 9
 
 
 async def test_scene_retries_a_decode_failure_from_an_obsolete_snapshot() -> None:
@@ -217,6 +219,22 @@ async def test_scene_retries_a_decode_failure_from_an_obsolete_snapshot() -> Non
 
     assert response.status == HTTPStatus.OK
     assert calls == 2
+
+
+async def test_scene_bounds_retries_for_obsolete_decode_failures() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+
+    async def changing_decode_failure(_target):
+        runtime.slam_map.revision += 1
+        raise DecodeError
+
+    hass.async_add_executor_job.side_effect = changing_decode_failure
+
+    response = await MaticSlamSceneView().get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.CONFLICT
+    assert hass.async_add_executor_job.await_count == 2
 
 
 async def test_scene_view_coalesces_concurrent_encodes() -> None:

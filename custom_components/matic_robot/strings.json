@@ -73,6 +73,7 @@
     "map_status_loading_scene": "Loading local 3D scene…",
     "map_status_no_map": "No local map data is available yet",
     "map_status_room_map": "Live labeled room map",
+    "map_status_scene_collecting": "Building local 3D scene · showing the local map",
     "map_status_scene_fallback": "3D scene is not ready · showing the local map",
     "map_status_scene_retained": "Showing the last local 3D scene · reconnecting…",
     "map_studio_privacy": "Full local SLAM · private inside Home Assistant",

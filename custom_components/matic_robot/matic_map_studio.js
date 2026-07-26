@@ -737,7 +737,11 @@ class MaticMapStudio extends HTMLElement {
         this._sceneRevision = revision;
         return;
       }
-      if (!response.ok) throw new Error(`scene request failed (${response.status})`);
+      if (!response.ok) {
+        const error = new Error(`scene request failed (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
       const scene = this._parseScene(await response.arrayBuffer());
       this._scene = scene;
       this._sceneRevision = revision;
@@ -762,7 +766,7 @@ class MaticMapStudio extends HTMLElement {
       this._showSpatialScene();
       this._updateSceneStatus(state);
       this._requestRender();
-    } catch (_error) {
+    } catch (error) {
       if (!this.isConnected) return;
       const superseded = controller.signal.aborted
         && this._pendingSceneRefresh;
@@ -773,13 +777,18 @@ class MaticMapStudio extends HTMLElement {
           this._entities().rooms || this._entities().photo,
           force,
         );
-        this._setStatus(
-          this._localize(
+        const health = String(state?.attributes?.map_health || "").toLowerCase();
+        const collecting = error?.status === 409
+          && ["empty", "collecting", "incomplete"].includes(health);
+        this._setStatus(collecting
+          ? this._localize(
+            "map_status_scene_collecting",
+            "Building local 3D scene · showing the local map",
+          )
+          : this._localize(
             "map_status_scene_fallback",
             "3D scene is not ready · showing the local map",
-          ),
-          "error",
-        );
+          ), collecting ? "normal" : "error");
       }
     } finally {
       window.clearTimeout(timeout);

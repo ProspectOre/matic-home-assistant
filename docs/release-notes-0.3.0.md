@@ -50,9 +50,11 @@ Home Assistant while exposing saved areas to automations by name.
   robot marker. Mouse movement stops on release, camera targets stay bounded,
   and Home view reliably recenters the house. A failed refresh retains the last
   good 3D scene; the room map remains the initial-load fallback while SLAM pages
-  are unavailable. Private requests use Home
-  Assistant's authenticated frontend transport with its automatic token
-  refresh, so a long-lived studio cannot fall back after a session expires.
+  are unavailable. Startup and active collection serve coherent scene snapshots
+  instead of repeatedly conflicting, then advance automatically on later polls.
+  Private requests use Home Assistant's authenticated frontend transport with
+  its automatic token refresh, so a long-lived studio cannot fall back after a
+  session expires.
   Room images are sized to the display (up to 2048 pixels) and coalesced while
   rendering so periodic updates cannot cancel and restart the same expensive
   image request.

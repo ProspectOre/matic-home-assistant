@@ -374,6 +374,38 @@ test.describe("map studio", () => {
     await expect(studio.locator(".map-image")).toBeHidden();
   });
 
+  test("recovers automatically while the first scene snapshot is still collecting", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let sceneReady = false;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/synthetic-scene",
+        pose_url: "/synthetic-pose",
+        map_revision: 1,
+        map_health: sceneReady ? "ready" : "collecting",
+        map_complete: sceneReady,
+      }] }),
+    }));
+    await page.route("**/synthetic-scene", (route) => sceneReady
+      ? route.fulfill({
+        status: 200,
+        body: syntheticScene(),
+        headers: { "Content-Type": "application/octet-stream", ETag: '"synthetic-recovered-1"' },
+      })
+      : route.fulfill({ status: 409, body: "scene is still collecting" }));
+    const studio = await loadStudio(page);
+    await expect(studio.locator(".status")).toContainText("Building local 3D scene");
+    await expect(studio.locator(".status")).not.toHaveAttribute("data-tone", "error");
+
+    sceneReady = true;
+    await page.evaluate(() => window.__studio._update());
+    await expect(studio.locator(".status")).toContainText("Full local 3D scene");
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+  });
+
   test("separates precise mouse and trackpad navigation", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const studio = await loadStudio(page);
