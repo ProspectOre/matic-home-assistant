@@ -47,6 +47,7 @@ from .floor_plan import decode_floor_plan, decode_pose
 from .models import (
     CleaningSchedule,
     CleaningSession,
+    CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
     RobotInfo,
@@ -471,6 +472,26 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return decode_pose(await self.async_get_property("latest_pose"))
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed robot pose") from err
+
+    async def async_has_active_cleaning_session(self) -> bool | None:
+        """Read whether the vetted active-session property is present."""
+        return _decode_presence_state(
+            await self.async_get_property("active_session_key")
+        )
+
+    async def async_get_cleaning_session_records(
+        self,
+    ) -> tuple[CleaningSessionRecord, ...]:
+        """Read opaque-keyed native history records for completion evidence."""
+        entries = await self.async_get_collection_entries(
+            "coverage_session_history", limit=64
+        )
+        return tuple(
+            CleaningSessionRecord(entry.key, session)
+            for entry in entries
+            if entry.key
+            and (session := _decode_cleaning_session(entry.value)) is not None
+        )
 
     async def async_get_telemetry(self) -> RobotTelemetry:
         """Read the complete decoded local telemetry surface."""
@@ -1316,13 +1337,21 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                 ).total_seconds()
             ),
         )
+    status_fields = [field for field in fields if field.number == 5]
+    completion_status = 0 if not status_fields else None
+    if (
+        len(status_fields) == 1
+        and status_fields[0].wire_type == 0
+        and isinstance(status_fields[0].value, int)
+    ):
+        completion_status = status_fields[0].value
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=duration_seconds,
         rooms=tuple(rooms),
         room_durations=tuple(room_durations.items()),
-        completed=ended_at is not None,
+        completed=(completion_status == 0 if completion_status is not None else None),
     )
 
 

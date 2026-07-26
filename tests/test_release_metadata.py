@@ -3,6 +3,7 @@
 import ast
 import json
 import re
+import struct
 import sys
 import tomllib
 from pathlib import Path
@@ -13,6 +14,56 @@ import yaml
 ROOT = Path(__file__).parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
 REPOSITORY_URL = "https://github.com/ProspectOre/matic-home-assistant"
+QUALITY_SCALE_RULES = {
+    "action-setup",
+    "appropriate-polling",
+    "config-flow-test-coverage",
+    "config-flow",
+    "dependency-transparency",
+    "docs-actions",
+    "docs-conditions",
+    "docs-high-level-description",
+    "docs-installation-instructions",
+    "docs-removal-instructions",
+    "docs-triggers",
+    "entity-unique-id",
+    "has-entity-name",
+    "runtime-data",
+    "test-before-configure",
+    "test-before-setup",
+    "unique-config-entry",
+    "action-exceptions",
+    "config-entry-unloading",
+    "docs-configuration-parameters",
+    "docs-installation-parameters",
+    "entity-unavailable",
+    "integration-owner",
+    "parallel-updates",
+    "reauthentication-flow",
+    "test-coverage",
+    "devices",
+    "diagnostics",
+    "discovery",
+    "docs-data-update",
+    "docs-examples",
+    "docs-known-limitations",
+    "docs-supported-devices",
+    "docs-supported-functions",
+    "docs-troubleshooting",
+    "docs-use-cases",
+    "entity-category",
+    "entity-device-class",
+    "entity-disabled-by-default",
+    "entity-translations",
+    "exception-translations",
+    "icon-translations",
+    "reconfiguration-flow",
+    "repair-issues",
+    "stale-devices",
+    "async-dependency",
+    "inject-websession",
+    "strict-typing",
+}
 
 # Maps each third-party import root used by the integration to the PyPI
 # distribution that provides it. Every distribution must be satisfied either by
@@ -116,6 +167,37 @@ def test_public_branding_is_explicitly_unofficial() -> None:
     assert manifest["name"] == "Matic (Unofficial)"
     assert hacs["name"] == manifest["name"]
     assert manifest["domain"] == "matic_robot"
+
+
+def test_local_brand_assets_match_home_assistant_sizes() -> None:
+    """Keep local brand icons ready for HA and HACS presentation."""
+    brand = INTEGRATION / "brand"
+
+    def png_dimensions(path: Path) -> tuple[int, int]:
+        content = path.read_bytes()
+        assert content[:8] == b"\x89PNG\r\n\x1a\n"
+        return struct.unpack(">II", content[16:24])
+
+    assert png_dimensions(brand / "icon.png") == (256, 256)
+    assert png_dimensions(brand / "icon@2x.png") == (512, 512)
+    assert "<svg" in (brand / "logo.svg").read_text()
+
+
+def test_quality_scale_file_is_an_unscored_self_audit() -> None:
+    """Track reviewed rules without claiming an official HA quality tier."""
+    manifest = json.loads((INTEGRATION / "manifest.json").read_text())
+    audit_text = (INTEGRATION / "quality_scale.yaml").read_text()
+    audit = yaml.safe_load(audit_text)
+
+    assert "quality_scale" not in manifest
+    assert "has not been reviewed or scored by Home Assistant" in audit_text
+    assert set(audit) == {"rules"}
+    assert set(audit["rules"]) == QUALITY_SCALE_RULES
+    for rule, result in audit["rules"].items():
+        if result == "done":
+            continue
+        assert result["status"] == "exempt", rule
+        assert result["comment"].strip(), rule
 
 
 def test_release_metadata_uses_the_authenticated_repository_owner() -> None:
@@ -332,6 +414,22 @@ def test_readme_states_the_actual_runtime_and_validation_scope() -> None:
         "validated" in readme
     )
     assert "Each exposed command is tested against a real robot" not in readme
+
+
+def test_documented_entity_surface_matches_release_contract() -> None:
+    """Keep public counts aligned with the tested 0.3 entity platforms."""
+    readme = " ".join((ROOT / "README.md").read_text().split())
+    automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
+    surface = (
+        "49 fixed entities — 21 sensors, 12 binary sensors, 4 buttons, "
+        "4 switches, 3 selects, 1 number, 2 cameras, 1 update, and 1 vacuum"
+    )
+
+    assert surface in readme
+    assert surface in automation
+    assert "two opt-in room statistics sensors per mapped room" in readme
+    assert "two opt-in statistics sensors per mapped room" in automation
+    assert "default-disabled private photographic SLAM camera" in readme
 
 
 def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:

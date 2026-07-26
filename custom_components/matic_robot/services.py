@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from copy import deepcopy
+from datetime import datetime
+from enum import StrEnum
 from typing import Any
 
 import voluptuous as vol
@@ -31,12 +34,15 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import target
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.util import dt as dt_util
 from homeassistant.util import slugify
 
-from .client.commands import CleaningMode, CoverageSetting
+from .area_binding import AreaBindingStatus, area_binding_status
+from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
 from .client.floor_plan import pose_vector_paths
+from .client.models import CleaningSessionRecord, FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
@@ -47,7 +53,13 @@ from .firmware import (
     async_build_firmware_snapshot,
     fingerprint_entry,
 )
-from .plans import CleaningPlanManager, CleaningRoom, resolve_rooms
+from .plans import (
+    PLAN_MOTION_TOKEN,
+    CleaningPlanManager,
+    CleaningRoom,
+    ManagedMotionReplacedError,
+    resolve_rooms,
+)
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_AREA = "clean_area"
@@ -74,6 +86,23 @@ TARGET_KEYS = (
     ATTR_LABEL_ID,
 )
 ROOM_STATUS_REFRESH_SECONDS = 5
+ACTIVE_SESSION_UNKNOWN_ATTEMPTS = 3
+ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
+SESSION_HISTORY_ATTEMPTS = 6
+SESSION_HISTORY_RETRY_SECONDS = 2
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class RoomRunOutcome(StrEnum):
+    """Conservative result of one managed, single-room command."""
+
+    HANDOFF_CANDIDATE = "handoff_candidate"
+    SUSPENDED = "suspended"
+    PAUSED = "paused"
+    TAKEN_OVER = "taken_over"
+    INTERRUPTED = "interrupted"
+
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
@@ -244,32 +273,41 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 "unknown_area",
                 {"area": str(call.data["area"])},
             ) from err
-        floor_plan = entry.runtime_data.coordinator.data.floor_plan
-        if floor_plan is None:
-            raise _validation_error(
-                "The robot's room map is unavailable", "room_plan_unavailable"
+        _validated_area_command(
+            area,
+            entry.runtime_data.coordinator.data.floor_plan,
+            call.data.get("cleaning_mode"),
+            call.data.get("coverage_setting"),
+        )
+
+        async with manager.command_lock(serial_number):
+            try:
+                current_area = manager.area(serial_number, call.data["area"])
+            except KeyError as err:
+                raise _validation_error(
+                    f"Unknown Matic custom area: {call.data['area']}",
+                    "unknown_area",
+                    {"area": str(call.data["area"])},
+                ) from err
+            floor_plan, circles, mode, coverage = _validated_area_command(
+                current_area,
+                entry.runtime_data.coordinator.data.floor_plan,
+                call.data.get("cleaning_mode"),
+                call.data.get("coverage_setting"),
             )
-        try:
-            circles = [
-                (float(item["x"]), float(item["y"]), float(item["radius"]))
-                for item in area["circles"]
-            ]
-            mode = CleaningMode(call.data.get("cleaning_mode", area["cleaning_mode"]))
-            coverage = CoverageSetting(
-                call.data.get("coverage_setting", area["coverage_setting"])
-            )
-            await entry.runtime_data.client.async_start_custom_coverage(
-                floor_plan,
-                circles,
-                cleaning_mode=mode,
-                coverage_setting=coverage,
-            )
-        except (KeyError, TypeError, ValueError) as err:
-            raise _validation_error(
-                "The saved custom area is invalid",
-                "invalid_area",
-                {"error": str(err)},
-            ) from err
+            manager.replace_managed_motion(serial_number)
+            try:
+                await entry.runtime_data.client.async_start_custom_coverage(
+                    floor_plan,
+                    circles,
+                    cleaning_mode=mode,
+                    coverage_setting=coverage,
+                )
+            except MaticError as err:
+                raise _validation_error(
+                    "The robot could not start the custom-area clean",
+                    "robot_command_failed",
+                ) from err
         await entry.runtime_data.coordinator.async_request_refresh()
 
     hass.services.async_register(
@@ -305,6 +343,12 @@ async def async_register_services(hass: HomeAssistant) -> None:
         execution_call = ServiceCall(
             hass, DOMAIN, call.service, data, context=call.context
         )
+
+        async def async_managed_command(token: int, command: UserCommand) -> None:
+            async with manager.managed_command(serial_number, token):
+                await entry.runtime_data.client.async_send_user_command(command)
+                await entry.runtime_data.coordinator.async_request_refresh()
+
         await _async_execute_rooms(
             hass,
             execution_call,
@@ -314,6 +358,17 @@ async def async_register_services(hass: HomeAssistant) -> None:
             rooms,
             intelligent=intelligent,
             refresh=entry.runtime_data.coordinator.async_request_refresh,
+            active_session=(
+                entry.runtime_data.client.async_has_active_cleaning_session
+            ),
+            session_history=(
+                entry.runtime_data.client.async_get_cleaning_session_records
+            ),
+            confirm_room_completed=(
+                entry.runtime_data.coordinator.async_confirm_room_completed
+            ),
+            managed_user_command=async_managed_command,
+            mapped_room_names=tuple(room_map.values()),
         )
 
     async def async_intelligent_clean(call: ServiceCall) -> None:
@@ -699,8 +754,21 @@ async def _async_run_room(
     room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
     refresh: Callable[[], Awaitable[None]] | None = None,
+    motion_token: int | None = None,
+    active_session: Callable[[], Awaitable[bool | None]] | None = None,
+    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    | None = None,
+    confirm_room_completed: Callable[[str], None] | None = None,
+    managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
+    room_name_is_unique: bool = True,
 ) -> None:
-    """Run one mapped room and advance history only after completion."""
+    """Run one room, separating safe handoff from completion credit."""
+    if not room_name_is_unique:
+        raise _validation_error(
+            "Managed completion cannot distinguish duplicate mapped room names",
+            "ambiguous_room_name",
+            {"room": room.name},
+        )
     event_data = {
         ATTR_ENTITY_ID: entity_id,
         "plan_id": call.data["plan_id"],
@@ -711,64 +779,227 @@ async def _async_run_room(
     }
     await manager.async_mark_started(serial_number, call.data["plan_id"], room)
     hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
+    history_baseline = await _async_session_history_baseline(session_history)
+    dispatched_at = dt_util.utcnow()
+    completion_verified = False
+    dispatch_attempted = False
     try:
+        params: dict[str, Any] = {
+            "rooms": [room.room_id],
+            "cleaning_mode": room.cleaning_mode,
+            "coverage": room.coverage_setting,
+            "ordered": False,
+        }
+        if motion_token is not None:
+            params[PLAN_MOTION_TOKEN] = motion_token
+        dispatch_attempted = True
         await hass.services.async_call(
             VACUUM_DOMAIN,
             "send_command",
             {
                 ATTR_ENTITY_ID: entity_id,
                 "command": "clean_rooms",
-                "params": {
-                    "rooms": [room.room_id],
-                    "cleaning_mode": room.cleaning_mode,
-                    "coverage": room.coverage_setting,
-                    "ordered": False,
-                },
+                "params": params,
             },
             blocking=True,
             context=call.context,
         )
-        await _async_wait_for_vacuum_state(
+        start_state = await _async_wait_for_vacuum_state(
             hass,
             entity_id,
             {"cleaning", "paused"},
             call.data["start_timeout"],
             cancel_event,
         )
+        if start_state == "paused":
+            await manager.async_mark_suspended(
+                serial_number, call.data["plan_id"], room, "paused"
+            )
+            await _async_wait_for_vacuum_state(
+                hass,
+                entity_id,
+                {"cleaning"},
+                call.data["completion_timeout"],
+                cancel_event,
+            )
+        await manager.async_mark_resumed(serial_number, call.data["plan_id"], room)
         refresh_task = (
             asyncio.create_task(_async_periodic_refresh(refresh))
             if refresh is not None
             else None
         )
         try:
-            await _async_wait_for_vacuum_state(
-                hass,
-                entity_id,
-                {"returning", "docked", "idle"},
-                call.data["completion_timeout"],
-                cancel_event,
-            )
+            async with asyncio.timeout(call.data["completion_timeout"]):
+                while True:
+                    outcome = await _async_wait_for_room_outcome(
+                        hass, entity_id, room, cancel_event
+                    )
+                    if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
+                        session_active = await _async_active_session_state(
+                            active_session
+                        )
+                        if session_active is False:
+                            await manager.async_mark_verifying(
+                                serial_number, call.data["plan_id"], room
+                            )
+                            completion_verified = await _async_verify_room_completion(
+                                session_history,
+                                history_baseline,
+                                room,
+                                dispatched_at,
+                                hass=hass,
+                                entity_id=entity_id,
+                                cancel_event=cancel_event,
+                            )
+                            break
+                        if session_active is None:
+                            raise RoomInterruptedError(
+                                f"{room.name} completion could not be verified"
+                            )
+                        await manager.async_mark_verifying(
+                            serial_number, call.data["plan_id"], room
+                        )
+                        session_resolution = (
+                            await _async_wait_for_active_session_resolution(
+                                hass,
+                                entity_id,
+                                active_session,
+                                cancel_event,
+                            )
+                        )
+                        if session_resolution is False:
+                            completion_verified = await _async_verify_room_completion(
+                                session_history,
+                                history_baseline,
+                                room,
+                                dispatched_at,
+                                hass=hass,
+                                entity_id=entity_id,
+                                cancel_event=cancel_event,
+                            )
+                            break
+                        if session_resolution is None:
+                            raise RoomInterruptedError(
+                                f"{room.name} completion could not be verified"
+                            )
+                        await manager.async_mark_resumed(
+                            serial_number, call.data["plan_id"], room
+                        )
+                        continue
+                    elif outcome is RoomRunOutcome.TAKEN_OVER:
+                        raise RoomTakenOverError(
+                            f"{room.name} was replaced by another cleaning task"
+                        )
+                    if outcome is RoomRunOutcome.INTERRUPTED:
+                        raise RoomInterruptedError(
+                            f"{room.name} stopped without verified completion"
+                        )
+                    if outcome is RoomRunOutcome.PAUSED:
+                        suspend_reason = "paused"
+                    elif outcome is RoomRunOutcome.SUSPENDED:
+                        suspend_reason = "low_charge"
+                    await manager.async_mark_suspended(
+                        serial_number,
+                        call.data["plan_id"],
+                        room,
+                        suspend_reason,
+                    )
+                    await _async_wait_for_vacuum_state(
+                        hass,
+                        entity_id,
+                        {"cleaning"},
+                        call.data["completion_timeout"],
+                        cancel_event,
+                    )
+                    await manager.async_mark_resumed(
+                        serial_number, call.data["plan_id"], room
+                    )
         finally:
             if refresh_task is not None:
                 refresh_task.cancel()
                 await asyncio.gather(refresh_task, return_exceptions=True)
-    except PlanCancelledError:
+    except ManagedMotionReplacedError as err:
         await manager.async_mark_cancelled(serial_number, call.data["plan_id"], room)
         hass.bus.async_fire(
             f"{DOMAIN}_room_cancelled", event_data, context=call.context
         )
+        raise PlanCancelledError from err
+    except PlanCancelledError:
+        if manager.cancellation_reason(serial_number) == "config_entry_unload":
+            await _async_cleanup_managed_motion(
+                managed_user_command, motion_token, dispatch_attempted
+            )
+            await manager.async_mark_interrupted(
+                serial_number,
+                call.data["plan_id"],
+                room,
+                "Home Assistant unloaded while cleaning this room",
+            )
+            hass.bus.async_fire(
+                f"{DOMAIN}_room_interrupted", event_data, context=call.context
+            )
+        else:
+            await manager.async_mark_cancelled(
+                serial_number, call.data["plan_id"], room
+            )
+            hass.bus.async_fire(
+                f"{DOMAIN}_room_cancelled", event_data, context=call.context
+            )
         raise
-    except (TimeoutError, HomeAssistantError, MaticError) as err:
-        await manager.async_mark_failed(
+    except RoomTakenOverError as err:
+        await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], room, str(err)
         )
         hass.bus.async_fire(
-            f"{DOMAIN}_room_failed",
+            f"{DOMAIN}_room_interrupted",
             {**event_data, "error": str(err)},
             context=call.context,
         )
-        if isinstance(err, (ServiceValidationError, MaticError)):
+        raise _validation_error(
+            "The managed room was replaced by another cleaning task",
+            "room_taken_over",
+            {"room": room.name},
+        ) from err
+    except RoomInterruptedError as err:
+        await _async_cleanup_managed_motion(
+            managed_user_command, motion_token, dispatch_attempted
+        )
+        await manager.async_mark_interrupted(
+            serial_number, call.data["plan_id"], room, str(err)
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_interrupted",
+            {**event_data, "error": str(err)},
+            context=call.context,
+        )
+        raise _validation_error(
+            str(err), "room_interrupted", {"room": room.name}
+        ) from err
+    except (TimeoutError, HomeAssistantError, MaticError) as err:
+        await _async_cleanup_managed_motion(
+            managed_user_command, motion_token, dispatch_attempted
+        )
+        failure_reason = (
+            "The robot could not complete the managed room"
+            if isinstance(err, MaticError)
+            else str(err)
+        )
+        await manager.async_mark_failed(
+            serial_number, call.data["plan_id"], room, failure_reason
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_failed",
+            {**event_data, "error": failure_reason},
+            context=call.context,
+        )
+        if isinstance(err, ServiceValidationError):
             raise
+        if isinstance(err, MaticError):
+            raise _validation_error(
+                "The robot could not complete the managed room",
+                "robot_command_failed",
+                {"room": room.name},
+            ) from err
         if isinstance(err, TimeoutError):
             raise _validation_error(
                 f"Timed out while cleaning {room.name}",
@@ -777,8 +1008,288 @@ async def _async_run_room(
             ) from err
         raise
 
-    await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
-    hass.bus.async_fire(f"{DOMAIN}_room_completed", event_data, context=call.context)
+    if completion_verified:
+        await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
+        if confirm_room_completed is not None:
+            confirm_room_completed(room.name)
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_completed", event_data, context=call.context
+        )
+    else:
+        await manager.async_mark_ended_unverified(
+            serial_number, call.data["plan_id"], room
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_ended_unverified", event_data, context=call.context
+        )
+
+
+async def _async_wait_for_room_outcome(
+    hass: HomeAssistant,
+    entity_id: str,
+    room: CleaningRoom,
+    cancel_event: asyncio.Event | None = None,
+) -> RoomRunOutcome:
+    """Classify the next terminal transition using positive room evidence.
+
+    A bare ``returning``, ``docked``, or ``idle`` state is deliberately not a
+    completion.  Completion requires the issued single-room command to be seen
+    cleaning that room before a normal return.  A low-charge return is a
+    suspension so firmware may recharge and resume it.  Every other terminal
+    transition is interrupted/unknown and receives no room-history credit.
+    """
+    observed_room = False
+    future: asyncio.Future[RoomRunOutcome] = hass.loop.create_future()
+
+    def classify(state: Any) -> None:
+        nonlocal observed_room
+        if state is None or future.done():
+            return
+        current_area = state.attributes.get("current_area")
+        if state.state in {"cleaning", "paused"}:
+            if _area_matches_room(current_area, room):
+                observed_room = True
+            elif observed_room and _is_known_room(
+                current_area, state.attributes.get("rooms")
+            ):
+                future.set_result(RoomRunOutcome.TAKEN_OVER)
+                return
+            if state.state == "paused":
+                future.set_result(RoomRunOutcome.PAUSED)
+                return
+        if state.state == "error":
+            future.set_exception(
+                _validation_error(
+                    "The selected Matic robot reported an error", "robot_error"
+                )
+            )
+        elif state.state == "returning":
+            if state.attributes.get("low_charge") is True:
+                future.set_result(RoomRunOutcome.SUSPENDED)
+            elif observed_room:
+                future.set_result(RoomRunOutcome.HANDOFF_CANDIDATE)
+            else:
+                future.set_result(RoomRunOutcome.INTERRUPTED)
+        elif state.state in {"docked", "idle"}:
+            future.set_result(RoomRunOutcome.INTERRUPTED)
+
+    @callback
+    def state_changed(event: Event[EventStateChangedData]) -> None:
+        classify(event.data["new_state"])
+
+    remove_listener = async_track_state_change_event(hass, entity_id, state_changed)
+    classify(hass.states.get(entity_id))
+    cancel_wait: asyncio.Task[bool] | None = None
+    try:
+        if cancel_event is None:
+            return await future
+        cancel_wait = asyncio.create_task(cancel_event.wait())
+        waiters: set[asyncio.Future[Any]] = {future, cancel_wait}
+        done, _pending = await asyncio.wait(
+            waiters, return_when=asyncio.FIRST_COMPLETED
+        )
+        if cancel_wait in done and cancel_wait.result():
+            if not future.done():
+                future.cancel()
+            raise PlanCancelledError
+        cancel_wait.cancel()
+        return future.result()
+    finally:
+        if cancel_wait is not None:
+            cancel_wait.cancel()
+        remove_listener()
+
+
+async def _async_active_session_state(
+    reader: Callable[[], Awaitable[bool | None]] | None,
+) -> bool | None:
+    """Resolve active-task presence with a small bounded unknown retry window."""
+    if reader is None:
+        return None
+    for attempt in range(ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
+        state = await reader()
+        if state is not None:
+            return state
+        if attempt + 1 < ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+            await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+    return None
+
+
+async def _async_session_history_baseline(
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+) -> frozenset[bytes] | None:
+    """Capture opaque native keys before dispatch without exposing their values."""
+    if reader is None:
+        return None
+    try:
+        return frozenset(record.key for record in await reader())
+    except MaticError as err:
+        _LOGGER.debug(
+            "Native Matic completion baseline unavailable (%s)", type(err).__name__
+        )
+        return None
+
+
+async def _async_verify_room_completion(
+    reader: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
+    baseline: frozenset[bytes] | None,
+    room: CleaningRoom,
+    dispatched_at: datetime,
+    *,
+    hass: HomeAssistant | None = None,
+    entity_id: str | None = None,
+    cancel_event: asyncio.Event | None = None,
+) -> bool:
+    """Require one new, completed, overlapping native single-room record."""
+    if reader is None or baseline is None:
+        return False
+    target = room.name.strip().casefold()
+    for attempt in range(SESSION_HISTORY_ATTEMPTS):
+        _raise_if_completion_verification_was_replaced(hass, entity_id, cancel_event)
+        try:
+            records = await reader()
+        except MaticError as err:
+            _LOGGER.debug(
+                "Native Matic completion evidence unavailable (%s)", type(err).__name__
+            )
+            records = ()
+        _raise_if_completion_verification_was_replaced(hass, entity_id, cancel_event)
+        now = dt_util.utcnow()
+        matches: list[CleaningSessionRecord] = []
+        for record in records:
+            session = record.session
+            if record.key in baseline or session.completed is not True:
+                continue
+            started = dt_util.parse_datetime(session.started_at or "")
+            ended = dt_util.parse_datetime(session.ended_at or "")
+            if started is None or ended is None or started > ended:
+                continue
+            if ended < dispatched_at or started > now or ended > now:
+                continue
+            rooms = [name.strip().casefold() for name in session.rooms]
+            durations = [
+                duration
+                for name, duration in session.room_durations
+                if name.strip().casefold() == target and duration > 0
+            ]
+            if rooms == [target] and len(durations) == 1:
+                matches.append(record)
+        if len(matches) == 1:
+            return True
+        if len(matches) > 1:
+            return False
+        if attempt + 1 < SESSION_HISTORY_ATTEMPTS:
+            if cancel_event is None:
+                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+            else:
+                try:
+                    async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
+                        await cancel_event.wait()
+                except TimeoutError:
+                    continue
+                raise PlanCancelledError
+    return False
+
+
+def _raise_if_completion_verification_was_replaced(
+    hass: HomeAssistant | None,
+    entity_id: str | None,
+    cancel_event: asyncio.Event | None,
+) -> None:
+    """Abort history verification if cancellation or a new task takes over."""
+    if cancel_event is not None and cancel_event.is_set():
+        raise PlanCancelledError
+    if hass is None or entity_id is None:
+        return
+    state = hass.states.get(entity_id)
+    if state is not None and state.state in {"cleaning", "paused"}:
+        raise RoomTakenOverError(
+            "Another cleaning task started while completion was being verified"
+        )
+
+
+async def _async_wait_for_active_session_resolution(
+    hass: HomeAssistant,
+    entity_id: str,
+    reader: Callable[[], Awaitable[bool | None]] | None,
+    cancel_event: asyncio.Event | None = None,
+) -> bool | None:
+    """Wait for a returning task to finish or visibly resume.
+
+    ``False`` means the firmware session ended and operational handoff is safe;
+    it does not prove completion. ``True`` means cleaning resumed, and ``None``
+    means repeated direct reads could not establish session ownership. The
+    enclosing room timeout bounds the wait while known-active firmware sessions
+    return to their dock.
+    """
+    if reader is None:
+        return None
+    unknown_reads = 0
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PlanCancelledError
+        state = hass.states.get(entity_id)
+        if state is not None:
+            if state.state == "error":
+                raise _validation_error(
+                    "The selected Matic robot reported an error", "robot_error"
+                )
+            if state.state == "cleaning":
+                return True
+        session_active = await reader()
+        if session_active is False:
+            return False
+        if session_active is None:
+            unknown_reads += 1
+            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+                return None
+        else:
+            unknown_reads = 0
+        if cancel_event is None:
+            await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+            continue
+        try:
+            async with asyncio.timeout(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS):
+                await cancel_event.wait()
+        except TimeoutError:
+            continue
+        raise PlanCancelledError
+
+
+async def _async_cleanup_managed_motion(
+    sender: Callable[[int, UserCommand], Awaitable[None]] | None,
+    motion_token: int | None,
+    dispatch_attempted: bool,
+) -> None:
+    """Best-effort STOP an accepted task without replacing newer ownership."""
+    if sender is None or motion_token is None or not dispatch_attempted:
+        return
+    try:
+        await sender(motion_token, UserCommand.STOP)
+    except (HomeAssistantError, MaticError, ManagedMotionReplacedError) as err:
+        _LOGGER.warning(
+            "Unable to stop a failed managed Matic motion before cleanup (%s)",
+            type(err).__name__,
+        )
+
+
+def _area_matches_room(value: object, room: CleaningRoom) -> bool:
+    """Match decoded current/previous area text to the commanded room."""
+    if not isinstance(value, str):
+        return False
+    normalized = value.strip().casefold()
+    return normalized in {room.room_id.casefold(), room.name.casefold()}
+
+
+def _is_known_room(value: object, rooms: object) -> bool:
+    """Detect a live switch to another mapped room, not an unnamed transit area."""
+    if not isinstance(value, str) or not isinstance(rooms, dict):
+        return False
+    normalized = value.strip().casefold()
+    return any(
+        normalized in {str(room_id).casefold(), str(room_name).casefold()}
+        for room_id, room_name in rooms.items()
+    )
 
 
 async def _async_periodic_refresh(
@@ -858,6 +1369,14 @@ class PlanCancelledError(HomeAssistantError):
     """An operator cancelled a managed cleaning plan."""
 
 
+class RoomInterruptedError(HomeAssistantError):
+    """A room command ended without positive completion evidence."""
+
+
+class RoomTakenOverError(HomeAssistantError):
+    """An external task began cleaning another known mapped room."""
+
+
 async def _async_execute_rooms(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -868,6 +1387,12 @@ async def _async_execute_rooms(
     *,
     intelligent: bool,
     refresh: Callable[[], Awaitable[None]] | None = None,
+    active_session: Callable[[], Awaitable[bool | None]] | None = None,
+    session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]]
+    | None = None,
+    confirm_room_completed: Callable[[str], None] | None = None,
+    managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
+    mapped_room_names: tuple[str, ...] = (),
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -876,16 +1401,20 @@ async def _async_execute_rooms(
             "A managed Matic cleaning plan is already running", "plan_already_running"
         )
     async with lock:
+        manager.register_run_task(serial_number)
         cancel_event = manager.prepare_run(serial_number)
-        finish_room_event = manager.finish_room_event(serial_number)
-        chosen = (
-            manager.choose(serial_number, call.data["plan_id"], rooms)
-            if intelligent
-            else rooms
-        )
+        motion_token = manager.begin_managed_motion(serial_number)
         try:
+            finish_room_event = manager.finish_room_event(serial_number)
+            chosen = (
+                manager.choose(serial_number, call.data["plan_id"], rooms)
+                if intelligent
+                else rooms
+            )
             for room in chosen:
-                if cancel_event.is_set():
+                if cancel_event.is_set() or not manager.managed_motion_is_current(
+                    serial_number, motion_token
+                ):
                     raise PlanCancelledError
                 await _async_run_room(
                     hass,
@@ -896,23 +1425,91 @@ async def _async_execute_rooms(
                     room,
                     cancel_event,
                     refresh,
+                    motion_token,
+                    active_session,
+                    session_history,
+                    confirm_room_completed,
+                    managed_user_command,
+                    room_name_is_unique=(
+                        not mapped_room_names
+                        or sum(
+                            name.strip().casefold() == room.name.strip().casefold()
+                            for name in mapped_room_names
+                        )
+                        == 1
+                    ),
                 )
+                if cancel_event.is_set() or not manager.managed_motion_is_current(
+                    serial_number, motion_token
+                ):
+                    raise PlanCancelledError
                 if finish_room_event.is_set():
                     break
+            if cancel_event.is_set() or not manager.managed_motion_is_current(
+                serial_number, motion_token
+            ):
+                raise PlanCancelledError
+            if (
+                (call.data["return_to_base"] or finish_room_event.is_set())
+                and (current := hass.states.get(entity_id)) is not None
+                and current.state not in {"docked", "returning"}
+                and managed_user_command is not None
+            ):
+                try:
+                    await managed_user_command(motion_token, UserCommand.DOCK)
+                except ManagedMotionReplacedError as err:
+                    raise PlanCancelledError from err
+                except MaticError as err:
+                    raise _validation_error(
+                        "The robot could not return to its dock",
+                        "robot_command_failed",
+                    ) from err
         except PlanCancelledError:
             return
-        if (
-            (call.data["return_to_base"] or finish_room_event.is_set())
-            and (current := hass.states.get(entity_id)) is not None
-            and current.state not in {"docked", "returning"}
-        ):
-            await hass.services.async_call(
-                VACUUM_DOMAIN,
-                "return_to_base",
-                {ATTR_ENTITY_ID: entity_id},
-                blocking=True,
-                context=call.context,
-            )
+        finally:
+            manager.end_managed_motion(serial_number, motion_token)
+            manager.unregister_run_task(serial_number)
+
+
+def _validated_area_command(
+    area: dict[str, Any],
+    floor_plan: FloorPlan | None,
+    cleaning_mode: object,
+    coverage_setting: object,
+) -> tuple[
+    FloorPlan,
+    list[tuple[float, float, float]],
+    CleaningMode,
+    CoverageSetting,
+]:
+    """Validate saved private geometry without changing robot ownership."""
+    if floor_plan is None or not floor_plan.rooms:
+        raise _validation_error(
+            "The robot's room map is unavailable", "room_plan_unavailable"
+        )
+    if area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT:
+        raise _validation_error(
+            "The saved custom area belongs to a different room map",
+            "area_map_changed",
+        )
+    try:
+        circles = [
+            (float(item["x"]), float(item["y"]), float(item["radius"]))
+            for item in area["circles"]
+        ]
+        mode_value = cleaning_mode or area["cleaning_mode"]
+        coverage_value = coverage_setting or area["coverage_setting"]
+        if not isinstance(mode_value, str) or not isinstance(coverage_value, str):
+            raise TypeError("cleaning settings must be strings")
+        mode = CleaningMode(mode_value)
+        coverage = CoverageSetting(coverage_value)
+    except (KeyError, TypeError, ValueError) as err:
+        raise _validation_error(
+            "The saved custom area is invalid",
+            "invalid_area",
+            {"error": str(err)},
+        ) from err
+    return floor_plan, circles, mode, coverage
 
 
 def _saved_plan_context(

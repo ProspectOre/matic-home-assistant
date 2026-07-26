@@ -90,7 +90,9 @@ Home Assistant error handling.
 ## Version snapshots
 
 - [v168.11](firmware-versions/v168.md) — core reads and the 40-name hash-only
-  availability sweep live-verified 2026-07-20; writes remain untested.
+  availability sweep live-verified 2026-07-20; selected stop, dock, and room-plan
+  control paths were later exercised, while the complete write matrix remains
+  pending.
 - [Snapshot template](firmware-versions/template.md) — copy after each OTA.
 
 The integration persists 52 safe snapshots, emits an event on a new version,

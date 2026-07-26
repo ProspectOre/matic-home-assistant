@@ -23,6 +23,13 @@ from homeassistant.util import slugify
 from zeroconf import IPVersion, ServiceStateChange
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo
 
+from .area_binding import (
+    AREA_SCHEMA_VERSION,
+    AreaBindingStatus,
+    MapBinding,
+    area_binding_status,
+    binding_for_floor_plan,
+)
 from .area_selector import MaticAreaSelector
 from .bluetooth_pairing import (
     BluetoothPairingIncompleteError,
@@ -42,6 +49,7 @@ from .client.exceptions import (
     MaticError,
     PairingModeRequiredError,
 )
+from .client.models import FloorPlan
 from .client.tls import async_fetch_peer_certificate, validate_certificate
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
@@ -65,6 +73,9 @@ _LOGGER = logging.getLogger(__name__)
 
 CONF_PASSKEY = "passkey"
 CONF_PAIRING_MODE_ENABLED = "pairing_mode_enabled"
+AREA_STATUS_CURRENT = "Current"
+AREA_STATUS_REDRAW_REQUIRED = "Redraw required"
+AREA_STATUS_MAP_UNAVAILABLE = "Map unavailable"
 
 
 async def _async_discover_robots(
@@ -974,6 +985,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
     def __init__(self) -> None:
         self._plan_id: str | None = None
         self._area_id: str | None = None
+        self._area_editor_binding: MapBinding | None = None
 
     @property
     def _serial_number(self) -> str:
@@ -1005,28 +1017,30 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         ]
 
     def _area_options(self) -> list[selector.SelectOptionDict]:
-        return [
-            selector.SelectOptionDict(
-                value=area_id,
-                label=str(area.get("name", area_id)),
-            )
-            for area_id, area in self._manager.areas(self._serial_number).items()
-        ]
+        context = self._live_area_context()
+        options: list[selector.SelectOptionDict] = []
+        for area_id, area in self._manager.areas(self._serial_number).items():
+            name = str(area.get("name", area_id))
+            if (
+                context is not None
+                and area_binding_status(area, context[0])
+                is not AreaBindingStatus.CURRENT
+            ):
+                name = f"⚠ {name}"
+            options.append(selector.SelectOptionDict(value=area_id, label=name))
+        return options
 
-    def _area_editor_schema(self, defaults: Mapping[str, Any]) -> vol.Schema:
-        floor_plan = self.config_entry.runtime_data.coordinator.data.floor_plan
-        rooms = (
-            [
-                {
-                    "room_id": room.id,
-                    "name": room.name,
-                    "boundary": [list(point) for point in room.boundary],
-                }
-                for room in floor_plan.rooms
-            ]
-            if floor_plan is not None
-            else []
-        )
+    def _area_editor_schema(
+        self, defaults: Mapping[str, Any], floor_plan: FloorPlan
+    ) -> vol.Schema:
+        rooms = [
+            {
+                "room_id": room.id,
+                "name": room.name,
+                "boundary": [list(point) for point in room.boundary],
+            }
+            for room in floor_plan.rooms
+        ]
         return vol.Schema(
             {
                 vol.Required("name", default=defaults.get("name", "")): str,
@@ -1051,6 +1065,77 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 ),
             }
         )
+
+    def _live_area_context(self) -> tuple[FloorPlan, MapBinding] | None:
+        """Return the current drawable floor plan and its exact binding."""
+        floor_plan = self.config_entry.runtime_data.coordinator.data.floor_plan
+        if floor_plan is None:
+            return None
+        try:
+            binding = binding_for_floor_plan(floor_plan)
+        except ValueError:
+            return None
+        return floor_plan, binding
+
+    @staticmethod
+    def _area_editor_defaults(
+        values: Mapping[str, Any], *, clear_circles: bool = False
+    ) -> dict[str, Any]:
+        """Preserve non-geometric fields while safely controlling old geometry."""
+        return {
+            "name": values.get("name", ""),
+            "circles": (
+                []
+                if clear_circles
+                else values.get("circles", values.get("area_editor", []))
+            ),
+            "cleaning_mode": values.get("cleaning_mode", CleaningMode.VACUUM.value),
+            "coverage_setting": values.get(
+                "coverage_setting", CoverageSetting.STANDARD.value
+            ),
+        }
+
+    def _show_area_form(
+        self,
+        step_id: str,
+        defaults: Mapping[str, Any],
+        *,
+        errors: Mapping[str, str] | None = None,
+        clear_circles: bool = False,
+        status: str = AREA_STATUS_CURRENT,
+    ) -> config_entries.ConfigFlowResult:
+        """Show an area editor only when its live map can be bound exactly."""
+        context = self._live_area_context()
+        if context is None:
+            self._area_editor_binding = None
+            unavailable_errors = dict(errors or {})
+            unavailable_errors["base"] = "room_plan_unavailable"
+            return self.async_show_form(
+                step_id=step_id,
+                data_schema=vol.Schema({}),
+                errors=unavailable_errors,
+                description_placeholders={"area_status": AREA_STATUS_MAP_UNAVAILABLE},
+            )
+        floor_plan, binding = context
+        self._area_editor_binding = binding
+        return self.async_show_form(
+            step_id=step_id,
+            data_schema=self._area_editor_schema(
+                self._area_editor_defaults(defaults, clear_circles=clear_circles),
+                floor_plan,
+            ),
+            errors=dict(errors or {}),
+            description_placeholders={"area_status": status},
+        )
+
+    def _validate_area_editor_map(
+        self,
+    ) -> tuple[FloorPlan, MapBinding] | None:
+        """Reject a submission if its map vanished or changed while open."""
+        context = self._live_area_context()
+        if context is None or context[1] != self._area_editor_binding:
+            return None
+        return context
 
     def _room_editor_value(
         self, plan: Mapping[str, Any] | None = None
@@ -1234,6 +1319,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return self.async_abort(reason="entry_not_loaded")
         self._plan_id = None
         self._area_id = None
+        self._area_editor_binding = None
         menu_options = []
         if self._manager.plans(self._serial_number):
             menu_options.append("manage_plan")
@@ -1280,10 +1366,23 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         if self._area_id is None:
             return await self.async_step_choose_area()
         area = self._manager.area(self._serial_number, self._area_id)
+        context = self._live_area_context()
+        status = (
+            AREA_STATUS_MAP_UNAVAILABLE
+            if context is None
+            else (
+                AREA_STATUS_CURRENT
+                if area_binding_status(area, context[0]) is AreaBindingStatus.CURRENT
+                else AREA_STATUS_REDRAW_REQUIRED
+            )
+        )
         return self.async_show_menu(
             step_id="area_menu",
             menu_options=["edit_area", "delete_area", "manage_areas", "finish"],
-            description_placeholders={"area_name": str(area["name"])},
+            description_placeholders={
+                "area_name": str(area["name"]),
+                "area_status": status,
+            },
         )
 
     async def async_step_add_area(
@@ -1292,27 +1391,40 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         """Draw and save a named local custom area."""
         errors: dict[str, str] = {}
         if user_input is not None:
+            context = self._validate_area_editor_map()
+            if context is None:
+                error = (
+                    "room_plan_unavailable"
+                    if self._live_area_context() is None
+                    else "area_map_changed"
+                )
+                return self._show_area_form(
+                    "add_area",
+                    user_input,
+                    errors={"base": error},
+                    clear_circles=True,
+                    status=AREA_STATUS_REDRAW_REQUIRED,
+                )
             area_id = slugify(user_input["name"])
             if not area_id or area_id in self._manager.areas(self._serial_number):
                 errors["name"] = "duplicate_area"
             else:
+                _floor_plan, binding = context
                 self._area_id = area_id
                 await self._manager.async_save_area(
                     self._serial_number,
                     area_id,
                     {
+                        "schema_version": AREA_SCHEMA_VERSION,
                         "name": user_input["name"],
                         "circles": user_input["area_editor"],
                         "cleaning_mode": user_input["cleaning_mode"],
                         "coverage_setting": user_input["coverage_setting"],
+                        "map_binding": binding,
                     },
                 )
                 return await self.async_step_area_menu()
-        return self.async_show_form(
-            step_id="add_area",
-            data_schema=self._area_editor_schema(user_input or {}),
-            errors=errors,
-        )
+        return self._show_area_form("add_area", user_input or {}, errors=errors)
 
     async def async_step_edit_area(
         self, user_input: dict[str, Any] | None = None
@@ -1322,19 +1434,44 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_choose_area()
         area = self._manager.area(self._serial_number, self._area_id)
         if user_input is not None:
+            context = self._validate_area_editor_map()
+            if context is None:
+                error = (
+                    "room_plan_unavailable"
+                    if self._live_area_context() is None
+                    else "area_map_changed"
+                )
+                return self._show_area_form(
+                    "edit_area",
+                    user_input,
+                    errors={"base": error},
+                    clear_circles=True,
+                    status=AREA_STATUS_REDRAW_REQUIRED,
+                )
+            _floor_plan, binding = context
             await self._manager.async_save_area(
                 self._serial_number,
                 self._area_id,
                 {
+                    "schema_version": AREA_SCHEMA_VERSION,
                     "name": user_input["name"],
                     "circles": user_input["area_editor"],
                     "cleaning_mode": user_input["cleaning_mode"],
                     "coverage_setting": user_input["coverage_setting"],
+                    "map_binding": binding,
                 },
             )
             return await self.async_step_area_menu()
-        return self.async_show_form(
-            step_id="edit_area", data_schema=self._area_editor_schema(area)
+        context = self._live_area_context()
+        is_current = (
+            context is not None
+            and area_binding_status(area, context[0]) is AreaBindingStatus.CURRENT
+        )
+        return self._show_area_form(
+            "edit_area",
+            area,
+            clear_circles=not is_current,
+            status=(AREA_STATUS_CURRENT if is_current else AREA_STATUS_REDRAW_REQUIRED),
         )
 
     async def async_step_delete_area(

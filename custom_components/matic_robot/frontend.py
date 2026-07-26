@@ -10,7 +10,7 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
-from .slam_scene import MaticSlamPoseView, MaticSlamSceneView
+from .slam_scene import MaticSlamCatalogView, MaticSlamPoseView, MaticSlamSceneView
 
 # Include both the packaged version and the editor content in the cache-buster.
 # Both are loaded once at import time, off the event loop.
@@ -30,6 +30,16 @@ MATIC_MAP_STUDIO_PATH = (
     f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_VERSION}/matic-map-studio.js"
 )
 MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-0"
+DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
+DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
+
+
+def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
+    """Purge private in-memory map data when an entry leaves service."""
+    if scene_view := hass.data.get(DATA_SLAM_SCENE_VIEW):
+        scene_view.clear_entry(entry_id)
+    if pose_view := hass.data.get(DATA_SLAM_POSE_VIEW):
+        pose_view.clear_entry(entry_id)
 
 
 async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
@@ -46,8 +56,13 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             ),
         ]
     )
-    hass.http.register_view(MaticSlamSceneView)
-    hass.http.register_view(MaticSlamPoseView)
+    scene_view = MaticSlamSceneView()
+    pose_view = MaticSlamPoseView()
+    hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
+    hass.data[DATA_SLAM_POSE_VIEW] = pose_view
+    hass.http.register_view(scene_view)
+    hass.http.register_view(pose_view)
+    hass.http.register_view(MaticSlamCatalogView)
     frontend.add_extra_js_url(
         hass,
         ROOM_PLAN_EDITOR_PATH,

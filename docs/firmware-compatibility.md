@@ -21,7 +21,7 @@ separates an observed update from verified compatibility.
 
 | Firmware | First observed | Integration | Status | Evidence | Changes or capabilities |
 | --- | --- | --- | --- | --- | --- |
-| [v168.11](firmware-versions/v168.md) | 2026-07-20 | 0.2.0 | Core read verified | Live on HA 2026.7.2; protocol 25; automatic baseline snapshot 28 populated / 12 empty / 0 failed | Uploader-state decoder fix released and live-confirmed; robot-side stream resets handled as transport noise |
+| [v168.11](firmware-versions/v168.md) | 2026-07-20 | 0.2.0–0.2.3 | Core read verified | Live on HA 2026.7.2; protocol 25; automatic baseline snapshot 28 populated / 12 empty / 0 failed; selected stop/dock/room-plan paths later exercised | Uploader-state decoder fix released and live-confirmed; robot-side stream resets handled as transport noise; complete control matrix remains pending |
 
 An empty or pending entry is not a compatibility claim. Synthetic tests show
 that the integration handles the documented protocol shapes; only real-robot

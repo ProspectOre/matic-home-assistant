@@ -193,12 +193,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         )
         now = dt_util.utcnow()
         if not self._session_history_recovered:
-            self._session_history_recovered = True
-            await self._async_recover_session_history(
+            self._session_history_recovered = await self._async_recover_session_history(
                 state.info.serial_number, room_names, now
             )
         self._session_tracker.update(
             cleaning=state.operational.cleaning,
+            paused=state.operational.paused,
+            returning=state.operational.returning,
+            charging=state.operational.is_charging,
+            low_charge=state.operational.low_charge,
             current_area=state.operational.current_area,
             room_names=room_names,
             now=now,
@@ -211,15 +214,20 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     @callback
     def async_discard_current_room(self) -> None:
         """Keep an interrupted room out of local completed-room statistics."""
-        self._session_tracker.discard_current_room()
+        self._session_tracker.discard_current_room(now=dt_util.utcnow())
+
+    @callback
+    def async_confirm_room_completed(self, room_name: str) -> None:
+        """Apply positive managed evidence to local room statistics."""
+        self._session_tracker.confirm_room_completed(room_name)
 
     async def _async_recover_session_history(
         self,
         serial_number: str,
         room_names: tuple[str, ...],
         now: datetime,
-    ) -> None:
-        """Recover the most recent local run from retained Recorder states."""
+    ) -> bool:
+        """Recover retained history, retrying until Recorder is ready."""
         registry = er.async_get(self.hass)
         cleaning_entity = registry.async_get_entity_id(
             "binary_sensor", DOMAIN, f"{serial_number}_cleaning"
@@ -228,7 +236,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             "sensor", DOMAIN, f"{serial_number}_current_area"
         )
         if cleaning_entity is None or area_entity is None:
-            return
+            return False
         try:
             from homeassistant.components.recorder import history
             from homeassistant.helpers.recorder import get_instance
@@ -247,13 +255,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             )
         except Exception as err:  # Recorder is optional and may not be ready yet.
             _LOGGER.debug("Unable to recover Matic cleaning history: %s", err)
-            return
+            return False
         self._session_tracker.recover(
             cast(Any, states.get(cleaning_entity, [])),
             cast(Any, states.get(area_entity, [])),
             room_names,
             now=now,
         )
+        return True
 
     async def _async_info(self) -> RobotInfo:
         """Read immutable identity once per coordinator lifetime."""

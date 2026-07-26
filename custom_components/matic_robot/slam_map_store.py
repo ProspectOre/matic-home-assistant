@@ -4,15 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from collections import OrderedDict, defaultdict, deque
+from collections.abc import Callable, Mapping, Sequence
+from dataclasses import dataclass
+from functools import partial
 from time import monotonic
-from typing import Any
+from typing import Any, Literal
 
 from google.protobuf.message import DecodeError
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .client.api import MaticHermesClient
-from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry
 from .client.slam_map import (
     SlamStructureTile,
@@ -29,17 +32,74 @@ STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
 MIN_COMPLETE_TILES = 32
+MIN_LAYER_OVERLAP = 0.95
+SPATIAL_BUCKETS_PER_AXIS = 8
+MAX_HEALTH_COUNTER = 2**31 - 1
+MAX_LOAD_ITEMS_PER_LAYER = MAX_TILES * 2
+MAX_CANDIDATE_MISSIONS = 2
+MAX_CANDIDATE_TILES_PER_LAYER = 128
+MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
+MAX_RETIRED_MISSIONS = 8
+
+MapHealthState = Literal[
+    "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
+]
+MapStreamState = Literal["idle", "connecting", "connected", "retrying"]
+
+
+@dataclass(frozen=True, slots=True)
+class SlamMapHealth:
+    """Bounded, content-free health details for the private map cache."""
+
+    state: MapHealthState
+    complete: bool
+    truncated: bool
+    photo_tiles: int
+    structure_tiles: int
+    dropped_photo_tiles: int
+    dropped_structure_tiles: int
+    invalid_tiles: int
+    stream_state: MapStreamState
+    stream_failures: int
+
+
+@dataclass(slots=True)
+class _MissionCandidate:
+    """Bounded pages waiting for cross-layer mission confirmation."""
+
+    generation: int
+    entries: dict[str, HermesCollectionEntry]
+    structure_entries: dict[str, HermesCollectionEntry]
+    truncated: bool = False
+    dropped_photo_tiles: int = 0
+    dropped_structure_tiles: int = 0
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedMap:
+    """One fully decoded private storage snapshot built off the event loop."""
+
+    mission_token: str | None
+    entries: dict[str, HermesCollectionEntry]
+    structure_entries: dict[str, HermesCollectionEntry]
+    truncated: bool
+    dropped_photo_tiles: int
+    dropped_structure_tiles: int
+    invalid_tiles: int
+    dirty: bool
 
 
 class SlamMapStore:
     """Accumulate current robot SLAM tiles without exposing them to Recorder."""
 
     def __init__(self, hass: HomeAssistant, entry_id: str) -> None:
+        self._hass = hass
         self._store = Store[dict[str, Any]](
             hass,
             STORAGE_VERSION,
             f"{DOMAIN}.slam_map.{entry_id}",
             private=True,
+            serialize_in_event_loop=False,
         )
         self._mission_token: str | None = None
         self._entries: dict[str, HermesCollectionEntry] = {}
@@ -47,72 +107,49 @@ class SlamMapStore:
         self._revision = 0
         self._last_change = 0.0
         self._map_complete = False
+        self._truncated = False
+        self._dropped_photo_tiles = 0
+        self._dropped_structure_tiles = 0
+        self._invalid_tiles = 0
+        self._stream_states: dict[str, MapStreamState] = {
+            "map_compressed_rgb": "idle",
+            "map_integrated": "idle",
+        }
+        self._stream_failures = 0
+        self._listeners: set[Callable[[], None]] = set()
+        self._candidates: OrderedDict[str, _MissionCandidate] = OrderedDict()
+        self._retired_missions: deque[str] = deque(maxlen=MAX_RETIRED_MISSIONS)
+        self._candidate_generation = 0
+        self._closed = False
 
     async def async_load(self) -> None:
         """Load and validate the robot-local tile cache."""
         stored = await self._store.async_load() or {}
-        entries: dict[str, HermesCollectionEntry] = {}
-        total = 0
-        for item in stored.get("tiles", ()):
-            try:
-                entry = HermesCollectionEntry(
-                    base64.b64decode(item["key"], validate=True),
-                    base64.b64decode(item["value"], validate=True),
-                )
-                photo_tile = decode_slam_tile(entry)
-            except DecodeError, KeyError, TypeError, ValueError:
-                continue
-            if self._mission_token not in (None, photo_tile.mission_token):
-                entries.clear()
-                total = 0
-            total += len(entry.key) + len(entry.value)
-            if total > MAX_STORED_BYTES or len(entries) >= MAX_TILES:
-                break
-            self._mission_token = photo_tile.mission_token
-            entries[_tile_key(photo_tile)] = entry
-        self._entries = entries
-        structure_entries: dict[str, HermesCollectionEntry] = {}
-        for item in stored.get("structure_tiles", ()):
-            try:
-                entry = HermesCollectionEntry(
-                    base64.b64decode(item["key"], validate=True),
-                    base64.b64decode(item["value"], validate=True),
-                )
-                structure_tile = decode_slam_structure_tile(entry)
-            except DecodeError, KeyError, TypeError, ValueError:
-                continue
-            if self._mission_token not in (None, structure_tile.mission_token):
-                entries.clear()
-                structure_entries.clear()
-                total = 0
-            total += len(entry.key) + len(entry.value)
-            if total > MAX_STORED_BYTES or len(structure_entries) >= MAX_TILES:
-                break
-            self._mission_token = structure_tile.mission_token
-            structure_entries[_tile_key(structure_tile)] = entry
-        self._structure_entries = structure_entries
-        self._revision = len(entries) + len(structure_entries)
+        loaded = await self._hass.async_add_executor_job(
+            _decode_stored_snapshot, stored
+        )
+        self._mission_token = loaded.mission_token
+        self._entries = loaded.entries
+        self._structure_entries = loaded.structure_entries
+        self._truncated = loaded.truncated
+        self._dropped_photo_tiles = loaded.dropped_photo_tiles
+        self._dropped_structure_tiles = loaded.dropped_structure_tiles
+        self._invalid_tiles = loaded.invalid_tiles
+        self._candidates.clear()
+        self._retired_missions.clear()
+        self._candidate_generation = 0
+        self._closed = False
+        self._revision = len(self._entries) + len(self._structure_entries)
         self._last_change = 0.0
-        self._map_complete = self._has_balanced_layers()
+        self._map_complete = not self._truncated and self._has_balanced_layers()
+        if loaded.dirty:
+            self._schedule_save()
+        self._notify_listeners()
 
     async def async_add(self, entry: HermesCollectionEntry) -> SlamTile:
         """Validate, cache, and privately persist one current tile."""
         tile = decode_slam_tile(entry)
-        if self._mission_token not in (None, tile.mission_token):
-            self._entries.clear()
-            self._structure_entries.clear()
-            self._map_complete = False
-        self._mission_token = tile.mission_token
-        key = _tile_key(tile)
-        changed = self._entries.get(key) != entry
-        self._entries[key] = entry
-        if not changed:
-            return tile
-        self._enforce_bounds()
-        self._store.async_delay_save(self._serialized_data, SAVE_DELAY_SECONDS)
-        if changed:
-            self._revision += 1
-            self._last_change = monotonic()
+        self._async_cache_entry(entry, tile, structural=False)
         return tile
 
     async def async_add_structure(
@@ -120,21 +157,108 @@ class SlamMapStore:
     ) -> SlamStructureTile:
         """Validate, cache, and privately persist one structural map page."""
         tile = decode_slam_structure_tile(entry)
-        if self._mission_token not in (None, tile.mission_token):
-            self._entries.clear()
-            self._structure_entries.clear()
-            self._map_complete = False
-        self._mission_token = tile.mission_token
+        self._async_cache_entry(entry, tile, structural=True)
+        return tile
+
+    def _async_cache_entry(
+        self,
+        entry: HermesCollectionEntry,
+        tile: SlamTile | SlamStructureTile,
+        *,
+        structural: bool,
+    ) -> None:
+        """Cache an active page or stage a cross-layer mission candidate."""
+        if self._closed:
+            return
+        mission_token = tile.mission_token
+        if self._mission_token is None:
+            self._mission_token = mission_token
+        if mission_token != self._mission_token:
+            self._stage_candidate(entry, tile, structural=structural)
+            return
+        target = self._structure_entries if structural else self._entries
         key = _tile_key(tile)
-        changed = self._structure_entries.get(key) != entry
-        self._structure_entries[key] = entry
+        changed = target.get(key) != entry
+        target[key] = entry
         if not changed:
-            return tile
+            return
+        self._content_changed()
+
+    def _stage_candidate(
+        self,
+        entry: HermesCollectionEntry,
+        tile: SlamTile | SlamStructureTile,
+        *,
+        structural: bool,
+    ) -> None:
+        """Wait for both independent map layers before changing missions."""
+        mission_token = tile.mission_token
+        if mission_token in self._retired_missions:
+            return
+        candidate = self._candidates.get(mission_token)
+        if candidate is None:
+            if len(self._candidates) >= MAX_CANDIDATE_MISSIONS:
+                evicted_token, _candidate = self._candidates.popitem(last=False)
+                self._retire_mission(evicted_token)
+            self._candidate_generation += 1
+            candidate = _MissionCandidate(self._candidate_generation, {}, {})
+            self._candidates[mission_token] = candidate
+        else:
+            self._candidates.move_to_end(mission_token)
+        target = candidate.structure_entries if structural else candidate.entries
+        target[_tile_key(tile)] = entry
+        self._enforce_candidate_bounds(candidate)
+        if candidate.entries and candidate.structure_entries:
+            self._promote_candidate(mission_token, candidate)
+
+    def _promote_candidate(
+        self, mission_token: str, candidate: _MissionCandidate
+    ) -> None:
+        """Atomically replace the active mission after cross-layer evidence."""
+        if self._mission_token is not None:
+            self._retire_mission(self._mission_token)
+        for token, pending in tuple(self._candidates.items()):
+            if pending.generation < candidate.generation:
+                self._candidates.pop(token)
+                self._retire_mission(token)
+        self._mission_token = mission_token
+        self._entries = candidate.entries
+        self._structure_entries = candidate.structure_entries
+        self._truncated = candidate.truncated
+        self._dropped_photo_tiles = candidate.dropped_photo_tiles
+        self._dropped_structure_tiles = candidate.dropped_structure_tiles
+        self._invalid_tiles = 0
+        self._candidates.pop(mission_token, None)
+        self._content_changed()
+
+    def _retire_mission(self, mission_token: str) -> None:
+        """Remember recently superseded tokens so delayed pages are ignored."""
+        self._retired_missions.append(mission_token)
+
+    def _enforce_candidate_bounds(self, candidate: _MissionCandidate) -> None:
+        dropped_photo, dropped_structure = _enforce_collection_bounds(
+            candidate.entries,
+            candidate.structure_entries,
+            max_tiles=MAX_CANDIDATE_TILES_PER_LAYER,
+            max_bytes=MAX_CANDIDATE_BYTES,
+        )
+        if dropped_photo or dropped_structure:
+            candidate.truncated = True
+            candidate.dropped_photo_tiles = _increment_by(
+                candidate.dropped_photo_tiles, dropped_photo
+            )
+            candidate.dropped_structure_tiles = _increment_by(
+                candidate.dropped_structure_tiles, dropped_structure
+            )
+
+    def _content_changed(self) -> None:
+        """Apply bounds and publish one content revision."""
         self._enforce_bounds()
-        self._store.async_delay_save(self._serialized_data, SAVE_DELAY_SECONDS)
         self._revision += 1
         self._last_change = monotonic()
-        return tile
+        self._map_complete = False
+        self._schedule_save()
+        self._notify_listeners()
 
     async def async_collect(self, client: MaticHermesClient) -> None:
         """Continuously collect photographic and structural map pages."""
@@ -147,21 +271,35 @@ class SlamMapStore:
         self, client: MaticHermesClient, name: str, structural: bool
     ) -> None:
         while True:
+            self._set_stream_state(name, "connecting")
             try:
                 async for entry in client.async_subscribe_collection_entries(name):
+                    self._set_stream_state(name, "connected")
                     try:
                         if structural:
                             await self.async_add_structure(entry)
                         else:
                             await self.async_add(entry)
                     except DecodeError:
-                        continue
+                        self._record_invalid()
+                        self._notify_listeners()
             except asyncio.CancelledError:
                 raise
-            except MaticError:
-                await asyncio.sleep(STREAM_RETRY_SECONDS)
+            except Exception:  # A failed private stream must not kill map collection.
+                self._stream_failures = _increment(self._stream_failures)
+                self._set_stream_state(name, "retrying")
             else:
-                await asyncio.sleep(STREAM_RETRY_SECONDS)
+                self._set_stream_state(name, "retrying")
+            await asyncio.sleep(STREAM_RETRY_SECONDS)
+
+    def async_add_listener(self, listener: Callable[[], None]) -> Callable[[], None]:
+        """Subscribe to content and health changes; return an unsubscribe callback."""
+        self._listeners.add(listener)
+
+        def remove_listener() -> None:
+            self._listeners.discard(listener)
+
+        return remove_listener
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
         """Return all currently valid tiles for local rendering."""
@@ -208,7 +346,9 @@ class SlamMapStore:
 
     @property
     def map_complete(self) -> bool:
-        """Return whether both map layers completed for the current mission."""
+        """Return whether both untruncated layers settled for the current mission."""
+        if self._truncated:
+            return False
         if self._map_complete:
             return True
         if not self._has_balanced_layers():
@@ -216,60 +356,409 @@ class SlamMapStore:
         self._map_complete = monotonic() - self._last_change >= MAP_SETTLE_SECONDS
         return self._map_complete
 
+    @property
+    def health(self) -> SlamMapHealth:
+        """Return bounded operational health without exposing map content."""
+        complete = self.map_complete
+        stream_state = self._combined_stream_state()
+        if self._truncated:
+            state: MapHealthState = "truncated"
+        elif stream_state == "retrying" or self._invalid_tiles:
+            state = "degraded"
+        elif complete:
+            state = "ready"
+        elif not self._entries and not self._structure_entries:
+            state = "collecting" if stream_state != "idle" else "empty"
+        else:
+            state = "incomplete"
+        return SlamMapHealth(
+            state=state,
+            complete=complete,
+            truncated=self._truncated,
+            photo_tiles=len(self._entries),
+            structure_tiles=len(self._structure_entries),
+            dropped_photo_tiles=self._dropped_photo_tiles,
+            dropped_structure_tiles=self._dropped_structure_tiles,
+            invalid_tiles=self._invalid_tiles,
+            stream_state=stream_state,
+            stream_failures=self._stream_failures,
+        )
+
+    def _combined_stream_state(self) -> MapStreamState:
+        states = tuple(self._stream_states.values())
+        if "retrying" in states:
+            return "retrying"
+        if states and all(state == "connected" for state in states):
+            return "connected"
+        if any(state in ("connecting", "connected") for state in states):
+            return "connecting"
+        return "idle"
+
     def _has_balanced_layers(self) -> bool:
         """Return whether enough pages from both full-map layers are present."""
         photo_count = len(self._entries)
         structure_count = len(self._structure_entries)
         if min(photo_count, structure_count) < MIN_COMPLETE_TILES:
             return False
-        coverage = min(photo_count, structure_count) / max(photo_count, structure_count)
-        return coverage >= 0.95
+        overlap = len(self._entries.keys() & self._structure_entries.keys())
+        coverage = overlap / max(photo_count, structure_count)
+        return coverage >= MIN_LAYER_OVERLAP
 
     async def async_remove(self) -> None:
         """Erase the private map cache when the robot entry is removed."""
+        self._closed = True
         self._entries.clear()
         self._structure_entries.clear()
+        self._candidates.clear()
+        self._retired_missions.clear()
+        self._candidate_generation = 0
         self._mission_token = None
         self._revision += 1
         self._last_change = monotonic()
         self._map_complete = False
+        self._truncated = False
+        self._dropped_photo_tiles = 0
+        self._dropped_structure_tiles = 0
+        self._invalid_tiles = 0
+        self._notify_listeners()
         await self._store.async_remove()
 
-    def _stored_bytes(self) -> int:
-        return sum(
-            len(item.key) + len(item.value)
-            for collection in (self._entries, self._structure_entries)
-            for item in collection.values()
+    async def async_shutdown(self) -> None:
+        """Close mutation and resolve pending private writes before unload."""
+        if self._closed:
+            return
+        self._closed = True
+        data = await self._hass.async_add_executor_job(
+            _serialize_snapshot,
+            tuple(self._entries.values()),
+            tuple(self._structure_entries.values()),
+            self._snapshot_health(),
         )
+        # Store.async_save replaces and resolves any delayed save through the
+        # documented API, so a later config-entry removal cannot be resurrected.
+        await self._store.async_save(data)
 
     def _enforce_bounds(self) -> None:
-        while len(self._entries) > MAX_TILES:
-            self._entries.pop(next(iter(self._entries)))
-        while len(self._structure_entries) > MAX_TILES:
-            self._structure_entries.pop(next(iter(self._structure_entries)))
-        while self._stored_bytes() > MAX_STORED_BYTES:
-            target = self._entries if self._entries else self._structure_entries
-            target.pop(next(iter(target)))
+        dropped_photo, dropped_structure = _enforce_collection_bounds(
+            self._entries,
+            self._structure_entries,
+            max_tiles=MAX_TILES,
+            max_bytes=MAX_STORED_BYTES,
+        )
+        if dropped_photo or dropped_structure:
+            self._truncated = True
+            self._dropped_photo_tiles = _increment_by(
+                self._dropped_photo_tiles, dropped_photo
+            )
+            self._dropped_structure_tiles = _increment_by(
+                self._dropped_structure_tiles, dropped_structure
+            )
 
-    def _serialized_data(self) -> dict[str, list[dict[str, str]]]:
-        """Build the private payload only when the debounced write runs."""
-        return {
-            "tiles": [
-                {
-                    "key": base64.b64encode(item.key).decode("ascii"),
-                    "value": base64.b64encode(item.value).decode("ascii"),
-                }
-                for item in self._entries.values()
-            ],
-            "structure_tiles": [
-                {
-                    "key": base64.b64encode(item.key).decode("ascii"),
-                    "value": base64.b64encode(item.value).decode("ascii"),
-                }
-                for item in self._structure_entries.values()
-            ],
-        }
+    def _record_invalid(self) -> None:
+        self._invalid_tiles = _increment(self._invalid_tiles)
+
+    def _set_stream_state(self, name: str, state: MapStreamState) -> None:
+        if self._stream_states.get(name) == state:
+            return
+        self._stream_states[name] = state
+        self._notify_listeners()
+
+    def _notify_listeners(self) -> None:
+        for listener in tuple(self._listeners):
+            listener()
+
+    def _schedule_save(self) -> None:
+        """Debounce an immutable snapshot and encode it outside the event loop."""
+        if self._closed:
+            return
+        self._store.async_delay_save(
+            partial(
+                _serialize_snapshot,
+                tuple(self._entries.values()),
+                tuple(self._structure_entries.values()),
+                self._snapshot_health(),
+            ),
+            SAVE_DELAY_SECONDS,
+        )
+
+    def _snapshot_health(self) -> tuple[str | None, bool, int, int]:
+        return (
+            self._mission_token,
+            self._truncated,
+            self._dropped_photo_tiles,
+            self._dropped_structure_tiles,
+        )
+
+    def _serialized_data(self) -> dict[str, Any]:
+        """Build a private payload synchronously for diagnostics and migration."""
+        return _serialize_snapshot(
+            tuple(self._entries.values()),
+            tuple(self._structure_entries.values()),
+            self._snapshot_health(),
+        )
+
+
+def _serialize_snapshot(
+    photo_entries: tuple[HermesCollectionEntry, ...],
+    structure_entries: tuple[HermesCollectionEntry, ...],
+    health: tuple[str | None, bool, int, int],
+) -> dict[str, Any]:
+    """Encode an immutable private snapshot for Home Assistant storage."""
+    mission_token, truncated, dropped_photo_tiles, dropped_structure_tiles = health
+    return {
+        "mission_token": mission_token,
+        "truncated": truncated,
+        "dropped_photo_tiles": dropped_photo_tiles,
+        "dropped_structure_tiles": dropped_structure_tiles,
+        "tiles": [_serialize_entry(item) for item in photo_entries],
+        "structure_tiles": [_serialize_entry(item) for item in structure_entries],
+    }
+
+
+def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
+    return {
+        "key": base64.b64encode(item.key).decode("ascii"),
+        "value": base64.b64encode(item.value).decode("ascii"),
+    }
+
+
+def _decode_stored_snapshot(stored: object) -> _LoadedMap:
+    """Decode and bound one private cache snapshot away from the event loop."""
+    if not isinstance(stored, Mapping):
+        return _LoadedMap(None, {}, {}, False, 0, 0, 1, True)
+    stored_mission = _stored_mission_token(stored.get("mission_token"))
+    mission_token = stored_mission
+    truncated = stored.get("truncated") is True
+    dropped_photo = _bounded_count(stored.get("dropped_photo_tiles", 0))
+    dropped_structure = _bounded_count(stored.get("dropped_structure_tiles", 0))
+    invalid = 0
+    dirty = (
+        (stored.get("mission_token") is not None and stored_mission is None)
+        or ("truncated" in stored and not isinstance(stored["truncated"], bool))
+        or dropped_photo != stored.get("dropped_photo_tiles", 0)
+        or dropped_structure != stored.get("dropped_structure_tiles", 0)
+    )
+    entries: dict[str, HermesCollectionEntry] = {}
+    structure_entries: dict[str, HermesCollectionEntry] = {}
+
+    for structural, name in ((False, "tiles"), (True, "structure_tiles")):
+        items = stored.get(name, ())
+        if not isinstance(items, Sequence) or isinstance(items, str | bytes):
+            invalid = _increment(invalid)
+            dirty = True
+            continue
+        item_limit = min(len(items), MAX_LOAD_ITEMS_PER_LAYER)
+        if len(items) > item_limit:
+            overflow = len(items) - item_limit
+            truncated = True
+            if structural:
+                dropped_structure = _increment_by(dropped_structure, overflow)
+            else:
+                dropped_photo = _increment_by(dropped_photo, overflow)
+            dirty = True
+        for index in range(item_limit):
+            item = items[index]
+            if not isinstance(item, Mapping):
+                invalid = _increment(invalid)
+                dirty = True
+                continue
+            try:
+                entry = HermesCollectionEntry(
+                    base64.b64decode(item["key"], validate=True),
+                    base64.b64decode(item["value"], validate=True),
+                )
+                tile = (
+                    decode_slam_structure_tile(entry)
+                    if structural
+                    else decode_slam_tile(entry)
+                )
+            except DecodeError, KeyError, TypeError, ValueError:
+                invalid = _increment(invalid)
+                dirty = True
+                continue
+            if mission_token not in (None, tile.mission_token):
+                entries.clear()
+                structure_entries.clear()
+                truncated = False
+                dropped_photo = 0
+                dropped_structure = 0
+                invalid = 0
+                dirty = True
+            mission_token = tile.mission_token
+            target = structure_entries if structural else entries
+            key = _tile_key(tile)
+            if key in target:
+                dirty = True
+            target[key] = entry
+            evicted_photo, evicted_structure = _enforce_collection_bounds(
+                entries,
+                structure_entries,
+                max_tiles=MAX_TILES,
+                max_bytes=MAX_STORED_BYTES,
+            )
+            if evicted_photo or evicted_structure:
+                truncated = True
+                dropped_photo = _increment_by(dropped_photo, evicted_photo)
+                dropped_structure = _increment_by(dropped_structure, evicted_structure)
+                dirty = True
+
+    if stored_mission is None and mission_token is not None:
+        dirty = True
+    return _LoadedMap(
+        mission_token,
+        entries,
+        structure_entries,
+        truncated,
+        dropped_photo,
+        dropped_structure,
+        invalid,
+        dirty,
+    )
+
+
+def _enforce_collection_bounds(
+    entries: dict[str, HermesCollectionEntry],
+    structure_entries: dict[str, HermesCollectionEntry],
+    *,
+    max_tiles: int,
+    max_bytes: int,
+) -> tuple[int, int]:
+    """Mutate two layers to bounded, spatially useful paired coverage."""
+    dropped_photo = 0
+    dropped_structure = 0
+
+    def drop_layer(
+        collection: dict[str, HermesCollectionEntry], *, structural: bool
+    ) -> None:
+        nonlocal dropped_photo, dropped_structure
+        counterpart = entries if structural else structure_entries
+        key = _spatial_victim(collection)
+        collection.pop(key)
+        if structural:
+            dropped_structure += 1
+        else:
+            dropped_photo += 1
+        if key in counterpart:
+            counterpart.pop(key)
+            if structural:
+                dropped_photo += 1
+            else:
+                dropped_structure += 1
+
+    while len(entries) > max_tiles:
+        drop_layer(entries, structural=False)
+    while len(structure_entries) > max_tiles:
+        drop_layer(structure_entries, structural=True)
+    while _stored_bytes(entries, structure_entries) > max_bytes:
+        photo_only = entries.keys() - structure_entries.keys()
+        structure_only = structure_entries.keys() - entries.keys()
+        if photo_only or structure_only:
+            if photo_only and (
+                not structure_only or len(photo_only) >= len(structure_only)
+            ):
+                drop_layer(entries, structural=False)
+            else:
+                drop_layer(structure_entries, structural=True)
+            continue
+        if entries:
+            drop_layer(entries, structural=False)
+    return dropped_photo, dropped_structure
+
+
+def _stored_bytes(
+    entries: Mapping[str, HermesCollectionEntry],
+    structure_entries: Mapping[str, HermesCollectionEntry],
+) -> int:
+    return sum(
+        len(item.key) + len(item.value)
+        for collection in (entries, structure_entries)
+        for item in collection.values()
+    )
+
+
+def _spatial_victim(
+    collection: Mapping[str, HermesCollectionEntry],
+) -> str:
+    """Choose a redundant page while retaining broad, deterministic coverage."""
+    available = sorted(collection)
+    if len(available) == 1:
+        return available[0]
+    coordinates = {key: _parse_tile_key(key) for key in available}
+    min_x = min(point[0] for point in coordinates.values())
+    max_x = max(point[0] for point in coordinates.values())
+    min_y = min(point[1] for point in coordinates.values())
+    max_y = max(point[1] for point in coordinates.values())
+    extrema = {
+        key
+        for key, (x, y) in coordinates.items()
+        if x in (min_x, max_x) or y in (min_y, max_y)
+    }
+    removable = [key for key in available if key not in extrema] or available
+    buckets: dict[tuple[int, int], list[str]] = defaultdict(list)
+    for key in removable:
+        x, y = coordinates[key]
+        bucket_x = _bucket(x, min_x, max_x)
+        bucket_y = _bucket(y, min_y, max_y)
+        buckets[(bucket_x, bucket_y)].append(key)
+    bucket_center = (SPATIAL_BUCKETS_PER_AXIS - 1) / 2
+    fullest = min(
+        buckets,
+        key=lambda item: (
+            -len(buckets[item]),
+            (item[0] - bucket_center) ** 2 + (item[1] - bucket_center) ** 2,
+            item,
+        ),
+    )
+    bucket_keys = buckets[fullest]
+    center_x = (min_x + max_x) / 2
+    center_y = (min_y + max_y) / 2
+    return min(
+        bucket_keys,
+        key=lambda key: (
+            (coordinates[key][0] - center_x) ** 2
+            + (coordinates[key][1] - center_y) ** 2,
+            key,
+        ),
+    )
+
+
+def _bucket(value: int, minimum: int, maximum: int) -> int:
+    if minimum == maximum:
+        return 0
+    return min(
+        SPATIAL_BUCKETS_PER_AXIS - 1,
+        (value - minimum) * SPATIAL_BUCKETS_PER_AXIS // (maximum - minimum + 1),
+    )
+
+
+def _bounded_count(value: object) -> int:
+    if not isinstance(value, int) or isinstance(value, bool):
+        return 0
+    return min(MAX_HEALTH_COUNTER, max(0, value))
+
+
+def _stored_mission_token(value: object) -> str | None:
+    if not isinstance(value, str) or len(value) != 64:
+        return None
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return None
+    return value
+
+
+def _increment(value: int) -> int:
+    return min(MAX_HEALTH_COUNTER, value + 1)
+
+
+def _increment_by(value: int, amount: int) -> int:
+    return min(MAX_HEALTH_COUNTER, value + max(0, amount))
 
 
 def _tile_key(tile: SlamTile | SlamStructureTile) -> str:
     return f"{tile.page_x}:{tile.page_y}"
+
+
+def _parse_tile_key(key: str) -> tuple[int, int]:
+    x, y = key.split(":", 1)
+    return int(x), int(y)

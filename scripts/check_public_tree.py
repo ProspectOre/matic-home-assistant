@@ -20,18 +20,35 @@ EXCLUDED_PARTS = {
     "dist",
     "htmlcov",
     "matic_home_assistant.egg-info",
+    "node_modules",
+    "playwright-report",
+    "test-results",
 }
 BINARY_SUFFIXES = {
     ".7z",
+    ".bin",
     ".db",
     ".har",
+    ".heic",
+    ".jpeg",
+    ".jpg",
     ".mobilebackup",
+    ".npy",
+    ".npz",
     ".pcap",
     ".pcapng",
+    ".png",
     ".sqlite",
     ".sqlite3",
+    ".webp",
     ".zip",
+    ".zst",
 }
+ALLOWED_BINARY_PATHS = {
+    Path("custom_components/matic_robot/brand/icon.png"),
+    Path("custom_components/matic_robot/brand/icon@2x.png"),
+}
+PRIVATE_PATH_PARTS = {".storage"}
 MAC_ADDRESS = re.compile(r"(?i)(?<![0-9a-f])(?:[0-9a-f]{2}:){5}[0-9a-f]{2}(?![0-9a-f])")
 IPV4 = re.compile(r"(?<![0-9])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![0-9])")
 IPV6 = re.compile(
@@ -91,7 +108,13 @@ def scan_file(path: Path, root: Path = ROOT) -> list[str]:
     """Return privacy violations for one public file."""
     relative = path.relative_to(root)
     violations: list[str] = []
-    if path.suffix.casefold() in BINARY_SUFFIXES:
+    if PRIVATE_PATH_PARTS.intersection(relative.parts):
+        violations.append(f"{relative}: private Home Assistant storage")
+        return violations
+    if (
+        path.suffix.casefold() in BINARY_SUFFIXES
+        and relative not in ALLOWED_BINARY_PATHS
+    ):
         violations.append(f"{relative}: private artifact type {path.suffix}")
         return violations
     try:

@@ -89,6 +89,7 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
     )
 
     assert "manifest.json" in package_data
+    assert "quality_scale.yaml" in package_data
     assert "brand/*.png" in package_data
     assert "translations/*.json" in package_data
     assert "client/matic_intermediate_ca.pem" in package_data

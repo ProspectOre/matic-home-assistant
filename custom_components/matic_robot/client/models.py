@@ -168,6 +168,14 @@ class CleaningSession:
 
 
 @dataclass(frozen=True, slots=True)
+class CleaningSessionRecord:
+    """One opaque native history key and its decoded session summary."""
+
+    key: bytes
+    session: CleaningSession
+
+
+@dataclass(frozen=True, slots=True)
 class HermesCollectionEntry:
     """One raw Hermes collection entry: its opaque key and value bytes."""
 

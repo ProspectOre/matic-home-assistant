@@ -9,9 +9,11 @@ contract. The integration does not request these properties or collections,
 publish to these command channels, fetch or cache clip media, or send vendor
 review decisions.
 
-The integration's **Map** camera is separate from these surfaces. It renders
-room geometry, labels, and robot pose locally in Home Assistant and contains no
-optical camera frames. No live video protocol or stream has been verified.
+The integration's visible **Map** camera is separate from these surfaces. It
+renders room geometry, labels, and robot pose locally and contains no
+photographic pixels. The default-disabled **Photorealistic map** and admin-only
+Map Studio use accumulated local SLAM color/structure pages; they do not expose
+recording collections, clips, microphones, or a live video stream.
 
 ## Why recording controls are not included
 

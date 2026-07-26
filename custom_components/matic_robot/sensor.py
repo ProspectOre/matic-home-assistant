@@ -662,8 +662,11 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
 
     @property
     def available(self) -> bool:
-        """Keep historical room facts visible while the robot is offline."""
-        return True
+        """Keep history offline, but retire rooms removed from the active map."""
+        floor_plan = self.coordinator.data.floor_plan
+        return floor_plan is None or any(
+            room.id == self._room_id for room in floor_plan.rooms
+        )
 
     def _room_session_value(self) -> tuple[str, int] | None:
         """Return this room's (ended_at, seconds) from the latest session."""
@@ -689,6 +692,8 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         )
         if managed:
             return True, managed_value
+        if session.completed is not True:
+            return False, None
         durations = dict(session.room_durations)
         if room.name not in durations:
             return False, None

@@ -1,6 +1,13 @@
 const MATIC_SCENE_HEADER_BYTES = 24;
 const MATIC_SCENE_POINT_STRIDE = 8;
 const MATIC_SCENE_MAX_POINTS = 1500000;
+const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
+const MATIC_MAP_PREFERENCES_VERSION = 1;
+const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
+  efficient: 300000,
+  balanced: 750000,
+  maximum: MATIC_SCENE_MAX_POINTS,
+});
 
 function maticClamp(value, minimum, maximum) {
   return Math.max(minimum, Math.min(maximum, value));
@@ -11,6 +18,15 @@ function maticAngleDelta(value) {
   while (angle > Math.PI) angle -= Math.PI * 2;
   while (angle < -Math.PI) angle += Math.PI * 2;
   return angle;
+}
+
+function maticEscape(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
 }
 
 function maticMat4Multiply(left, right) {
@@ -84,6 +100,7 @@ class MaticMapStudio extends HTMLElement {
     super();
     this.attachShadow({ mode: "open" });
     this._view = "three";
+    this._quality = "maximum";
     this._scene = undefined;
     this._sceneRevision = undefined;
     this._sceneEtag = undefined;
@@ -92,11 +109,25 @@ class MaticMapStudio extends HTMLElement {
     this._poseLoading = false;
     this._fallbackVersion = undefined;
     this._fallbackLoader = undefined;
+    this._catalogEntries = [];
+    this._catalogLoading = false;
     this._pointers = new Map();
     this._drag = undefined;
     this._pinch = undefined;
     this._gesture = undefined;
     this._labelsVisible = true;
+    this._preferencesIdentity = undefined;
+    this._preferencesSaveTimer = undefined;
+    this._savedCamera = undefined;
+    this._cameraRestored = false;
+    this._reducedMotionQuery = window.matchMedia?.(
+      "(prefers-reduced-motion: reduce)",
+    );
+    this._reducedMotion = Boolean(this._reducedMotionQuery?.matches);
+    this._reducedMotionHandler = (event) => {
+      this._reducedMotion = event.matches;
+      if (event.matches) this._cancelMotion();
+    };
     this._camera = {
       yaw: -Math.PI / 4,
       pitch: 0.82,
@@ -113,20 +144,24 @@ class MaticMapStudio extends HTMLElement {
     this._renderFrame = undefined;
     this._viewProjection = undefined;
     this._fullscreenHandler = () => {
-      const button = this.shadowRoot.querySelector(".fullscreen");
-      if (button) {
-        button.textContent = document.fullscreenElement
-          ? "Exit full screen"
-          : "Full screen";
-      }
+      this._syncFullscreenLabel();
       this._resizeCanvas();
       this._requestRender();
     };
   }
 
   set hass(value) {
+    const previousLanguage = this._hass?.language;
+    const previousIdentity = this._hass?.user?.id;
     this._hass = value;
-    if (!this.shadowRoot.hasChildNodes()) this._render();
+    this._loadPreferences();
+    const languageChanged = previousLanguage !== undefined
+      && previousLanguage !== value?.language;
+    const identityChanged = previousIdentity !== undefined
+      && previousIdentity !== value?.user?.id;
+    if (!this.shadowRoot.hasChildNodes() || languageChanged || identityChanged) {
+      this._render();
+    }
     this._update();
   }
 
@@ -136,8 +171,19 @@ class MaticMapStudio extends HTMLElement {
   }
 
   connectedCallback() {
+    this._loadPreferences();
     if (!this.shadowRoot.hasChildNodes()) this._render();
+    const viewport = this.shadowRoot.querySelector(".viewport");
+    if (!this._gl) {
+      this._initWebGL();
+      if (this._scene) this._uploadScene(this._scene);
+    }
+    if (viewport) this._resizeObserver?.observe(viewport);
     document.addEventListener("fullscreenchange", this._fullscreenHandler);
+    this._reducedMotionQuery?.addEventListener?.(
+      "change",
+      this._reducedMotionHandler,
+    );
     this._refreshTimer = window.setInterval(() => this._update(), 5000);
     this._helpTimer = window.setTimeout(() => {
       const help = this.shadowRoot.querySelector(".gesture-help");
@@ -152,9 +198,15 @@ class MaticMapStudio extends HTMLElement {
     window.cancelAnimationFrame(this._renderFrame);
     window.cancelAnimationFrame(this._inertiaFrame);
     window.cancelAnimationFrame(this._cameraAnimation);
+    window.clearTimeout(this._preferencesSaveTimer);
+    this._savePreferences();
     this._resizeObserver?.disconnect();
     if (this._fallbackLoader) this._fallbackLoader.src = "";
     document.removeEventListener("fullscreenchange", this._fullscreenHandler);
+    this._reducedMotionQuery?.removeEventListener?.(
+      "change",
+      this._reducedMotionHandler,
+    );
     if (this._gl) {
       if (this._pointBuffer) this._gl.deleteBuffer(this._pointBuffer);
       if (this._pointVertexArray) {
@@ -162,6 +214,8 @@ class MaticMapStudio extends HTMLElement {
       }
       if (this._pointProgram) this._gl.deleteProgram(this._pointProgram);
     }
+    this._gl = undefined;
+    this._webglAvailable = false;
   }
 
   _entities() {
@@ -171,6 +225,151 @@ class MaticMapStudio extends HTMLElement {
         state.attributes?.source === "local_robot_slam"),
       rooms: states.find(([, state]) =>
         state.attributes?.robot_location_source),
+    };
+  }
+
+  _localize(key, fallback, placeholders = undefined) {
+    const translated = this._hass?.localize?.(
+      `component.matic_robot.common.${key}`,
+      placeholders,
+    );
+    if (translated) return translated;
+    let result = fallback;
+    for (const [name, value] of Object.entries(placeholders || {})) {
+      result = result.replaceAll(`{${name}}`, String(value));
+    }
+    return result;
+  }
+
+  _preferencesKey() {
+    const identity = String(this._hass?.user?.id || "local-user")
+      .replaceAll(/[^a-zA-Z0-9_-]/g, "")
+      .slice(0, 128);
+    return `matic-map-studio:v${MATIC_MAP_PREFERENCES_VERSION}:${identity}`;
+  }
+
+  _loadPreferences() {
+    const identity = this._preferencesKey();
+    if (identity === this._preferencesIdentity) return;
+    this._preferencesIdentity = identity;
+    this._view = "three";
+    this._labelsVisible = true;
+    this._quality = "maximum";
+    this._savedCamera = undefined;
+    this._cameraRestored = false;
+    this._camera = {
+      yaw: -Math.PI / 4,
+      pitch: 0.82,
+      distance: 12,
+      targetX: 0,
+      targetZ: 0,
+      orthographic: false,
+    };
+    try {
+      const parsed = JSON.parse(window.localStorage.getItem(identity) || "null");
+      if (!parsed || typeof parsed !== "object") return;
+      if (["three", "top", "rooms"].includes(parsed.view)) {
+        this._view = parsed.view;
+      }
+      if (typeof parsed.labels === "boolean") {
+        this._labelsVisible = parsed.labels;
+      }
+      if (["auto", ...Object.keys(MATIC_MAP_QUALITY_BUDGETS)].includes(
+        parsed.quality,
+      )) {
+        this._quality = parsed.quality;
+      }
+      const camera = parsed.camera;
+      if (
+        camera
+        && ["yaw", "pitch", "distance", "targetX", "targetZ"]
+          .every((key) => Number.isFinite(camera[key]))
+      ) {
+        this._savedCamera = {
+          yaw: maticAngleDelta(camera.yaw),
+          pitch: maticClamp(camera.pitch, 0.18, Math.PI / 2 - 0.018),
+          distance: maticClamp(camera.distance, 0.1, 10000),
+          targetX: maticClamp(camera.targetX, -10000, 10000),
+          targetZ: maticClamp(camera.targetZ, -10000, 10000),
+          orthographic: this._view === "top",
+        };
+      }
+    } catch (_error) {
+      // Browsers can deny storage in private or hardened contexts.
+    }
+  }
+
+  _savePreferences() {
+    if (!this._preferencesIdentity) return;
+    const camera = {
+      yaw: this._camera.yaw,
+      pitch: this._camera.pitch,
+      distance: this._camera.distance,
+      targetX: this._camera.targetX,
+      targetZ: this._camera.targetZ,
+    };
+    try {
+      window.localStorage.setItem(
+        this._preferencesIdentity,
+        JSON.stringify({
+          view: this._view,
+          labels: this._labelsVisible,
+          quality: this._quality,
+          camera,
+        }),
+      );
+    } catch (_error) {
+      // The map continues to work when storage is full or unavailable.
+    }
+  }
+
+  _schedulePreferencesSave() {
+    window.clearTimeout(this._preferencesSaveTimer);
+    this._preferencesSaveTimer = window.setTimeout(
+      () => this._savePreferences(),
+      250,
+    );
+  }
+
+  async _fetchCatalog() {
+    if (this._catalogLoading) return;
+    this._catalogLoading = true;
+    try {
+      const response = await fetch(this._absoluteUrl(MATIC_MAP_CATALOG_URL), {
+        headers: this._authHeaders(),
+        cache: "no-store",
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      const entries = Array.isArray(payload)
+        ? payload
+        : Array.isArray(payload?.entries)
+          ? payload.entries
+          : payload?.entry_id
+            ? [payload]
+            : [];
+      this._catalogEntries = entries
+        .filter((entry) => entry && typeof entry === "object")
+        .slice(0, 64);
+    } catch (_error) {
+      // Older integration builds do not provide the private admin catalog.
+    } finally {
+      this._catalogLoading = false;
+    }
+  }
+
+  _catalogState() {
+    const requestedEntry = this._panel?.config?.entry_id;
+    const entry = this._catalogEntries.find(
+      (candidate) => candidate.entry_id === requestedEntry,
+    ) || this._catalogEntries[0];
+    if (!entry?.scene_url) return undefined;
+    return {
+      last_updated: entry.updated_at || entry.last_updated,
+      attributes: {
+        ...entry,
+        map_revision: entry.map_revision ?? entry.revision,
+      },
     };
   }
 
@@ -356,7 +555,9 @@ class MaticMapStudio extends HTMLElement {
           ? room.center
           : undefined;
         return {
-          name: String(room?.name || "Room").slice(0, 128),
+          name: String(
+            room?.name || this._localize("map_room_default", "Room"),
+          ).slice(0, 128),
           boundary,
           center,
         };
@@ -411,13 +612,74 @@ class MaticMapStudio extends HTMLElement {
 
   _uploadScene(scene) {
     if (!this._gl) return;
-    const pointBytes = new Uint8Array(
+    const source = new Uint8Array(
       scene.buffer,
       scene.pointOffset,
       scene.total * MATIC_SCENE_POINT_STRIDE,
     );
+    const pointBudget = this._pointBudget(scene.total);
+    const floorBudget = Math.min(
+      scene.floorCount,
+      Math.round(pointBudget * scene.floorCount / scene.total),
+    );
+    const surfaceBudget = Math.min(
+      scene.surfaceCount,
+      pointBudget - floorBudget,
+    );
+    let pointBytes = source;
+    if (floorBudget + surfaceBudget < scene.total) {
+      pointBytes = new Uint8Array(
+        (floorBudget + surfaceBudget) * MATIC_SCENE_POINT_STRIDE,
+      );
+      this._samplePoints(
+        source,
+        0,
+        scene.floorCount,
+        floorBudget,
+        pointBytes,
+        0,
+      );
+      this._samplePoints(
+        source,
+        scene.floorCount,
+        scene.surfaceCount,
+        surfaceBudget,
+        pointBytes,
+        floorBudget,
+      );
+    }
+    this._renderFloorCount = floorBudget;
+    this._renderSurfaceCount = surfaceBudget;
+    this._renderPointCount = floorBudget + surfaceBudget;
     this._gl.bindBuffer(this._gl.ARRAY_BUFFER, this._pointBuffer);
     this._gl.bufferData(this._gl.ARRAY_BUFFER, pointBytes, this._gl.STATIC_DRAW);
+  }
+
+  _pointBudget(total) {
+    if (this._quality !== "auto") {
+      return Math.min(total, MATIC_MAP_QUALITY_BUDGETS[this._quality]);
+    }
+    const cores = Number(navigator.hardwareConcurrency) || 8;
+    const memory = Number(navigator.deviceMemory) || 8;
+    if (cores <= 4 || memory <= 4) return Math.min(total, 450000);
+    if (cores <= 6 || memory <= 6) return Math.min(total, 900000);
+    return total;
+  }
+
+  _samplePoints(source, start, count, targetCount, destination, targetStart) {
+    if (targetCount < 1 || count < 1) return;
+    for (let index = 0; index < targetCount; index += 1) {
+      const sourceIndex = start + Math.floor(index * count / targetCount);
+      const sourceOffset = sourceIndex * MATIC_SCENE_POINT_STRIDE;
+      const targetOffset = (targetStart + index) * MATIC_SCENE_POINT_STRIDE;
+      destination.set(
+        source.subarray(
+          sourceOffset,
+          sourceOffset + MATIC_SCENE_POINT_STRIDE,
+        ),
+        targetOffset,
+      );
+    }
   }
 
   async _fetchScene(state, force = false) {
@@ -450,17 +712,27 @@ class MaticMapStudio extends HTMLElement {
       this._uploadScene(scene);
       this._rebuildOverlays();
       this._calculateHomeDistances();
-      this._applyPreset(this._view === "top" ? "top" : "three", false);
+      if (!this._cameraRestored && this._savedCamera) {
+        this._restoreSavedCamera();
+      } else if (!this._cameraRestored) {
+        this._applyPreset(this._view === "top" ? "top" : "three", false);
+        this._cameraRestored = true;
+      }
       this._showSpatialScene();
       this._updateSceneStatus(state);
       this._requestRender();
     } catch (_error) {
       this._showFallback(
-        this._entities().photo || this._entities().rooms,
+        this._entities().rooms || this._entities().photo,
         force,
       );
-      this.shadowRoot.querySelector(".status").textContent =
-        "3D scene is not ready · showing the local map";
+      this._setStatus(
+        this._localize(
+          "map_status_scene_fallback",
+          "3D scene is not ready · showing the local map",
+        ),
+        "error",
+      );
     } finally {
       this._sceneLoading = false;
       this._setLoading(false);
@@ -506,22 +778,54 @@ class MaticMapStudio extends HTMLElement {
 
   _updateSceneStatus(state) {
     if (!this._scene) return;
-    const points = this._scene.total.toLocaleString();
+    const points = new Intl.NumberFormat(this._hass?.language).format(
+      this._scene.total,
+    );
     const sampling = this._scene.metadata.sampleStep === 1
-      ? "all captured samples"
-      : `adaptive 1:${this._scene.metadata.sampleStep} detail`;
+      ? this._localize("map_sampling_all", "all captured samples")
+      : this._localize(
+        "map_sampling_adaptive",
+        "adaptive 1:{step} detail",
+        { step: this._scene.metadata.sampleStep },
+      );
     const complete = state?.attributes?.map_complete === true;
-    this.shadowRoot.querySelector(".status").textContent = complete
-      ? `Full local 3D scene · ${points} points · ${sampling}`
-      : `Building live 3D scene · ${points} points`;
-    this.shadowRoot.querySelector(".resolution-value").textContent =
-      `${(this._scene.total / 1000000).toFixed(2)}M pts · 1.5 cm`;
+    this._setStatus(
+      complete
+        ? this._localize(
+          "map_status_full_scene",
+          "Full local 3D scene · {points} points · {sampling}",
+          { points, sampling },
+        )
+        : this._localize(
+          "map_status_building_scene",
+          "Building live 3D scene · {points} points",
+          { points },
+        ),
+    );
+    const rendered = this._renderPointCount || this._scene.total;
+    const detail = rendered < this._scene.total
+      ? this._localize(
+        "map_resolution_sampled",
+        "{rendered} of {total} pts · 1.5 cm",
+        {
+          rendered: new Intl.NumberFormat(this._hass?.language).format(rendered),
+          total: points,
+        },
+      )
+      : this._localize(
+        "map_resolution_full",
+        "{points} pts · 1.5 cm",
+        { points },
+      );
+    this.shadowRoot.querySelector(".resolution-value").textContent = detail;
+    this._updateHealth(state);
   }
 
-  _update(force = false) {
+  async _update(force = false) {
     if (!this.shadowRoot.hasChildNodes()) return;
+    await this._fetchCatalog();
     const entities = this._entities();
-    const photoState = entities.photo?.[1];
+    const photoState = this._catalogState() || entities.photo?.[1];
     if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
     } else if (photoState) {
@@ -533,8 +837,12 @@ class MaticMapStudio extends HTMLElement {
       }
     } else {
       this._showFallback(entities.rooms, force);
-      this.shadowRoot.querySelector(".status").textContent =
-        "No local map entity is available yet";
+      this._setStatus(
+        this._localize(
+          "map_status_no_map",
+          "No local map data is available yet",
+        ),
+      );
     }
   }
 
@@ -546,7 +854,12 @@ class MaticMapStudio extends HTMLElement {
     overlays.hidden = true;
     if (!selected) {
       image.hidden = true;
-      this._setEmpty("The local map will appear when the Matic integration is ready.");
+      this._setEmpty(
+        this._localize(
+          "map_empty_waiting",
+          "The local map will appear when the Matic integration is ready.",
+        ),
+      );
       return;
     }
     const [entityId, state] = selected;
@@ -583,12 +896,24 @@ class MaticMapStudio extends HTMLElement {
       this._setLoading(false);
       if (!(image.complete && image.naturalWidth > 0)) {
         image.hidden = true;
-        this._setEmpty("The local map could not be loaded. Try Refresh after reconnecting.");
+        this._setEmpty(
+          this._localize(
+            "map_empty_load_error",
+            "The local map could not be loaded. Try Refresh after reconnecting.",
+          ),
+        );
       }
     }, { once: true });
     loader.src = `/api/camera_proxy/${entityId}?${query}`;
-    this.shadowRoot.querySelector(".status").textContent =
-      this._view === "rooms" ? "Live labeled room map" : "Loading local 3D data…";
+    this._setStatus(
+      this._view === "rooms"
+        ? this._localize("map_status_room_map", "Live labeled room map")
+        : this._localize(
+          "map_status_loading_data",
+          "Loading local 3D data…",
+        ),
+    );
+    this._updateHealth(state);
   }
 
   _showSpatialScene() {
@@ -608,6 +933,147 @@ class MaticMapStudio extends HTMLElement {
 
   _setLoading(loading) {
     this.shadowRoot.querySelector(".viewport").classList.toggle("loading", loading);
+    this.shadowRoot.querySelector(".viewport").setAttribute(
+      "aria-busy",
+      String(loading),
+    );
+  }
+
+  _setStatus(message, tone = "normal") {
+    const status = this.shadowRoot.querySelector(".status");
+    if (!status) return;
+    status.dataset.tone = tone;
+    status.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+    status.textContent = message;
+  }
+
+  _updateHealth(state) {
+    const badge = this.shadowRoot.querySelector(".health-value");
+    if (!badge) return;
+    const attributes = state?.attributes || {};
+    const mapHealth = String(
+      attributes.map_health
+      || attributes.stream_health
+      || attributes.health?.status
+      || "",
+    ).toLowerCase();
+    const streamState = String(
+      attributes.stream_state
+      || attributes.collector_state
+      || "",
+    ).toLowerCase();
+    const failures = Number(
+      attributes.stream_failures
+      ?? attributes.failure_count
+      ?? 0,
+    );
+    const invalidTiles = Number(attributes.invalid_tiles ?? 0);
+    const truncated = attributes.map_truncated === true
+      || attributes.truncated === true
+      || mapHealth.includes("truncat")
+      || mapHealth.includes("limit");
+    const streamHealthy = streamState.includes("connect")
+      || streamState.includes("collect")
+      || streamState.includes("run");
+    const failed = mapHealth.includes("degrad")
+      || invalidTiles > 0
+      || mapHealth.includes("error")
+      || mapHealth.includes("fail")
+      || streamState.includes("retry")
+      || streamState.includes("error")
+      || streamState.includes("fail")
+      || (failures > 0 && !streamHealthy);
+    let text;
+    let tone = "normal";
+    if (failed) {
+      text = this._localize(
+        "map_health_error",
+        "Map stream needs attention",
+      );
+      tone = "error";
+    } else if (truncated) {
+      text = this._localize(
+        "map_health_limited",
+        "Map cache limit reached",
+      );
+      tone = "warning";
+    } else if (streamHealthy) {
+      text = this._localize("map_health_live", "Live");
+      tone = "live";
+    } else {
+      const freshness = attributes.updated_at
+        || attributes.last_map_update
+        || attributes.last_stream_update
+        || state?.last_updated;
+      const timestamp = freshness ? Date.parse(freshness) : Number.NaN;
+      if (Number.isFinite(timestamp)) {
+        const elapsedSeconds = Math.round((timestamp - Date.now()) / 1000);
+        const [amount, unit] = Math.abs(elapsedSeconds) < 90
+          ? [elapsedSeconds, "second"]
+          : Math.abs(elapsedSeconds) < 5400
+            ? [Math.round(elapsedSeconds / 60), "minute"]
+            : [Math.round(elapsedSeconds / 3600), "hour"];
+        const relative = new Intl.RelativeTimeFormat(
+          this._hass?.language,
+          { numeric: "auto" },
+        ).format(amount, unit);
+        text = this._localize(
+          "map_health_updated",
+          "Updated {relative}",
+          { relative },
+        );
+      } else if (attributes.map_complete === true) {
+        text = this._localize("map_health_ready", "Ready");
+      } else {
+        text = this._localize("map_health_building", "Map building");
+        tone = "live";
+      }
+    }
+    badge.dataset.tone = tone;
+    badge.setAttribute("aria-live", tone === "error" ? "assertive" : "polite");
+    badge.textContent = text;
+    badge.hidden = false;
+  }
+
+  _restoreSavedCamera() {
+    if (!this._savedCamera) return;
+    this._camera = {
+      yaw: maticAngleDelta(this._savedCamera.yaw),
+      pitch: maticClamp(
+        this._savedCamera.pitch,
+        0.18,
+        this._maximumPitch(),
+      ),
+      distance: maticClamp(
+        this._savedCamera.distance,
+        Math.max(0.3, this._radius * 0.08),
+        this._radius * 8,
+      ),
+      targetX: maticClamp(
+        this._savedCamera.targetX,
+        -this._radius * 3,
+        this._radius * 3,
+      ),
+      targetZ: maticClamp(
+        this._savedCamera.targetZ,
+        -this._radius * 3,
+        this._radius * 3,
+      ),
+      orthographic: this._view === "top",
+    };
+    this._cameraRestored = true;
+    this._requestRender();
+  }
+
+  _syncFullscreenLabel() {
+    const button = this.shadowRoot.querySelector(".fullscreen");
+    if (!button) return;
+    const fullscreen = Boolean(document.fullscreenElement);
+    const label = fullscreen
+      ? this._localize("exit_fullscreen", "Exit full screen")
+      : this._localize("expand_map", "Full screen");
+    button.textContent = label;
+    button.setAttribute("aria-label", label);
   }
 
   _calculateHomeDistances() {
@@ -649,7 +1115,7 @@ class MaticMapStudio extends HTMLElement {
   _applyPreset(view, animate = true) {
     const target = this._preset(view);
     this._cancelMotion();
-    if (!animate) {
+    if (!animate || this._reducedMotion) {
       this._camera = target;
       this._requestRender();
       return;
@@ -688,6 +1154,7 @@ class MaticMapStudio extends HTMLElement {
     viewport.classList.toggle("top-down", view === "top");
     viewport.classList.toggle("spatial", view !== "rooms");
     this.shadowRoot.querySelector(".spatial-controls").hidden = view === "rooms";
+    this._schedulePreferencesSave();
     if (view === "rooms") {
       this._cancelMotion();
       this._update(true);
@@ -745,6 +1212,7 @@ class MaticMapStudio extends HTMLElement {
 
   _startInertia(velocityX, velocityY, mode) {
     this._cancelMotion();
+    if (this._reducedMotion) return;
     velocityX = maticClamp(velocityX, -0.55, 0.55);
     velocityY = maticClamp(velocityY, -0.55, 0.55);
     if (Math.hypot(velocityX, velocityY) < 0.02) return;
@@ -855,13 +1323,17 @@ class MaticMapStudio extends HTMLElement {
     const perspectiveScale = canvas.height * 0.038;
     this._gl.uniform1f(this._uniforms.pointPixels, perspectiveScale);
     this._gl.uniform1f(this._uniforms.maxPointPixels, 4.5 * pixelRatio);
-    this._gl.drawArrays(this._gl.POINTS, 0, this._scene.floorCount);
+    this._gl.drawArrays(
+      this._gl.POINTS,
+      0,
+      this._renderFloorCount ?? this._scene.floorCount,
+    );
     this._gl.uniform1f(this._uniforms.pointPixels, canvas.height * 0.05);
     this._gl.uniform1f(this._uniforms.maxPointPixels, 7 * pixelRatio);
     this._gl.drawArrays(
       this._gl.POINTS,
-      this._scene.floorCount,
-      this._scene.surfaceCount,
+      this._renderFloorCount ?? this._scene.floorCount,
+      this._renderSurfaceCount ?? this._scene.surfaceCount,
     );
     this._gl.bindVertexArray(null);
     this._updateOverlays();
@@ -875,6 +1347,7 @@ class MaticMapStudio extends HTMLElement {
     );
     this.shadowRoot.querySelector(".angle-value").textContent =
       `${Math.round((maticAngleDelta(this._camera.yaw) * 180) / Math.PI)}° · ${Math.round((this._camera.pitch * 180) / Math.PI)}°`;
+    this._schedulePreferencesSave();
   }
 
   _worldForCell(x, y, height = 0) {
@@ -953,7 +1426,13 @@ class MaticMapStudio extends HTMLElement {
     marker.hidden = !point?.visible;
     if (point?.visible) {
       marker.style.transform = `translate(${point.x}px, ${point.y}px) translate(-50%, -50%)`;
-      marker.title = `Robot position · ${this._robot.source.replaceAll("_", " ")}`;
+      const source = this._robot.source.replaceAll("_", " ");
+      marker.title = this._localize(
+        "map_robot_position",
+        "Robot position · {source}",
+        { source },
+      );
+      marker.setAttribute("aria-label", marker.title);
     }
   }
 
@@ -968,6 +1447,10 @@ class MaticMapStudio extends HTMLElement {
     else if (key === "h" || event.key === "0") this._applyPreset(this._view);
     else if (key === "l") {
       this._labelsVisible = !this._labelsVisible;
+      const button = this.shadowRoot.querySelector(".layers");
+      button.classList.toggle("selected", this._labelsVisible);
+      button.setAttribute("aria-pressed", String(this._labelsVisible));
+      this._schedulePreferencesSave();
       this._requestRender();
     } else if (key === "r") this._update(true);
     else if (key === "f") {
@@ -1007,17 +1490,24 @@ class MaticMapStudio extends HTMLElement {
       if (this._view === "rooms") return;
       event.preventDefault();
       this._cancelMotion();
+      const unit = event.deltaMode === 1
+        ? 16
+        : event.deltaMode === 2
+          ? Math.max(1, viewport.clientHeight)
+          : 1;
+      const deltaX = event.deltaX * unit;
+      const deltaY = event.deltaY * unit;
       if (event.ctrlKey || event.metaKey) {
-        this._zoom(Math.exp(-event.deltaY * 0.012));
+        this._zoom(Math.exp(maticClamp(-deltaY * 0.012, -0.35, 0.35)));
       } else if (event.altKey) {
         this._camera.pitch = maticClamp(
-          this._camera.pitch - event.deltaY * 0.003,
+          this._camera.pitch - deltaY * 0.003,
           0.18,
           this._maximumPitch(),
         );
         this._requestRender();
       } else {
-        this._panBy(-event.deltaX, -event.deltaY);
+        this._panBy(-deltaX, -deltaY);
       }
     }, { passive: false });
     viewport.addEventListener("pointerdown", (event) => {
@@ -1025,7 +1515,11 @@ class MaticMapStudio extends HTMLElement {
       if (event.pointerType === "mouse" && ![0, 2].includes(event.button)) return;
       event.preventDefault();
       this._cancelMotion();
-      viewport.setPointerCapture(event.pointerId);
+      try {
+        viewport.setPointerCapture(event.pointerId);
+      } catch (_error) {
+        return;
+      }
       this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
       if (this._pointers.size === 1) {
         this._drag = {
@@ -1057,7 +1551,13 @@ class MaticMapStudio extends HTMLElement {
     });
     viewport.addEventListener("pointermove", (event) => {
       if (!this._pointers.has(event.pointerId)) return;
-      this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      event.preventDefault();
+      const samples = event.getCoalescedEvents?.() || [];
+      const sample = samples[samples.length - 1] || event;
+      this._pointers.set(
+        event.pointerId,
+        { x: sample.clientX, y: sample.clientY },
+      );
       if (this._pinch && this._pointers.size >= 2) {
         const [first, second] = [...this._pointers.values()];
         const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
@@ -1087,16 +1587,16 @@ class MaticMapStudio extends HTMLElement {
         this._camera.targetZ = panned.targetZ;
       } else if (event.pointerId === this._drag?.pointerId) {
         const drag = this._drag;
-        const deltaX = event.clientX - drag.x;
-        const deltaY = event.clientY - drag.y;
+        const deltaX = sample.clientX - drag.x;
+        const deltaY = sample.clientY - drag.y;
         const now = performance.now();
         const elapsed = Math.max(1, now - drag.lastTime);
-        const velocityX = (event.clientX - drag.lastX) / elapsed;
-        const velocityY = (event.clientY - drag.lastY) / elapsed;
+        const velocityX = (sample.clientX - drag.lastX) / elapsed;
+        const velocityY = (sample.clientY - drag.lastY) / elapsed;
         drag.velocityX = drag.velocityX * 0.6 + velocityX * 0.4;
         drag.velocityY = drag.velocityY * 0.6 + velocityY * 0.4;
-        drag.lastX = event.clientX;
-        drag.lastY = event.clientY;
+        drag.lastX = sample.clientX;
+        drag.lastY = sample.clientY;
         drag.lastTime = now;
         if (drag.mode === "orbit") {
           this._camera.yaw = maticAngleDelta(
@@ -1141,8 +1641,13 @@ class MaticMapStudio extends HTMLElement {
         }
       }
       if (viewport.hasPointerCapture(event.pointerId)) {
-        viewport.releasePointerCapture(event.pointerId);
+        try {
+          viewport.releasePointerCapture(event.pointerId);
+        } catch (_error) {
+          // Safari can release capture before dispatching pointercancel.
+        }
       }
+      this._schedulePreferencesSave();
     };
     viewport.addEventListener("pointerup", finish);
     viewport.addEventListener("pointercancel", (event) => finish(event, true));
@@ -1150,6 +1655,10 @@ class MaticMapStudio extends HTMLElement {
     viewport.addEventListener("gesturestart", (event) => {
       if (this._view === "rooms") return;
       event.preventDefault();
+      if (this._pointers.size >= 2) {
+        this._gesture = undefined;
+        return;
+      }
       this._cancelMotion();
       this._gesture = {
         camera: { ...this._camera },
@@ -1157,8 +1666,8 @@ class MaticMapStudio extends HTMLElement {
       };
     }, { passive: false });
     viewport.addEventListener("gesturechange", (event) => {
-      if (!this._gesture) return;
       event.preventDefault();
+      if (!this._gesture || this._pointers.size >= 2) return;
       const start = this._gesture.camera;
       this._camera.distance = maticClamp(
         start.distance / Math.max(0.1, Number(event.scale || 1)),
@@ -1174,6 +1683,7 @@ class MaticMapStudio extends HTMLElement {
     viewport.addEventListener("gestureend", (event) => {
       event.preventDefault();
       this._gesture = undefined;
+      this._schedulePreferencesSave();
     }, { passive: false });
     viewport.addEventListener("dblclick", (event) => {
       if (this._view === "rooms") return;
@@ -1183,6 +1693,18 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _render() {
+    this._resizeObserver?.disconnect();
+    if (this._gl) {
+      if (this._pointBuffer) this._gl.deleteBuffer(this._pointBuffer);
+      if (this._pointVertexArray) {
+        this._gl.deleteVertexArray(this._pointVertexArray);
+      }
+      if (this._pointProgram) this._gl.deleteProgram(this._pointProgram);
+    }
+    this._gl = undefined;
+    const text = (key, fallback, placeholders = undefined) => maticEscape(
+      this._localize(key, fallback, placeholders),
+    );
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; height: 100%; min-height: 0; color: var(--primary-text-color); background: #080d13; }
@@ -1192,7 +1714,7 @@ class MaticMapStudio extends HTMLElement {
         h1 { margin: 0; font-size: 19px; line-height: 1.25; }
         .privacy { color: var(--secondary-text-color); font-size: 11px; }
         .spacer { flex: 1 1 auto; }
-        button, a { min-height: 42px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border: 1px solid var(--divider-color); border-radius: 12px; color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 94%, transparent); text-decoration: none; cursor: pointer; touch-action: manipulation; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
+        button, a, select { min-height: 42px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border: 1px solid var(--divider-color); border-radius: 12px; color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 94%, transparent); text-decoration: none; cursor: pointer; touch-action: manipulation; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
         button:hover, a:hover { border-color: color-mix(in srgb, var(--primary-color) 55%, var(--divider-color)); background: color-mix(in srgb, var(--primary-color) 9%, var(--card-background-color)); }
         button:active, a:active { transform: scale(.97); }
         button.selected { border-color: var(--primary-color); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 15%, transparent); }
@@ -1201,10 +1723,17 @@ class MaticMapStudio extends HTMLElement {
         .spatial-controls button { min-width: 36px; padding: 0 9px; font-size: 17px; }
         .zoom-slider { width: 96px; accent-color: var(--primary-color); touch-action: pan-x; }
         .zoom-value, .angle-value, .status, .resolution-value { color: var(--secondary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .status[data-tone="error"] { color: var(--error-color); }
+        .health-value { padding: 6px 9px; border-radius: 999px; color: var(--secondary-text-color); background: rgba(4, 10, 17, .32); font-size: 11px; white-space: nowrap; }
+        .health-value[data-tone="live"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #35c759; box-shadow: 0 0 0 3px rgba(53,199,89,.15); }
+        .health-value[data-tone="warning"] { color: var(--warning-color, #ff9f0a); }
+        .health-value[data-tone="error"] { color: var(--error-color); }
+        .quality-control { display: inline-flex; align-items: center; }
+        .quality-control select { min-height: 36px; max-width: 132px; border-radius: 10px; }
         .zoom-value { min-width: 42px; text-align: center; }
         .angle-value { min-width: 72px; text-align: center; font-size: 11px; }
         .resolution-value { padding: 7px 10px; border-radius: 999px; background: rgba(4, 10, 17, .32); text-align: center; font-size: 11px; }
-        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .38s ease; }
+        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .38s ease; }
         .viewport.top-down { background-color: #efefeb; background-image: radial-gradient(#c9cac6 .7px, transparent .75px); background-size: 12px 12px; }
         .viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--primary-color); }
         .viewport.moving { cursor: grabbing; }
@@ -1226,50 +1755,66 @@ class MaticMapStudio extends HTMLElement {
         .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--secondary-text-color); font-size: 17px; text-align: center; padding: 40px; z-index: 2; }
         .gesture-help { position: absolute; left: 16px; bottom: 16px; max-width: min(680px, calc(100% - 32px)); padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; color: #e3edf8; background: rgba(5,10,16,.76); box-shadow: 0 8px 32px rgba(0,0,0,.25); backdrop-filter: blur(14px); font-size: 12px; pointer-events: none; z-index: 3; }
         .top-down .gesture-help { color: #202833; background: rgba(255,255,255,.86); border-color: rgba(20,30,40,.16); }
+        .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+        @media (prefers-reduced-motion: reduce) {
+          *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
+        }
         @media (max-width: 1050px) { .heading { width: 100%; } .status { order: 10; width: 100%; } header { padding: 8px; gap: 6px; } }
-        @media (max-width: 650px) { button, a { min-height: 40px; padding: 0 9px; } .resolution-value, .angle-value, .cleaning-areas { display: none; } .zoom-slider { width: 72px; } .gesture-help { font-size: 11px; } }
+        @media (max-width: 650px) { button, a, select { min-height: 40px; padding: 0 9px; } .resolution-value, .angle-value, .cleaning-areas { display: none; } .zoom-slider { width: 72px; } .gesture-help { font-size: 11px; } .quality-control select { max-width: 105px; } }
       </style>
       <div class="shell">
         <header>
-          <div class="heading"><h1>Matic map studio</h1><span class="privacy">Full local SLAM · private inside Home Assistant</span></div>
-          <span class="segmented">
-            <button data-view="three" class="selected" aria-pressed="true">3D</button>
-            <button data-view="top" aria-pressed="false">Top-down</button>
-            <button data-view="rooms" aria-pressed="false">Rooms</button>
+          <div class="heading"><h1>${text("map_studio_title", "Matic map studio")}</h1><span class="privacy">${text("map_studio_privacy", "Full local SLAM · private inside Home Assistant")}</span></div>
+          <span class="segmented" role="group" aria-label="${text("map_view_label", "Map view")}">
+            <button data-view="three" class="${this._view === "three" ? "selected" : ""}" aria-pressed="${this._view === "three"}">${text("map_view_3d", "3D")}</button>
+            <button data-view="top" class="${this._view === "top" ? "selected" : ""}" aria-pressed="${this._view === "top"}">${text("map_view_top", "Top-down")}</button>
+            <button data-view="rooms" class="${this._view === "rooms" ? "selected" : ""}" aria-pressed="${this._view === "rooms"}">${text("map_view_rooms", "Rooms")}</button>
           </span>
-          <span class="status">Loading local 3D scene…</span>
+          <span class="status" role="status" aria-live="polite" aria-atomic="true">${text("map_status_loading_scene", "Loading local 3D scene…")}</span>
           <span class="spacer"></span>
-          <span class="resolution-value">Loading…</span>
-          <span class="spatial-controls">
-            <button class="rotate-left" aria-label="Rotate left">↶</button>
-            <button class="tilt-down" aria-label="Lower viewing angle">⌄</button>
-            <input class="zoom-slider" type="range" min="25" max="400" step="5" value="100" aria-label="Scene zoom">
+          <span class="health-value" role="status" aria-live="polite" aria-atomic="true" hidden></span>
+          <span class="resolution-value">${text("map_loading", "Loading…")}</span>
+          <label class="quality-control">
+            <span class="visually-hidden">${text("map_quality_label", "Scene detail")}</span>
+            <select class="quality" aria-label="${text("map_quality_label", "Scene detail")}">
+              <option value="auto" ${this._quality === "auto" ? "selected" : ""}>${text("map_quality_auto", "Auto detail")}</option>
+              <option value="efficient" ${this._quality === "efficient" ? "selected" : ""}>${text("map_quality_efficient", "Efficient")}</option>
+              <option value="balanced" ${this._quality === "balanced" ? "selected" : ""}>${text("map_quality_balanced", "Balanced")}</option>
+              <option value="maximum" ${this._quality === "maximum" ? "selected" : ""}>${text("map_quality_maximum", "Maximum")}</option>
+            </select>
+          </label>
+          <span class="spatial-controls" role="group" aria-label="${text("map_camera_controls", "Map camera controls")}">
+            <button class="rotate-left" aria-label="${text("map_rotate_left", "Rotate left")}">↶</button>
+            <button class="tilt-down" aria-label="${text("map_tilt_down", "Lower viewing angle")}">⌄</button>
+            <input class="zoom-slider" type="range" min="25" max="400" step="5" value="100" aria-label="${text("map_scene_zoom", "Scene zoom")}">
             <span class="zoom-value">100%</span>
-            <button class="tilt-up" aria-label="Raise viewing angle">⌃</button>
-            <button class="rotate-right" aria-label="Rotate right">↷</button>
+            <button class="tilt-up" aria-label="${text("map_tilt_up", "Raise viewing angle")}">⌃</button>
+            <button class="rotate-right" aria-label="${text("map_rotate_right", "Rotate right")}">↷</button>
             <span class="angle-value">−45° · 47°</span>
           </span>
-          <button class="home-view">Home view</button>
-          <button class="layers selected">Labels</button>
-          <button class="refresh">Refresh</button>
-          <button class="fullscreen">Full screen</button>
-          <a class="cleaning-areas" href="/config/integrations/integration/matic_robot">Cleaning areas</a>
+          <button class="home-view">${text("map_home_view", "Home view")}</button>
+          <button class="layers ${this._labelsVisible ? "selected" : ""}" aria-pressed="${this._labelsVisible}">${text("map_labels", "Labels")}</button>
+          <button class="refresh">${text("map_refresh", "Refresh")}</button>
+          <button class="fullscreen">${text("expand_map", "Full screen")}</button>
+          <a class="cleaning-areas" href="/config/integrations/integration/matic_robot">${text("map_cleaning_areas", "Cleaning areas")}</a>
         </header>
-        <div class="viewport spatial" tabindex="0" role="application" aria-label="Interactive Matic 3D map. Drag to orbit, Shift-drag or two-finger scroll to pan, pinch to zoom, twist to rotate, and move two fingers vertically to tilt.">
-          <canvas class="scene-canvas" aria-label="Matic local 3D SLAM scene"></canvas>
-          <img class="map-image" alt="Matic local fallback map" draggable="false" hidden>
+        <div class="viewport ${this._view === "top" ? "top-down" : ""} ${this._view !== "rooms" ? "spatial" : ""}" tabindex="0" role="application" aria-busy="true" aria-label="${text("map_viewport_aria", "Interactive Matic 3D map. Drag to orbit, Shift-drag or two-finger scroll to pan, pinch to zoom, twist to rotate, and move two fingers vertically to tilt.")}">
+          <canvas class="scene-canvas" aria-label="${text("map_canvas_aria", "Matic local 3D SLAM scene")}"></canvas>
+          <img class="map-image" alt="${text("map_fallback_alt", "Matic local fallback map")}" draggable="false" hidden>
           <div class="spatial-overlays">
             <svg class="room-lines" aria-hidden="true"></svg>
             <div class="room-labels"></div>
-            <span class="robot-marker" hidden></span>
+            <span class="robot-marker" role="img" hidden></span>
           </div>
-          <div class="empty">Loading the private local map…</div>
-          <div class="gesture-help">Drag to orbit · Shift-drag or scroll to pan · pinch to zoom · twist to rotate · move two fingers vertically to tilt · press T for top-down · 3 for 3D · ? for help</div>
+          <div class="empty">${text("map_empty_loading", "Loading the private local map…")}</div>
+          <div class="gesture-help">${text("map_gesture_help", "Drag to orbit · Shift-drag or scroll to pan · pinch to zoom · twist to rotate · move two fingers vertically to tilt · press T for top-down · 3 for 3D · ? for help")}</div>
         </div>
       </div>
     `;
     this._initWebGL();
     const viewport = this.shadowRoot.querySelector(".viewport");
+    this.shadowRoot.querySelector(".spatial-controls").hidden =
+      this._view === "rooms";
     this._bindGestures(viewport);
     viewport.addEventListener("keydown", (event) => this._handleKeyDown(event));
     this._guardButton(this.shadowRoot.querySelector('[data-view="three"]'), () => this._setView("three"));
@@ -1302,7 +1847,10 @@ class MaticMapStudio extends HTMLElement {
     this._guardButton(this.shadowRoot.querySelector(".home-view"), () => this._applyPreset(this._view));
     this._guardButton(this.shadowRoot.querySelector(".layers"), () => {
       this._labelsVisible = !this._labelsVisible;
-      this.shadowRoot.querySelector(".layers").classList.toggle("selected", this._labelsVisible);
+      const button = this.shadowRoot.querySelector(".layers");
+      button.classList.toggle("selected", this._labelsVisible);
+      button.setAttribute("aria-pressed", String(this._labelsVisible));
+      this._schedulePreferencesSave();
       this._requestRender();
     });
     this._guardButton(this.shadowRoot.querySelector(".refresh"), () => this._update(true));
@@ -1310,6 +1858,24 @@ class MaticMapStudio extends HTMLElement {
       if (document.fullscreenElement) document.exitFullscreen();
       else this.shadowRoot.querySelector(".shell").requestFullscreen();
     });
+    this.shadowRoot.querySelector(".quality").addEventListener(
+      "change",
+      (event) => {
+        const quality = event.target.value;
+        if (!["auto", ...Object.keys(MATIC_MAP_QUALITY_BUDGETS)].includes(
+          quality,
+        )) return;
+        this._quality = quality;
+        if (this._scene) {
+          this._uploadScene(this._scene);
+          this._updateSceneStatus(
+            this._catalogState() || this._entities().photo?.[1],
+          );
+          this._requestRender();
+        }
+        this._schedulePreferencesSave();
+      },
+    );
     this.shadowRoot.querySelector(".zoom-slider").addEventListener("input", (event) => {
       const home = this._camera.orthographic
         ? this._homeTopDistance
@@ -1325,7 +1891,7 @@ class MaticMapStudio extends HTMLElement {
     canvas.addEventListener("webglcontextlost", (event) => {
       event.preventDefault();
       this._webglAvailable = false;
-      this._showFallback(this._entities().photo || this._entities().rooms);
+      this._showFallback(this._entities().rooms || this._entities().photo);
     });
     canvas.addEventListener("webglcontextrestored", () => {
       this._initWebGL();
@@ -1338,6 +1904,12 @@ class MaticMapStudio extends HTMLElement {
     });
     this._resizeObserver.observe(viewport);
     this._resizeCanvas();
+    this._syncFullscreenLabel();
+    if (this._scene && this._webglAvailable) {
+      this._uploadScene(this._scene);
+      this._rebuildOverlays();
+      this._showSpatialScene();
+    }
   }
 }
 

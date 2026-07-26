@@ -54,6 +54,7 @@ include = ["custom_components*"]
   "brand/*.png",
   "brand/*.svg",
   "manifest.json",
+  "quality_scale.yaml",
   "*.js",
   "client/matic_intermediate_ca.pem",
   "client/proto/*.proto",

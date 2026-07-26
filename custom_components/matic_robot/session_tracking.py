@@ -30,9 +30,12 @@ class CleaningSessionTracker:
     latest_session: CleaningSession | None = None
     _started_at: datetime | None = None
     _current_room: str | None = None
-    _room_started_at: datetime | None = None
+    _active_started_at: datetime | None = None
+    _active_seconds: float = 0.0
     _room_durations: dict[str, float] = field(default_factory=dict)
     _rooms: list[str] = field(default_factory=list)
+    _confirmed_rooms: set[str] = field(default_factory=set)
+    _recharge_suspended: bool = False
 
     def recover(
         self,
@@ -59,42 +62,76 @@ class CleaningSessionTracker:
             durations, rooms, _, _ = _room_timeline(
                 started_at, ended_at, area_states, room_names
             )
-            self.latest_session = _build_session(started_at, ended_at, durations, rooms)
+            self.latest_session = _build_session(
+                started_at,
+                ended_at,
+                durations,
+                rooms,
+                confirmed_rooms=set(),
+                duration_seconds=sum(durations.values()),
+            )
 
     def update(
         self,
         *,
         cleaning: bool,
+        paused: bool = False,
+        returning: bool = False,
+        charging: bool = False,
+        low_charge: bool = False,
         current_area: str | None,
         room_names: tuple[str, ...],
         now: datetime,
     ) -> CleaningSession | None:
         """Observe one coordinator update and return the newest finished run."""
         room = _canonical_room(current_area, room_names)
-        if cleaning:
+        if cleaning and not paused and not returning and not charging:
             if self._started_at is None:
                 self._started_at = now
                 self._current_room = room
-                self._room_started_at = now
+                self._active_started_at = now
                 if room is not None:
                     self._rooms.append(room)
-            elif room != self._current_room:
-                self._finish_room(now)
-                self._current_room = room
-                self._room_started_at = now
-                if room is not None and room not in self._rooms:
-                    self._rooms.append(room)
+            else:
+                self._recharge_suspended = False
+                if self._active_started_at is None:
+                    self._current_room = room
+                    self._active_started_at = now
+                    if room is not None and room not in self._rooms:
+                        self._rooms.append(room)
+                elif room != self._current_room:
+                    self._finish_active(now)
+                    self._current_room = room
+                    self._active_started_at = now
+                    if room is not None and room not in self._rooms:
+                        self._rooms.append(room)
             return self.latest_session
 
         if self._started_at is None:
             return self.latest_session
 
-        self._finish_room(now)
+        self._finish_active(now)
+        if low_charge:
+            self._recharge_suspended = True
+        if paused or returning or (self._recharge_suspended and charging):
+            return self.latest_session
         self.latest_session = _build_session(
-            self._started_at, now, self._room_durations, self._rooms
+            self._started_at,
+            now,
+            self._room_durations,
+            self._rooms,
+            confirmed_rooms=self._confirmed_rooms,
+            duration_seconds=self._active_seconds,
         )
         self._reset_active()
         return self.latest_session
+
+    def confirm_room_completed(self, room_name: str) -> None:
+        """Record positive managed evidence that one observed room completed."""
+        key = _room_key(room_name)
+        room = next((item for item in self._rooms if _room_key(item) == key), None)
+        if room is not None:
+            self._confirmed_rooms.add(room)
 
     def preferred_session(
         self, native_session: CleaningSession | None
@@ -105,27 +142,37 @@ class CleaningSessionTracker:
             return native_session
         if native_session is None:
             return tracked
+        if _sessions_overlap(native_session, tracked):
+            if native_session.completed is False:
+                return native_session
+            if tracked.completed is True:
+                return tracked
+            return CleaningSession(
+                started_at=native_session.started_at,
+                ended_at=native_session.ended_at,
+                duration_seconds=tracked.duration_seconds,
+                rooms=native_session.rooms,
+                room_durations=native_session.room_durations,
+                completed=native_session.completed,
+            )
         native_started = _parse_timestamp(native_session.started_at)
         tracked_started = _parse_timestamp(tracked.started_at)
         if native_started > tracked_started:
             return native_session
-        if (
-            native_started == tracked_started
-            and native_session.room_durations
-            and not tracked.room_durations
-        ):
-            return native_session
         return tracked
 
-    def discard_current_room(self) -> None:
-        """Exclude an interrupted room from the finished session summary."""
+    def discard_current_room(self, *, now: datetime | None = None) -> None:
+        """Exclude an interrupted room while preserving active run duration."""
+        if now is not None:
+            self._finish_active(now)
         room = self._current_room
         if room is None:
             return
         self._room_durations.pop(room, None)
         self._rooms = [item for item in self._rooms if item != room]
+        self._confirmed_rooms.discard(room)
         self._current_room = None
-        self._room_started_at = None
+        self._active_started_at = None
 
     def _restore_active(
         self,
@@ -146,25 +193,32 @@ class CleaningSessionTracker:
             )
         self._started_at = started_at
         self._current_room = current_room
-        self._room_started_at = room_started_at
+        self._active_started_at = room_started_at
+        self._active_seconds = sum(durations.values())
         self._room_durations = durations
         self._rooms = rooms
 
-    def _finish_room(self, ended_at: datetime) -> None:
-        """Accumulate the currently observed room segment."""
-        if self._current_room is not None and self._room_started_at is not None:
-            elapsed = max(0.0, (ended_at - self._room_started_at).total_seconds())
-            self._room_durations[self._current_room] = (
-                self._room_durations.get(self._current_room, 0.0) + elapsed
-            )
+    def _finish_active(self, ended_at: datetime) -> None:
+        """Accumulate one actively-cleaning segment, excluding suspensions."""
+        if self._active_started_at is not None:
+            elapsed = max(0.0, (ended_at - self._active_started_at).total_seconds())
+            self._active_seconds += elapsed
+            if self._current_room is not None:
+                self._room_durations[self._current_room] = (
+                    self._room_durations.get(self._current_room, 0.0) + elapsed
+                )
+            self._active_started_at = None
 
     def _reset_active(self) -> None:
         """Clear the live accumulator after publishing a completed session."""
         self._started_at = None
         self._current_room = None
-        self._room_started_at = None
+        self._active_started_at = None
+        self._active_seconds = 0.0
         self._room_durations = {}
         self._rooms = []
+        self._confirmed_rooms = set()
+        self._recharge_suspended = False
 
 
 def _room_timeline(
@@ -230,20 +284,33 @@ def _build_session(
     ended_at: datetime,
     durations: dict[str, float],
     rooms: list[str],
+    *,
+    confirmed_rooms: set[str] | None = None,
+    duration_seconds: float | None = None,
 ) -> CleaningSession:
     """Create one immutable public session from local tracking values."""
+    confirmed = set(rooms) if confirmed_rooms is None else confirmed_rooms
     cleaned_rooms = [
-        room for room in rooms if durations.get(room, 0.0) >= MIN_CLEANED_ROOM_SECONDS
+        room
+        for room in rooms
+        if room in confirmed and durations.get(room, 0.0) >= MIN_CLEANED_ROOM_SECONDS
     ]
     return CleaningSession(
         started_at=started_at.isoformat(),
         ended_at=ended_at.isoformat(),
-        duration_seconds=max(0, round((ended_at - started_at).total_seconds())),
+        duration_seconds=max(
+            0,
+            round(
+                (ended_at - started_at).total_seconds()
+                if duration_seconds is None
+                else duration_seconds
+            ),
+        ),
         rooms=tuple(cleaned_rooms),
         room_durations=tuple(
             (room, max(0, round(durations[room]))) for room in cleaned_rooms
         ),
-        completed=True,
+        completed=bool(cleaned_rooms),
     )
 
 
@@ -258,3 +325,17 @@ def _parse_timestamp(value: str | None) -> datetime:
     if parsed.tzinfo is None:
         return parsed.replace(tzinfo=UTC)
     return parsed.astimezone(UTC)
+
+
+def _sessions_overlap(left: CleaningSession, right: CleaningSession) -> bool:
+    """Return whether two bounded session intervals describe the same run."""
+    if left.ended_at is None or right.ended_at is None:
+        return False
+    left_start = _parse_timestamp(left.started_at)
+    left_end = _parse_timestamp(left.ended_at)
+    right_start = _parse_timestamp(right.started_at)
+    right_end = _parse_timestamp(right.ended_at)
+    unknown = datetime.min.replace(tzinfo=UTC)
+    if unknown in {left_start, left_end, right_start, right_end}:
+        return False
+    return max(left_start, right_start) <= min(left_end, right_end)

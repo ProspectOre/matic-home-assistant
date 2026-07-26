@@ -60,6 +60,37 @@ def test_release_artifact_gate_rejects_stale_dashboard_card(tmp_path) -> None:
         validate_artifact(artifact, {"__init__.py"})
 
 
+@pytest.mark.parametrize(
+    "private_path",
+    (
+        ".storage/matic_robot.slam_map",
+        "captures/house.pcapng",
+        "map/full_house.webp",
+        "map/point_cloud.npz",
+        "map/room_photo.png",
+    ),
+)
+def test_release_artifact_gate_rejects_private_map_data(
+    tmp_path: Path, private_path: str
+) -> None:
+    """Never ship household imagery, captures, or persisted SLAM state."""
+    files = {"__init__.py", private_path}
+    artifact = _wheel(tmp_path / "project-0.1.0-py3-none-any.whl", files)
+
+    with pytest.raises(ArtifactError, match="forbidden"):
+        validate_artifact(artifact, files)
+
+
+def test_release_artifact_gate_allows_only_reviewed_brand_rasters(
+    tmp_path: Path,
+) -> None:
+    """Keep the two public brand icons without opening a map-photo bypass."""
+    files = {"__init__.py", "brand/icon.png", "brand/icon@2x.png"}
+    artifact = _wheel(tmp_path / "project-0.1.0-py3-none-any.whl", files)
+
+    validate_artifact(artifact, files)
+
+
 def test_source_files_ignore_generated_macos_metadata(tmp_path) -> None:
     (tmp_path / "__init__.py").write_text("")
     (tmp_path / ".DS_Store").write_bytes(b"Finder metadata")

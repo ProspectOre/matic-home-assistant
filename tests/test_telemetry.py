@@ -24,6 +24,7 @@ from custom_components.matic_robot.client.api import (
     _decode_water_flow_factor,
     _decode_wifi_status,
 )
+from custom_components.matic_robot.client.models import HermesCollectionEntry
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -82,6 +83,51 @@ def test_decode_optional_telemetry_handles_defaults_and_unknowns() -> None:
     assert _decode_update_state(b"\x3a\x00") is None
     assert _decode_timezone(b"tombstone-value!") is None
     assert _decode_wifi_status(b"\x08\x63")[0] == "unknown"
+
+
+async def test_active_cleaning_session_reads_only_presence() -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_property = AsyncMock(
+        side_effect=(b"\x0a\x00", b"tombstone-value!", b"\x0a\xff")
+    )
+
+    assert await client.async_has_active_cleaning_session() is True
+    assert await client.async_has_active_cleaning_session() is False
+    assert await client.async_has_active_cleaning_session() is None
+    assert client.async_get_property.await_args_list == [
+        call("active_session_key"),
+        call("active_session_key"),
+        call("active_session_key"),
+    ]
+
+
+async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
+    def timestamp(value: int) -> bytes:
+        return _bfield(1, _vfield(1, value))
+
+    details = _bfield(3, b"Kitchen") + _bfield(4, _vfield(1, 60))
+    summary = (
+        _bfield(3, timestamp(1_700_000_000))
+        + _bfield(4, timestamp(1_700_000_060))
+        + _bfield(6, _bfield(1, _bfield(2, details)))
+    )
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(b"opaque-synthetic-key", _bfield(5, summary)),
+            HermesCollectionEntry(b"", _bfield(5, summary)),
+            HermesCollectionEntry(b"malformed", b"\x2a\xff"),
+        )
+    )
+
+    records = await client.async_get_cleaning_session_records()
+
+    assert len(records) == 1
+    assert records[0].key == b"opaque-synthetic-key"
+    assert records[0].session.completed is True
+    client.async_get_collection_entries.assert_awaited_once_with(
+        "coverage_session_history", limit=64
+    )
 
 
 async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
@@ -193,6 +239,14 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert session.rooms == ("Kitchen",)
     assert session.room_durations == (("Kitchen", 600),)
     assert session.completed is True
+    interrupted = _decode_cleaning_session(_bfield(5, summary + _vfield(5, 2)))
+    assert interrupted is not None
+    assert interrupted.completed is False
+    malformed_status = _decode_cleaning_session(
+        _bfield(5, summary + _bfield(5, b"wrong-wire-type"))
+    )
+    assert malformed_status is not None
+    assert malformed_status.completed is None
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
 
 

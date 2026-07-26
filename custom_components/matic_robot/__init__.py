@@ -11,6 +11,10 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
+from .area_binding import (
+    async_delete_custom_area_issue,
+    async_sync_custom_area_issue,
+)
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
@@ -28,7 +32,7 @@ from .const import (
 )
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
-from .frontend import async_register_room_plan_editor
+from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import async_register_services
@@ -74,6 +78,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         timezone_identifier=hass.config.time_zone,
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
+    slam_map: SlamMapStore | None = None
     try:
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
@@ -101,7 +106,24 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_map.async_collect(client),
             f"{DOMAIN} photographic map collector",
         )
+        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+
+        def _async_sync_area_issue() -> None:
+            async_sync_custom_area_issue(
+                hass,
+                entry.entry_id,
+                plans.areas(serial_number),
+                coordinator.data.floor_plan,
+            )
+
+        entry.async_on_unload(coordinator.async_add_listener(_async_sync_area_issue))
+        entry.async_on_unload(
+            plans.async_add_listener(serial_number, _async_sync_area_issue)
+        )
+        _async_sync_area_issue()
     except BaseException:
+        if slam_map is not None:
+            await slam_map.async_shutdown()
         client.close()
         raise
     return True
@@ -109,13 +131,20 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
+    await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        await entry.runtime_data.slam_map.async_shutdown()
+        clear_slam_scene_cache(hass, entry.entry_id)
         entry.runtime_data.client.close()
     return unload_ok
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
     """Erase the removed robot's persisted firmware history and repairs."""
+    clear_slam_scene_cache(hass, entry.entry_id)
+    async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
         DATA_FIRMWARE_TRACKER
     )

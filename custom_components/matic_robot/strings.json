@@ -34,7 +34,55 @@
     "vacuum": "Vacuum",
     "vacuum_and_mop": "Vacuum + mop",
     "zoom_in": "Zoom in",
-    "zoom_out": "Zoom out"
+    "zoom_out": "Zoom out",
+    "map_camera_controls": "Map camera controls",
+    "map_canvas_aria": "Matic local 3D SLAM scene",
+    "map_cleaning_areas": "Cleaning areas",
+    "map_empty_load_error": "The local map could not be loaded. Try Refresh after reconnecting.",
+    "map_empty_loading": "Loading the private local map…",
+    "map_empty_waiting": "The local map will appear when the Matic integration is ready.",
+    "map_fallback_alt": "Matic local fallback map",
+    "map_gesture_help": "Drag to orbit · Shift-drag or scroll to pan · pinch to zoom · twist to rotate · move two fingers vertically to tilt · press T for top-down · 3 for 3D · ? for help",
+    "map_health_building": "Map building",
+    "map_health_error": "Map stream needs attention",
+    "map_health_limited": "Map cache limit reached",
+    "map_health_live": "Live",
+    "map_health_ready": "Ready",
+    "map_health_updated": "Updated {relative}",
+    "map_home_view": "Home view",
+    "map_labels": "Labels",
+    "map_loading": "Loading…",
+    "map_quality_auto": "Auto detail",
+    "map_quality_balanced": "Balanced",
+    "map_quality_efficient": "Efficient",
+    "map_quality_label": "Scene detail",
+    "map_quality_maximum": "Maximum",
+    "map_refresh": "Refresh",
+    "map_resolution_full": "{points} pts · 1.5 cm",
+    "map_resolution_sampled": "{rendered} of {total} pts · 1.5 cm",
+    "map_room_default": "Room",
+    "map_robot_position": "Robot position · {source}",
+    "map_rotate_left": "Rotate left",
+    "map_rotate_right": "Rotate right",
+    "map_sampling_adaptive": "adaptive 1:{step} detail",
+    "map_sampling_all": "all captured samples",
+    "map_scene_zoom": "Scene zoom",
+    "map_status_building_scene": "Building live 3D scene · {points} points",
+    "map_status_full_scene": "Full local 3D scene · {points} points · {sampling}",
+    "map_status_loading_data": "Loading local 3D data…",
+    "map_status_loading_scene": "Loading local 3D scene…",
+    "map_status_no_map": "No local map data is available yet",
+    "map_status_room_map": "Live labeled room map",
+    "map_status_scene_fallback": "3D scene is not ready · showing the local map",
+    "map_studio_privacy": "Full local SLAM · private inside Home Assistant",
+    "map_studio_title": "Matic map studio",
+    "map_tilt_down": "Lower viewing angle",
+    "map_tilt_up": "Raise viewing angle",
+    "map_view_3d": "3D",
+    "map_view_label": "Map view",
+    "map_view_rooms": "Rooms",
+    "map_view_top": "Top-down",
+    "map_viewport_aria": "Interactive Matic 3D map. Drag to orbit, Shift-drag or two-finger scroll to pan, pinch to zoom, twist to rotate, and move two fingers vertically to tilt."
   },
   "config": {
     "abort": {
@@ -134,7 +182,9 @@
       "duplicate_area": "Use a unique area name with at least one letter or number.",
       "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
-      "no_rooms": "Turn on at least one room."
+      "no_rooms": "Turn on at least one room.",
+      "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
+      "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map."
     },
     "step": {
       "init": {
@@ -167,7 +217,7 @@
       },
       "area_menu": {
         "title": "Manage custom area",
-        "description": "{area_name}",
+        "description": "{area_name} — map status: {area_status}.",
         "menu_options": {
           "edit_area": "Edit area",
           "delete_area": "Delete area",
@@ -177,7 +227,7 @@
       },
       "add_area": {
         "title": "Draw a custom cleaning area",
-        "description": "Draw only where Matic should clean. The map and coordinates stay inside Home Assistant.",
+        "description": "Map status: {area_status}. Draw only where Matic should clean. The map and coordinates stay inside Home Assistant.",
         "data": {
           "name": "Area name",
           "area_editor": "Area",
@@ -193,7 +243,7 @@
       },
       "edit_area": {
         "title": "Edit custom cleaning area",
-        "description": "Changes apply after you save.",
+        "description": "Map status: {area_status}. Changes apply after you save. If the map changed, redraw the area before saving.",
         "data": {
           "name": "Area name",
           "area_editor": "Area",
@@ -555,6 +605,12 @@
     "invalid_area": {
       "message": "The saved custom area is invalid: {error}"
     },
+    "area_map_changed": {
+      "message": "This custom area was saved for a different room map. Open Configure and redraw it on the current map before cleaning."
+    },
+    "ambiguous_room_name": {
+      "message": "Rename duplicate mapped rooms named {room} before using managed plans so completion can be verified safely."
+    },
     "invalid_cleaning_option": {
       "message": "The cleaning option is invalid: {error}"
     },
@@ -584,6 +640,15 @@
     },
     "robot_error": {
       "message": "The selected Matic robot reported an error."
+    },
+    "robot_command_failed": {
+      "message": "The robot could not complete the requested command."
+    },
+    "room_interrupted": {
+      "message": "{room} stopped without verified completion."
+    },
+    "room_taken_over": {
+      "message": "Another cleaning task replaced the managed run in {room}."
     },
     "room_plan_unavailable": {
       "message": "The robot's room map is unavailable."
@@ -615,6 +680,10 @@
     "robot_identity_changed": {
       "title": "Matic robot identity changed",
       "description": "The device at the configured Matic address presented a TLS certificate that does not match the pinned robot identity. Communication is blocked until the certificate matches again. If the robot was factory reset or replaced, re-pair it through **Settings > Devices & Services > Matic Robot > Reconfigure**."
+    },
+    "custom_area_map_changed": {
+      "title": "Matic custom areas need to be redrawn",
+      "description": "Saved custom areas requiring redraw: {count}. Their map identity no longer matches the robot's current room map, so Home Assistant will not start them. Open **Settings > Devices & services > Matic Robot > Configure > Custom cleaning areas**, redraw each marked area, and save it again."
     }
   },
   "services": {

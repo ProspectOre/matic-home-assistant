@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
@@ -135,6 +136,16 @@ def _floor_plan() -> FloorPlan:
     )
 
 
+@asynccontextmanager
+async def _motion_context(_serial: str):
+    yield
+
+
+@asynccontextmanager
+async def _managed_motion_context(_serial: str, _token: int):
+    yield
+
+
 def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = True):
     floor_plan = _floor_plan() if with_floor_plan else None
     coordinator = SimpleNamespace(
@@ -198,6 +209,10 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
+        has_managed_task=MagicMock(return_value=False),
+        command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
+        external_motion=MagicMock(side_effect=_motion_context),
+        managed_command=MagicMock(side_effect=_managed_motion_context),
     )
     firmware = SimpleNamespace(
         summary=MagicMock(
@@ -379,11 +394,59 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     assert study_duration.native_value == 120
     assert study_last.native_value == stored_when.native_value
 
+    # Native or external runs that did not prove completion cannot overwrite
+    # the last trusted room statistics, even when they report room timing.
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                "2026-01-02T08:00:00+00:00",
+                "2026-01-02T08:05:00+00:00",
+                300,
+                ("Kitchen",),
+                (("Kitchen", 300),),
+                None,
+            ),
+        ),
+    )
+    duration._async_apply_session()
+    last_cleaned._async_apply_session()
+    assert duration.native_value == 600
+    assert last_cleaned.native_value is not None
+    assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
+
     # Coordinator updates re-apply the latest session.
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                "2026-01-01T08:00:01+00:00",
+                "2026-01-01T08:10:00+00:00",
+                600,
+                ("Kitchen",),
+                (("Kitchen", 600),),
+                True,
+            ),
+        ),
+    )
     fresh = sensor.MaticRoomDurationSensor(entry, kitchen)
     fresh.async_write_ha_state = MagicMock()
     fresh._handle_coordinator_update()
     assert fresh.native_value == 600
+
+    # A remap retires statistics entities whose stable room id disappeared,
+    # without erasing their restored values.
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data,
+        floor_plan=replace(
+            entry.runtime_data.coordinator.data.floor_plan, rooms=(study,)
+        ),
+    )
+    assert duration.available is False
+    assert study_duration.available is True
 
 
 def test_managed_room_statistics_ignore_transit_and_cancelled_rooms() -> None:
@@ -938,6 +1001,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     store.revision = 1
     entity = camera.MaticPhotorealisticMapCamera(entry)
     entity.hass = hass
+    assert entity.entity_registry_enabled_default is False
     with patch(
         "custom_components.matic_robot.camera._render_photorealistic_entries",
         return_value=b"photorealistic-png",
@@ -1034,7 +1098,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
     assert plans.request_stop.call_count == 1
-    assert plans.cancel.call_count == 1
+    assert plans.external_motion.call_count == 2
 
     await entity.async_clean_segments(["room-2"])
     coverage_call = coordinator.client.async_start_coverage.await_args
@@ -1120,14 +1184,20 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert entity.extra_state_attributes == {
         "low_charge": False,
         "problem": False,
+        "current_area": None,
+        "previous_area": None,
         "rooms": {"room-1": "Kitchen", "room-2": "Study"},
     }
-    assert vacuum.MaticVacuum._unrecorded_attributes == frozenset({"rooms"})
+    assert vacuum.MaticVacuum._unrecorded_attributes == frozenset(
+        {"rooms", "current_area", "previous_area"}
+    )
 
     bare = vacuum.MaticVacuum(_entry(with_floor_plan=False))
     assert bare.extra_state_attributes == {
         "low_charge": False,
         "problem": False,
+        "current_area": None,
+        "previous_area": None,
         "rooms": {},
     }
     assert await bare.async_get_segments() == []

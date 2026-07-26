@@ -31,9 +31,16 @@ disabled by default and, when a user enables them, record that room's name and
 cleaning durations as long-term statistics; and the
 `matic_robot_cleaning_finished` event includes the finished session's rooms
 and per-room durations in its payload. Home Assistant's recorder retains
-enabled entity states according to the user's recorder settings. The local map
-camera renders room geometry and robot pose on demand; it contains no optical
-camera frames.
+enabled entity states according to the user's recorder settings.
+
+The visible-by-default room-map camera renders geometry and pose and contains
+no photographic pixels. The separate photographic SLAM camera accumulates the
+robot's local color and structural map pages. That map can reveal floor layout,
+furniture, belongings, and activity patterns even though it is not a live video
+stream. The photographic camera is disabled by default; the Matic Map panel and
+its scene/pose endpoints require a Home Assistant administrator. If an
+administrator enables the camera entity, Home Assistant's ordinary camera and
+user permissions govern who can view it.
 
 The integration does not start camera or microphone recordings, request clip
 bytes or thumbnails, cache media, expose recording metadata, or send vendor
@@ -45,7 +52,7 @@ reliable local-control contract. See
 [Recording-related protocol notes](recording-protocol.md) for the observed but
 unavailable protocol semantics.
 
-Managed rotation history is stored in Home Assistant's local `.storage`
+Managed rotation history is stored in Home Assistant's private local storage
 directory. It contains selected room IDs/names, individual room preferences,
 completion timestamps, and failure summaries. The integration does not
 transmit this history. Home Assistant backups may include it according to the
@@ -54,7 +61,27 @@ user’s backup configuration.
 Named custom cleaning areas are stored in that same local integration storage.
 Their map coordinates are omitted from entity state, events, action calls,
 Logbook-facing service data, and downloaded diagnostics; automations refer to a
-saved area by name.
+saved area by name. A saved area also carries coverage mission, partition, and
+room-geometry bindings so a legacy area, remap, floor change, or geometry drift
+fails closed instead of applying old coordinates to a new map. The resulting
+Repair exposes only an affected-area count, never names, coordinates, or map
+identifiers.
+
+The accumulated photographic/structural SLAM cache is kept in a separate
+private integration store. It is size-bounded, is not written to Recorder, and
+is removed when the config entry is deleted. Home Assistant backups can still
+include private integration storage, so encrypt and restrict backup access and
+do not share a backup when requesting support. Capacity or stream problems can
+leave a map incomplete. Content-free state, layer/drop/invalid counts, revision,
+stream state, and failure counts may be exposed for local troubleshooting, but
+there is no guaranteed last-scanned timestamp and downloaded diagnostics omit
+the map content itself.
+
+The admin-only scene catalog, point-cloud scene, and pose responses use
+`private, no-store` browser-cache policy. Any encoded scene retained in memory
+for rendering is purged when the integration unloads or is removed. This does
+not erase the private persisted SLAM store on an ordinary reload; deletion of
+the config entry does.
 
 ## Data never sent to this project
 

@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import socket
 from base64 import b64encode
+from dataclasses import replace
 from ipaddress import ip_address
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
@@ -15,6 +17,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from zeroconf import ServiceStateChange
 
 from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot.area_binding import (
+    AREA_SCHEMA_VERSION,
+    binding_for_floor_plan,
+)
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
@@ -903,6 +909,15 @@ def _direct_options_flow(hass, entry) -> MaticRobotOptionsFlow:
     return flow
 
 
+def _form_defaults(result) -> dict[str, object]:
+    """Return concrete defaults from one options-flow form schema."""
+    return {
+        str(marker.schema): marker.default()
+        for marker in result["data_schema"].schema
+        if marker.default is not vol.UNDEFINED
+    }
+
+
 async def _start_options_step(hass, entry, step: str):
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["type"] is FlowResultType.MENU
@@ -1111,8 +1126,15 @@ async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
     assert result["step_id"] == "area_menu"
     saved = manager.area("synthetic-serial", "Litter box")
     assert saved["circles"] == [{"x": 0.5, "y": 0.5, "radius": 0.35}]
+    assert saved["schema_version"] == AREA_SCHEMA_VERSION
+    assert saved["map_binding"] == binding_for_floor_plan(
+        entry.runtime_data.coordinator.data.floor_plan
+    )
 
     result = await _select_menu_step(hass, result, "edit_area")
+    assert _form_defaults(result)["area_editor"] == [
+        {"x": 0.5, "y": 0.5, "radius": 0.35}
+    ]
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],
         {
@@ -1129,6 +1151,177 @@ async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
     assert result["step_id"] == "add_area"
     assert manager.areas("synthetic-serial") == {}
+
+
+async def test_custom_area_editor_blocks_map_changes_and_rebinds_after_redraw(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    original = entry.runtime_data.coordinator.data.floor_plan
+    entry.runtime_data.coordinator.data.floor_plan = replace(original, mission_id=2)
+    values = {
+        "name": "Table",
+        "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+
+    assert result["step_id"] == "add_area"
+    assert result["errors"] == {"base": "area_map_changed"}
+    defaults = _form_defaults(result)
+    assert defaults["name"] == "Table"
+    assert defaults["cleaning_mode"] == "vacuum"
+    assert defaults["coverage_setting"] == "standard"
+    assert defaults["area_editor"] == []
+    assert manager.areas("synthetic-serial") == {}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+    assert result["step_id"] == "area_menu"
+    assert manager.area("synthetic-serial", "table")["map_binding"] == (
+        binding_for_floor_plan(entry.runtime_data.coordinator.data.floor_plan)
+    )
+
+
+async def test_custom_area_editor_requires_a_live_drawable_map(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    entry.runtime_data.coordinator.data.floor_plan = None
+
+    result = await _start_options_step(hass, entry, "manage_areas")
+
+    assert result["step_id"] == "add_area"
+    assert result["errors"] == {"base": "room_plan_unavailable"}
+    assert result["data_schema"].schema == {}
+    assert result["description_placeholders"] == {"area_status": "Map unavailable"}
+    assert manager.areas("synthetic-serial") == {}
+
+    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
+        1, "partition", b"partition", ()
+    )
+    flow = _direct_options_flow(hass, entry)
+    invalid = await flow.async_step_add_area()
+    assert invalid["errors"] == {"base": "room_plan_unavailable"}
+    assert invalid["data_schema"].schema == {}
+
+
+async def test_custom_area_editor_blocks_when_map_disappears_before_submit(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    entry.runtime_data.coordinator.data.floor_plan = None
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Table",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+
+    assert result["errors"] == {"base": "room_plan_unavailable"}
+    assert result["data_schema"].schema == {}
+    assert manager.areas("synthetic-serial") == {}
+
+
+async def test_legacy_area_is_labeled_and_must_be_redrawn_on_current_map(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+    assert flow._area_options() == [{"value": "litter_box", "label": "⚠ Litter box"}]
+    flow._area_id = "litter_box"
+
+    menu = await flow.async_step_area_menu()
+    assert menu["description_placeholders"] == {
+        "area_name": "Litter box",
+        "area_status": "Redraw required",
+    }
+    form = await flow.async_step_edit_area()
+    defaults = _form_defaults(form)
+    assert defaults == {
+        "name": "Litter box",
+        "area_editor": [],
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "quick",
+    }
+    assert form["description_placeholders"] == {"area_status": "Redraw required"}
+
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        }
+    )
+    assert result["step_id"] == "area_menu"
+    saved = manager.area("synthetic-serial", "litter_box")
+    assert saved["circles"] == [{"x": 0.6, "y": 0.5, "radius": 0.4}]
+    assert saved["schema_version"] == AREA_SCHEMA_VERSION
+    assert saved["map_binding"] == binding_for_floor_plan(
+        entry.runtime_data.coordinator.data.floor_plan
+    )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "error"),
+    [
+        (None, "room_plan_unavailable"),
+        ("changed", "area_map_changed"),
+    ],
+)
+async def test_custom_area_edit_rechecks_map_before_overwriting_saved_geometry(
+    hass, replacement, error
+) -> None:
+    entry, manager = await _options_entry(hass)
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    original = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "name": "Litter box",
+        "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "map_binding": binding_for_floor_plan(floor_plan),
+    }
+    await manager.async_save_area("synthetic-serial", "litter_box", original)
+    flow = _direct_options_flow(hass, entry)
+    flow._area_id = "litter_box"
+    await flow.async_step_edit_area()
+    entry.runtime_data.coordinator.data.floor_plan = (
+        None if replacement is None else replace(floor_plan, mission_id=2)
+    )
+
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Changed name",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        }
+    )
+
+    assert result["errors"] == {"base": error}
+    assert manager.area("synthetic-serial", "litter_box") == {
+        "id": "litter_box",
+        **original,
+    }
 
 
 async def test_options_flow_rejects_duplicate_custom_area_name(hass) -> None:

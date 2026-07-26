@@ -12,7 +12,32 @@ from pathlib import Path, PurePosixPath
 ROOT = Path(__file__).resolve().parents[1]
 INTEGRATION = ROOT / "custom_components" / "matic_robot"
 ARCHIVE_MARKER = "custom_components/matic_robot/"
-FORBIDDEN_PARTS = {"__pycache__", ".DS_Store", ".private", "captures", "www"}
+FORBIDDEN_PARTS = {
+    "__pycache__",
+    ".DS_Store",
+    ".private",
+    ".storage",
+    "captures",
+    "www",
+}
+PRIVATE_ARTIFACT_SUFFIXES = {
+    ".bin",
+    ".db",
+    ".har",
+    ".heic",
+    ".jpeg",
+    ".jpg",
+    ".mobilebackup",
+    ".npy",
+    ".npz",
+    ".pcap",
+    ".pcapng",
+    ".sqlite",
+    ".sqlite3",
+    ".webp",
+    ".zst",
+}
+ALLOWED_RASTER_ASSETS = {"brand/icon.png", "brand/icon@2x.png"}
 
 
 class ArtifactError(RuntimeError):
@@ -45,6 +70,21 @@ def _integration_members(names: Iterable[str]) -> set[str]:
     return members
 
 
+def _private_artifact_paths(paths: Iterable[str]) -> list[str]:
+    """Return release paths that may contain private household data."""
+    private: list[str] = []
+    for path in paths:
+        normalized = PurePosixPath(path)
+        suffix = normalized.suffix.casefold()
+        if FORBIDDEN_PARTS.intersection(normalized.parts):
+            private.append(path)
+        elif suffix in PRIVATE_ARTIFACT_SUFFIXES:
+            private.append(path)
+        elif suffix == ".png" and path not in ALLOWED_RASTER_ASSETS:
+            private.append(path)
+    return sorted(private)
+
+
 def artifact_integration_files(artifact: Path) -> set[str]:
     """Return integration files stored in one supported release archive."""
     if artifact.suffix == ".whl":
@@ -61,11 +101,7 @@ def artifact_integration_files(artifact: Path) -> set[str]:
 def validate_artifact(artifact: Path, expected: set[str]) -> None:
     """Require an archive to contain exactly the expected integration files."""
     actual = artifact_integration_files(artifact)
-    forbidden = sorted(
-        path
-        for path in actual
-        if FORBIDDEN_PARTS.intersection(PurePosixPath(path).parts)
-    )
+    forbidden = _private_artifact_paths(actual)
     missing = sorted(expected - actual)
     unexpected = sorted(actual - expected)
     problems: list[str] = []

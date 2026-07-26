@@ -243,7 +243,7 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert "centerY - this._pinch.centerY" in panel
     assert "maticAngleDelta(angle - this._pinch.angle)" in panel
     assert "_startInertia" in panel
-    assert "this._panBy(-event.deltaX, -event.deltaY)" in panel
+    assert "this._panBy(-deltaX, -deltaY)" in panel
     assert "Math.PI / 2 - 0.018" in panel
     assert 'headers["If-None-Match"]' in panel
     assert "response.arrayBuffer()" in panel
@@ -256,6 +256,73 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert 'class="room-labels"' in panel
     assert 'class="robot-marker"' in panel
     assert "label.textContent = room.name" in panel
+
+
+def test_map_panel_localizes_every_visible_string_with_english_fallback() -> None:
+    """The panel follows Home Assistant's translation namespace."""
+    strings = json.loads(
+        Path(frontend.__file__).with_name("strings.json").read_text(encoding="utf-8")
+    )
+    translations = json.loads(
+        Path(frontend.__file__)
+        .with_name("translations")
+        .joinpath("en.json")
+        .read_text(encoding="utf-8")
+    )
+    referenced = set(re.findall(r'this\._localize\(\s*"([a-z_]+)"', _STUDIO_JS))
+    referenced.update(re.findall(r'text\(\s*"([a-z_]+)"', _STUDIO_JS))
+    assert referenced
+    assert not referenced - set(strings["common"])
+    assert strings["common"] == translations["common"]
+    assert "component.matic_robot.common.${key}" in _STUDIO_JS
+
+
+def test_map_panel_persists_only_bounded_view_preferences() -> None:
+    """Per-user storage remembers UX state without storing private map data."""
+    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
+    assert "matic-map-studio:v${MATIC_MAP_PREFERENCES_VERSION}:${identity}" in panel
+    assert "this._hass?.user?.id" in panel
+    assert "window.localStorage.getItem(identity)" in panel
+    assert "window.localStorage.setItem(" in panel
+    assert "view: this._view" in panel
+    assert "labels: this._labelsVisible" in panel
+    assert "quality: this._quality" in panel
+    assert "camera," in panel
+    storage_block = panel[
+        panel.index("_savePreferences()") : panel.index("_schedulePreferencesSave()")
+    ]
+    assert "this._scene" not in storage_block
+    assert "scene_url" not in storage_block
+
+
+def test_map_panel_has_accessible_reduced_motion_and_health_status() -> None:
+    """Loading, stream health, and motion preferences stay accessible."""
+    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
+    assert 'matchMedia?.(\n      "(prefers-reduced-motion: reduce)"' in panel
+    assert "if (!animate || this._reducedMotion)" in panel
+    assert "if (this._reducedMotion) return;" in panel
+    assert "@media (prefers-reduced-motion: reduce)" in panel
+    assert 'role="status"' in panel
+    assert 'aria-live="polite"' in panel
+    assert 'aria-atomic="true"' in panel
+    assert '"aria-busy"' in panel
+    assert "map_truncated" in panel
+    assert "stream_failures" in panel
+    assert "stream_state" in panel
+
+
+def test_map_panel_uses_private_catalog_and_bounded_quality_sampling() -> None:
+    """The panel works without an enabled photo camera and can lower GPU load."""
+    panel = _STUDIO_JS[_STUDIO_JS.index("class MaticMapStudio") :]
+    assert '"/api/matic_robot/slam_entries"' in _STUDIO_JS
+    assert "await this._fetchCatalog();" in panel
+    assert "this._catalogState() || entities.photo?.[1]" in panel
+    assert 'cache: "no-store"' in panel
+    assert "MATIC_MAP_QUALITY_BUDGETS" in _STUDIO_JS
+    assert 'class="quality"' in panel
+    assert "_samplePoints(" in panel
+    assert "this._renderFloorCount ?? this._scene.floorCount" in panel
+    assert "this._renderSurfaceCount ?? this._scene.surfaceCount" in panel
 
 
 def test_hass_refresh_does_not_rebuild_an_open_editor() -> None:

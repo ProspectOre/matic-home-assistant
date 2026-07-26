@@ -95,6 +95,10 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
 
     _attr_translation_key = "photorealistic_map"
     _attr_content_type = "image/png"
+    # Unlike the geometric room map, this image can reveal the interior of a
+    # home. Keep it out of the state machine and camera proxy unless an
+    # administrator makes the explicit decision to enable it.
+    _attr_entity_registry_enabled_default = False
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         Camera.__init__(self)

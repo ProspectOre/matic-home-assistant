@@ -22,8 +22,8 @@ Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
 HACS. Compatibility with other Home Assistant releases has not been validated.
 
 The integration has been tested on a real robot and a stock Home Assistant
-Yellow. One robot creates 48 fixed entities — 21 sensors, 12 binary sensors,
-4 buttons, 4 switches, 3 selects, 1 number, 1 camera, 1 update, and 1 vacuum —
+Yellow. One robot creates 49 fixed entities — 21 sensors, 12 binary sensors,
+4 buttons, 4 switches, 3 selects, 1 number, 2 cameras, 1 update, and 1 vacuum —
 plus two opt-in room statistics sensors per mapped room.
 Setup, state, map, cleaning, and settings paths have been exercised on the robot,
 and the integration is covered by automated tests.
@@ -34,8 +34,8 @@ and the integration is covered by automated tests.
   authenticated local sessions, reload, and unload.
 - Start/resume, pause, stop, dock, full-floor cleaning, named-room
   cleaning, and Home Assistant Area-to-room mapping.
-- Local map camera rendered from room geometry and robot pose; it contains no
-  optical camera frames.
+- A visible-by-default labeled room-map camera, plus a default-disabled private
+  photographic SLAM camera and admin-only 3D Map Studio.
 - Activity, battery, rooms, hardware/software/protocol, current area, update,
   Wi-Fi, schedule, local cleaning history, dock/sink, Matter-pairing,
   robot SSH-tunnel permission, diagnostic-upload state, and persistent firmware
@@ -58,7 +58,9 @@ The integration adds Home Assistant-native planning and automation:
   room.
 - **Least-recently-cleaned rotation.** A plan run can start with the rooms
   that have waited longest, using the saved order to break ties — no manual
-  bookkeeping of what was cleaned last.
+  bookkeeping of what was cleaned last. A room advances only after a new
+  robot-native successful history record matches that exact managed run;
+  stopping partway never credits the room or changes its learned duration.
 - **Top-to-bottom runs.** Deterministic whole-plan runs in the exact saved
   room order, every time.
 - **Plan operations as actions.** Preview, run, stop-and-dock, history
@@ -67,13 +69,16 @@ The integration adds Home Assistant-native planning and automation:
 - **Hey Matic control.** Enable or disable the robot's voice activation
   from a switch — and therefore from any automation, scene, or schedule.
 - **Room-level automation events.** `room_started`, `room_completed`,
-  `room_failed`, and `room_cancelled` events per run, with Home Assistant
-  Area-to-room mapping.
+  `room_failed`, `room_interrupted`, `room_cancelled`, and
+  `room_ended_unverified` events per run, with Home Assistant Area-to-room
+  mapping. Only `room_completed` advances successful history.
 - **A dashboard map.** The live floor-plan camera renders rooms, labels,
   and robot pose on any dashboard with a standard Picture Entity card.
-- **A private 3D map workspace.** The Matic Map sidebar panel renders the
-  robot's local color SLAM tiles, with a labeled-room fallback, smooth bounded
-  pan and zoom, refresh controls, and no vendor or third-party map upload.
+- **A private 3D map workspace.** The admin-only Matic Map sidebar panel renders
+  the robot's local color SLAM point cloud in **3D**, orthographic
+  **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
+  twist, tilt, fit, refresh, keyboard control, full-screen use, and resilient
+  room-map fallback without a vendor or third-party map upload.
 - **Drawn custom areas.** Paint a reusable subset of one or more rooms in
   **Configure**, save it by name, and clean only that footprint from an
   automation. Geometry stays in Home Assistant; action calls contain only the
@@ -127,7 +132,9 @@ The same **Configure** flow includes **Custom cleaning areas**. Draw over the
 local room map, choose the saved mode and coverage, and name the result (for
 example, `Litter box`). Automations call `matic_robot.clean_area` with that
 name, so coordinates never appear in automation YAML, Logbook service data, or
-diagnostics. The editor opens as a full-screen workspace with room labels,
+diagnostics. Each saved area is bound to the floor/map geometry it was drawn
+against; after a remap or floor change, the integration blocks the stale area
+instead of sending old coordinates. The editor opens as a full-screen workspace with room labels,
 room focus, separate Draw and Pan modes, cursor-centered zoom, Undo/Redo,
 reversible Clear, keyboard controls, and a clear return to Home Assistant's
 name/settings form.
@@ -154,6 +161,23 @@ addresses, certificate identity, serial numbers, names, maps, pose, room and Are
 context, Wi-Fi identities, schedules, and session details. See
 [the privacy model](docs/privacy.md).
 
+The photographic SLAM cache can reveal the layout and contents of a home. It is
+stored only in private Home Assistant integration storage, may be included in a
+Home Assistant backup, and is deleted with the config entry. Its camera is
+disabled by default and the interactive Map Studio and scene endpoints require
+an administrator. Treat screenshots, backups, and enabled camera access as
+sensitive household data.
+
+## Official Matic Home Assistant support
+
+Matic also documents an official Home Assistant connection path. This project
+is separate: it is an unofficial, community-maintained, local Hermes integration
+for users who want its entity model, saved plans, local map workspace, and
+automation surfaces. Do not configure both integrations to issue competing
+motion commands unless you understand how each one arbitrates an active robot
+task. For the vendor-supported route, follow Matic's
+[Home Assistant guide](https://support.maticrobots.com/how-to-connect-matic-to-home-assistant).
+
 ## Bluetooth permissions
 
 Home Assistant OS manages supported local Bluetooth adapters; the robot-display
@@ -178,8 +202,23 @@ uses the LAN.
   compare all known read endpoints with the prior snapshot. A Repair is created
   only when that comparison finds compatibility drift.
 - Rooms without an exact Area name or unique alias require one manual mapping.
-- The map camera is a local floor-plan rendering. No optical-camera live stream
-  has been verified or exposed.
+- Managed plans require unique mapped room names because the robot's completion
+  ledger identifies rooms by name. Duplicate names are blocked before motion
+  instead of risking credit to the wrong room.
+- Home Assistant motion actions are serialized per robot. Starting another
+  Home Assistant clean, custom-area clean, stop, or dock replaces a managed
+  plan; pause/resume keeps it resumable. Commands from the official app or
+  another client cannot be intercepted before the robot receives them, so avoid
+  concurrent control during a managed plan.
+- The room camera is geometric. The optional photographic camera and Map Studio
+  use the robot's accumulated local SLAM color/structure data, not a live video
+  stream or recording browser. Map detail arrives only while the robot emits
+  pages; it can be incomplete, stale, or unavailable after a remap, stream
+  interruption, storage limit, or unsupported firmware.
+- The Map Studio currently transfers a bounded full scene when its map revision
+  changes; it does not yet stream point-cloud deltas or provide historical map
+  timelines. The status shown in Home Assistant is a health signal, not proof
+  that every part of the home has been scanned.
 - Pairing credentials, certificate secrets, Wi-Fi passwords, account tokens,
   Matter setup codes, and arbitrary raw writes are never exposed.
 - If discovery fails, confirm the robot and Home Assistant share a

@@ -31,8 +31,9 @@ Home Assistant while exposing saved areas to automations by name.
   firmware's signed page coordinates, and persists them in a size-bounded
   private Home Assistant store.
 - A lifecycle-managed tracked Hermes subscription keeps both bidirectional
-  streams open and acknowledges every server sequence so the complete map and
-  later refinements advance into the private cache.
+  streams open and acknowledges every server sequence so emitted map pages and
+  later refinements advance into the private cache. A settled/balanced health
+  signal is not proof that every physical surface was scanned.
 - The renderer transposes the robot's channel-major floor tensor into map space
   before compositing pages. Neighboring live edges are continuous, eliminating
   the repeated 32-by-32 texture squares caused by flat raster reversal.
@@ -40,27 +41,59 @@ Home Assistant while exposing saved areas to automations by name.
   Assistant event loop responsive while rendering the full map. Concurrent
   camera requests share one render, and ordinary live refinements replace the
   image without covering the existing map with a loading spinner.
-- The admin-only **Matic Map** panel provides a one-screen Photo/Rooms toggle,
-  smooth bounded pan and zoom, fit, refresh, double-click zoom, arrow-key pan,
-  full-screen mode, loading/error feedback, room labels, and an exact live robot
-  marker, with an automatic labeled-room fallback while SLAM tiles are not
-  available.
-- Map images are served through Home Assistant's authenticated camera proxy.
-  No cloud, analytics, telemetry, or third-party map service is involved.
+- The admin-only **Matic Map** panel provides **3D**, orthographic
+  **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
+  twist, tilt, fit, refresh, keyboard access, full-screen mode, loading/error
+  feedback, room labels, and a live robot marker, with an automatic room-map
+  fallback while SLAM pages are unavailable.
+- The photographic camera is disabled by default. Scene and pose endpoints
+  require an administrator and use `private, no-store` responses. In-memory
+  encoded scenes are purged on unload and removal. No cloud, analytics,
+  telemetry, or third-party map service is involved.
+- Map cache health, revision, truncation, layer/drop/invalid counts, stream
+  state, and failures are surfaced without exposing map content. A limit-driven
+  eviction forces `map_complete` false; balanced/settled pages do not prove
+  every surface was scanned. The viewer refreshes a bounded complete scene
+  after relevant changes; a guaranteed last-scanned timestamp, point-cloud
+  deltas, and historical timelines are not part of 0.3.
 - Removing the config entry also removes its private accumulated tile store.
 
 ## Named custom-area actions
 
 - `matic_robot.clean_area` accepts a saved area name plus optional cleaning-mode
   and coverage overrides.
+- Each area is bound to the coverage mission, standard partition, and canonical
+  room geometry used by its editor. Legacy/unbound areas and any mismatch are
+  blocked before a robot command; a privacy-safe Repair reports only the count
+  affected and requires redraw on the current live map. There is no automatic
+  coordinate transform or cross-floor migration.
 - Automations never need raw coordinates. Saved geometry remains out of entity
   state, events, diagnostics, service-call data, and logs.
 - The local command encoder is backed by byte-for-byte synthetic fixtures and
   rejects malformed or oversized geometry before transport.
 
+## Plan and command safety
+
+- A room is credited only after the issued one-room command is observed cleaning
+  that target and a new robot-native history record confirms a successful,
+  overlapping single-room run with a positive room duration. The active-session
+  key disappearing means only that the task ended; it is never completion proof.
+  App/robot STOP, stale or malformed history, duplicate room-name ambiguity, and
+  takeover activity cannot advance last-cleaned, successful durations, run
+  counts, or intelligent rotation.
+- Low-charge return is suspended for automatic resume. Ordinary return while a
+  firmware session is still active uses a neutral verification state, so it
+  does not inflate pause/recharge counts. Cancelled and unverified elapsed time
+  is stored separately and never overwrites the last successful duration.
+- Per-robot arbitration serializes Home Assistant motion commands. A new clean,
+  custom-area clean, stop, or dock revokes a managed plan generation before
+  dispatch; pause/resume preserves it. Commands from another client remain an
+  external takeover that Home Assistant can detect only through later state.
+
 ## Verification posture
 
-The local candidate is gated by the complete test suite at 100% coverage,
-JavaScript syntax validation, strict typing, lint and format checks, privacy
-inspection, and release-artifact validation. Real Home Assistant/Safari proof
-is performed privately before this candidate is considered publishable.
+Before publication, the local candidate must pass the complete test suite at
+100% coverage, JavaScript/browser validation, strict typing, lint and format
+checks, privacy inspection, release-artifact validation, and private real Home
+Assistant/Safari proof. This document does not by itself claim those final gates
+have passed.

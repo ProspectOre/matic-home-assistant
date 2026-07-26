@@ -3,20 +3,27 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime
-from typing import Any, Literal, cast
+from statistics import median
+from typing import Any, Literal, cast, override
 
 from homeassistant.core import HomeAssistant, callback
+from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 
 STORAGE_VERSION = 1
+STORAGE_MINOR_VERSION = 2
 STORAGE_KEY = f"{DOMAIN}.plans"
+PLAN_MOTION_TOKEN = "_matic_plan_run"
+DURATION_HISTORY_MAX_SAMPLES = 7
+DURATION_CONFIDENCE_MIN_SAMPLES = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,17 +45,64 @@ class PlanStopDecision:
     threshold: int | None = None
 
 
+class ManagedMotionReplacedError(HomeAssistantError):
+    """A newer command superseded a managed plan command."""
+
+
+class _CleaningPlanStore(Store[dict[str, Any]]):
+    """Private plan storage with a fail-closed custom-area migration."""
+
+    @override
+    async def _async_migrate_func(
+        self,
+        old_major_version: int,
+        old_minor_version: int,
+        old_data: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Mark pre-binding custom areas as legacy without inventing identity."""
+        if old_major_version != STORAGE_VERSION:
+            raise ValueError(f"unsupported plan storage version {old_major_version}")
+        if old_minor_version > STORAGE_MINOR_VERSION:
+            raise ValueError(
+                f"unsupported plan storage minor version {old_minor_version}"
+            )
+        if old_minor_version < STORAGE_MINOR_VERSION:
+            robots = old_data.get("robots")
+            if isinstance(robots, dict):
+                for robot in robots.values():
+                    if not isinstance(robot, dict):
+                        continue
+                    areas = robot.get("areas")
+                    if not isinstance(areas, dict):
+                        continue
+                    for area in areas.values():
+                        if isinstance(area, dict):
+                            area.setdefault("schema_version", 0)
+        return old_data
+
+
 class CleaningPlanManager:
     """Persist room-native plans, outcomes, selection, and recovery state."""
 
     def __init__(self, hass: HomeAssistant) -> None:
         self.hass = hass
-        self._store = Store[dict[str, Any]](hass, STORAGE_VERSION, STORAGE_KEY)
+        self._store = _CleaningPlanStore(
+            hass,
+            STORAGE_VERSION,
+            STORAGE_KEY,
+            private=True,
+            minor_version=STORAGE_MINOR_VERSION,
+        )
         self._data: dict[str, Any] = self._empty_data()
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
+        self._command_locks: dict[str, asyncio.Lock] = {}
+        self._motion_generations: dict[str, int] = {}
+        self._managed_motion: dict[str, int] = {}
+        self._run_tasks: dict[str, asyncio.Task[None]] = {}
+        self._cancellation_reasons: dict[str, str] = {}
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -87,6 +141,93 @@ class CleaningPlanManager:
         """Return the single-flight plan lock for one robot."""
         return self._locks.setdefault(serial_number, asyncio.Lock())
 
+    def command_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize commands that can change one robot's active task."""
+        return self._command_locks.setdefault(serial_number, asyncio.Lock())
+
+    @callback
+    def begin_managed_motion(self, serial_number: str) -> int:
+        """Claim a generation token for one managed plan run."""
+        generation = self._motion_generations.get(serial_number, 0) + 1
+        self._motion_generations[serial_number] = generation
+        self._managed_motion[serial_number] = generation
+        return generation
+
+    @callback
+    def managed_motion_is_current(self, serial_number: str, token: int) -> bool:
+        """Return whether a plan still owns the robot's motion generation."""
+        return self._managed_motion.get(serial_number) == token
+
+    @callback
+    def has_managed_task(self, serial_number: str) -> bool:
+        """Return whether a plan run or persisted active room still exists."""
+        return self.lock(serial_number).locked() or bool(
+            self._robot(serial_number).get("active_plan")
+        )
+
+    @callback
+    def end_managed_motion(self, serial_number: str, token: int) -> None:
+        """Release ownership without disturbing a newer replacement command."""
+        if self._managed_motion.get(serial_number) == token:
+            self._managed_motion.pop(serial_number, None)
+
+    @callback
+    def replace_managed_motion(self, serial_number: str) -> None:
+        """Cancel any managed plan before an independent motion command."""
+        self.cancel(serial_number)
+        self._motion_generations[serial_number] = (
+            self._motion_generations.get(serial_number, 0) + 1
+        )
+        self._managed_motion.pop(serial_number, None)
+
+    @callback
+    def register_run_task(self, serial_number: str) -> None:
+        """Tie the current managed run to config-entry lifecycle cleanup."""
+        task = asyncio.current_task()
+        if task is None:
+            raise RuntimeError("managed plan has no current task")
+        self._run_tasks[serial_number] = cast(asyncio.Task[None], task)
+
+    @callback
+    def unregister_run_task(self, serial_number: str) -> None:
+        """Forget only the current run task, preserving a newer replacement."""
+        if self._run_tasks.get(serial_number) is asyncio.current_task():
+            self._run_tasks.pop(serial_number, None)
+        self._cancellation_reasons.pop(serial_number, None)
+
+    def cancellation_reason(self, serial_number: str) -> str | None:
+        """Return the lifecycle reason attached to the current cancellation."""
+        return self._cancellation_reasons.get(serial_number)
+
+    async def async_cancel_and_wait(self, serial_number: str) -> None:
+        """Interrupt a managed run and wait before its client can be closed."""
+        task = self._run_tasks.get(serial_number)
+        if task is None or task.done():
+            return
+        self._cancellation_reasons[serial_number] = "config_entry_unload"
+        self.finish_room_event(serial_number).clear()
+        self.cancellation_event(serial_number).set()
+        if task is asyncio.current_task():
+            return
+        await asyncio.gather(task, return_exceptions=True)
+
+    @asynccontextmanager
+    async def external_motion(self, serial_number: str) -> AsyncIterator[None]:
+        """Replace a managed run and serialize one independent command."""
+        self.replace_managed_motion(serial_number)
+        async with self.command_lock(serial_number):
+            yield
+
+    @asynccontextmanager
+    async def managed_command(
+        self, serial_number: str, token: int
+    ) -> AsyncIterator[None]:
+        """Serialize a plan command and reject a superseded generation."""
+        async with self.command_lock(serial_number):
+            if not self.managed_motion_is_current(serial_number, token):
+                raise ManagedMotionReplacedError("managed motion was replaced")
+            yield
+
     def cancellation_event(self, serial_number: str) -> asyncio.Event:
         """Return the cancellation signal for the current managed run."""
         return self._cancel_events.setdefault(serial_number, asyncio.Event())
@@ -100,6 +241,7 @@ class CleaningPlanManager:
         """Clear and return the cancellation signal for a new managed run."""
         event = self.cancellation_event(serial_number)
         event.clear()
+        self._cancellation_reasons.pop(serial_number, None)
         self.finish_room_event(serial_number).clear()
         return event
 
@@ -140,8 +282,8 @@ class CleaningPlanManager:
             .get("rooms", {})
             .get(active["room_id"], {})
         )
-        expected = record.get("average_duration_seconds")
-        progress = _estimated_progress(active.get("started"), expected)
+        expected = _expected_duration(record)
+        progress = _estimated_progress(active, expected)
         if progress is not None and progress < threshold:
             self.cancel(serial_number)
             return PlanStopDecision("immediate", progress, threshold)
@@ -326,6 +468,9 @@ class CleaningPlanManager:
             "room_id": room.room_id,
             "room": room.name,
             "started": now,
+            "status": "starting",
+            "active_elapsed_seconds": 0,
+            "active_segment_started": None,
         }
         await self._async_save_and_notify(serial_number)
 
@@ -338,20 +483,21 @@ class CleaningPlanManager:
         record = self._room(serial_number, plan_id, room)
         active = self._robot(serial_number).get("active_plan")
         duration = (
-            _elapsed_seconds(active.get("started"), now_value)
+            _active_elapsed_seconds(active, now_value)
             if active is not None
             and active.get("plan_id") == plan_id
             and active.get("room_id") == room.room_id
             else None
         )
-        if duration is not None:
-            samples = int(record.get("duration_samples", 0))
-            average = float(record.get("average_duration_seconds", duration))
+        if duration is not None and duration > 0:
+            samples = int(record.get("duration_samples", 0)) + 1
+            history = _duration_history(record)
+            history.append(duration)
+            history = history[-DURATION_HISTORY_MAX_SAMPLES:]
             record["last_duration_seconds"] = duration
-            record["average_duration_seconds"] = round(
-                ((average * samples) + duration) / (samples + 1)
-            )
-            record["duration_samples"] = samples + 1
+            record["duration_history_seconds"] = history
+            record["average_duration_seconds"] = round(median(history))
+            record["duration_samples"] = samples
         record["last_completed"] = now
         record["last_result"] = "completed"
         record["completed_runs"] = int(record.get("completed_runs", 0)) + 1
@@ -361,6 +507,23 @@ class CleaningPlanManager:
         global_room["name"] = room.name
         global_room["last_completed"] = now
         global_room["completed_runs"] = int(global_room.get("completed_runs", 0)) + 1
+        self._robot(serial_number)["active_plan"] = None
+        await self._async_save_and_notify(serial_number)
+
+    async def async_mark_ended_unverified(
+        self, serial_number: str, plan_id: str, room: CleaningRoom
+    ) -> None:
+        """Record an operational room handoff without claiming completion."""
+        now_value = dt_util.utcnow()
+        record = self._room(serial_number, plan_id, room)
+        record["last_result"] = "ended_unverified"
+        record["last_ended_unverified"] = now_value.isoformat()
+        record["unverified_runs"] = int(record.get("unverified_runs", 0)) + 1
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            record["last_unverified_duration_seconds"] = _active_elapsed_seconds(
+                active, now_value
+            )
         self._robot(serial_number)["active_plan"] = None
         await self._async_save_and_notify(serial_number)
 
@@ -380,14 +543,88 @@ class CleaningPlanManager:
         self._robot(serial_number)["active_plan"] = None
         await self._async_save_and_notify(serial_number)
 
+    async def async_mark_suspended(
+        self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
+    ) -> None:
+        """Persist a temporary recharge suspension without advancing history."""
+        now_value = dt_util.utcnow()
+        record = self._room(serial_number, plan_id, room)
+        record["last_result"] = "suspended"
+        record["last_suspended"] = now_value.isoformat()
+        record["last_suspend_reason"] = reason
+        record["suspended_runs"] = int(record.get("suspended_runs", 0)) + 1
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            active["active_elapsed_seconds"] = _active_elapsed_seconds(
+                active, now_value
+            )
+            active["active_segment_started"] = None
+            active["status"] = "suspended"
+            active["suspend_reason"] = reason
+        await self._async_save_and_notify(serial_number)
+
+    async def async_mark_verifying(
+        self, serial_number: str, plan_id: str, room: CleaningRoom
+    ) -> None:
+        """Close active timing while native completion evidence is checked."""
+        now_value = dt_util.utcnow()
+        record = self._room(serial_number, plan_id, room)
+        record["last_result"] = "verifying"
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            active["active_elapsed_seconds"] = _active_elapsed_seconds(
+                active, now_value
+            )
+            active["active_segment_started"] = None
+            active["status"] = "verifying"
+            active.pop("suspend_reason", None)
+        await self._async_save_and_notify(serial_number)
+
+    async def async_mark_resumed(
+        self, serial_number: str, plan_id: str, room: CleaningRoom
+    ) -> None:
+        """Restore running state after a verified automatic resume."""
+        now = dt_util.utcnow().isoformat()
+        record = self._room(serial_number, plan_id, room)
+        record["last_result"] = "running"
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            active["status"] = "running"
+            if active.get("active_segment_started") is None:
+                active["active_segment_started"] = now
+            active.pop("suspend_reason", None)
+        await self._async_save_and_notify(serial_number)
+
+    async def async_mark_interrupted(
+        self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
+    ) -> None:
+        """Persist an unexplained terminal transition without room credit."""
+        now = dt_util.utcnow().isoformat()
+        record = self._room(serial_number, plan_id, room)
+        record["last_result"] = "interrupted"
+        record["last_interrupted"] = now
+        record["last_error"] = reason
+        record["interrupted_runs"] = int(record.get("interrupted_runs", 0)) + 1
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            self._robot(serial_number)["last_interrupted_plan"] = deepcopy(active)
+        self._robot(serial_number)["active_plan"] = None
+        await self._async_save_and_notify(serial_number)
+
     async def async_mark_cancelled(
         self, serial_number: str, plan_id: str, room: CleaningRoom
     ) -> None:
         """Record cancellation without treating the room as completed."""
+        now_value = dt_util.utcnow()
         record = self._room(serial_number, plan_id, room)
         record["last_result"] = "cancelled"
-        record["last_cancelled"] = dt_util.utcnow().isoformat()
+        record["last_cancelled"] = now_value.isoformat()
         record["cancelled_runs"] = int(record.get("cancelled_runs", 0)) + 1
+        active = self._robot(serial_number).get("active_plan")
+        if active is not None:
+            record["last_cancelled_duration_seconds"] = _active_elapsed_seconds(
+                active, now_value
+            )
         self._robot(serial_number)["active_plan"] = None
         await self._async_save_and_notify(serial_number)
 
@@ -402,6 +639,9 @@ class CleaningPlanManager:
         completed_runs = sum(int(item.get("completed_runs", 0)) for item in records)
         failed_runs = sum(int(item.get("failed_runs", 0)) for item in records)
         cancelled_runs = sum(int(item.get("cancelled_runs", 0)) for item in records)
+        interrupted_runs = sum(int(item.get("interrupted_runs", 0)) for item in records)
+        suspended_runs = sum(int(item.get("suspended_runs", 0)) for item in records)
+        unverified_runs = sum(int(item.get("unverified_runs", 0)) for item in records)
         last_completed = max(
             (
                 str(item["last_completed"])
@@ -422,6 +662,9 @@ class CleaningPlanManager:
             "completed_runs": completed_runs,
             "failed_runs": failed_runs,
             "cancelled_runs": cancelled_runs,
+            "interrupted_runs": interrupted_runs,
+            "suspended_runs": suspended_runs,
+            "unverified_runs": unverified_runs,
             "last_completed": last_completed,
             "last_completed_by_room": {
                 room_id: {
@@ -483,6 +726,9 @@ class CleaningPlanManager:
                 "last_duration_seconds",
                 "average_duration_seconds",
                 "duration_samples",
+                "duration_history_seconds",
+                "last_cancelled_duration_seconds",
+                "last_unverified_duration_seconds",
             ):
                 record.pop(key, None)
         record.update(asdict(room))
@@ -504,13 +750,45 @@ def _elapsed_seconds(started: object, now: datetime) -> int | None:
     return max(1, round((now - parsed).total_seconds()))
 
 
-def _estimated_progress(started: object, expected: object) -> int | None:
-    """Estimate current room completion from its learned successful duration."""
+def _active_elapsed_seconds(active: Mapping[str, Any], now: datetime) -> int:
+    """Return elapsed cleaning time while excluding closed suspension segments."""
+    stored = active.get("active_elapsed_seconds", 0)
+    elapsed = float(stored) if isinstance(stored, int | float) else 0.0
+    segment_started = active.get("active_segment_started")
+    if isinstance(segment_started, str):
+        parsed = dt_util.parse_datetime(segment_started)
+        if parsed is not None:
+            elapsed += max(0.0, (now - parsed).total_seconds())
+    return max(0, round(elapsed))
+
+
+def _duration_history(record: Mapping[str, Any]) -> list[int]:
+    """Return bounded positive successful samples from compatible settings."""
+    raw = record.get("duration_history_seconds")
+    if not isinstance(raw, list):
+        return []
+    return [
+        round(value)
+        for value in raw[-DURATION_HISTORY_MAX_SAMPLES:]
+        if isinstance(value, int | float) and value > 0
+    ]
+
+
+def _expected_duration(record: Mapping[str, Any]) -> int | None:
+    """Return a robust estimate only after enough recent successful samples."""
+    history = _duration_history(record)
+    if len(history) < DURATION_CONFIDENCE_MIN_SAMPLES:
+        return None
+    return max(1, round(median(history)))
+
+
+def _estimated_progress(active: object, expected: object) -> int | None:
+    """Estimate completion from active cleaning time and a confident baseline."""
     if not isinstance(expected, int | float) or expected <= 0:
         return None
-    elapsed = _elapsed_seconds(started, dt_util.utcnow())
-    if elapsed is None:
+    if not isinstance(active, Mapping):
         return None
+    elapsed = _active_elapsed_seconds(active, dt_util.utcnow())
     return max(0, min(100, round((elapsed / expected) * 100)))
 
 
