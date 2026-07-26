@@ -52,6 +52,8 @@ Home Assistant while exposing saved areas to automations by name.
   good 3D scene; the room map remains the initial-load fallback while SLAM pages
   are unavailable. Startup and active collection serve coherent scene snapshots
   instead of repeatedly conflicting, then advance automatically on later polls.
+  Concurrent viewers share the newest completed encode even when the map changes,
+  and queued requests stop before encoding after an entry unloads.
   Private requests use Home Assistant's authenticated frontend transport with
   its automatic token refresh, so a long-lived studio cannot fall back after a
   session expires.

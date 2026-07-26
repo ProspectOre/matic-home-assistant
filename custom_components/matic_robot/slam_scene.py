@@ -120,48 +120,56 @@ class MaticSlamSceneView(HomeAssistantView):
         key = (runtime.slam_map.revision, id(data.floor_plan))
         cached = self._cache.get(entry_id)
         if cached is None or cached.key != key:
+            queued_after = cached
             lock = self._locks.setdefault(entry_id, asyncio.Lock())
             async with lock:
-                for _attempt in range(SCENE_ENCODE_ATTEMPTS):
-                    data = runtime.coordinator.data
-                    revision = runtime.slam_map.revision
-                    floor_plan = data.floor_plan
-                    key = (revision, id(floor_plan))
-                    cached = self._cache.get(entry_id)
-                    if cached is not None and cached.key == key:
+                if (
+                    self._epochs.get(entry_id, 0) != epoch
+                    or _runtime_for_entry(hass, entry_id) is not runtime
+                ):
+                    return web.Response(
+                        status=HTTPStatus.NOT_FOUND,
+                        headers=PRIVATE_NO_STORE_HEADERS,
+                    )
+                cached = self._cache.get(entry_id)
+                if cached is None or cached is queued_after:
+                    for _attempt in range(SCENE_ENCODE_ATTEMPTS):
+                        data = runtime.coordinator.data
+                        revision = runtime.slam_map.revision
+                        floor_plan = data.floor_plan
+                        key = (revision, id(floor_plan))
+                        cached = self._cache.get(entry_id)
+                        if cached is not None and cached.key == key:
+                            break
+                        entries = runtime.slam_map.entries()
+                        try:
+                            encoded = await hass.async_add_executor_job(
+                                partial(_encode_scene_entries, entries, floor_plan)
+                            )
+                        except DecodeError:
+                            if not _scene_snapshot_is_current(
+                                runtime, revision, floor_plan
+                            ):
+                                continue
+                            return web.Response(
+                                status=HTTPStatus.CONFLICT,
+                                headers=PRIVATE_NO_STORE_HEADERS,
+                            )
+                        if self._epochs.get(entry_id, 0) != epoch:
+                            return web.Response(
+                                status=HTTPStatus.NOT_FOUND,
+                                headers=PRIVATE_NO_STORE_HEADERS,
+                            )
+                        # The immutable entries and floor plan captured above are
+                        # coherent even if collection advances while encoding.
+                        cached = _CachedScene(key, encoded.payload, encoded.etag)
+                        self._cache[entry_id] = cached
                         break
-                    entries = runtime.slam_map.entries()
-                    try:
-                        encoded = await hass.async_add_executor_job(
-                            partial(_encode_scene_entries, entries, floor_plan)
-                        )
-                    except DecodeError:
-                        if not _scene_snapshot_is_current(
-                            runtime, revision, floor_plan
-                        ):
-                            continue
+                    else:
                         return web.Response(
                             status=HTTPStatus.CONFLICT,
                             headers=PRIVATE_NO_STORE_HEADERS,
                         )
-                    if self._epochs.get(entry_id, 0) != epoch:
-                        return web.Response(
-                            status=HTTPStatus.NOT_FOUND,
-                            headers=PRIVATE_NO_STORE_HEADERS,
-                        )
-                    # The immutable entries and floor plan captured above are a
-                    # coherent scene even if the live collector advances while
-                    # encoding. Serve that snapshot now and let the next poll
-                    # advance the cache instead of returning a conflict forever
-                    # on an actively changing map.
-                    cached = _CachedScene(key, encoded.payload, encoded.etag)
-                    self._cache[entry_id] = cached
-                    break
-                else:
-                    return web.Response(
-                        status=HTTPStatus.CONFLICT,
-                        headers=PRIVATE_NO_STORE_HEADERS,
-                    )
         if request.headers.get("If-None-Match") == cached.etag:
             return web.Response(
                 status=HTTPStatus.NOT_MODIFIED,

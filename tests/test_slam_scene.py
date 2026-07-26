@@ -237,28 +237,55 @@ async def test_scene_bounds_retries_for_obsolete_decode_failures() -> None:
     assert hass.async_add_executor_job.await_count == 2
 
 
-async def test_scene_view_coalesces_concurrent_encodes() -> None:
+async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
     started = asyncio.Event()
     release = asyncio.Event()
 
+    calls = 0
+
     async def delayed_encode(target):
+        nonlocal calls
         started.set()
         await release.wait()
-        return target()
+        encoded = target()
+        calls += 1
+        if calls == 1:
+            runtime.slam_map.revision += 1
+        return encoded
 
     hass.async_add_executor_job.side_effect = delayed_encode
-    first = asyncio.create_task(view.get(_request(hass), "entry"))
+    requests = [
+        asyncio.create_task(view.get(_request(hass), "entry")) for _index in range(24)
+    ]
     await started.wait()
-    second = asyncio.create_task(view.get(_request(hass), "entry"))
     await asyncio.sleep(0)
     release.set()
 
-    responses = await asyncio.gather(first, second)
+    responses = await asyncio.gather(*requests)
 
-    assert [response.status for response in responses] == [HTTPStatus.OK] * 2
+    assert [response.status for response in responses] == [HTTPStatus.OK] * 24
+    hass.async_add_executor_job.assert_awaited_once()
+
+
+async def test_scene_waiter_reuses_cache_if_revision_returns() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.revision = 8
+    lock = view._locks["entry"]
+    await lock.acquire()
+    waiting = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+
+    runtime.slam_map.revision = 7
+    lock.release()
+    response = await waiting
+
+    assert response.status == HTTPStatus.OK
     hass.async_add_executor_job.assert_awaited_once()
 
 
@@ -534,6 +561,35 @@ async def test_scene_purge_during_encoding_does_not_retain_private_payload() -> 
 
     assert response.status == HTTPStatus.NOT_FOUND
     assert view._cache == {}
+
+
+async def test_scene_purge_rejects_waiters_without_duplicate_encoding() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_encode(target):
+        started.set()
+        await release.wait()
+        return target()
+
+    hass.async_add_executor_job.side_effect = delayed_encode
+    first = asyncio.create_task(view.get(_request(hass), "entry"))
+    await started.wait()
+    waiting = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    view.clear_entry("entry")
+    release.set()
+
+    first_response, waiting_response = await asyncio.gather(first, waiting)
+
+    assert first_response.status == HTTPStatus.NOT_FOUND
+    assert waiting_response.status == HTTPStatus.NOT_FOUND
+    hass.async_add_executor_job.assert_awaited_once()
+    assert view._cache == {}
+    assert view._locks == {}
 
 
 def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
