@@ -247,6 +247,7 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert "maticClamp(deltaX, -80, 80)" in panel
     assert 'drag.pointerType !== "mouse"' in panel
     assert "[0, 1, 2].includes(event.button)" in panel
+    assert "viewport.focus({ preventScroll: true })" in panel
     assert "Math.PI / 2 - 0.018" in panel
     assert "MATIC_SCENE_REQUEST_TIMEOUT_MS" in _STUDIO_JS
     assert "this._sceneAbortController?.abort()" in panel

@@ -145,7 +145,9 @@ three views use the same local map coordinate system:
 release; touch retains momentum. Camera targets remain bounded so the house
 cannot be stranded off-screen, and a transient refresh failure keeps the last
 good 3D scene visible while the viewer reconnects. Full-screen, pointer, touch,
-and keyboard controls are also available.
+and keyboard controls are also available. Clicking, dragging, or scrolling the
+map gives it keyboard focus, so the arrow keys and shortcuts work immediately
+after mouse navigation without an extra click.
 Robot pose updates and map-page updates have different cadences, so a marker or
 scene can briefly lag the physical robot. A content revision or health change
 asks the viewer to reload a bounded scene; 0.3 does not send point-level deltas

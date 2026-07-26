@@ -1603,6 +1603,7 @@ class MaticMapStudio extends HTMLElement {
     viewport.addEventListener("wheel", (event) => {
       if (this._view === "rooms") return;
       event.preventDefault();
+      viewport.focus({ preventScroll: true });
       this._cancelMotion();
       const unit = event.deltaMode === 1
         ? 16
@@ -1633,6 +1634,7 @@ class MaticMapStudio extends HTMLElement {
       if (this._view === "rooms") return;
       if (event.pointerType === "mouse" && ![0, 1, 2].includes(event.button)) return;
       event.preventDefault();
+      viewport.focus({ preventScroll: true });
       this._cancelMotion();
       try {
         viewport.setPointerCapture(event.pointerId);

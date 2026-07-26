@@ -436,6 +436,33 @@ test.describe("map studio", () => {
     expect(afterMiddlePan.inertia).toBeUndefined();
   });
 
+  test("hands keyboard navigation to the map after mouse or wheel input", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const viewport = studio.locator(".viewport");
+    const bounds = await viewport.boundingBox();
+    await page.mouse.move(bounds.x + bounds.width / 2, bounds.y + bounds.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(bounds.x + bounds.width / 2 + 80, bounds.y + bounds.height / 2 - 30);
+    await page.mouse.up();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio.shadowRoot.activeElement?.classList.contains("viewport"),
+    )).toBe(true);
+
+    await page.keyboard.press("0");
+    await expect.poll(() => page.evaluate(() => window.__studio._camera.yaw)).toBeCloseTo(-Math.PI / 4, 3);
+    await expect.poll(() => page.evaluate(() => window.__studio._camera.pitch)).toBeCloseTo(0.82, 3);
+
+    await page.evaluate(() => window.__studio.shadowRoot.activeElement.blur());
+    await viewport.dispatchEvent("wheel", { deltaY: 120, deltaMode: 0 });
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio.shadowRoot.activeElement?.classList.contains("viewport"),
+    )).toBe(true);
+    const beforeArrow = await page.evaluate(() => window.__studio._camera.yaw);
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => page.evaluate(() => window.__studio._camera.yaw)).not.toBeCloseTo(beforeArrow, 4);
+  });
+
   test("loads a bounded synthetic scene through the WebGL path", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     await page.route("**/synthetic-scene", (route) => route.fulfill({
