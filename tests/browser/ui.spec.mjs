@@ -267,7 +267,7 @@ test.describe("map studio", () => {
     await installBrowserDoubles(page, { webgl: true });
     await page.goto("/");
     await page.evaluate(() => {
-      localStorage.setItem("matic-map-studio:v1:synthetic-user", JSON.stringify({
+      localStorage.setItem("matic-map-studio:v2:synthetic-user", JSON.stringify({
         view: "top",
         labels: false,
         quality: "efficient",
@@ -300,7 +300,7 @@ test.describe("map studio", () => {
     await studio.locator(".quality").selectOption("balanced");
     await studio.locator(".layers").click();
     await expect.poll(() => page.evaluate(() => {
-      const saved = JSON.parse(localStorage.getItem("matic-map-studio:v1:synthetic-user"));
+      const saved = JSON.parse(localStorage.getItem("matic-map-studio:v2:synthetic-user"));
       return { view: saved.view, labels: saved.labels, quality: saved.quality };
     })).toEqual({ view: "top", labels: true, quality: "balanced" });
   });
@@ -338,6 +338,102 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__studio._catalogState().attributes.map_revision)).toBe(4);
     await expect(studio.locator(".status")).toContainText("1 points");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
+  });
+
+  test("keeps the last 3D scene visible when a live refresh fails", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let revision = 1;
+    let failScene = false;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/synthetic-scene",
+        pose_url: "/synthetic-pose",
+        map_revision: revision,
+        updated_at: "2026-01-01T00:00:00Z",
+      }] }),
+    }));
+    await page.route("**/synthetic-scene", (route) => failScene
+      ? route.fulfill({ status: 503, body: "temporarily unavailable" })
+      : route.fulfill({
+        status: 200,
+        body: syntheticScene(),
+        headers: { "Content-Type": "application/octet-stream", ETag: '"synthetic-retained-1"' },
+      }));
+    const studio = await loadStudio(page);
+    await expect(studio.locator(".status")).toContainText("1 points");
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+
+    failScene = true;
+    revision = 2;
+    await studio.locator(".refresh").click();
+    await expect(studio.locator(".status")).toContainText("last local 3D scene");
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+    await expect(studio.locator(".map-image")).toBeHidden();
+  });
+
+  test("separates precise mouse and trackpad navigation", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const initial = await page.evaluate(() => ({ ...window.__studio._camera }));
+
+    await studio.locator(".viewport").dispatchEvent("wheel", {
+      deltaY: 120,
+      deltaMode: 0,
+    });
+    const afterMouseWheel = await page.evaluate(() => ({ ...window.__studio._camera }));
+    expect(afterMouseWheel.distance).not.toBeCloseTo(initial.distance, 4);
+    expect(afterMouseWheel.targetX).toBeCloseTo(initial.targetX, 4);
+    expect(afterMouseWheel.targetZ).toBeCloseTo(initial.targetZ, 4);
+
+    await studio.locator(".viewport").dispatchEvent("wheel", {
+      deltaX: 8,
+      deltaY: 14,
+      deltaMode: 0,
+    });
+    const afterTrackpadPan = await page.evaluate(() => ({ ...window.__studio._camera }));
+    expect(afterTrackpadPan.distance).toBeCloseTo(afterMouseWheel.distance, 4);
+    expect(afterTrackpadPan.targetX).not.toBeCloseTo(afterMouseWheel.targetX, 4);
+    expect(afterTrackpadPan.targetZ).not.toBeCloseTo(afterMouseWheel.targetZ, 4);
+
+    await page.evaluate(() => {
+      const viewport = window.__studio.shadowRoot.querySelector(".viewport");
+      viewport.dispatchEvent(new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 41,
+        pointerType: "mouse",
+        button: 1,
+        clientX: 200,
+        clientY: 200,
+      }));
+      viewport.dispatchEvent(new PointerEvent("pointermove", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 41,
+        pointerType: "mouse",
+        button: 1,
+        clientX: 250,
+        clientY: 225,
+      }));
+      viewport.dispatchEvent(new PointerEvent("pointerup", {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 41,
+        pointerType: "mouse",
+        button: 1,
+        clientX: 250,
+        clientY: 225,
+      }));
+    });
+    const afterMiddlePan = await page.evaluate(() => ({
+      camera: { ...window.__studio._camera },
+      inertia: window.__studio._inertiaFrame,
+    }));
+    expect(afterMiddlePan.camera.targetX).not.toBeCloseTo(afterTrackpadPan.targetX, 4);
+    expect(afterMiddlePan.inertia).toBeUndefined();
   });
 
   test("loads a bounded synthetic scene through the WebGL path", async ({ page }) => {

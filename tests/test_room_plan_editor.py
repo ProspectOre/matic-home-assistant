@@ -243,8 +243,14 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert "centerY - this._pinch.centerY" in panel
     assert "maticAngleDelta(angle - this._pinch.angle)" in panel
     assert "_startInertia" in panel
-    assert "this._panBy(-deltaX, -deltaY)" in panel
+    assert "_isMouseWheel" in panel
+    assert "maticClamp(deltaX, -80, 80)" in panel
+    assert 'drag.pointerType !== "mouse"' in panel
+    assert "[0, 1, 2].includes(event.button)" in panel
     assert "Math.PI / 2 - 0.018" in panel
+    assert "MATIC_SCENE_REQUEST_TIMEOUT_MS" in _STUDIO_JS
+    assert "this._sceneAbortController?.abort()" in panel
+    assert "_showRetainedScene" in panel
     assert 'headers["If-None-Match"]' in panel
     assert "response.arrayBuffer()" in panel
     assert "response.status === 304" in panel
@@ -293,7 +299,9 @@ def test_map_panel_persists_only_bounded_view_preferences() -> None:
     assert "quality: this._quality" in panel
     assert "camera," in panel
     storage_block = panel[
-        panel.index("_savePreferences()") : panel.index("_schedulePreferencesSave()")
+        panel.index("\n  _savePreferences() {") : panel.index(
+            "\n  _schedulePreferencesSave()"
+        )
     ]
     assert "this._scene" not in storage_block
     assert "scene_url" not in storage_block

@@ -2,7 +2,8 @@ const MATIC_SCENE_HEADER_BYTES = 24;
 const MATIC_SCENE_POINT_STRIDE = 8;
 const MATIC_SCENE_MAX_POINTS = 1500000;
 const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
-const MATIC_MAP_PREFERENCES_VERSION = 1;
+const MATIC_MAP_PREFERENCES_VERSION = 2;
+const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
 const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
   efficient: 300000,
   balanced: 750000,
@@ -105,6 +106,8 @@ class MaticMapStudio extends HTMLElement {
     this._sceneRevision = undefined;
     this._sceneEtag = undefined;
     this._sceneLoading = false;
+    this._sceneAbortController = undefined;
+    this._latestSceneState = undefined;
     this._pendingSceneRefresh = false;
     this._poseLoading = false;
     this._fallbackVersion = undefined;
@@ -203,6 +206,9 @@ class MaticMapStudio extends HTMLElement {
     this._savePreferences();
     this._resizeObserver?.disconnect();
     this._cancelFallbackLoad();
+    this._pendingSceneRefresh = false;
+    this._sceneAbortController?.abort();
+    this._sceneAbortController = undefined;
     document.removeEventListener("fullscreenchange", this._fullscreenHandler);
     this._reducedMotionQuery?.removeEventListener?.(
       "change",
@@ -704,19 +710,28 @@ class MaticMapStudio extends HTMLElement {
     const url = state?.attributes?.scene_url;
     const revision = state?.attributes?.map_revision;
     if (!url || !this._webglAvailable) return;
+    this._latestSceneState = state;
     if (!force && this._scene && revision === this._sceneRevision) return;
     if (this._sceneLoading) {
       this._pendingSceneRefresh = this._pendingSceneRefresh || force;
+      if (force) this._sceneAbortController?.abort();
       return;
     }
     this._sceneLoading = true;
     this._setLoading(true);
+    const controller = new AbortController();
+    this._sceneAbortController = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      MATIC_SCENE_REQUEST_TIMEOUT_MS,
+    );
     try {
       const headers = {};
       if (this._sceneEtag && !force) headers["If-None-Match"] = this._sceneEtag;
       const response = await this._authenticatedFetch(url, {
         headers,
         cache: "no-store",
+        signal: controller.signal,
       });
       if (response.status === 304) {
         this._sceneRevision = revision;
@@ -730,6 +745,14 @@ class MaticMapStudio extends HTMLElement {
       this._uploadScene(scene);
       this._rebuildOverlays();
       this._calculateHomeDistances();
+      if (this._cameraRestored) {
+        this._camera.distance = maticClamp(
+          this._camera.distance,
+          Math.max(0.3, this._radius * 0.08),
+          this._radius * 8,
+        );
+        this._constrainCameraTarget(this._camera);
+      }
       if (!this._cameraRestored && this._savedCamera) {
         this._restoreSavedCamera();
       } else if (!this._cameraRestored) {
@@ -740,24 +763,35 @@ class MaticMapStudio extends HTMLElement {
       this._updateSceneStatus(state);
       this._requestRender();
     } catch (_error) {
-      this._showFallback(
-        this._entities().rooms || this._entities().photo,
-        force,
-      );
-      this._setStatus(
-        this._localize(
-          "map_status_scene_fallback",
-          "3D scene is not ready · showing the local map",
-        ),
-        "error",
-      );
+      if (!this.isConnected) return;
+      const superseded = controller.signal.aborted
+        && this._pendingSceneRefresh;
+      if (!superseded && this._scene) {
+        this._showRetainedScene();
+      } else if (!superseded) {
+        this._showFallback(
+          this._entities().rooms || this._entities().photo,
+          force,
+        );
+        this._setStatus(
+          this._localize(
+            "map_status_scene_fallback",
+            "3D scene is not ready · showing the local map",
+          ),
+          "error",
+        );
+      }
     } finally {
+      window.clearTimeout(timeout);
+      if (this._sceneAbortController === controller) {
+        this._sceneAbortController = undefined;
+      }
       this._sceneLoading = false;
       this._setLoading(false);
-      if (this._pendingSceneRefresh) {
+      if (this._pendingSceneRefresh && this.isConnected) {
         const pendingForce = this._pendingSceneRefresh;
         this._pendingSceneRefresh = false;
-        this._fetchScene(state, pendingForce);
+        this._fetchScene(this._latestSceneState || state, pendingForce);
       }
     }
   }
@@ -852,6 +886,8 @@ class MaticMapStudio extends HTMLElement {
         this._showSpatialScene();
         this._updateSceneStatus(photoState);
       }
+    } else if (this._scene) {
+      this._showRetainedScene();
     } else {
       this._showFallback(entities.rooms, force);
       this._setStatus(
@@ -968,6 +1004,17 @@ class MaticMapStudio extends HTMLElement {
     this.shadowRoot.querySelector(".map-image").hidden = true;
     this._setEmpty();
     this._requestRender();
+  }
+
+  _showRetainedScene() {
+    this._showSpatialScene();
+    this._setStatus(
+      this._localize(
+        "map_status_scene_retained",
+        "Showing the last local 3D scene · reconnecting…",
+      ),
+      "warning",
+    );
   }
 
   _cancelFallbackLoad() {
@@ -1101,18 +1148,11 @@ class MaticMapStudio extends HTMLElement {
         Math.max(0.3, this._radius * 0.08),
         this._radius * 8,
       ),
-      targetX: maticClamp(
-        this._savedCamera.targetX,
-        -this._radius * 3,
-        this._radius * 3,
-      ),
-      targetZ: maticClamp(
-        this._savedCamera.targetZ,
-        -this._radius * 3,
-        this._radius * 3,
-      ),
+      targetX: this._savedCamera.targetX,
+      targetZ: this._savedCamera.targetZ,
       orthographic: this._view === "top",
     };
+    this._constrainCameraTarget(this._camera);
     this._cameraRestored = true;
     this._requestRender();
   }
@@ -1234,6 +1274,28 @@ class MaticMapStudio extends HTMLElement {
     this._requestRender();
   }
 
+  _cameraTargetBounds() {
+    if (!this._scene) return { x: this._radius, z: this._radius };
+    const [spanX, spanY] = this._scene.metadata.span;
+    const meters = this._scene.metadata.metersPerCell;
+    return {
+      x: Math.max(0.5, spanX * meters * 0.45),
+      z: Math.max(0.5, spanY * meters * 0.45),
+    };
+  }
+
+  _constrainCameraTarget(camera) {
+    const bounds = this._cameraTargetBounds();
+    camera.targetX = maticClamp(camera.targetX, -bounds.x, bounds.x);
+    camera.targetZ = maticClamp(camera.targetZ, -bounds.z, bounds.z);
+    return camera;
+  }
+
+  _isMouseWheel(event, deltaX, deltaY) {
+    return event.deltaMode !== 0
+      || (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) >= 50);
+  }
+
   _maximumPitch() {
     return this._view === "three" ? 1.38 : Math.PI / 2 - 0.018;
   }
@@ -1245,14 +1307,14 @@ class MaticMapStudio extends HTMLElement {
     const rightZ = -Math.sin(camera.yaw);
     const forwardX = -Math.sin(camera.yaw);
     const forwardZ = -Math.cos(camera.yaw);
-    return {
+    return this._constrainCameraTarget({
       targetX: camera.targetX
         - deltaX * worldPerPixel * rightX
         + deltaY * worldPerPixel * forwardX,
       targetZ: camera.targetZ
         - deltaX * worldPerPixel * rightZ
         + deltaY * worldPerPixel * forwardZ,
-    };
+    });
   }
 
   _panBy(deltaX, deltaY) {
@@ -1550,7 +1612,7 @@ class MaticMapStudio extends HTMLElement {
       const deltaX = event.deltaX * unit;
       const deltaY = event.deltaY * unit;
       if (event.ctrlKey || event.metaKey) {
-        this._zoom(Math.exp(maticClamp(-deltaY * 0.012, -0.35, 0.35)));
+        this._zoom(Math.exp(maticClamp(-deltaY * 0.008, -0.28, 0.28)));
       } else if (event.altKey) {
         this._camera.pitch = maticClamp(
           this._camera.pitch - deltaY * 0.003,
@@ -1558,13 +1620,18 @@ class MaticMapStudio extends HTMLElement {
           this._maximumPitch(),
         );
         this._requestRender();
+      } else if (this._isMouseWheel(event, deltaX, deltaY)) {
+        this._zoom(Math.exp(maticClamp(-deltaY * 0.0025, -0.28, 0.28)));
       } else {
-        this._panBy(-deltaX, -deltaY);
+        this._panBy(
+          -maticClamp(deltaX, -80, 80),
+          -maticClamp(deltaY, -80, 80),
+        );
       }
     }, { passive: false });
     viewport.addEventListener("pointerdown", (event) => {
       if (this._view === "rooms") return;
-      if (event.pointerType === "mouse" && ![0, 2].includes(event.button)) return;
+      if (event.pointerType === "mouse" && ![0, 1, 2].includes(event.button)) return;
       event.preventDefault();
       this._cancelMotion();
       try {
@@ -1572,7 +1639,11 @@ class MaticMapStudio extends HTMLElement {
       } catch (_error) {
         return;
       }
-      this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      this._pointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+        pointerType: event.pointerType,
+      });
       if (this._pointers.size === 1) {
         this._drag = {
           pointerId: event.pointerId,
@@ -1583,8 +1654,9 @@ class MaticMapStudio extends HTMLElement {
           lastTime: performance.now(),
           velocityX: 0,
           velocityY: 0,
+          pointerType: event.pointerType,
           camera: { ...this._camera },
-          mode: this._view === "top" || event.shiftKey || event.button === 2
+          mode: this._view === "top" || event.shiftKey || [1, 2].includes(event.button)
             ? "pan"
             : "orbit",
         };
@@ -1608,7 +1680,11 @@ class MaticMapStudio extends HTMLElement {
       const sample = samples[samples.length - 1] || event;
       this._pointers.set(
         event.pointerId,
-        { x: sample.clientX, y: sample.clientY },
+        {
+          x: sample.clientX,
+          y: sample.clientY,
+          pointerType: event.pointerType,
+        },
       );
       if (this._pinch && this._pointers.size >= 2) {
         const [first, second] = [...this._pointers.values()];
@@ -1683,12 +1759,18 @@ class MaticMapStudio extends HTMLElement {
         lastTime: performance.now(),
         velocityX: 0,
         velocityY: 0,
+        pointerType: remaining[1].pointerType,
         camera: { ...this._camera },
         mode: this._view === "top" ? "pan" : "orbit",
       } : undefined;
       if (!remaining) {
         viewport.classList.remove("moving");
-        if (!cancelled && !wasPinching && drag) {
+        if (
+          !cancelled
+          && !wasPinching
+          && drag
+          && drag.pointerType !== "mouse"
+        ) {
           this._startInertia(drag.velocityX, drag.velocityY, drag.mode);
         }
       }
@@ -1850,7 +1932,7 @@ class MaticMapStudio extends HTMLElement {
           <button class="fullscreen">${text("expand_map", "Full screen")}</button>
           <a class="cleaning-areas" href="/config/integrations/integration/matic_robot">${text("map_cleaning_areas", "Cleaning areas")}</a>
         </header>
-        <div class="viewport ${this._view === "top" ? "top-down" : ""} ${this._view !== "rooms" ? "spatial" : ""}" tabindex="0" role="application" aria-busy="true" aria-label="${text("map_viewport_aria", "Interactive Matic 3D map. Drag to orbit, Shift-drag or two-finger scroll to pan, pinch to zoom, twist to rotate, and move two fingers vertically to tilt.")}">
+        <div class="viewport ${this._view === "top" ? "top-down" : ""} ${this._view !== "rooms" ? "spatial" : ""}" tabindex="0" role="application" aria-busy="true" aria-label="${text("map_viewport_aria", "Interactive Matic 3D map. Mouse drag orbits; right, middle, or Shift-drag pans; the mouse wheel zooms. Trackpad two-finger scroll pans, pinch zooms, twist rotates, and Option-scroll tilts.")}">
           <canvas class="scene-canvas" aria-label="${text("map_canvas_aria", "Matic local 3D SLAM scene")}"></canvas>
           <img class="map-image" alt="${text("map_fallback_alt", "Matic local fallback map")}" draggable="false" hidden>
           <div class="spatial-overlays">
@@ -1859,7 +1941,7 @@ class MaticMapStudio extends HTMLElement {
             <span class="robot-marker" role="img" hidden></span>
           </div>
           <div class="empty">${text("map_empty_loading", "Loading the private local map…")}</div>
-          <div class="gesture-help">${text("map_gesture_help", "Drag to orbit · Shift-drag or scroll to pan · pinch to zoom · twist to rotate · move two fingers vertically to tilt · press T for top-down · 3 for 3D · ? for help")}</div>
+          <div class="gesture-help">${text("map_gesture_help", "Mouse: drag orbit · right/middle/Shift-drag pan · wheel zoom · Trackpad: two-finger pan · pinch zoom · twist rotate · Option-scroll tilt · 0 reset · ? help")}</div>
         </div>
       </div>
     `;

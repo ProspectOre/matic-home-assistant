@@ -77,8 +77,9 @@ The integration adds Home Assistant-native planning and automation:
 - **A private 3D map workspace.** The admin-only Matic Map sidebar panel renders
   the robot's local color SLAM point cloud in **3D**, orthographic
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
-  twist, tilt, fit, refresh, keyboard control, full-screen use, and resilient
-  room-map fallback without a vendor or third-party map upload.
+  twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
+  control, full-screen use, and last-good-scene recovery without a vendor or
+  third-party map upload.
 - **Drawn custom areas.** Paint a reusable subset of one or more rooms in
   **Configure**, save it by name, and clean only that footprint from an
   automation. Geometry stays in Home Assistant; action calls contain only the

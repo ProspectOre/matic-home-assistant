@@ -42,7 +42,7 @@
     "map_empty_loading": "Loading the private local map…",
     "map_empty_waiting": "The local map will appear when the Matic integration is ready.",
     "map_fallback_alt": "Matic local fallback map",
-    "map_gesture_help": "Drag to orbit · Shift-drag or scroll to pan · pinch to zoom · twist to rotate · move two fingers vertically to tilt · press T for top-down · 3 for 3D · ? for help",
+    "map_gesture_help": "Mouse: drag orbit · right/middle/Shift-drag pan · wheel zoom · Trackpad: two-finger pan · pinch zoom · twist rotate · Option-scroll tilt · 0 reset · ? help",
     "map_health_building": "Map building",
     "map_health_error": "Map stream needs attention",
     "map_health_limited": "Map cache limit reached",
@@ -74,6 +74,7 @@
     "map_status_no_map": "No local map data is available yet",
     "map_status_room_map": "Live labeled room map",
     "map_status_scene_fallback": "3D scene is not ready · showing the local map",
+    "map_status_scene_retained": "Showing the last local 3D scene · reconnecting…",
     "map_studio_privacy": "Full local SLAM · private inside Home Assistant",
     "map_studio_title": "Matic map studio",
     "map_tilt_down": "Lower viewing angle",
@@ -82,7 +83,7 @@
     "map_view_label": "Map view",
     "map_view_rooms": "Rooms",
     "map_view_top": "Top-down",
-    "map_viewport_aria": "Interactive Matic 3D map. Drag to orbit, Shift-drag or two-finger scroll to pan, pinch to zoom, twist to rotate, and move two fingers vertically to tilt."
+    "map_viewport_aria": "Interactive Matic 3D map. Mouse drag orbits; right, middle, or Shift-drag pans; the mouse wheel zooms. Trackpad two-finger scroll pans, pinch zooms, twist rotates, and Option-scroll tilts."
   },
   "config": {
     "abort": {

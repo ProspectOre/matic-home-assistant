@@ -134,13 +134,18 @@ saved with the area for that run.
 Administrators can open **Matic Map** from the Home Assistant sidebar. Its
 three views use the same local map coordinate system:
 
-- **3D** renders the accumulated color and structural point cloud with orbit,
-  pan, pinch, twist, and tilt gestures.
+- **3D** renders the accumulated color and structural point cloud. Mouse drag
+  orbits; right-, middle-, or Shift-drag pans; and the wheel zooms. A trackpad
+  uses two-finger pan, pinch zoom, twist rotation, and Option-scroll tilt.
 - **Top-down** provides an orthographic plan view for precise exploration.
 - **Rooms** provides the stable labeled geometry fallback when photographic
   pages are absent or unhealthy.
 
-Fit, refresh, full-screen, pointer, touch, and keyboard controls are available.
+**Home view** or `0` safely recenters the scene. Mouse movement stops on
+release; touch retains momentum. Camera targets remain bounded so the house
+cannot be stranded off-screen, and a transient refresh failure keeps the last
+good 3D scene visible while the viewer reconnects. Full-screen, pointer, touch,
+and keyboard controls are also available.
 Robot pose updates and map-page updates have different cadences, so a marker or
 scene can briefly lag the physical robot. A content revision or health change
 asks the viewer to reload a bounded scene; 0.3 does not send point-level deltas

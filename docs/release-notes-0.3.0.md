@@ -45,9 +45,12 @@ Home Assistant while exposing saved areas to automations by name.
   image without covering the existing map with a loading spinner.
 - The admin-only **Matic Map** panel provides **3D**, orthographic
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
-  twist, tilt, fit, refresh, keyboard access, full-screen mode, loading/error
-  feedback, room labels, and a live robot marker, with an automatic room-map
-  fallback while SLAM pages are unavailable. Private requests use Home
+  twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
+  access, full-screen mode, loading/error feedback, room labels, and a live
+  robot marker. Mouse movement stops on release, camera targets stay bounded,
+  and Home view reliably recenters the house. A failed refresh retains the last
+  good 3D scene; the room map remains the initial-load fallback while SLAM pages
+  are unavailable. Private requests use Home
   Assistant's authenticated frontend transport with its automatic token
   refresh, so a long-lived studio cannot fall back after a session expires.
   Room images are sized to the display (up to 2048 pixels) and coalesced while
