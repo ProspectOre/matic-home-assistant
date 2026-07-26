@@ -52,6 +52,8 @@ def synthetic_slam_entry(
     mission: bytes = b"synthetic-mission",
     malformed: str | None = None,
     surface_height: int = 7,
+    surface_outer: int = 0,
+    surface_inner: int = 0,
     with_rgb: bool = True,
 ) -> HermesCollectionEntry:
     """Build a byte-for-byte synthetic equivalent of the observed tile shape."""
@@ -65,7 +67,7 @@ def synthetic_slam_entry(
     if malformed == "dimensions":
         dimensions = dimensions[:-1] + b"\x17"
     surface = bytearray(SURFACE_BYTES)
-    surface_index = surface_height
+    surface_index = surface_outer * 32 * 24 + surface_inner * 24 + surface_height
     surface[surface_index >> 3] |= 1 << (7 ^ (surface_index & 7))
     if malformed == "surface":
         surface.pop()
@@ -145,7 +147,7 @@ def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
     assert tile.floor_rgba[:4] == bytes((12, 34, 56, 255))
     assert len(tile.floor_rgba) == 32 * 32 * 4
     assert len(tile.voxels) == 1
-    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (95, -1, 0)
+    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (64, -32, 0)
 
 
 def test_decode_slam_tile_transposes_floor_texture_axes() -> None:
@@ -165,18 +167,17 @@ def test_decode_slam_tile_transposes_floor_texture_axes() -> None:
 
 
 def test_decode_slam_tile_decodes_visible_rgb_voxel() -> None:
-    entry = synthetic_slam_entry(page_x=0, page_y=0)
-    value = bytearray(entry.value)
-    # Replace the surface bit at z=7 with z=8 without changing the envelope.
-    surface_marker = value.find(bytes((0x01,)) + bytes(SURFACE_BYTES - 1))
-    assert surface_marker >= 0
-    value[surface_marker] = 0x00
-    value[surface_marker + 1] = 0x80
-
-    tile = decode_slam_tile(HermesCollectionEntry(entry.key, bytes(value)))
+    entry = synthetic_slam_entry(
+        page_x=0,
+        page_y=0,
+        surface_height=8,
+        surface_outer=1,
+        surface_inner=2,
+    )
+    tile = decode_slam_tile(entry)
 
     assert len(tile.voxels) == 1
-    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (31, 31, 1)
+    assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (1, 2, 1)
     assert tile.voxels[0].color == (100, 110, 120)
 
 
@@ -218,7 +219,9 @@ def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None
 
     assert (tile.page_x, tile.page_y) == (2, -1)
     assert len(tile.mission_token) == 64
-    assert tile.occupancy[:4] == bytes((3, 0, 1, 1))
+    assert tile.occupancy[991] == 0
+    assert tile.occupancy[1023] == 3
+    assert tile.occupancy[:4] == bytes((1, 1, 1, 1))
     assert tile.semantics == bytes((2,)) * (32 * 32)
 
 

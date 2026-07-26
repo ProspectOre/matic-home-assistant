@@ -404,8 +404,8 @@ def _iter_voxels(tile: SlamTile) -> Iterator[SlamVoxel]:
                 if height < 7:
                     continue
                 yield SlamVoxel(
-                    tile.page_x * TILE_SIDE + (TILE_SIDE - 1 - inner),
-                    tile.page_y * TILE_SIDE + (TILE_SIDE - 1 - outer),
+                    tile.page_x * TILE_SIDE + outer,
+                    tile.page_y * TILE_SIDE + inner,
                     height - 7,
                     color,
                 )
@@ -455,8 +455,12 @@ def _paint_voxels(
         colors = colors[visible]
         page_x = np.asarray([tile.page_x for tile in batch], dtype=np.int32)
         page_y = np.asarray([tile.page_y for tile in batch], dtype=np.int32)
-        local_x = page_x[tile_indexes] * TILE_SIDE + TILE_SIDE - 1 - inners - min_cell_x
-        local_y = page_y[tile_indexes] * TILE_SIDE + TILE_SIDE - 1 - outers - min_cell_y
+        # The surface tensor uses the same first-axis-x, second-axis-y layout
+        # as the floor tensor. Keeping its former reversed/swapped transform
+        # made each 32-cell point-cloud page internally face a different way
+        # from the stitched floor beneath it.
+        local_x = page_x[tile_indexes] * TILE_SIDE + outers - min_cell_x
+        local_y = page_y[tile_indexes] * TILE_SIDE + inners - min_cell_y
         projected_x = (
             margin_x + 2 * (local_x - local_y) + 2 * (grid_height - 1)
         ).astype(np.int32)
@@ -481,9 +485,14 @@ def _paint_voxels(
 def _decode_nibbles(payload: bytes) -> bytes:
     if len(payload) != TILE_SIDE * TILE_SIDE // 2:
         raise DecodeError("invalid integrated SLAM plane length")
-    # The robot stores the 32 x 32 plane in reverse raster order and packs two
-    # four-bit values per byte, low nibble first.
-    return bytes(value for item in payload for value in (item & 0x0F, item >> 4))[::-1]
+    # Values are packed low nibble first. As with the photographic tensor, the
+    # first spatial axis is map x and the second is map y, so transpose into
+    # PIL's row-major y/x convention before compositing adjacent pages.
+    packed = np.frombuffer(payload, dtype=np.uint8)
+    values = np.empty(TILE_SIDE * TILE_SIDE, dtype=np.uint8)
+    values[0::2] = packed & 0x0F
+    values[1::2] = packed >> 4
+    return bytes(values.reshape(TILE_SIDE, TILE_SIDE).T.tobytes())
 
 
 def _optional_varint(payload: bytes, number: int) -> int:
