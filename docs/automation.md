@@ -137,11 +137,15 @@ three views use the same local map coordinate system:
 - **3D** renders the accumulated color and structural point cloud. Mouse drag
   orbits; right-, middle-, or Shift-drag pans; and the wheel zooms. A trackpad
   uses two-finger pan, pinch zoom, twist rotation, and Option-scroll tilt.
-- **Top-down** provides an orthographic plan view for precise exploration.
-- **Rooms** provides the stable labeled geometry fallback when photographic
-  pages are absent or unhealthy.
+- **Top-down** provides an aligned orthographic plan view for precise
+  exploration. It supports pan, zoom, and rotation while remaining planar and
+  keeps its framing separate from 3D.
+- **Rooms** provides a centered, stable labeled geometry fallback when
+  photographic pages are absent or unhealthy.
 
-**Home view** or `0` safely recenters the scene. Mouse movement stops on
+The compact map toolbar exposes Fit map, room labels, refresh, full screen,
+help, and cleaning-area editing without reducing the workspace height.
+**Fit map** or `0` safely recenters the scene. Mouse movement stops on
 release; touch retains momentum. Camera targets remain bounded so the house
 cannot be stranded off-screen, and a transient refresh failure keeps the last
 good 3D scene visible while the viewer reconnects. Full-screen, pointer, touch,

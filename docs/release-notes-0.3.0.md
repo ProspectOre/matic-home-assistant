@@ -48,8 +48,12 @@ Home Assistant while exposing saved areas to automations by name.
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
   twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
   access, full-screen mode, loading/error feedback, room labels, and a live
-  robot marker. Mouse movement stops on release, camera targets stay bounded,
-  and Home view reliably recenters the house. A failed refresh retains the last
+  robot marker. A compact Home Assistant-native toolbar keeps actions over the
+  workspace instead of consuming map height. Top-down opens aligned and fitted,
+  remains planar during gestures, and retains its camera independently from 3D.
+  The Rooms renderer centers non-square layouts inside the requested viewport.
+  Mouse movement stops on release, camera targets stay bounded, and Fit map
+  reliably recenters the house. A failed refresh retains the last
   good 3D scene; the room map remains the initial-load fallback while SLAM pages
   are unavailable. Startup and active collection serve coherent scene snapshots
   instead of repeatedly conflicting, then advance automatically on later polls.

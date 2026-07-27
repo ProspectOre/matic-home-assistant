@@ -193,12 +193,16 @@ def render_floor_plan(
         (width - 2 * padding) / max(max_x - min_x, 0.1),
         (height - 2 * padding) / max(max_y - min_y, 0.1),
     )
+    rendered_width = (max_x - min_x) * scale
+    rendered_height = (max_y - min_y) * scale
+    origin_x = (width - rendered_width) / 2
+    origin_y = (height - rendered_height) / 2
 
     def project(value: tuple[float, float]) -> tuple[float, float]:
         x, y = value
         return (
-            padding + (x - min_x) * scale,
-            height - padding - (y - min_y) * scale,
+            origin_x + (x - min_x) * scale,
+            height - origin_y - (y - min_y) * scale,
         )
 
     # Semi-transparent fills only blend if drawn onto their own RGBA layer and

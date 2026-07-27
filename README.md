@@ -79,7 +79,10 @@ The integration adds Home Assistant-native planning and automation:
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
   twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
   control, full-screen use, live point-cloud deltas, a private map timeline,
-  and last-good-scene recovery without a vendor or third-party map upload.
+  mode-specific camera framing, and last-good-scene recovery. A compact native
+  toolbar preserves map space, Top-down stays aligned and planar, and Rooms
+  stays centered at any aspect ratio. No map is uploaded to a vendor or third
+  party.
 - **Drawn custom areas.** Paint a reusable subset of one or more rooms in
   **Configure**, save it by name, and clean only that footprint from an
   automation. Geometry stays in Home Assistant; action calls contain only the

@@ -2,7 +2,7 @@ const MATIC_SCENE_HEADER_BYTES = 24;
 const MATIC_SCENE_POINT_STRIDE = 8;
 const MATIC_SCENE_MAX_POINTS = 1500000;
 const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
-const MATIC_MAP_PREFERENCES_VERSION = 2;
+const MATIC_MAP_PREFERENCES_VERSION = 3;
 const MATIC_CATALOG_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
 const MATIC_DELTA_REQUEST_TIMEOUT_MS = 30000;
@@ -153,7 +153,8 @@ class MaticMapStudio extends HTMLElement {
     this._labelsVisible = true;
     this._preferencesIdentity = undefined;
     this._preferencesSaveTimer = undefined;
-    this._savedCamera = undefined;
+    this._savedCameras = {};
+    this._viewCameras = {};
     this._cameraRestored = false;
     this._reducedMotionQuery = window.matchMedia?.(
       "(prefers-reduced-motion: reduce)",
@@ -228,6 +229,10 @@ class MaticMapStudio extends HTMLElement {
     this._helpTimer = window.setTimeout(() => {
       const help = this.shadowRoot.querySelector(".gesture-help");
       if (help) help.hidden = true;
+      this.shadowRoot.querySelector(".help")?.setAttribute(
+        "aria-expanded",
+        "false",
+      );
     }, 9000);
     this._update(true);
   }
@@ -306,6 +311,13 @@ class MaticMapStudio extends HTMLElement {
     return `matic-map-studio:v${MATIC_MAP_PREFERENCES_VERSION}:${identity}`;
   }
 
+  _legacyPreferencesKey() {
+    const identity = String(this._hass?.user?.id || "local-user")
+      .replaceAll(/[^a-zA-Z0-9_-]/g, "")
+      .slice(0, 128);
+    return `matic-map-studio:v2:${identity}`;
+  }
+
   _loadPreferences() {
     const identity = this._preferencesKey();
     if (identity === this._preferencesIdentity) return;
@@ -313,7 +325,8 @@ class MaticMapStudio extends HTMLElement {
     this._view = "three";
     this._labelsVisible = true;
     this._quality = "maximum";
-    this._savedCamera = undefined;
+    this._savedCameras = {};
+    this._viewCameras = {};
     this._cameraRestored = false;
     this._camera = {
       yaw: -Math.PI / 4,
@@ -324,7 +337,10 @@ class MaticMapStudio extends HTMLElement {
       orthographic: false,
     };
     try {
-      const parsed = JSON.parse(window.localStorage.getItem(identity) || "null");
+      const current = window.localStorage.getItem(identity);
+      const parsed = JSON.parse(
+        current || window.localStorage.getItem(this._legacyPreferencesKey()) || "null",
+      );
       if (!parsed || typeof parsed !== "object") return;
       if (["three", "top", "rooms"].includes(parsed.view)) {
         this._view = parsed.view;
@@ -337,20 +353,23 @@ class MaticMapStudio extends HTMLElement {
       )) {
         this._quality = parsed.quality;
       }
-      const camera = parsed.camera;
-      if (
-        camera
-        && ["yaw", "pitch", "distance", "targetX", "targetZ"]
-          .every((key) => Number.isFinite(camera[key]))
-      ) {
-        this._savedCamera = {
-          yaw: maticAngleDelta(camera.yaw),
-          pitch: maticClamp(camera.pitch, 0.18, Math.PI / 2 - 0.018),
-          distance: maticClamp(camera.distance, 0.1, 10000),
-          targetX: maticClamp(camera.targetX, -10000, 10000),
-          targetZ: maticClamp(camera.targetZ, -10000, 10000),
-          orthographic: this._view === "top",
-        };
+      if (current) {
+        for (const view of ["three", "top"]) {
+          const camera = parsed.cameras?.[view];
+          if (
+            camera
+            && ["yaw", "pitch", "zoom", "targetX", "targetZ"]
+              .every((key) => Number.isFinite(camera[key]))
+          ) {
+            this._savedCameras[view] = {
+              yaw: maticAngleDelta(camera.yaw),
+              pitch: maticClamp(camera.pitch, 0.18, Math.PI / 2 - 0.018),
+              zoom: maticClamp(camera.zoom, 0.125, 12.5),
+              targetX: maticClamp(camera.targetX, -10000, 10000),
+              targetZ: maticClamp(camera.targetZ, -10000, 10000),
+            };
+          }
+        }
       }
     } catch (_error) {
       // Browsers can deny storage in private or hardened contexts.
@@ -359,13 +378,24 @@ class MaticMapStudio extends HTMLElement {
 
   _savePreferences() {
     if (!this._preferencesIdentity) return;
-    const camera = {
-      yaw: this._camera.yaw,
-      pitch: this._camera.pitch,
-      distance: this._camera.distance,
-      targetX: this._camera.targetX,
-      targetZ: this._camera.targetZ,
-    };
+    if (["three", "top"].includes(this._view)) {
+      this._viewCameras[this._view] = { ...this._camera };
+    }
+    const cameras = {};
+    for (const view of ["three", "top"]) {
+      const camera = this._viewCameras[view];
+      if (!camera) continue;
+      const home = view === "top"
+        ? this._homeTopDistance
+        : this._homeThreeDistance;
+      cameras[view] = {
+        yaw: camera.yaw,
+        pitch: camera.pitch,
+        zoom: maticClamp(home / camera.distance, 0.125, 12.5),
+        targetX: camera.targetX,
+        targetZ: camera.targetZ,
+      };
+    }
     try {
       window.localStorage.setItem(
         this._preferencesIdentity,
@@ -373,7 +403,7 @@ class MaticMapStudio extends HTMLElement {
           view: this._view,
           labels: this._labelsVisible,
           quality: this._quality,
-          camera,
+          cameras,
         }),
       );
     } catch (_error) {
@@ -1030,12 +1060,7 @@ class MaticMapStudio extends HTMLElement {
       );
       this._constrainCameraTarget(this._camera);
     }
-    if (!this._cameraRestored && this._savedCamera) {
-      this._restoreSavedCamera();
-    } else if (!this._cameraRestored) {
-      this._applyPreset(this._view === "top" ? "top" : "three", false);
-      this._cameraRestored = true;
-    }
+    if (!this._cameraRestored) this._restoreSavedCamera();
     this._showSpatialScene();
     this._updateSceneStatus(state);
     this._fetchPose(state);
@@ -1409,10 +1434,10 @@ class MaticMapStudio extends HTMLElement {
       this._scene.total,
     );
     const sampling = this._scene.metadata.sampleStep === 1
-      ? this._localize("map_sampling_all", "all captured samples")
+      ? this._localize("map_sampling_all", "full capture")
       : this._localize(
         "map_sampling_adaptive",
-        "adaptive 1:{step} detail",
+        "adaptive 1:{step} sampling",
         { step: this._scene.metadata.sampleStep },
       );
     const complete = state?.attributes?.map_complete === true;
@@ -1420,12 +1445,12 @@ class MaticMapStudio extends HTMLElement {
       complete
         ? this._localize(
           "map_status_full_scene",
-          "Full local 3D scene · {points} points · {sampling}",
+          "{points} points · {sampling}",
           { points, sampling },
         )
         : this._localize(
           "map_status_building_scene",
-          "Building live 3D scene · {points} points",
+          "Building local map · {points} points",
           { points },
         ),
     );
@@ -1803,24 +1828,33 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _restoreSavedCamera() {
-    if (!this._savedCamera) return;
+    const view = this._view === "top" ? "top" : "three";
+    const saved = this._savedCameras[view];
+    if (!saved) {
+      this._applyPreset(view, false);
+      this._viewCameras[view] = { ...this._camera };
+      this._cameraRestored = true;
+      return;
+    }
+    const home = view === "top"
+      ? this._homeTopDistance
+      : this._homeThreeDistance;
     this._camera = {
-      yaw: maticAngleDelta(this._savedCamera.yaw),
-      pitch: maticClamp(
-        this._savedCamera.pitch,
-        0.18,
-        this._maximumPitch(),
-      ),
+      yaw: maticAngleDelta(saved.yaw),
+      pitch: view === "top"
+        ? Math.PI / 2 - 0.018
+        : maticClamp(saved.pitch, 0.18, this._maximumPitch()),
       distance: maticClamp(
-        this._savedCamera.distance,
+        home / saved.zoom,
         Math.max(0.3, this._radius * 0.08),
         this._radius * 8,
       ),
-      targetX: this._savedCamera.targetX,
-      targetZ: this._savedCamera.targetZ,
-      orthographic: this._view === "top",
+      targetX: saved.targetX,
+      targetZ: saved.targetZ,
+      orthographic: view === "top",
     };
     this._constrainCameraTarget(this._camera);
+    this._viewCameras[view] = { ...this._camera };
     this._cameraRestored = true;
     this._requestRender();
   }
@@ -1832,8 +1866,54 @@ class MaticMapStudio extends HTMLElement {
     const label = fullscreen
       ? this._localize("exit_fullscreen", "Exit full screen")
       : this._localize("expand_map", "Full screen");
-    button.textContent = label;
+    const controlLabel = button.querySelector(".control-label");
+    if (controlLabel) controlLabel.textContent = label;
+    const icon = button.querySelector("ha-icon");
+    if (icon) {
+      icon.setAttribute(
+        "icon",
+        fullscreen ? "mdi:fullscreen-exit" : "mdi:fullscreen",
+      );
+    }
     button.setAttribute("aria-label", label);
+    button.title = label;
+  }
+
+  _syncViewPresentation() {
+    const viewport = this.shadowRoot.querySelector(".viewport");
+    const help = this.shadowRoot.querySelector(".gesture-help");
+    if (!viewport || !help) return;
+    if (this._view === "top") {
+      viewport.setAttribute(
+        "aria-label",
+        this._localize(
+          "map_viewport_aria_top",
+          "Interactive top-down Matic map",
+        ),
+      );
+      help.textContent = this._localize(
+        "map_gesture_help_top",
+        "Drag to pan · scroll or pinch to zoom · twist to rotate · 0 fits map",
+      );
+    } else if (this._view === "rooms") {
+      viewport.setAttribute(
+        "aria-label",
+        this._localize("map_viewport_aria_rooms", "Matic labeled room map"),
+      );
+      help.textContent = this._localize(
+        "map_gesture_help_rooms",
+        "Use Refresh for the newest room map · F enters full screen",
+      );
+    } else {
+      viewport.setAttribute(
+        "aria-label",
+        this._localize("map_viewport_aria", "Interactive Matic 3D map"),
+      );
+      help.textContent = this._localize(
+        "map_gesture_help",
+        "Drag to orbit · Shift-drag to pan · scroll or pinch to zoom · 0 fits map",
+      );
+    }
   }
 
   _calculateHomeDistances() {
@@ -1855,7 +1935,7 @@ class MaticMapStudio extends HTMLElement {
   _preset(view) {
     return view === "top"
       ? {
-        yaw: -Math.PI / 4,
+        yaw: 0,
         pitch: Math.PI / 2 - 0.018,
         distance: this._homeTopDistance,
         targetX: 0,
@@ -1873,10 +1953,13 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _applyPreset(view, animate = true) {
-    const target = this._preset(view);
+    this._applyCamera(this._preset(view), animate);
+  }
+
+  _applyCamera(target, animate = true) {
     this._cancelMotion();
     if (!animate || this._reducedMotion) {
-      this._camera = target;
+      this._camera = { ...target };
       this._requestRender();
       return;
     }
@@ -1904,6 +1987,9 @@ class MaticMapStudio extends HTMLElement {
 
   _setView(view) {
     if (!["three", "top", "rooms"].includes(view)) return;
+    if (["three", "top"].includes(this._view)) {
+      this._viewCameras[this._view] = { ...this._camera };
+    }
     this._view = view;
     for (const button of this.shadowRoot.querySelectorAll("[data-view]")) {
       const selected = button.dataset.view === view;
@@ -1914,6 +2000,7 @@ class MaticMapStudio extends HTMLElement {
     viewport.classList.toggle("top-down", view === "top");
     viewport.classList.toggle("spatial", view !== "rooms");
     this.shadowRoot.querySelector(".spatial-controls").hidden = view === "rooms";
+    this._syncViewPresentation();
     this._syncTimeline();
     this._schedulePreferencesSave();
     if (view === "rooms") {
@@ -1921,7 +2008,9 @@ class MaticMapStudio extends HTMLElement {
       this._update(true);
     } else {
       this._showSpatialScene();
-      this._applyPreset(view);
+      this._applyCamera(
+        this._viewCameras[view] || this._preset(view),
+      );
       this._update();
     }
   }
@@ -2247,6 +2336,10 @@ class MaticMapStudio extends HTMLElement {
     } else if (event.key === "?") {
       const help = this.shadowRoot.querySelector(".gesture-help");
       help.hidden = !help.hidden;
+      this.shadowRoot.querySelector(".help").setAttribute(
+        "aria-expanded",
+        String(!help.hidden),
+      );
     } else if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) {
       if (event.shiftKey || this._view === "top") {
         const horizontal = event.key === "ArrowLeft" ? 30 : event.key === "ArrowRight" ? -30 : 0;
@@ -2288,7 +2381,7 @@ class MaticMapStudio extends HTMLElement {
       const deltaY = event.deltaY * unit;
       if (event.ctrlKey || event.metaKey) {
         this._zoom(Math.exp(maticClamp(-deltaY * 0.008, -0.28, 0.28)));
-      } else if (event.altKey) {
+      } else if (event.altKey && this._view === "three") {
         this._camera.pitch = maticClamp(
           this._camera.pitch - deltaY * 0.003,
           0.18,
@@ -2377,11 +2470,13 @@ class MaticMapStudio extends HTMLElement {
         this._camera.yaw = maticAngleDelta(
           start.yaw + maticAngleDelta(angle - this._pinch.angle),
         );
-        this._camera.pitch = maticClamp(
-          start.pitch - (centerY - this._pinch.centerY) * 0.0035,
-          0.18,
-          this._maximumPitch(),
-        );
+        this._camera.pitch = this._view === "top"
+          ? Math.PI / 2 - 0.018
+          : maticClamp(
+            start.pitch - (centerY - this._pinch.centerY) * 0.0035,
+            0.18,
+            this._maximumPitch(),
+          );
         const panned = this._panValues(
           start,
           centerX - this._pinch.centerX,
@@ -2517,36 +2612,47 @@ class MaticMapStudio extends HTMLElement {
     );
     this.shadowRoot.innerHTML = `
       <style>
-        :host { display: block; height: 100%; min-height: 0; color: var(--primary-text-color); background: #080d13; }
-        .shell { height: 100dvh; min-height: 500px; display: grid; grid-template-rows: auto minmax(0, 1fr); overflow: hidden; background: #080d13; }
-        header { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; background: color-mix(in srgb, var(--card-background-color) 90%, transparent); border-bottom: 1px solid var(--divider-color); box-shadow: 0 8px 28px rgba(0, 0, 0, .2); backdrop-filter: blur(20px) saturate(1.3); z-index: 4; }
-        .heading { display: grid; gap: 1px; margin-right: 10px; }
-        h1 { margin: 0; font-size: 19px; line-height: 1.25; }
-        .privacy { color: var(--secondary-text-color); font-size: 11px; }
+        :host { display: block; height: 100%; min-height: 0; color: var(--primary-text-color); background: var(--primary-background-color, #080d13); color-scheme: light dark; }
+        .shell { height: 100dvh; min-height: 500px; display: grid; grid-template-rows: 64px minmax(0, 1fr); overflow: hidden; background: var(--primary-background-color, #080d13); }
+        header { display: flex; flex-wrap: nowrap; gap: 12px; align-items: center; min-width: 0; padding: 8px 16px; border-bottom: 1px solid var(--divider-color); background: color-mix(in srgb, var(--primary-background-color, #080d13) 92%, transparent); backdrop-filter: blur(20px) saturate(1.2); -webkit-backdrop-filter: blur(20px) saturate(1.2); z-index: 6; }
+        .heading { display: grid; flex: 0 1 auto; min-width: 140px; gap: 1px; }
+        h1 { overflow: hidden; margin: 0; font-size: 18px; font-weight: 650; line-height: 1.25; text-overflow: ellipsis; white-space: nowrap; }
+        .privacy { overflow: hidden; color: var(--secondary-text-color); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
         .spacer { flex: 1 1 auto; }
-        button, a, select { min-height: 42px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border: 1px solid var(--divider-color); border-radius: 12px; color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 94%, transparent); text-decoration: none; cursor: pointer; touch-action: manipulation; transition: border-color .16s ease, background .16s ease, transform .16s ease; }
+        button, a, select { min-height: 44px; box-sizing: border-box; display: inline-flex; align-items: center; justify-content: center; padding: 0 12px; border: 1px solid var(--divider-color); border-radius: 12px; color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 94%, transparent); font: inherit; text-decoration: none; cursor: pointer; touch-action: manipulation; transition: border-color .16s ease, background .16s ease, color .16s ease, transform .16s ease; }
         button:hover, a:hover { border-color: color-mix(in srgb, var(--primary-color) 55%, var(--divider-color)); background: color-mix(in srgb, var(--primary-color) 9%, var(--card-background-color)); }
         button:active, a:active { transform: scale(.97); }
+        button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--primary-color); outline-offset: 2px; }
         button.selected { border-color: var(--primary-color); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 15%, transparent); }
-        .segmented, .spatial-controls { display: inline-flex; align-items: center; gap: 3px; padding: 3px; border: 1px solid var(--divider-color); border-radius: 14px; background: rgba(4, 10, 17, .25); }
-        .segmented button, .spatial-controls button { min-height: 34px; border: 0; background: transparent; }
-        .spatial-controls button { min-width: 36px; padding: 0 9px; font-size: 17px; }
+        .segmented { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--divider-color); border-radius: 13px; background: color-mix(in srgb, var(--card-background-color) 75%, transparent); }
+        .segmented button { min-height: 34px; padding: 0 13px; border: 0; border-radius: 9px; background: transparent; }
+        .segmented button.selected { color: var(--primary-text-color); background: color-mix(in srgb, var(--primary-color) 18%, var(--card-background-color)); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+        .scene-summary { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; }
+        .status { overflow: hidden; max-width: 420px; text-overflow: ellipsis; }
         .zoom-slider { width: 96px; accent-color: var(--primary-color); touch-action: pan-x; }
         .zoom-value, .angle-value, .status, .resolution-value { color: var(--secondary-text-color); font-variant-numeric: tabular-nums; white-space: nowrap; }
         .status[data-tone="error"] { color: var(--error-color); }
-        .health-value { padding: 6px 9px; border-radius: 999px; color: var(--secondary-text-color); background: rgba(4, 10, 17, .32); font-size: 11px; white-space: nowrap; }
+        .health-value { padding: 6px 9px; border-radius: 999px; color: var(--secondary-text-color); background: color-mix(in srgb, var(--card-background-color) 82%, transparent); font-size: 11px; white-space: nowrap; }
         .health-value[data-tone="live"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #35c759; box-shadow: 0 0 0 3px rgba(53,199,89,.15); }
         .health-value[data-tone="warning"] { color: var(--warning-color, #ff9f0a); }
         .health-value[data-tone="error"] { color: var(--error-color); }
         .quality-control { display: inline-flex; align-items: center; }
-        .quality-control select { min-height: 36px; max-width: 132px; border-radius: 10px; }
+        .quality-control select { min-height: 36px; max-width: 126px; border-radius: 10px; }
         .zoom-value { min-width: 42px; text-align: center; }
         .angle-value { min-width: 72px; text-align: center; font-size: 11px; }
-        .resolution-value { padding: 7px 10px; border-radius: 999px; background: rgba(4, 10, 17, .32); text-align: center; font-size: 11px; }
-        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .38s ease; }
-        .viewport.top-down { background-color: #efefeb; background-image: radial-gradient(#c9cac6 .7px, transparent .75px); background-size: 12px 12px; }
+        .resolution-value { padding: 7px 10px; border-radius: 999px; background: color-mix(in srgb, var(--card-background-color) 82%, transparent); text-align: center; font-size: 11px; }
+        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .32s ease; }
+        .viewport.top-down { background-color: color-mix(in srgb, var(--primary-background-color, #080d13) 91%, var(--primary-color) 9%); background-image: radial-gradient(color-mix(in srgb, var(--primary-text-color) 14%, transparent) .7px, transparent .8px); background-size: 14px 14px; }
         .viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--primary-color); }
         .viewport.moving { cursor: grabbing; }
+        .floating-controls { position: absolute; z-index: 5; border: 1px solid color-mix(in srgb, var(--primary-text-color) 13%, transparent); background: color-mix(in srgb, var(--card-background-color) 82%, transparent); box-shadow: 0 10px 28px rgba(0,0,0,.2); backdrop-filter: blur(18px) saturate(1.2); -webkit-backdrop-filter: blur(18px) saturate(1.2); }
+        .spatial-controls { top: 14px; left: 14px; display: inline-flex; align-items: center; gap: 2px; padding: 4px; border-radius: 15px; }
+        .spatial-controls button { min-width: 40px; min-height: 40px; padding: 0 8px; border: 0; background: transparent; font-size: 17px; }
+        .map-actions { top: 14px; right: 14px; display: grid; gap: 3px; padding: 4px; border-radius: 15px; }
+        .map-actions button, .map-actions a { width: 42px; min-height: 42px; padding: 0; border: 0; border-radius: 11px; background: transparent; }
+        .map-actions ha-icon { width: 21px; height: 21px; }
+        .viewport:not(.spatial) .home-view, .viewport:not(.spatial) .layers { display: none; }
+        .top-down .tilt-control, .top-down .angle-value { display: none; }
         .scene-canvas, .map-image, .spatial-overlays { position: absolute; inset: 0; width: 100%; height: 100%; }
         .scene-canvas { display: block; }
         .map-image { object-fit: contain; user-select: none; -webkit-user-drag: none; }
@@ -2554,10 +2660,10 @@ class MaticMapStudio extends HTMLElement {
         .spatial-overlays { pointer-events: none; overflow: hidden; }
         .room-lines { display: none; position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
         .room-boundary { fill: color-mix(in srgb, var(--primary-color) 7%, transparent); stroke: rgba(224, 238, 252, .5); stroke-width: 1.25; vector-effect: non-scaling-stroke; }
-        .top-down .room-boundary { fill: rgba(35, 93, 205, .035); stroke: rgba(31, 62, 94, .4); }
+        .top-down .room-boundary { fill: color-mix(in srgb, var(--primary-color) 6%, transparent); stroke: color-mix(in srgb, var(--primary-text-color) 44%, transparent); }
         .room-labels { position: absolute; inset: 0; }
         .room-label { position: absolute; top: 0; left: 0; max-width: 150px; overflow: hidden; text-overflow: ellipsis; padding: 4px 8px; border: 1px solid rgba(255,255,255,.22); border-radius: 999px; color: #f7fbff; background: rgba(5, 10, 16, .72); box-shadow: 0 4px 18px rgba(0,0,0,.18); backdrop-filter: blur(10px); font-size: 11px; white-space: nowrap; will-change: transform; }
-        .top-down .room-label { color: #18212b; border-color: rgba(20,30,40,.18); background: rgba(255,255,255,.84); }
+        .top-down .room-label { color: var(--primary-text-color); border-color: color-mix(in srgb, var(--primary-text-color) 18%, transparent); background: color-mix(in srgb, var(--card-background-color) 84%, transparent); }
         .robot-marker { position: absolute; top: 0; left: 0; width: 16px; height: 16px; border: 3px solid #fff; border-radius: 50%; background: #101923; box-shadow: 0 0 0 8px rgba(255,255,255,.2), 0 5px 18px rgba(0,0,0,.35); will-change: transform; }
         .top-down .robot-marker { border-color: #fff; background: #1438d0; box-shadow: 0 0 0 7px rgba(20,56,208,.16), 0 5px 18px rgba(0,0,0,.25); }
         .viewport.loading::after { content: ""; position: absolute; top: 16px; right: 16px; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--primary-color); border-radius: 50%; animation: spin .8s linear infinite; z-index: 3; }
@@ -2569,16 +2675,16 @@ class MaticMapStudio extends HTMLElement {
         .timeline-track { min-width: 0; display: grid; gap: 3px; }
         .timeline-range { width: 100%; accent-color: var(--primary-color); cursor: pointer; }
         .timeline-label { overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
-        .top-down .timeline { color: #202833; background: rgba(255,255,255,.9); border-color: rgba(20,30,40,.16); }
-        .top-down .timeline button { border-color: rgba(20,30,40,.14); background: rgba(20,30,40,.04); }
+        .top-down .timeline { color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 88%, transparent); border-color: color-mix(in srgb, var(--primary-text-color) 16%, transparent); }
+        .top-down .timeline button { border-color: color-mix(in srgb, var(--primary-text-color) 14%, transparent); background: color-mix(in srgb, var(--primary-text-color) 4%, transparent); }
         .gesture-help { position: absolute; left: 16px; bottom: 82px; max-width: min(680px, calc(100% - 32px)); padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; color: #e3edf8; background: rgba(5,10,16,.76); box-shadow: 0 8px 32px rgba(0,0,0,.25); backdrop-filter: blur(14px); font-size: 12px; pointer-events: none; z-index: 3; }
-        .top-down .gesture-help { color: #202833; background: rgba(255,255,255,.86); border-color: rgba(20,30,40,.16); }
+        .top-down .gesture-help { color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 86%, transparent); border-color: color-mix(in srgb, var(--primary-text-color) 16%, transparent); }
         .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
         }
-        @media (max-width: 1050px) { .heading { width: 100%; } .status { order: 10; width: 100%; } header { padding: 8px; gap: 6px; } }
-        @media (max-width: 650px) { button, a, select { min-height: 40px; padding: 0 9px; } .resolution-value, .angle-value, .cleaning-areas { display: none; } .zoom-slider { width: 72px; } .timeline { width: calc(100% - 20px); bottom: 10px; grid-template-columns: auto minmax(80px, 1fr) auto; gap: 5px; padding: 7px; } .timeline-live { grid-column: 1 / -1; min-height: 34px !important; } .gesture-help { bottom: 104px; font-size: 11px; } .quality-control select { max-width: 105px; } }
+        @media (max-width: 1050px) { .privacy, .status, .resolution-value { display: none; } .heading { min-width: 0; } header { gap: 8px; padding-inline: 10px; } }
+        @media (max-width: 650px) { .shell { grid-template-rows: 56px minmax(0, 1fr); } h1 { font-size: 16px; } .heading { flex: 1 1 auto; } .segmented button { min-height: 36px; padding: 0 10px; } .quality-control { display: none; } .scene-summary { flex: 0 0 auto; } .health-value { max-width: 84px; overflow: hidden; text-overflow: ellipsis; } .camera-step, .angle-value { display: none; } .spatial-controls { top: 10px; left: 10px; } .map-actions { top: 10px; right: 10px; } .zoom-slider { width: 92px; } .timeline { width: calc(100% - 20px); bottom: 10px; grid-template-columns: auto minmax(80px, 1fr) auto; gap: 5px; padding: 7px; } .timeline-live { grid-column: 1 / -1; min-height: 36px !important; } .gesture-help { right: 62px; bottom: 104px; max-width: none; font-size: 11px; } }
       </style>
       <div class="shell">
         <header>
@@ -2588,35 +2694,23 @@ class MaticMapStudio extends HTMLElement {
             <button data-view="top" class="${this._view === "top" ? "selected" : ""}" aria-pressed="${this._view === "top"}">${text("map_view_top", "Top-down")}</button>
             <button data-view="rooms" class="${this._view === "rooms" ? "selected" : ""}" aria-pressed="${this._view === "rooms"}">${text("map_view_rooms", "Rooms")}</button>
           </span>
-          <span class="status" role="status" aria-live="polite" aria-atomic="true">${text("map_status_loading_scene", "Loading local 3D scene…")}</span>
           <span class="spacer"></span>
-          <span class="health-value" role="status" aria-live="polite" aria-atomic="true" hidden></span>
-          <span class="resolution-value">${text("map_loading", "Loading…")}</span>
-          <label class="quality-control">
-            <span class="visually-hidden">${text("map_quality_label", "Scene detail")}</span>
-            <select class="quality" aria-label="${text("map_quality_label", "Scene detail")}">
-              <option value="auto" ${this._quality === "auto" ? "selected" : ""}>${text("map_quality_auto", "Auto detail")}</option>
-              <option value="efficient" ${this._quality === "efficient" ? "selected" : ""}>${text("map_quality_efficient", "Efficient")}</option>
-              <option value="balanced" ${this._quality === "balanced" ? "selected" : ""}>${text("map_quality_balanced", "Balanced")}</option>
-              <option value="maximum" ${this._quality === "maximum" ? "selected" : ""}>${text("map_quality_maximum", "Maximum")}</option>
-            </select>
-          </label>
-          <span class="spatial-controls" role="group" aria-label="${text("map_camera_controls", "Map camera controls")}">
-            <button class="rotate-left" aria-label="${text("map_rotate_left", "Rotate left")}">↶</button>
-            <button class="tilt-down" aria-label="${text("map_tilt_down", "Lower viewing angle")}">⌄</button>
-            <input class="zoom-slider" type="range" min="25" max="400" step="5" value="100" aria-label="${text("map_scene_zoom", "Scene zoom")}">
-            <span class="zoom-value">100%</span>
-            <button class="tilt-up" aria-label="${text("map_tilt_up", "Raise viewing angle")}">⌃</button>
-            <button class="rotate-right" aria-label="${text("map_rotate_right", "Rotate right")}">↷</button>
-            <span class="angle-value">−45° · 47°</span>
+          <span class="scene-summary">
+            <span class="status" role="status" aria-live="polite" aria-atomic="true">${text("map_status_loading_scene", "Loading local map…")}</span>
+            <span class="health-value" role="status" aria-live="polite" aria-atomic="true" hidden></span>
+            <span class="resolution-value">${text("map_loading", "Loading…")}</span>
+            <label class="quality-control">
+              <span class="visually-hidden">${text("map_quality_label", "Scene detail")}</span>
+              <select class="quality" aria-label="${text("map_quality_label", "Scene detail")}">
+                <option value="auto" ${this._quality === "auto" ? "selected" : ""}>${text("map_quality_auto", "Auto detail")}</option>
+                <option value="efficient" ${this._quality === "efficient" ? "selected" : ""}>${text("map_quality_efficient", "Efficient")}</option>
+                <option value="balanced" ${this._quality === "balanced" ? "selected" : ""}>${text("map_quality_balanced", "Balanced")}</option>
+                <option value="maximum" ${this._quality === "maximum" ? "selected" : ""}>${text("map_quality_maximum", "Maximum")}</option>
+              </select>
+            </label>
           </span>
-          <button class="home-view">${text("map_home_view", "Home view")}</button>
-          <button class="layers ${this._labelsVisible ? "selected" : ""}" aria-pressed="${this._labelsVisible}">${text("map_labels", "Labels")}</button>
-          <button class="refresh">${text("map_refresh", "Refresh")}</button>
-          <button class="fullscreen">${text("expand_map", "Full screen")}</button>
-          <a class="cleaning-areas" href="/config/integrations/integration/matic_robot">${text("map_cleaning_areas", "Cleaning areas")}</a>
         </header>
-        <div class="viewport ${this._view === "top" ? "top-down" : ""} ${this._view !== "rooms" ? "spatial" : ""}" tabindex="0" role="application" aria-busy="true" aria-label="${text("map_viewport_aria", "Interactive Matic 3D map. Mouse drag orbits; right, middle, or Shift-drag pans; the mouse wheel zooms. Trackpad two-finger scroll pans, pinch zooms, twist rotates, and Option-scroll tilts.")}">
+        <div class="viewport ${this._view === "top" ? "top-down" : ""} ${this._view !== "rooms" ? "spatial" : ""}" tabindex="0" role="region" aria-busy="true" aria-describedby="map-gesture-help" aria-label="${text("map_viewport_aria", "Interactive Matic map")}">
           <canvas class="scene-canvas" aria-label="${text("map_canvas_aria", "Matic local 3D SLAM scene")}"></canvas>
           <img class="map-image" alt="${text("map_fallback_alt", "Matic local fallback map")}" draggable="false" hidden>
           <div class="spatial-overlays">
@@ -2625,6 +2719,23 @@ class MaticMapStudio extends HTMLElement {
             <span class="robot-marker" role="img" hidden></span>
           </div>
           <div class="empty">${text("map_empty_loading", "Loading the private local map…")}</div>
+          <span class="spatial-controls floating-controls" role="toolbar" aria-label="${text("map_camera_controls", "Map camera controls")}">
+            <button class="rotate-left camera-step" aria-label="${text("map_rotate_left", "Rotate left")}" title="${text("map_rotate_left", "Rotate left")}">↶</button>
+            <button class="tilt-down tilt-control camera-step" aria-label="${text("map_tilt_down", "Lower viewing angle")}" title="${text("map_tilt_down", "Lower viewing angle")}">⌄</button>
+            <input class="zoom-slider" type="range" min="25" max="400" step="5" value="100" aria-label="${text("map_scene_zoom", "Scene zoom")}">
+            <span class="zoom-value">100%</span>
+            <button class="tilt-up tilt-control camera-step" aria-label="${text("map_tilt_up", "Raise viewing angle")}" title="${text("map_tilt_up", "Raise viewing angle")}">⌃</button>
+            <button class="rotate-right camera-step" aria-label="${text("map_rotate_right", "Rotate right")}" title="${text("map_rotate_right", "Rotate right")}">↷</button>
+            <span class="angle-value">−45° · 47°</span>
+          </span>
+          <div class="map-actions floating-controls" role="toolbar" aria-label="${text("map_actions_label", "Map actions")}">
+            <button class="home-view" aria-label="${text("map_home_view", "Fit map")}" title="${text("map_home_view", "Fit map")}"><ha-icon icon="mdi:fit-to-screen-outline" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_home_view", "Fit map")}</span></button>
+            <button class="layers ${this._labelsVisible ? "selected" : ""}" aria-label="${text("map_labels", "Room labels")}" title="${text("map_labels", "Room labels")}" aria-pressed="${this._labelsVisible}"><ha-icon icon="mdi:label-outline" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_labels", "Room labels")}</span></button>
+            <button class="refresh" aria-label="${text("map_refresh", "Refresh map")}" title="${text("map_refresh", "Refresh map")}"><ha-icon icon="mdi:refresh" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_refresh", "Refresh map")}</span></button>
+            <button class="fullscreen" aria-label="${text("expand_map", "Full screen")}" title="${text("expand_map", "Full screen")}"><ha-icon icon="mdi:fullscreen" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("expand_map", "Full screen")}</span></button>
+            <button class="help" aria-label="${text("map_help", "Map help")}" title="${text("map_help", "Map help")}" aria-expanded="false"><ha-icon icon="mdi:help-circle-outline" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_help", "Map help")}</span></button>
+            <a class="cleaning-areas" href="/config/integrations/integration/matic_robot" aria-label="${text("map_cleaning_areas", "Edit cleaning areas")}" title="${text("map_cleaning_areas", "Edit cleaning areas")}"><ha-icon icon="mdi:vector-square-edit" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_cleaning_areas", "Edit cleaning areas")}</span></a>
+          </div>
           <div class="timeline" role="group" aria-label="${text("map_timeline_label", "Map timeline")}" hidden>
             <button class="timeline-earlier" aria-label="${text("map_timeline_earlier", "Earlier map")}">←</button>
             <label class="timeline-track">
@@ -2634,7 +2745,7 @@ class MaticMapStudio extends HTMLElement {
             <button class="timeline-later" aria-label="${text("map_timeline_later", "Later map")}">→</button>
             <button class="timeline-live selected" aria-pressed="true">${text("map_timeline_live_action", "Live")}</button>
           </div>
-          <div class="gesture-help">${text("map_gesture_help", "Mouse: drag orbit · right/middle/Shift-drag pan · wheel zoom · Trackpad: two-finger pan · pinch zoom · twist rotate · Option-scroll tilt · 0 reset · ? help")}</div>
+          <div id="map-gesture-help" class="gesture-help">${text("map_gesture_help", "Drag to explore · scroll or pinch to zoom · 0 fits map · ? toggles help")}</div>
         </div>
       </div>
     `;
@@ -2642,6 +2753,7 @@ class MaticMapStudio extends HTMLElement {
     const viewport = this.shadowRoot.querySelector(".viewport");
     this.shadowRoot.querySelector(".spatial-controls").hidden =
       this._view === "rooms";
+    this._syncViewPresentation();
     this._bindGestures(viewport);
     viewport.addEventListener("keydown", (event) => this._handleKeyDown(event));
     this._guardButton(this.shadowRoot.querySelector('[data-view="three"]'), () => this._setView("three"));
@@ -2681,6 +2793,15 @@ class MaticMapStudio extends HTMLElement {
       this._requestRender();
     });
     this._guardButton(this.shadowRoot.querySelector(".refresh"), () => this._update(true));
+    this._guardButton(this.shadowRoot.querySelector(".help"), () => {
+      window.clearTimeout(this._helpTimer);
+      const help = this.shadowRoot.querySelector(".gesture-help");
+      help.hidden = !help.hidden;
+      this.shadowRoot.querySelector(".help").setAttribute(
+        "aria-expanded",
+        String(!help.hidden),
+      );
+    });
     const timelineRange = this.shadowRoot.querySelector(".timeline-range");
     this._guardButton(this.shadowRoot.querySelector(".timeline-earlier"), () => {
       this._selectTimelinePosition(Number(timelineRange.value) - 1);

@@ -565,6 +565,101 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__studio._cameraAnimation)).toBeUndefined();
   });
 
+  test("keeps top-down framing aligned, fitted, and planar", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    await page.evaluate(() => window.__studio._zoom(1.5));
+    const threeDistance = await page.evaluate(() => window.__studio._camera.distance);
+    await studio.locator('[data-view="top"]').click();
+    await expect.poll(() => page.evaluate(() => window.__studio._view)).toBe("top");
+    const initial = await page.evaluate(() => ({
+      ...window.__studio._camera,
+      home: window.__studio._homeTopDistance,
+    }));
+    expect(initial.yaw).toBeCloseTo(0, 6);
+    expect(initial.pitch).toBeCloseTo(Math.PI / 2 - 0.018, 6);
+    expect(initial.distance).toBeCloseTo(initial.home, 6);
+
+    await studio.locator(".viewport").dispatchEvent("wheel", {
+      deltaY: 80,
+      altKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    await page.evaluate(() => {
+      const viewport = window.__studio.shadowRoot.querySelector(".viewport");
+      const pointer = (type, pointerId, x, y) => new PointerEvent(type, {
+        pointerId,
+        pointerType: "touch",
+        clientX: x,
+        clientY: y,
+        bubbles: true,
+        cancelable: true,
+      });
+      viewport.dispatchEvent(pointer("pointerdown", 31, 120, 150));
+      viewport.dispatchEvent(pointer("pointerdown", 32, 240, 150));
+      viewport.dispatchEvent(pointer("pointermove", 31, 100, 110));
+      viewport.dispatchEvent(pointer("pointermove", 32, 260, 220));
+      viewport.dispatchEvent(pointer("pointerup", 31, 100, 110));
+      viewport.dispatchEvent(pointer("pointerup", 32, 260, 220));
+    });
+    expect(await page.evaluate(() => window.__studio._camera.pitch)).toBeCloseTo(
+      Math.PI / 2 - 0.018,
+      6,
+    );
+    await page.evaluate(() => window.__studio._zoom(1.4));
+    const topDistance = await page.evaluate(() => window.__studio._camera.distance);
+    await studio.locator('[data-view="three"]').click();
+    expect(await page.evaluate(() => window.__studio._camera.distance)).toBeCloseTo(
+      threeDistance,
+      6,
+    );
+    await studio.locator('[data-view="top"]').click();
+    expect(await page.evaluate(() => window.__studio._camera.distance)).toBeCloseTo(
+      topDistance,
+      6,
+    );
+  });
+
+  test("uses a compact native control hierarchy at desktop and mobile widths", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const desktop = await studio.evaluate((element) => {
+      const root = element.shadowRoot;
+      const header = root.querySelector("header").getBoundingClientRect();
+      const viewport = root.querySelector(".viewport");
+      const actions = root.querySelector(".map-actions");
+      const fit = root.querySelector(".home-view").getBoundingClientRect();
+      return {
+        headerHeight: header.height,
+        actionsInsideViewport: actions.parentElement === viewport,
+        actionRole: actions.getAttribute("role"),
+        fitWidth: fit.width,
+        fitHeight: fit.height,
+        viewportRole: viewport.getAttribute("role"),
+      };
+    });
+    expect(desktop).toEqual({
+      headerHeight: 64,
+      actionsInsideViewport: true,
+      actionRole: "toolbar",
+      fitWidth: 42,
+      fitHeight: 42,
+      viewportRole: "region",
+    });
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    await expect.poll(() => studio.evaluate((element) => ({
+      header: element.shadowRoot.querySelector("header").getBoundingClientRect().height,
+      qualityVisible: Boolean(
+        element.shadowRoot.querySelector(".quality-control").offsetParent,
+      ),
+      cameraStepsVisible: [...element.shadowRoot.querySelectorAll(".camera-step")]
+        .some((button) => button.offsetParent !== null),
+    }))).toEqual({ header: 56, qualityVisible: false, cameraStepsVisible: false });
+  });
+
   test("localizes accessible controls and persists per-user view preferences", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     await page.goto("/");
@@ -602,9 +697,16 @@ test.describe("map studio", () => {
     await studio.locator(".quality").selectOption("balanced");
     await studio.locator(".layers").click();
     await expect.poll(() => page.evaluate(() => {
-      const saved = JSON.parse(localStorage.getItem("matic-map-studio:v2:synthetic-user"));
+      const saved = JSON.parse(
+        localStorage.getItem("matic-map-studio:v3:synthetic-user") || "{}",
+      );
       return { view: saved.view, labels: saved.labels, quality: saved.quality };
     })).toEqual({ view: "top", labels: true, quality: "balanced" });
+    expect(await page.evaluate(() => {
+      const saved = JSON.parse(localStorage.getItem("matic-map-studio:v3:synthetic-user"));
+      return Object.keys(saved.cameras).every((view) => ["three", "top"].includes(view))
+        && Object.values(saved.cameras).every((camera) => !Object.hasOwn(camera, "distance"));
+    })).toBe(true);
   });
 
   test("uses the authenticated private catalog without requiring camera state", async ({ page }) => {
@@ -922,7 +1024,7 @@ test.describe("map studio", () => {
 
     sceneReady = true;
     await page.evaluate(() => window.__studio._update());
-    await expect(studio.locator(".status")).toContainText("Full local 3D scene");
+    await expect(studio.locator(".status")).toContainText("points · full capture");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
   });
 
@@ -1207,7 +1309,7 @@ test.describe("map studio", () => {
     await canvas.dispatchEvent("webglcontextrestored");
     await expect(canvas).toBeVisible();
     await expect(studio.locator(".map-image")).toBeHidden();
-    await expect(studio.locator(".status")).toContainText("Full local 3D scene");
+    await expect(studio.locator(".status")).toContainText("points · full capture");
     expect(sceneRequests).toBe(1);
     expect(await page.evaluate(() => window.__glCalls.some(
       ([name]) => name === "bufferData",

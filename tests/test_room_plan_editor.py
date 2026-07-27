@@ -303,7 +303,8 @@ def test_map_panel_persists_only_bounded_view_preferences() -> None:
     assert "view: this._view" in panel
     assert "labels: this._labelsVisible" in panel
     assert "quality: this._quality" in panel
-    assert "camera," in panel
+    assert "cameras," in panel
+    assert "zoom: maticClamp(home / camera.distance" in panel
     storage_block = panel[
         panel.index("\n  _savePreferences() {") : panel.index(
             "\n  _schedulePreferencesSave()"
