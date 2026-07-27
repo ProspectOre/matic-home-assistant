@@ -56,6 +56,10 @@ Home Assistant while exposing saved areas to automations by name.
   and queued requests stop before encoding after an entry unloads.
   WebGL loss now keeps the local camera map visible through background refreshes,
   then restores the retained 3D scene without downloading it again.
+  Multiple robots keep independent scene, pose, ETag, and camera-fallback state;
+  late responses from a previously selected entry are discarded.
+  Unloading the final entry also clears retained map buffers and references from
+  the browser instead of leaving the last private scene resident.
   Private requests use Home Assistant's authenticated frontend transport with
   its automatic token refresh, so a long-lived studio cannot fall back after a
   session expires.
@@ -110,8 +114,8 @@ Home Assistant while exposing saved areas to automations by name.
 
 ## Verification posture
 
-The unpublished local candidate passed 681 tests / 6,582 statements at 100%
-coverage, 15 real-browser UI tests, strict typing, lint/format, privacy,
+The unpublished local candidate passed 681 tests / 6,584 statements at 100%
+coverage, 17 real-browser UI tests, strict typing, lint/format, privacy,
 wheel/source parity, and clean-wheel import. Live Home Assistant/Safari proof
 covered maximum-detail 3D, exact pose, orbit, top-down, labeled Rooms, forced
 refresh, repeated updates, expired-session recovery, and a second clean restart

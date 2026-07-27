@@ -987,7 +987,11 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert cached == image
     assert render.call_count == 1
     assert render.call_args.kwargs == {"width": 256, "height": 4096}
-    assert entity.extra_state_attributes == {"robot_location_source": "exact_pose"}
+    assert entity.extra_state_attributes == {
+        "matic_entry_id": "entry",
+        "robot_location_source": "exact_pose",
+    }
+    assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 
 
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
@@ -1015,6 +1019,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     assert render.call_args.kwargs["width"] == 4096
     assert render.call_args.kwargs["height"] == 3000
     assert entity.extra_state_attributes == {
+        "matic_entry_id": "entry",
         "cached_tiles": 1,
         "structural_tiles": 1,
         "map_complete": True,
@@ -1023,6 +1028,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "scene_url": "/api/matic_robot/slam_scene/entry",
         "pose_url": "/api/matic_robot/slam_pose/entry",
     }
+    assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 
 
 async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> None:

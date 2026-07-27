@@ -4,6 +4,7 @@ const MATIC_SCENE_MAX_POINTS = 1500000;
 const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
 const MATIC_MAP_PREFERENCES_VERSION = 2;
 const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
+const MATIC_POSE_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
   efficient: 300000,
   balanced: 750000,
@@ -103,18 +104,29 @@ class MaticMapStudio extends HTMLElement {
     this._view = "three";
     this._quality = "maximum";
     this._scene = undefined;
+    this._sceneUrl = undefined;
+    this._sceneIdentity = undefined;
     this._sceneRevision = undefined;
     this._sceneEtag = undefined;
     this._sceneLoading = false;
     this._sceneAbortController = undefined;
+    this._sceneRequestKey = undefined;
+    this._sceneRequestUrl = undefined;
+    this._latestSceneKey = undefined;
     this._latestSceneState = undefined;
     this._pendingSceneRefresh = false;
+    this._pendingSceneForce = false;
     this._poseLoading = false;
+    this._poseAbortController = undefined;
+    this._poseRequestUrl = undefined;
+    this._latestPoseState = undefined;
+    this._pendingPoseRefresh = false;
     this._fallbackVersion = undefined;
     this._fallbackLoader = undefined;
     this._fallbackLoadingVersion = undefined;
     this._catalogEntries = [];
     this._catalogLoading = false;
+    this._catalogReady = false;
     this._pointers = new Map();
     this._drag = undefined;
     this._pinch = undefined;
@@ -170,8 +182,13 @@ class MaticMapStudio extends HTMLElement {
   }
 
   set panel(value) {
+    const previousEntry = this._panel?.config?.entry_id;
     this._panel = value;
     if (this.isConnected && !this.shadowRoot.hasChildNodes()) this._render();
+    if (
+      this.isConnected
+      && previousEntry !== value?.config?.entry_id
+    ) this._update();
   }
 
   connectedCallback() {
@@ -207,8 +224,12 @@ class MaticMapStudio extends HTMLElement {
     this._resizeObserver?.disconnect();
     this._cancelFallbackLoad();
     this._pendingSceneRefresh = false;
+    this._pendingSceneForce = false;
     this._sceneAbortController?.abort();
     this._sceneAbortController = undefined;
+    this._pendingPoseRefresh = false;
+    this._poseAbortController?.abort();
+    this._poseAbortController = undefined;
     document.removeEventListener("fullscreenchange", this._fullscreenHandler);
     this._reducedMotionQuery?.removeEventListener?.(
       "change",
@@ -225,12 +246,16 @@ class MaticMapStudio extends HTMLElement {
     this._webglAvailable = false;
   }
 
-  _entities() {
+  _entities(entryId = undefined) {
     const states = Object.entries(this._hass?.states || {});
+    const scoped = entryId
+      ? states.filter(([, state]) =>
+        state.attributes?.matic_entry_id === entryId)
+      : states;
     return {
-      photo: states.find(([, state]) =>
+      photo: scoped.find(([, state]) =>
         state.attributes?.source === "local_robot_slam"),
-      rooms: states.find(([, state]) =>
+      rooms: scoped.find(([, state]) =>
         state.attributes?.robot_location_source),
     };
   }
@@ -357,6 +382,7 @@ class MaticMapStudio extends HTMLElement {
       this._catalogEntries = entries
         .filter((entry) => entry && typeof entry === "object")
         .slice(0, 64);
+      this._catalogReady = true;
     } catch (_error) {
       // Older integration builds do not provide the private admin catalog.
     } finally {
@@ -390,6 +416,40 @@ class MaticMapStudio extends HTMLElement {
       event.stopImmediatePropagation();
       action();
     });
+  }
+
+  _clearPrivateMap() {
+    this._pendingSceneRefresh = false;
+    this._pendingSceneForce = false;
+    this._latestSceneKey = undefined;
+    this._latestSceneState = undefined;
+    this._sceneAbortController?.abort();
+    this._pendingPoseRefresh = false;
+    this._latestPoseState = undefined;
+    this._poseAbortController?.abort();
+    this._scene = undefined;
+    this._sceneUrl = undefined;
+    this._sceneIdentity = undefined;
+    this._sceneRevision = undefined;
+    this._sceneEtag = undefined;
+    this._robot = undefined;
+    this._renderFloorCount = undefined;
+    this._renderSurfaceCount = undefined;
+    this._renderPointCount = undefined;
+    this._cancelFallbackLoad();
+    this._fallbackVersion = undefined;
+    this.shadowRoot.querySelector(".map-image")?.removeAttribute("src");
+    const marker = this.shadowRoot.querySelector(".robot-marker");
+    if (marker) marker.hidden = true;
+    const resolution = this.shadowRoot.querySelector(".resolution-value");
+    if (resolution) resolution.textContent = "—";
+    this._rebuildOverlays();
+    if (this._gl && this._pointBuffer) {
+      this._gl.bindBuffer(this._gl.ARRAY_BUFFER, this._pointBuffer);
+      this._gl.bufferData(this._gl.ARRAY_BUFFER, 0, this._gl.STATIC_DRAW);
+      this._gl.clearColor(0, 0, 0, 0);
+      this._gl.clear(this._gl.COLOR_BUFFER_BIT | this._gl.DEPTH_BUFFER_BIT);
+    }
   }
 
   _authHeaders() {
@@ -706,18 +766,36 @@ class MaticMapStudio extends HTMLElement {
     }
   }
 
+  _sceneRequestIdentity(state) {
+    const url = String(state?.attributes?.scene_url || "");
+    const version = state?.attributes?.map_revision
+      ?? state?.last_updated
+      ?? "";
+    return `${url}\u0000${String(version)}`;
+  }
+
   async _fetchScene(state, force = false) {
     const url = state?.attributes?.scene_url;
     const revision = state?.attributes?.map_revision;
     if (!url || !this._webglAvailable) return;
+    const requestKey = this._sceneRequestIdentity(state);
     this._latestSceneState = state;
-    if (!force && this._scene && revision === this._sceneRevision) return;
+    this._latestSceneKey = requestKey;
+    if (!force && this._scene && requestKey === this._sceneIdentity) return;
     if (this._sceneLoading) {
-      this._pendingSceneRefresh = this._pendingSceneRefresh || force;
-      if (force) this._sceneAbortController?.abort();
+      const changed = requestKey !== this._sceneRequestKey;
+      if (force || changed) {
+        this._pendingSceneRefresh = true;
+        this._pendingSceneForce ||= force;
+        if (force || url !== this._sceneRequestUrl) {
+          this._sceneAbortController?.abort();
+        }
+      }
       return;
     }
     this._sceneLoading = true;
+    this._sceneRequestKey = requestKey;
+    this._sceneRequestUrl = url;
     this._setLoading(true);
     const controller = new AbortController();
     this._sceneAbortController = controller;
@@ -727,13 +805,17 @@ class MaticMapStudio extends HTMLElement {
     );
     try {
       const headers = {};
-      if (this._sceneEtag && !force) headers["If-None-Match"] = this._sceneEtag;
+      if (this._sceneEtag && this._sceneUrl === url && !force) {
+        headers["If-None-Match"] = this._sceneEtag;
+      }
       const response = await this._authenticatedFetch(url, {
         headers,
         cache: "no-store",
         signal: controller.signal,
       });
       if (response.status === 304) {
+        if (this._latestSceneKey !== requestKey) return;
+        this._sceneIdentity = requestKey;
         this._sceneRevision = revision;
         return;
       }
@@ -743,7 +825,10 @@ class MaticMapStudio extends HTMLElement {
         throw error;
       }
       const scene = this._parseScene(await response.arrayBuffer());
+      if (this._latestSceneKey !== requestKey) return;
       this._scene = scene;
+      this._sceneUrl = url;
+      this._sceneIdentity = requestKey;
       this._sceneRevision = revision;
       this._sceneEtag = response.headers.get("ETag") || undefined;
       this._uploadScene(scene);
@@ -765,18 +850,23 @@ class MaticMapStudio extends HTMLElement {
       }
       this._showSpatialScene();
       this._updateSceneStatus(state);
+      this._fetchPose(state);
       this._requestRender();
     } catch (error) {
       if (!this.isConnected) return;
-      const superseded = controller.signal.aborted
-        && this._pendingSceneRefresh;
-      if (!superseded && this._scene) {
+      const superseded = this._latestSceneKey !== requestKey
+        || (controller.signal.aborted && this._pendingSceneRefresh);
+      if (
+        !superseded
+        && this._scene
+        && this._sceneUrl === url
+      ) {
         this._showRetainedScene();
       } else if (!superseded) {
-        this._showFallback(
-          this._entities().rooms || this._entities().photo,
-          force,
-        );
+        const entryId = state?.attributes?.entry_id
+          || state?.attributes?.matic_entry_id;
+        const entities = this._entities(entryId);
+        this._showFallback(entities.rooms || entities.photo, force);
         const health = String(state?.attributes?.map_health || "").toLowerCase();
         const collecting = error?.status === 409
           && ["empty", "collecting", "incomplete"].includes(health);
@@ -795,11 +885,16 @@ class MaticMapStudio extends HTMLElement {
       if (this._sceneAbortController === controller) {
         this._sceneAbortController = undefined;
       }
+      if (this._sceneRequestKey === requestKey) {
+        this._sceneRequestKey = undefined;
+        this._sceneRequestUrl = undefined;
+      }
       this._sceneLoading = false;
       this._setLoading(false);
       if (this._pendingSceneRefresh && this.isConnected) {
-        const pendingForce = this._pendingSceneRefresh;
+        const pendingForce = this._pendingSceneForce;
         this._pendingSceneRefresh = false;
+        this._pendingSceneForce = false;
         this._fetchScene(this._latestSceneState || state, pendingForce);
       }
     }
@@ -807,14 +902,37 @@ class MaticMapStudio extends HTMLElement {
 
   async _fetchPose(state) {
     const url = state?.attributes?.pose_url;
-    if (!url || this._poseLoading || !this._scene) return;
+    const sceneUrl = state?.attributes?.scene_url;
+    if (!url) return;
+    this._latestPoseState = state;
+    if (this._poseLoading) {
+      if (url !== this._poseRequestUrl) {
+        this._pendingPoseRefresh = true;
+        this._poseAbortController?.abort();
+      }
+      return;
+    }
+    if (!this._scene || sceneUrl !== this._sceneUrl) return;
     this._poseLoading = true;
+    this._poseRequestUrl = url;
+    const controller = new AbortController();
+    this._poseAbortController = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      MATIC_POSE_REQUEST_TIMEOUT_MS,
+    );
     try {
       const response = await this._authenticatedFetch(url, {
         cache: "no-store",
+        signal: controller.signal,
       });
       if (!response.ok) return;
       const payload = await response.json();
+      if (
+        controller.signal.aborted
+        || this._latestPoseState?.attributes?.pose_url !== url
+        || sceneUrl !== this._sceneUrl
+      ) return;
       const position = payload?.position;
       if (
         Array.isArray(position)
@@ -831,8 +949,19 @@ class MaticMapStudio extends HTMLElement {
         this._robot = undefined;
       }
       this._requestRender();
+    } catch (_error) {
+      // Pose is an optional overlay; the scene stays usable while it retries.
     } finally {
+      window.clearTimeout(timeout);
+      if (this._poseAbortController === controller) {
+        this._poseAbortController = undefined;
+      }
+      if (this._poseRequestUrl === url) this._poseRequestUrl = undefined;
       this._poseLoading = false;
+      if (this._pendingPoseRefresh && this.isConnected) {
+        this._pendingPoseRefresh = false;
+        this._fetchPose(this._latestPoseState || state);
+      }
     }
   }
 
@@ -884,8 +1013,22 @@ class MaticMapStudio extends HTMLElement {
   async _update(force = false) {
     if (!this.shadowRoot.hasChildNodes()) return;
     await this._fetchCatalog();
-    const entities = this._entities();
-    const photoState = this._catalogState() || entities.photo?.[1];
+    if (this._catalogReady && this._catalogEntries.length === 0) {
+      this._clearPrivateMap();
+      this._showFallback(undefined);
+      this._setStatus(
+        this._localize(
+          "map_status_no_map",
+          "No local map data is available yet",
+        ),
+      );
+      return;
+    }
+    const catalogState = this._catalogState();
+    const entryId = catalogState?.attributes?.entry_id
+      || this._panel?.config?.entry_id;
+    const entities = this._entities(entryId);
+    const photoState = catalogState || entities.photo?.[1];
     if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
     } else if (photoState) {
@@ -894,9 +1037,21 @@ class MaticMapStudio extends HTMLElement {
       } else {
         this._fetchScene(photoState, force);
         this._fetchPose(photoState);
-        if (this._scene) {
+        if (
+          this._scene
+          && this._sceneUrl === photoState.attributes?.scene_url
+        ) {
           this._showSpatialScene();
           this._updateSceneStatus(photoState);
+        } else {
+          this._robot = undefined;
+          this._showFallback(entities.rooms || entities.photo, force);
+          this._setStatus(
+            this._localize(
+              "map_status_loading_scene",
+              "Loading local 3D scene…",
+            ),
+          );
         }
       }
     } else if (this._scene) {
@@ -2033,9 +2188,14 @@ class MaticMapStudio extends HTMLElement {
         this._quality = quality;
         if (this._scene) {
           this._uploadScene(this._scene);
-          this._updateSceneStatus(
-            this._catalogState() || this._entities().photo?.[1],
-          );
+          const catalogState = this._catalogState();
+          const entryId = catalogState?.attributes?.entry_id
+            || this._panel?.config?.entry_id;
+          const selectedState = catalogState
+            || this._entities(entryId).photo?.[1];
+          if (selectedState?.attributes?.scene_url === this._sceneUrl) {
+            this._updateSceneStatus(selectedState);
+          }
           this._requestRender();
         }
         this._schedulePreferencesSave();
@@ -2060,26 +2220,29 @@ class MaticMapStudio extends HTMLElement {
       this._renderFrame = undefined;
       this._webglAvailable = false;
       this._gl = undefined;
-      this._showRenderingFallback(
-        this._entities().rooms || this._entities().photo,
-      );
+      const entryId = this._catalogState()?.attributes?.entry_id
+        || this._panel?.config?.entry_id;
+      const entities = this._entities(entryId);
+      this._showRenderingFallback(entities.rooms || entities.photo);
     });
     canvas.addEventListener("webglcontextrestored", () => {
       this._initWebGL();
+      const entryId = this._catalogState()?.attributes?.entry_id
+        || this._panel?.config?.entry_id;
+      const entities = this._entities(entryId);
       if (!this._webglAvailable) {
-        this._showRenderingFallback(
-          this._entities().rooms || this._entities().photo,
-        );
+        this._showRenderingFallback(entities.rooms || entities.photo);
         return;
       }
       if (this._view === "rooms") {
-        this._showFallback(
-          this._entities().rooms || this._entities().photo,
-          true,
-        );
+        this._showFallback(entities.rooms || entities.photo, true);
         return;
       }
-      if (!this._scene) {
+      const selectedState = this._catalogState() || entities.photo?.[1];
+      if (
+        !this._scene
+        || selectedState?.attributes?.scene_url !== this._sceneUrl
+      ) {
         this._update(true);
         return;
       }
@@ -2087,9 +2250,7 @@ class MaticMapStudio extends HTMLElement {
       this._rebuildOverlays();
       this._resizeCanvas();
       this._showSpatialScene();
-      this._updateSceneStatus(
-        this._catalogState() || this._entities().photo?.[1],
-      );
+      this._updateSceneStatus(selectedState);
     });
     this._resizeObserver = new ResizeObserver(() => {
       this._resizeCanvas();

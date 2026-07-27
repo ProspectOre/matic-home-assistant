@@ -131,13 +131,13 @@ function pointer(type, pointerId, x, y) {
   return { type, init: { bubbles: true, cancelable: true, pointerId, pointerType: "touch", isPrimary: pointerId === 11, button: 0, clientX: x, clientY: y } };
 }
 
-function syntheticScene() {
+function syntheticScene(roomName = "Synthetic room", pointX = 10) {
   const metadata = Buffer.from(JSON.stringify({
     meters_per_cell: 0.015,
     span_cells: [100, 80],
     origin_cells: [10, 10],
     sample_step: 1,
-    rooms: [{ name: "Synthetic room", boundary: [[0, 0], [1, 0], [1, 1]], center: [0.3, 0.3] }],
+    rooms: [{ name: roomName, boundary: [[0, 0], [1, 0], [1, 1]], center: [0.3, 0.3] }],
   }));
   const scene = Buffer.alloc(24 + metadata.length + 8);
   scene.write("MATIC3D\0", 0, "binary");
@@ -147,7 +147,7 @@ function syntheticScene() {
   scene.writeUInt32LE(1, 16);
   scene.writeUInt32LE(0, 20);
   metadata.copy(scene, 24);
-  scene.writeUInt16LE(10, 24 + metadata.length);
+  scene.writeUInt16LE(pointX, 24 + metadata.length);
   scene.writeUInt16LE(12, 26 + metadata.length);
   scene[28 + metadata.length] = 1;
   scene[29 + metadata.length] = 30;
@@ -338,6 +338,174 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__studio._catalogState().attributes.map_revision)).toBe(4);
     await expect(studio.locator(".status")).toContainText("1 points");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
+  });
+
+  test("isolates equal-revision robots while scene and pose requests overlap", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true, images: true });
+    let alphaSceneCalls = 0;
+    let releaseAlphaScene;
+    let releaseAlphaPose;
+    let markAlphaRefreshStarted;
+    let markAlphaPoseStarted;
+    let betaIfNoneMatch;
+    const alphaSceneRelease = new Promise((resolve) => {
+      releaseAlphaScene = resolve;
+    });
+    const alphaPoseRelease = new Promise((resolve) => {
+      releaseAlphaPose = resolve;
+    });
+    const alphaRefreshStarted = new Promise((resolve) => {
+      markAlphaRefreshStarted = resolve;
+    });
+    const alphaPoseStarted = new Promise((resolve) => {
+      markAlphaPoseStarted = resolve;
+    });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [
+        {
+          entry_id: "alpha",
+          scene_url: "/scene-alpha",
+          pose_url: "/pose-alpha",
+          map_revision: 9,
+          map_complete: true,
+        },
+        {
+          entry_id: "beta",
+          scene_url: "/scene-beta",
+          pose_url: "/pose-beta",
+          map_revision: 9,
+          map_complete: true,
+        },
+      ] }),
+    }));
+    await page.route("**/scene-alpha", async (route) => {
+      alphaSceneCalls += 1;
+      if (alphaSceneCalls > 1) {
+        markAlphaRefreshStarted();
+        await alphaSceneRelease;
+      }
+      try {
+        await route.fulfill({
+          status: 200,
+          body: syntheticScene("Alpha room", 10),
+          headers: { "Content-Type": "application/octet-stream", ETag: '"alpha"' },
+        });
+      } catch (_error) {
+        // The entry switch intentionally aborts the superseded request.
+      }
+    });
+    await page.route("**/scene-beta", (route) => {
+      betaIfNoneMatch = route.request().headers()["if-none-match"];
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Beta room", 20),
+        headers: { "Content-Type": "application/octet-stream", ETag: '"beta"' },
+      });
+    });
+    await page.route("**/pose-alpha", async (route) => {
+      markAlphaPoseStarted();
+      await alphaPoseRelease;
+      try {
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ position: [0.15, 0.15], source: "alpha_pose" }),
+        });
+      } catch (_error) {
+        // The entry switch intentionally aborts the superseded request.
+      }
+    });
+    await page.route("**/pose-beta", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ position: [0.3, 0.3], source: "beta_pose" }),
+    }));
+    const studio = await loadStudio(page, {
+      "camera.alpha_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "alpha",
+          robot_location_source: "exact_pose",
+        },
+      },
+      "camera.beta_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "beta",
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneUrl)).toBe("/scene-alpha");
+    await alphaPoseStarted;
+
+    await page.evaluate(() => window.__studio._update(true));
+    await alphaRefreshStarted;
+    await page.evaluate(() => {
+      window.__studio.panel = { config: { entry_id: "beta" } };
+    });
+    releaseAlphaScene();
+    releaseAlphaPose();
+
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneUrl)).toBe("/scene-beta");
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene.metadata.rooms[0].name,
+    )).toBe("Beta room");
+    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("beta_pose");
+    expect(betaIfNoneMatch).toBeUndefined();
+    expect(await page.evaluate(() =>
+      window.__studio._entities("beta").rooms[0],
+    )).toBe("camera.beta_rooms");
+  });
+
+  test("purges retained browser map data after the last entry unloads", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let entries = [{
+      entry_id: "synthetic-entry",
+      scene_url: "/synthetic-scene",
+      pose_url: "/synthetic-pose",
+      map_revision: 1,
+      map_complete: true,
+    }];
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries }),
+    }));
+    await page.route("**/synthetic-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene(),
+      headers: { "Content-Type": "application/octet-stream", ETag: '"private-scene"' },
+    }));
+    const studio = await loadStudio(page);
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+    await expect(studio.locator(".room-label")).toHaveCount(1);
+
+    entries = [];
+    await page.evaluate(() => window.__studio._update());
+
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".room-label")).toHaveCount(0);
+    await expect(studio.locator(".robot-marker")).toBeHidden();
+    await expect(studio.locator(".resolution-value")).toHaveText("—");
+    await expect(studio.locator(".status")).toContainText("No local map data");
+    expect(await page.evaluate(() => ({
+      scene: window.__studio._scene,
+      sceneUrl: window.__studio._sceneUrl,
+      sceneEtag: window.__studio._sceneEtag,
+      robot: window.__studio._robot,
+      imageSource: window.__studio.shadowRoot.querySelector(".map-image").getAttribute("src"),
+    }))).toEqual({
+      scene: undefined,
+      sceneUrl: undefined,
+      sceneEtag: undefined,
+      robot: undefined,
+      imageSource: null,
+    });
   });
 
   test("keeps the last 3D scene visible when a live refresh fails", async ({ page }) => {

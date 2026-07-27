@@ -38,6 +38,7 @@ class MaticMapCamera(MaticEntity, Camera):
 
     _attr_translation_key = "map"
     _attr_content_type = "image/png"
+    _unrecorded_attributes = frozenset({"matic_entry_id"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         Camera.__init__(self)
@@ -84,9 +85,10 @@ class MaticMapCamera(MaticEntity, Camera):
             data.floor_plan, data.pose, data.operational.current_area
         )
         return {
+            "matic_entry_id": self._config_entry.entry_id,
             "robot_location_source": position[2]
             if position is not None
-            else "unavailable"
+            else "unavailable",
         }
 
 
@@ -95,6 +97,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
 
     _attr_translation_key = "photorealistic_map"
     _attr_content_type = "image/png"
+    _unrecorded_attributes = frozenset({"matic_entry_id"})
     # Unlike the geometric room map, this image can reveal the interior of a
     # home. Keep it out of the state machine and camera proxy unless an
     # administrator makes the explicit decision to enable it.
@@ -160,6 +163,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose cache readiness without exposing private map content."""
         return {
+            "matic_entry_id": self._config_entry.entry_id,
             "cached_tiles": self._store.tile_count,
             "structural_tiles": self._store.structure_tile_count,
             "map_complete": self._store.map_complete,
