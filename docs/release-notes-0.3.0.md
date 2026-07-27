@@ -60,6 +60,9 @@ Home Assistant while exposing saved areas to automations by name.
   late responses from a previously selected entry are discarded.
   Unloading the final entry also clears retained map buffers and references from
   the browser instead of leaving the last private scene resident.
+  Catalog, scene, pose, and camera-image requests are time-bounded. A stalled
+  refresh retains the last usable local map, while a stalled first image load
+  exits the busy state with actionable reconnect-and-refresh guidance.
   Private requests use Home Assistant's authenticated frontend transport with
   its automatic token refresh, so a long-lived studio cannot fall back after a
   session expires.

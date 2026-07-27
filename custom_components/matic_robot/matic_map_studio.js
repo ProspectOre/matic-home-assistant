@@ -3,8 +3,10 @@ const MATIC_SCENE_POINT_STRIDE = 8;
 const MATIC_SCENE_MAX_POINTS = 1500000;
 const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
 const MATIC_MAP_PREFERENCES_VERSION = 2;
+const MATIC_CATALOG_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
 const MATIC_POSE_REQUEST_TIMEOUT_MS = 10000;
+const MATIC_FALLBACK_IMAGE_TIMEOUT_MS = 15000;
 const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
   efficient: 300000,
   balanced: 750000,
@@ -124,9 +126,11 @@ class MaticMapStudio extends HTMLElement {
     this._fallbackVersion = undefined;
     this._fallbackLoader = undefined;
     this._fallbackLoadingVersion = undefined;
+    this._fallbackLoadTimer = undefined;
     this._catalogEntries = [];
     this._catalogLoading = false;
     this._catalogReady = false;
+    this._catalogAbortController = undefined;
     this._pointers = new Map();
     this._drag = undefined;
     this._pinch = undefined;
@@ -223,6 +227,8 @@ class MaticMapStudio extends HTMLElement {
     this._savePreferences();
     this._resizeObserver?.disconnect();
     this._cancelFallbackLoad();
+    this._catalogAbortController?.abort();
+    this._catalogAbortController = undefined;
     this._pendingSceneRefresh = false;
     this._pendingSceneForce = false;
     this._sceneAbortController?.abort();
@@ -366,10 +372,25 @@ class MaticMapStudio extends HTMLElement {
   async _fetchCatalog() {
     if (this._catalogLoading) return;
     this._catalogLoading = true;
+    const controller = new AbortController();
+    this._catalogAbortController = controller;
+    const aborted = new Promise((_resolve, reject) => {
+      controller.signal.addEventListener("abort", () => {
+        reject(new DOMException("Catalog request aborted", "AbortError"));
+      }, { once: true });
+    });
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      MATIC_CATALOG_REQUEST_TIMEOUT_MS,
+    );
     try {
-      const response = await this._authenticatedFetch(MATIC_MAP_CATALOG_URL, {
-        cache: "no-store",
-      });
+      const response = await Promise.race([
+        this._authenticatedFetch(MATIC_MAP_CATALOG_URL, {
+          cache: "no-store",
+          signal: controller.signal,
+        }),
+        aborted,
+      ]);
       if (!response.ok) return;
       const payload = await response.json();
       const entries = Array.isArray(payload)
@@ -386,6 +407,10 @@ class MaticMapStudio extends HTMLElement {
     } catch (_error) {
       // Older integration builds do not provide the private admin catalog.
     } finally {
+      window.clearTimeout(timeout);
+      if (this._catalogAbortController === controller) {
+        this._catalogAbortController = undefined;
+      }
       this._catalogLoading = false;
     }
   }
@@ -1126,6 +1151,8 @@ class MaticMapStudio extends HTMLElement {
     this._setLoading(true);
     loader.addEventListener("load", () => {
       if (this._fallbackLoader !== loader) return;
+      window.clearTimeout(this._fallbackLoadTimer);
+      this._fallbackLoadTimer = undefined;
       image.src = loader.src;
       image.hidden = false;
       this._fallbackVersion = version;
@@ -1137,20 +1164,12 @@ class MaticMapStudio extends HTMLElement {
         `${loader.naturalWidth} × ${loader.naturalHeight}`;
     }, { once: true });
     loader.addEventListener("error", () => {
-      if (this._fallbackLoader !== loader) return;
-      this._fallbackLoader = undefined;
-      this._fallbackLoadingVersion = undefined;
-      this._setLoading(false);
-      if (!(image.complete && image.naturalWidth > 0)) {
-        image.hidden = true;
-        this._setEmpty(
-          this._localize(
-            "map_empty_load_error",
-            "The local map could not be loaded. Try Refresh after reconnecting.",
-          ),
-        );
-      }
+      this._handleFallbackLoadFailure(loader, image);
     }, { once: true });
+    this._fallbackLoadTimer = window.setTimeout(
+      () => this._handleFallbackLoadFailure(loader, image),
+      MATIC_FALLBACK_IMAGE_TIMEOUT_MS,
+    );
     loader.src = `/api/camera_proxy/${entityId}?${query}`;
     this._setStatus(
       this._view === "rooms"
@@ -1197,10 +1216,52 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _cancelFallbackLoad() {
+    window.clearTimeout(this._fallbackLoadTimer);
+    this._fallbackLoadTimer = undefined;
     const loader = this._fallbackLoader;
     this._fallbackLoader = undefined;
     this._fallbackLoadingVersion = undefined;
     if (loader) loader.src = "";
+  }
+
+  _handleFallbackLoadFailure(loader, image) {
+    if (this._fallbackLoader !== loader) return;
+    window.clearTimeout(this._fallbackLoadTimer);
+    this._fallbackLoadTimer = undefined;
+    this._fallbackLoader = undefined;
+    this._fallbackLoadingVersion = undefined;
+    loader.src = "";
+    this._setLoading(false);
+    const retained = Boolean(
+      (this._fallbackVersion && image.getAttribute("src"))
+      || (image.complete && image.naturalWidth > 0),
+    );
+    if (retained) {
+      image.hidden = false;
+      this._setEmpty();
+      this._setStatus(
+        this._localize(
+          "map_status_image_retained",
+          "Showing the last local map · reconnecting…",
+        ),
+        "warning",
+      );
+      return;
+    }
+    image.hidden = true;
+    this._setEmpty(
+      this._localize(
+        "map_empty_load_error",
+        "The local map could not be loaded. Try Refresh after reconnecting.",
+      ),
+    );
+    this._setStatus(
+      this._localize(
+        "map_status_image_unavailable",
+        "Local map image is unavailable",
+      ),
+      "error",
+    );
   }
 
   _setEmpty(message) {

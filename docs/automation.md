@@ -156,7 +156,10 @@ to become completely idle. With multiple Matic entries, scene, pose, ETag, and
 camera-fallback state remain scoped to the selected robot even when revisions
 match or an older request finishes late. Unloading the final entry clears the
 retained point buffer, camera source, overlays, pose, ETag, and scene references
-from the browser as well as the backend.
+from the browser as well as the backend. Catalog, scene, pose, and camera-image
+requests are time-bounded. If an image refresh stalls, the last usable local
+map stays visible with reconnecting status; a stalled first load exits its busy
+state with a retryable error instead of spinning indefinitely.
 Robot pose updates and map-page updates have different cadences, so a marker or
 scene can briefly lag the physical robot. A content revision or health change
 asks the viewer to reload a bounded scene; 0.3 does not send point-level deltas

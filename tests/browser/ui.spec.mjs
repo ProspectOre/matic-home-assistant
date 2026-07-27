@@ -340,6 +340,56 @@ test.describe("map studio", () => {
     await expect(studio.locator(".scene-canvas")).toBeVisible();
   });
 
+  test("abandons a stalled catalog and continues from camera state", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    await page.addInitScript(() => {
+      const nativeFetch = window.fetch.bind(window);
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.__catalogAborted = false;
+      window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
+        callback,
+        delay === 10000 ? 25 : delay,
+        ...args,
+      );
+      window.fetch = (input, init = {}) => {
+        if (String(input).includes("/api/matic_robot/slam_entries")) {
+          return new Promise((_resolve, reject) => {
+            init.signal?.addEventListener("abort", () => {
+              window.__catalogAborted = true;
+              reject(new DOMException("Synthetic timeout", "AbortError"));
+            }, { once: true });
+          });
+        }
+        return nativeFetch(input, init);
+      };
+    });
+    await page.route("**/synthetic-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene(),
+      headers: { "Content-Type": "application/octet-stream", ETag: '"synthetic-camera-1"' },
+    }));
+    const studio = await loadStudio(page, {
+      "camera.synthetic_map": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_robot_slam",
+          scene_url: "/synthetic-scene",
+          map_revision: 1,
+          map_complete: true,
+        },
+      },
+    });
+
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+    await expect(studio.locator(".status")).toContainText("1 points");
+    await expect.poll(() => page.evaluate(() => window.__catalogAborted)).toBe(true);
+    expect(await page.evaluate(() => ({
+      loading: window.__studio._catalogLoading,
+      controller: window.__studio._catalogAbortController,
+    }))).toEqual({ loading: false, controller: undefined });
+  });
+
   test("isolates equal-revision robots while scene and pose requests overlap", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true, images: true });
     let alphaSceneCalls = 0;
@@ -701,6 +751,118 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).toContainText("3D rendering paused");
     await expect(studio.locator(".status")).toHaveAttribute("data-tone", "warning");
     await expect(studio.locator(".resolution-value")).toHaveText("640 × 480");
+  });
+
+  test("ends a stalled first image load with actionable state", async ({ page }) => {
+    await installBrowserDoubles(page);
+    await page.addInitScript(() => {
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
+        callback,
+        delay === 15000 ? 25 : delay,
+        ...args,
+      );
+      class HangingImage extends EventTarget {
+        naturalWidth = 0;
+        naturalHeight = 0;
+        complete = false;
+
+        get src() {
+          return this._src || "";
+        }
+
+        set src(value) {
+          this._src = value;
+        }
+      }
+      window.Image = HangingImage;
+    });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 404,
+      body: "not available",
+    }));
+    const studio = await loadStudio(page, {
+      "camera.synthetic_map": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: { source: "local_robot_slam", map_revision: 1 },
+      },
+    });
+
+    await expect(studio.locator(".status")).toHaveText("Local map image is unavailable");
+    await expect(studio.locator(".status")).toHaveAttribute("data-tone", "error");
+    await expect(studio.locator(".empty")).toContainText("could not be loaded");
+    await expect(studio.locator(".map-image")).toBeHidden();
+    await expect(studio.locator(".viewport")).toHaveAttribute("aria-busy", "false");
+    expect(await page.evaluate(() => ({
+      loader: window.__studio._fallbackLoader,
+      loadingVersion: window.__studio._fallbackLoadingVersion,
+      timer: window.__studio._fallbackLoadTimer,
+    }))).toEqual({ loader: undefined, loadingVersion: undefined, timer: undefined });
+  });
+
+  test("keeps the last camera map visible when its refresh stalls", async ({ page }) => {
+    await installBrowserDoubles(page);
+    await page.addInitScript(() => {
+      const nativeSetTimeout = window.setTimeout.bind(window);
+      window.__fallbackImageRequests = 0;
+      window.setTimeout = (callback, delay, ...args) => nativeSetTimeout(
+        callback,
+        delay === 15000 ? 40 : delay,
+        ...args,
+      );
+      class FirstImageLoads extends EventTarget {
+        naturalWidth = 0;
+        naturalHeight = 0;
+        complete = false;
+
+        get src() {
+          return this._src || "";
+        }
+
+        set src(value) {
+          this._src = value;
+          if (!value) return;
+          window.__fallbackImageRequests += 1;
+          if (window.__fallbackImageRequests !== 1) return;
+          this.naturalWidth = 1280;
+          this.naturalHeight = 960;
+          this.complete = true;
+          queueMicrotask(() => this.dispatchEvent(new Event("load")));
+        }
+      }
+      window.Image = FirstImageLoads;
+    });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 404,
+      body: "not available",
+    }));
+    const studio = await loadStudio(page, {
+      "camera.synthetic_map": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: { source: "local_robot_slam", map_revision: 1 },
+      },
+    });
+    await expect.poll(() => page.evaluate(() => window.__studio._fallbackVersion)).toBeTruthy();
+    await expect(studio.locator(".map-image")).toBeVisible();
+    await page.evaluate(() => {
+      if (window.__fallbackImageRequests === 1) window.__studio._update(true);
+    });
+
+    await expect.poll(() => page.evaluate(() => window.__fallbackImageRequests)).toBeGreaterThan(1);
+    await expect(studio.locator(".status")).toHaveText(
+      "Showing the last local map · reconnecting…",
+    );
+    await expect(studio.locator(".status")).toHaveAttribute("data-tone", "warning");
+    await expect(studio.locator(".map-image")).toBeVisible();
+    await expect(studio.locator(".empty")).toBeHidden();
+    await expect(studio.locator(".viewport")).toHaveAttribute("aria-busy", "false");
+    expect(await page.evaluate(() => ({
+      loader: window.__studio._fallbackLoader,
+      loadingVersion: window.__studio._fallbackLoadingVersion,
+      timer: window.__studio._fallbackLoadTimer,
+    }))).toEqual({ loader: undefined, loadingVersion: undefined, timer: undefined });
   });
 
   test("keeps the fallback stable and restores 3D after WebGL context loss", async ({ page }) => {

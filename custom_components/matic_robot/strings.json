@@ -72,6 +72,8 @@
     "map_status_loading_data": "Loading local 3D data…",
     "map_status_loading_scene": "Loading local 3D scene…",
     "map_status_no_map": "No local map data is available yet",
+    "map_status_image_retained": "Showing the last local map · reconnecting…",
+    "map_status_image_unavailable": "Local map image is unavailable",
     "map_status_room_map": "Live labeled room map",
     "map_status_scene_collecting": "Building local 3D scene · showing the local map",
     "map_status_scene_fallback": "3D scene is not ready · showing the local map",
