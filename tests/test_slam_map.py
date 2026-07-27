@@ -26,6 +26,7 @@ from custom_components.matic_robot.client.slam_map import (
     decode_slam_structure_tile,
     decode_slam_tile,
     encode_slam_scene,
+    parse_slam_scene_header,
     render_slam_map,
 )
 
@@ -301,6 +302,18 @@ def test_encode_slam_scene_deterministically_bounds_point_count() -> None:
     )
     assert metadata["sample_step"] == 513
     assert floor_count + surface_count == 2
+
+
+def test_scene_header_parser_rejects_incomplete_and_inconsistent_payloads() -> None:
+    scene = encode_slam_scene((decode_slam_tile(synthetic_slam_entry()),))
+    header = parse_slam_scene_header(scene)
+    assert header.metadata_bytes > 0
+    assert header.point_count == header.floor_points + header.surface_points
+
+    with pytest.raises(DecodeError, match="incomplete"):
+        parse_slam_scene_header(scene[:8])
+    with pytest.raises(DecodeError, match="invalid"):
+        parse_slam_scene_header(scene[:-1])
 
 
 def test_encode_slam_scene_rejects_empty_unbounded_or_invisible_data() -> None:

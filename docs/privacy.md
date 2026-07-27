@@ -67,18 +67,17 @@ fails closed instead of applying old coordinates to a new map. The resulting
 Repair exposes only an affected-area count, never names, coordinates, or map
 identifiers.
 
-The accumulated photographic/structural SLAM cache is kept in a separate
-private integration store. It is size-bounded, is not written to Recorder, and
-is removed when the config entry is deleted. Home Assistant backups can still
-include private integration storage, so encrypt and restrict backup access and
-do not share a backup when requesting support. Capacity or stream problems can
-leave a map incomplete. Content-free state, layer/drop/invalid counts, revision,
-stream state, and failure counts may be exposed for local troubleshooting, but
-there is no guaranteed last-scanned timestamp and downloaded diagnostics omit
-the map content itself.
+The current photographic/structural map and its timeline use private integration
+storage, not Recorder. Timeline retention is limited to 12 time-spaced scenes
+and 48 MiB compressed; current-map storage has separate tile and byte limits.
+Deleting the config entry removes both stores. Home Assistant backups can still
+contain them, so encrypt and restrict backup access and never attach a backup to
+a public issue. Diagnostics omit map content and history. Content-free health
+and count fields may be exposed locally; no guaranteed last-scanned timestamp is
+available.
 
-The admin-only scene catalog, point-cloud scene, and pose responses use
-`private, no-store` browser-cache policy. Any encoded scene retained in memory
+The admin-only catalog, scene, delta, timeline, historical-scene, and pose
+responses use `private, no-store` browser-cache policy. Any encoded scene retained in memory
 for rendering is purged when the integration unloads or is removed. This does
 not erase the private persisted SLAM store on an ordinary reload; deletion of
 the config entry does.

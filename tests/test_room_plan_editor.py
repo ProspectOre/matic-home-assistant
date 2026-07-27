@@ -150,13 +150,18 @@ def test_area_editor_has_labeled_zoomable_draw_and_pan_map() -> None:
 
 
 def test_area_editor_buttons_do_not_rebuild_or_escape_to_the_form() -> None:
-    """Undo/Clear keep focus in the editor and emit only the selector value."""
+    """Buttons preserve native activation without leaking into map gestures."""
     area = _JS[_JS.index("class MaticAreaEditor") :]
     guard = area[area.index("_guardButton(") : area.index("_mapPoint(")]
     assert 'event.addEventListener("pointerdown"' not in guard
     assert 'button.addEventListener("pointerdown"' in guard
-    assert "event.preventDefault();" in guard
-    assert "event.stopImmediatePropagation();" in guard
+    pointer_guard, click_guard = guard.split(
+        'button.addEventListener("click"', maxsplit=1
+    )
+    assert "event.preventDefault();" not in pointer_guard
+    assert "event.stopPropagation();" in pointer_guard
+    assert "event.preventDefault();" in click_guard
+    assert "event.stopPropagation();" in click_guard
     undo = area[area.index("_undo()") : area.index("_redo()")]
     assert "this._undoStack.pop()" in undo
     assert "this._setValue(previous, { record: false });" in undo

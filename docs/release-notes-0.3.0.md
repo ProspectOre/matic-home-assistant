@@ -17,7 +17,8 @@ Home Assistant while exposing saved areas to automations by name.
   Space-drag pans temporarily, and pointer capture is released after every
   completed or cancelled gesture.
 - Undo, Redo, and Clear mutate the existing editor without rebuilding it or
-  escaping into Home Assistant's form. Clear is recoverable through Undo.
+  escaping into Home Assistant's form. Clear is recoverable through Undo, and
+  pointer guards preserve native Safari/WebKit button activation.
 - Keyboard controls include Command/Control-Z, Shift-Command/Control-Z, D, P,
   plus, minus, 0 to fit, and Escape/Done editing to return to the name, mode,
   coverage, and Submit fields.
@@ -69,6 +70,8 @@ Home Assistant while exposing saved areas to automations by name.
   Room images are sized to the display (up to 2048 pixels) and coalesced while
   rendering so periodic updates cannot cancel and restart the same expensive
   image request.
+  Map controls stop gesture propagation without cancelling native button focus
+  or click synthesis.
 - The photographic camera is disabled by default. Scene and pose endpoints
   require an administrator and use `private, no-store` responses. In-memory
   encoded scenes are purged on unload and removal. No cloud, analytics,
@@ -76,10 +79,12 @@ Home Assistant while exposing saved areas to automations by name.
 - Map cache health, revision, truncation, layer/drop/invalid counts, stream
   state, and failures are surfaced without exposing map content. A limit-driven
   eviction forces `map_complete` false; balanced/settled pages do not prove
-  every surface was scanned. The viewer refreshes a bounded complete scene
-  after relevant changes; a guaranteed last-scanned timestamp, point-cloud
-  deltas, and historical timelines are not part of 0.3.
-- Removing the config entry also removes its private accumulated tile store.
+  every surface was scanned. The viewer starts with a bounded complete scene,
+  then applies compressed binary deltas through an authenticated long-poll.
+  Missing or inefficient bases fall back to a complete scene in that request.
+- Stable scenes enter a private timeline capped at 12 checkpoints and 48 MiB
+  compressed. Removing the config entry removes both current tiles and history.
+- A guaranteed last-scanned timestamp is not exposed.
 - Legacy mixed-mission cache repair retains a usable photographic layer instead
   of allowing a mismatched structural page to erase the 3D scene.
 
@@ -117,10 +122,11 @@ Home Assistant while exposing saved areas to automations by name.
 
 ## Verification posture
 
-The unpublished local candidate passed 681 tests / 6,584 statements at 100%
-coverage, 17 real-browser UI tests, strict typing, lint/format, privacy,
-wheel/source parity, and clean-wheel import. Live Home Assistant/Safari proof
-covered maximum-detail 3D, exact pose, orbit, top-down, labeled Rooms, forced
+The unpublished local candidate passes 713 Python tests / 6,955 statements at
+100% coverage and 25 real-browser interaction tests, plus strict typing,
+lint/format, privacy, wheel/source parity, and clean-wheel import. Live Home
+Assistant/Safari proof covered maximum-detail 3D, exact pose, orbit, top-down,
+labeled Rooms, forced
 refresh, repeated updates, expired-session recovery, and a second clean restart
 with no Matic task leak, authentication failure, or traceback. No push, PR,
 tag, or release was made.

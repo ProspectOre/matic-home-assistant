@@ -36,6 +36,10 @@ from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import async_register_services
+from .slam_history import (
+    SlamHistoryStore,
+    async_collect_slam_history,
+)
 from .slam_map_store import SlamMapStore
 
 __all__ = ["async_migrate_entry"]
@@ -50,6 +54,7 @@ class MaticRuntimeData:
     cleaning_plans: CleaningPlanManager
     firmware_tracker: FirmwareTracker
     slam_map: SlamMapStore
+    slam_history: SlamHistoryStore
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -79,6 +84,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
     slam_map: SlamMapStore | None = None
+    slam_history: SlamHistoryStore | None = None
     try:
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
@@ -97,14 +103,31 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
+        slam_history = SlamHistoryStore(hass, entry.entry_id)
+        await slam_history.async_load()
         entry.runtime_data = MaticRuntimeData(
-            client, coordinator, plans, firmware_tracker, slam_map
+            client,
+            coordinator,
+            plans,
+            firmware_tracker,
+            slam_map,
+            slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
             f"{DOMAIN} photographic map collector",
+        )
+        entry.async_create_background_task(
+            hass,
+            async_collect_slam_history(
+                hass,
+                slam_map,
+                slam_history,
+                lambda: coordinator.data.floor_plan,
+            ),
+            f"{DOMAIN} map history collector",
         )
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
 
@@ -122,6 +145,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         _async_sync_area_issue()
     except BaseException:
+        if slam_history is not None:
+            await slam_history.async_shutdown()
         if slam_map is not None:
             await slam_map.async_shutdown()
         client.close()
@@ -135,6 +160,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         str(entry.data[CONF_SERIAL_NUMBER])
     )
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
         entry.runtime_data.client.close()
@@ -152,3 +178,5 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
         await tracker.async_remove_robot(entry.entry_id)
     slam_map = SlamMapStore(hass, entry.entry_id)
     await slam_map.async_remove()
+    slam_history = SlamHistoryStore(hass, entry.entry_id)
+    await slam_history.async_remove()

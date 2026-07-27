@@ -607,12 +607,11 @@ class MaticAreaEditor extends HTMLElement {
   _guardButton(button, onAction) {
     button.addEventListener("pointerdown", (event) => {
       if (button.disabled || event.button !== 0) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      event.stopPropagation();
     });
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      event.stopImmediatePropagation();
+      event.stopPropagation();
       if (button.disabled) return;
       onAction(event);
     });

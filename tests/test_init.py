@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend
+from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
     async_remove_entry,
@@ -93,7 +94,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 3
+    assert hass.http.register_view.call_count == 6
     from custom_components.matic_robot.frontend import (
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
@@ -148,6 +149,10 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )
+    slam_history = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_shutdown=AsyncMock(),
+    )
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
@@ -157,6 +162,14 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
         ),
         patch("custom_components.matic_robot.HermesCredential.from_storage") as decode,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
+        patch(
+            "custom_components.matic_robot.SlamHistoryStore",
+            return_value=slam_history,
+        ),
+        patch(
+            "custom_components.matic_robot.async_collect_slam_history",
+            return_value=MagicMock(),
+        ) as collect_history,
         patch(
             "custom_components.matic_robot.async_sync_custom_area_issue"
         ) as sync_area_issue,
@@ -174,9 +187,12 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     )
     assert entry.runtime_data.client is client
     assert entry.runtime_data.slam_map is slam_map
+    assert entry.runtime_data.slam_history is slam_history
     slam_map.async_load.assert_awaited_once()
+    slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
-    entry.async_create_background_task.assert_called_once()
+    collect_history.assert_called_once()
+    assert entry.async_create_background_task.call_count == 2
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -230,6 +246,44 @@ async def test_setup_closes_client_when_first_refresh_fails() -> None:
     client.close.assert_called_once()
 
 
+async def test_revoked_credential_enters_reauthentication_before_setup() -> None:
+    hass = SimpleNamespace(
+        config=SimpleNamespace(time_zone="UTC"),
+        config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
+        data={
+            DOMAIN: {
+                DATA_PLAN_MANAGER: MagicMock(),
+                DATA_FIRMWARE_TRACKER: MagicMock(),
+            }
+        },
+    )
+    entry = _entry()
+    client = MagicMock()
+    coordinator = SimpleNamespace(
+        async_config_entry_first_refresh=AsyncMock(
+            side_effect=ConfigEntryAuthFailed("credential rejected")
+        )
+    )
+
+    with (
+        patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
+        patch(
+            "custom_components.matic_robot.MaticCoordinator",
+            return_value=coordinator,
+        ),
+        patch("custom_components.matic_robot.HermesCredential.from_storage"),
+        patch("custom_components.matic_robot.SlamMapStore") as slam_store,
+        patch("custom_components.matic_robot.SlamHistoryStore") as history_store,
+        pytest.raises(ConfigEntryAuthFailed, match="rejected"),
+    ):
+        await async_setup_entry(hass, entry)
+
+    client.close.assert_called_once()
+    hass.config_entries.async_forward_entry_setups.assert_not_awaited()
+    slam_store.assert_not_called()
+    history_store.assert_not_called()
+
+
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
@@ -253,6 +307,10 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )
+    slam_history = SimpleNamespace(
+        async_load=AsyncMock(),
+        async_shutdown=AsyncMock(),
+    )
 
     with (
         patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
@@ -262,18 +320,24 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         ),
         patch("custom_components.matic_robot.HermesCredential.from_storage"),
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
+        patch(
+            "custom_components.matic_robot.SlamHistoryStore",
+            return_value=slam_history,
+        ),
         pytest.raises(RuntimeError, match="platform setup failed"),
     ):
         await async_setup_entry(hass, entry)
 
     client.close.assert_called_once()
     slam_map.async_shutdown.assert_awaited_once()
+    slam_history.async_shutdown.assert_awaited_once()
 
 
 @pytest.mark.parametrize("unload_ok", [True, False])
 async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -> None:
     client = MagicMock()
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
+    slam_history = SimpleNamespace(async_shutdown=AsyncMock())
     plans = SimpleNamespace(async_cancel_and_wait=AsyncMock())
     entry = SimpleNamespace(
         entry_id="entry",
@@ -281,6 +345,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
         runtime_data=SimpleNamespace(
             client=client,
             slam_map=slam_map,
+            slam_history=slam_history,
             cleaning_plans=plans,
         ),
     )
@@ -307,6 +372,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
     assert slam_map.async_shutdown.await_count == int(unload_ok)
+    assert slam_history.async_shutdown.await_count == int(unload_ok)
 
 
 async def test_remove_entry_erases_firmware_history() -> None:
@@ -327,9 +393,14 @@ async def test_remove_entry_erases_firmware_history() -> None:
     )
     entry = SimpleNamespace(entry_id="entry")
     slam_map = SimpleNamespace(async_remove=AsyncMock())
+    slam_history = SimpleNamespace(async_remove=AsyncMock())
 
     with (
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
+        patch(
+            "custom_components.matic_robot.SlamHistoryStore",
+            return_value=slam_history,
+        ),
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_area_issue,
@@ -340,11 +411,16 @@ async def test_remove_entry_erases_firmware_history() -> None:
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
+    slam_history.async_remove.assert_awaited_once()
     delete_area_issue.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
     with (
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
+        patch(
+            "custom_components.matic_robot.SlamHistoryStore",
+            return_value=slam_history,
+        ),
         patch(
             "custom_components.matic_robot.async_delete_custom_area_issue"
         ) as delete_bare_area_issue,

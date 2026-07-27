@@ -150,20 +150,18 @@ context is lost, the labeled local camera map stays visible across refreshes;
 the retained 3D scene returns without another download when rendering recovers.
 Clicking, dragging, or scrolling the map gives it keyboard focus, so the arrow
 keys and shortcuts work immediately after mouse navigation without an extra
-click. During startup or a live map update, the studio serves a coherent
-captured scene and advances on the next poll; it does not wait for the collector
-to become completely idle. With multiple Matic entries, scene, pose, ETag, and
-camera-fallback state remain scoped to the selected robot even when revisions
-match or an older request finishes late. Unloading the final entry clears the
-retained point buffer, camera source, overlays, pose, ETag, and scene references
-from the browser as well as the backend. Catalog, scene, pose, and camera-image
-requests are time-bounded. If an image refresh stalls, the last usable local
-map stays visible with reconnecting status; a stalled first load exits its busy
-state with a retryable error instead of spinning indefinitely.
-Robot pose updates and map-page updates have different cadences, so a marker or
-scene can briefly lag the physical robot. A content revision or health change
-asks the viewer to reload a bounded scene; 0.3 does not send point-level deltas
-or expose a guaranteed last-scanned timestamp.
+click. The studio loads one coherent scene, then holds a bounded authenticated
+long-poll and applies compressed binary deltas. A stale base or inefficient
+delta falls back to a complete scene in the same request. The timeline beneath
+the map browses private, time-spaced checkpoints and returns to live updates
+with **Live**. Checkpoints are capped at 12 items and 48 MiB compressed.
+
+Multiple entries keep scene, pose, ETag, timeline, and fallback state isolated.
+Unload clears browser buffers and backend scene caches. Catalog, scene, delta,
+history, pose, and camera requests are time-bounded; the last usable map remains
+visible during a transient failure. Pose and map pages have different cadences,
+so the marker can briefly lag the robot. No guaranteed last-scanned timestamp is
+available.
 
 The admin-only Map Studio catalog reports a content-free map health state:
 `empty`, `collecting`, `incomplete`, `ready`, `truncated`, or `degraded`, plus

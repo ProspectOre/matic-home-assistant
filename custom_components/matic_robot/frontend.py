@@ -10,7 +10,14 @@ from homeassistant.components import frontend
 from homeassistant.components.http import StaticPathConfig
 from homeassistant.core import HomeAssistant
 
-from .slam_scene import MaticSlamCatalogView, MaticSlamPoseView, MaticSlamSceneView
+from .slam_scene import (
+    MaticSlamCatalogView,
+    MaticSlamDeltaView,
+    MaticSlamHistorySceneView,
+    MaticSlamHistoryView,
+    MaticSlamPoseView,
+    MaticSlamSceneView,
+)
 
 # Include both the packaged version and the editor content in the cache-buster.
 # Both are loaded once at import time, off the event loop.
@@ -61,16 +68,16 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
     hass.data[DATA_SLAM_POSE_VIEW] = pose_view
     hass.http.register_view(scene_view)
+    hass.http.register_view(MaticSlamDeltaView(scene_view))
     hass.http.register_view(pose_view)
+    hass.http.register_view(MaticSlamHistoryView)
+    hass.http.register_view(MaticSlamHistorySceneView)
     hass.http.register_view(MaticSlamCatalogView)
     frontend.add_extra_js_url(
         hass,
         ROOM_PLAN_EDITOR_PATH,
     )
-    # Registering a custom panel only writes frontend metadata; panel_custom is
-    # deliberately not a manifest dependency. The integration must remain
-    # usable for config-flow tests and headless Home Assistant installs where
-    # the frontend's optional Python package is unavailable.
+    # Keep panel_custom optional for config flows and headless installations.
     from homeassistant.components.panel_custom import async_register_panel
 
     if "matic-map" not in hass.data.get(frontend.DATA_PANELS, {}):

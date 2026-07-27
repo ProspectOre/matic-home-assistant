@@ -1,4 +1,5 @@
 import { expect, test } from "@playwright/test";
+import { deflateSync } from "node:zlib";
 
 const ROOMS = [
   {
@@ -156,6 +157,23 @@ function syntheticScene(roomName = "Synthetic room", pointX = 10) {
   return scene;
 }
 
+function syntheticDelta(base, scene, baseRevision, revision) {
+  const difference = Buffer.alloc(Math.max(base.length, scene.length));
+  for (let index = 0; index < difference.length; index += 1) {
+    difference[index] = (base[index] || 0) ^ (scene[index] || 0);
+  }
+  const compressed = deflateSync(difference);
+  const header = Buffer.alloc(36);
+  header.write("MATICDLT", 0, "binary");
+  header.writeUInt16LE(1, 8);
+  header.writeUInt16LE(1, 10);
+  header.writeBigUInt64LE(BigInt(baseRevision), 12);
+  header.writeBigUInt64LE(BigInt(revision), 20);
+  header.writeUInt32LE(scene.length, 28);
+  header.writeUInt32LE(compressed.length, 32);
+  return Buffer.concat([header, compressed]);
+}
+
 test.describe("custom-area editor", () => {
   test.beforeEach(async ({ page }) => installBrowserDoubles(page));
 
@@ -176,6 +194,15 @@ test.describe("custom-area editor", () => {
 
     await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(1);
     await expect(editor.locator(".marks circle")).toHaveCount(1);
+    expect(await editor.locator(".undo").evaluate((button) => {
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      });
+      button.dispatchEvent(event);
+      return event.defaultPrevented;
+    })).toBe(false);
     await editor.locator(".undo").click();
     await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(0);
     await editor.locator(".redo").click();
@@ -205,6 +232,281 @@ test.describe("custom-area editor", () => {
 });
 
 test.describe("map studio", () => {
+  test("streams bounded scene deltas without refetching the full map", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const initial = syntheticScene("Initial room", 10);
+    const updated = syntheticScene("Updated room", 24);
+    const delta = syntheticDelta(initial, updated, 1, 2);
+    let fullSceneRequests = 0;
+    let deltaRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/live-scene",
+        delta_url: "/live-delta",
+        map_revision: 1,
+        map_complete: true,
+      }] }),
+    }));
+    await page.route("**/live-scene", (route) => {
+      fullSceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: initial,
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Revision": "1",
+          ETag: '"scene-1"',
+        },
+      });
+    });
+    await page.route("**/live-delta?since=*", async (route) => {
+      deltaRequests += 1;
+      if (deltaRequests === 1) {
+        return route.fulfill({
+          status: 200,
+          body: delta,
+          headers: {
+            "Content-Type": "application/vnd.matic.slam-delta",
+            "X-Matic-Base-Revision": "1",
+            "X-Matic-Revision": "2",
+            ETag: '"scene-2"',
+          },
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return route.fulfill({ status: 204 });
+    });
+
+    const studio = await loadStudio(page);
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Updated room");
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneRevision)).toBe(2);
+    expect(fullSceneRequests).toBe(1);
+    expect(deltaRequests).toBeGreaterThanOrEqual(1);
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+    await page.evaluate(() => window.__studio._stopDeltaStream());
+  });
+
+  test("rejects a scene delta that expands past its declared bound", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [] }),
+    }));
+    await loadStudio(page);
+    const compressed = deflateSync(Buffer.alloc(64, 1)).toString("base64");
+
+    const result = await page.evaluate(async (encoded) => {
+      const bytes = Uint8Array.from(atob(encoded), (character) =>
+        character.charCodeAt(0));
+      try {
+        await window.__studio._inflateSceneDelta(bytes, 8);
+        return "accepted";
+      } catch (error) {
+        return error.message;
+      }
+    }, compressed);
+
+    expect(result).toContain("bounds");
+  });
+
+  test("recovers a delta stream with a complete scene when the base expires", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const initial = syntheticScene("Initial room", 10);
+    const replacement = syntheticScene("Recovered room", 30);
+    let updateRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/fallback-scene",
+        delta_url: "/fallback-delta",
+        map_revision: 1,
+        map_complete: true,
+      }] }),
+    }));
+    await page.route("**/fallback-scene", (route) => route.fulfill({
+      status: 200,
+      body: initial,
+      headers: {
+        "Content-Type": "application/vnd.matic.slam-scene",
+        "X-Matic-Revision": "1",
+      },
+    }));
+    await page.route("**/fallback-delta?since=*", async (route) => {
+      updateRequests += 1;
+      if (updateRequests === 1) {
+        return route.fulfill({
+          status: 200,
+          body: replacement,
+          headers: {
+            "Content-Type": "application/vnd.matic.slam-scene",
+            "X-Matic-Revision": "9",
+          },
+        });
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return route.fulfill({ status: 204 });
+    });
+
+    await loadStudio(page);
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Recovered room");
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneRevision)).toBe(9);
+    await page.evaluate(() => window.__studio._stopDeltaStream());
+  });
+
+  test("scrubs private map history and returns to the live stream", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const snapshots = [
+      {
+        id: "snapshot-old",
+        created_at: "2026-07-25T08:30:00Z",
+        revision: 2,
+        point_count: 1,
+        scene_url: "/history-old",
+      },
+      {
+        id: "snapshot-new",
+        created_at: "2026-07-26T09:45:00Z",
+        revision: 6,
+        point_count: 1,
+        scene_url: "/history-new",
+      },
+    ];
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/timeline-live",
+        history_url: "/timeline-history",
+        history_count: snapshots.length,
+        map_revision: 10,
+        map_complete: true,
+      }] }),
+    }));
+    await page.route("**/timeline-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots }),
+    }));
+    await page.route("**/timeline-live", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Live room", 40),
+      headers: {
+        "Content-Type": "application/vnd.matic.slam-scene",
+        "X-Matic-Revision": "10",
+      },
+    }));
+    await page.route("**/history-old", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Old room", 8),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+    await page.route("**/history-new", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Recent room", 16),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+
+    const studio = await loadStudio(page);
+    const timeline = studio.locator(".timeline");
+    await expect(timeline).toBeVisible();
+    await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+    expect(await timeline.locator(".timeline-earlier").evaluate((button) => {
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      });
+      button.dispatchEvent(event);
+      return event.defaultPrevented;
+    })).toBe(false);
+    await timeline.locator(".timeline-earlier").click();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Recent room");
+    await expect(studio.locator(".status")).toContainText("Map captured");
+    await timeline.locator(".timeline-earlier").click();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Old room");
+    await expect(timeline.locator(".timeline-earlier")).toBeDisabled();
+    await timeline.locator(".timeline-live").click();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Live room");
+    await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("isolates timeline requests when switching robots", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [] }),
+    }));
+    await page.route("**/history-a", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 100));
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ snapshots: [{
+          id: "snapshot-a",
+          created_at: "2026-07-25T08:30:00Z",
+          scene_url: "/scene-a",
+        }] }),
+      });
+    });
+    await page.route("**/history-b", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [
+        {
+          id: "snapshot-external",
+          created_at: "2026-07-26T09:00:00Z",
+          scene_url: "https://invalid.example/scene",
+        },
+        {
+          id: "snapshot-b",
+          created_at: "2026-07-26T09:45:00Z",
+          scene_url: "/scene-b",
+        },
+      ] }),
+    }));
+    await loadStudio(page);
+    await expect.poll(() => page.evaluate(() => window.__studio._catalogReady)).toBe(true);
+
+    const result = await page.evaluate(async () => {
+      const first = window.__studio._fetchHistory({ attributes: {
+        entry_id: "robot-a",
+        history_url: "/history-a",
+        history_count: 1,
+      } }, true);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      const second = window.__studio._fetchHistory({ attributes: {
+        entry_id: "robot-b",
+        history_url: "/history-b",
+        history_count: 2,
+      } }, true);
+      await Promise.allSettled([first, second]);
+      return {
+        entryId: window.__studio._historyEntryId,
+        ids: window.__studio._history.map((snapshot) => snapshot.id),
+      };
+    });
+
+    expect(result).toEqual({ entryId: "robot-b", ids: ["snapshot-b"] });
+  });
+
   test("renders its controls and supports real pointer drag plus synthetic pinch/twist", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const studio = await loadStudio(page);

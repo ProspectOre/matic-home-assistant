@@ -78,8 +78,8 @@ The integration adds Home Assistant-native planning and automation:
   the robot's local color SLAM point cloud in **3D**, orthographic
   **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
   twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
-  control, full-screen use, and last-good-scene recovery without a vendor or
-  third-party map upload.
+  control, full-screen use, live point-cloud deltas, a private map timeline,
+  and last-good-scene recovery without a vendor or third-party map upload.
 - **Drawn custom areas.** Paint a reusable subset of one or more rooms in
   **Configure**, save it by name, and clean only that footprint from an
   automation. Geometry stays in Home Assistant; action calls contain only the
@@ -216,19 +216,21 @@ uses the LAN.
   stream or recording browser. Map detail arrives only while the robot emits
   pages; it can be incomplete, stale, or unavailable after a remap, stream
   interruption, storage limit, or unsupported firmware.
-- The Map Studio currently transfers a bounded full scene when its map revision
-  changes; it does not yet stream point-cloud deltas or provide historical map
-  timelines. The status shown in Home Assistant is a health signal, not proof
-  that every part of the home has been scanned.
+- Map Studio starts with one bounded full scene, then long-polls authenticated
+  revision changes and applies compressed point-cloud deltas. If its retained
+  base is unavailable or a delta would be inefficient, the same request returns
+  a complete scene. Private, time-spaced map checkpoints are limited to 12
+  items and 48 MiB of compressed data; deleting the integration removes them.
+  Map health is not proof that every part of the home has been scanned.
 - Pairing credentials, certificate secrets, Wi-Fi passwords, account tokens,
   Matter setup codes, and arbitrary raw writes are never exposed.
 - If discovery fails, confirm the robot and Home Assistant share a
   multicast-capable LAN.
 - Every Bluetooth pairing displays a fresh six-digit code on Matic. Enter that
   code only in the active Home Assistant setup dialog.
-- If a requested code expires or is rejected, turn Pairing mode off and back on
-  in the Matic app, select **Submit** again, then enter the fresh code when Home
-  Assistant asks.
+- If a displayed code expires or is rejected, the open flow starts a fresh bond
+  and asks for the new code. If the app's pairing window has closed, turn
+  Pairing mode off and back on before retrying.
 - If setup times out, review **Settings → System → Logs** for the sanitized
   `matic_robot` pairing-timeout entry before retrying.
 - A new Bluetooth pairing deliberately proves physical access: someone at the

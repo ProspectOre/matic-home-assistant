@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import UTC, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -24,12 +25,21 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.slam_scene import (
     CATALOG_API_URL,
+    DELTA_API_URL,
+    HISTORY_API_URL,
+    HISTORY_SCENE_API_URL,
     POSE_API_URL,
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
     MaticSlamCatalogView,
+    MaticSlamDeltaView,
+    MaticSlamHistorySceneView,
+    MaticSlamHistoryView,
     MaticSlamPoseView,
     MaticSlamSceneView,
+    delta_api_url,
+    history_api_url,
+    history_scene_api_url,
     pose_api_url,
     scene_api_url,
 )
@@ -80,6 +90,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 if entries is not None
                 else (synthetic_slam_entry(page_x=0, page_y=0),)
             ),
+            async_add_listener=MagicMock(return_value=MagicMock()),
         ),
         coordinator=SimpleNamespace(
             data=SimpleNamespace(
@@ -87,6 +98,10 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
             )
+        ),
+        slam_history=SimpleNamespace(
+            catalog=MagicMock(return_value=()),
+            async_scene=AsyncMock(return_value=None),
         ),
     )
 
@@ -101,9 +116,15 @@ def _hass(entry) -> SimpleNamespace:
     )
 
 
-def _request(hass, *, etag: str | None = None, admin: bool = True):
+def _request(
+    hass,
+    *,
+    etag: str | None = None,
+    admin: bool = True,
+    path: str = "/",
+):
     headers = {"If-None-Match": etag} if etag is not None else None
-    request = make_mocked_request("GET", "/", headers=headers, app={KEY_HASS: hass})
+    request = make_mocked_request("GET", path, headers=headers, app={KEY_HASS: hass})
     request["hass_user"] = SimpleNamespace(is_admin=admin)
     return request
 
@@ -175,7 +196,7 @@ async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
 
     assert response.status == HTTPStatus.OK
     assert calls == 1
-    assert view._cache["entry"].key == (7, id(captured_floor_plan))
+    assert view._cache["entry"].key == (7, captured_floor_plan)
 
 
 async def test_scene_advances_coherent_snapshots_during_continuous_updates() -> None:
@@ -198,6 +219,50 @@ async def test_scene_advances_coherent_snapshots_during_continuous_updates() -> 
     assert hass.async_add_executor_job.await_count == 2
     assert view._cache["entry"].key[0] == 8
     assert runtime.slam_map.revision == 9
+
+
+async def test_scene_revision_advances_when_room_metadata_changes() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    first = await view.get(_request(hass), "entry")
+    original = runtime.coordinator.data.floor_plan
+    runtime.coordinator.data.floor_plan = FloorPlan(
+        original.mission_id,
+        original.partition_protocol_id,
+        original.partition_id_wire,
+        (
+            Room(
+                "room-1",
+                "Pantry",
+                "protocol-1",
+                b"room",
+                original.rooms[0].boundary,
+            ),
+        ),
+    )
+
+    second = await view.get(_request(hass), "entry")
+
+    assert first.headers["X-Matic-Revision"] == "7"
+    assert second.headers["X-Matic-Revision"] == "8"
+    assert first.body != second.body
+    assert runtime.slam_map.revision == 7
+
+
+async def test_scene_cache_retains_two_transport_revisions() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    for revision in (7, 8, 9):
+        runtime.slam_map.revision = revision
+        response = await view.get(_request(hass), "entry")
+        assert response.headers["X-Matic-Revision"] == str(revision)
+
+    assert view.scene_for_revision("entry", 7) is None
+    assert view.scene_for_revision("entry", 8) is not None
+    assert view.scene_for_revision("entry", 9) is not None
 
 
 async def test_scene_retries_a_decode_failure_from_an_obsolete_snapshot() -> None:
@@ -503,7 +568,10 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
             {
                 "entry_id": loaded.entry_id,
                 "scene_url": f"/api/matic_robot/slam_scene/{loaded.entry_id}",
+                "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
+                "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
+                "history_count": 0,
                 "map_revision": 7,
                 "map_health": "ready",
                 "map_complete": True,
@@ -598,3 +666,201 @@ def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
         "{entry_id}", "synthetic"
     )
     assert pose_api_url("synthetic") == POSE_API_URL.replace("{entry_id}", "synthetic")
+    assert delta_api_url("synthetic") == DELTA_API_URL.replace(
+        "{entry_id}", "synthetic"
+    )
+    assert history_api_url("synthetic") == HISTORY_API_URL.replace(
+        "{entry_id}", "synthetic"
+    )
+    assert history_scene_api_url(
+        "synthetic", "snapshot"
+    ) == HISTORY_SCENE_API_URL.replace("{entry_id}", "synthetic").replace(
+        "{snapshot_id}", "snapshot"
+    )
+
+
+async def test_delta_view_streams_revision_change_and_full_fallback() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    await scene_view.get(_request(hass), "entry")
+    runtime.slam_map.revision = 8
+    runtime.slam_map.entries.return_value = (
+        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    )
+    view = MaticSlamDeltaView(scene_view)
+
+    delta = await view.get(_request(hass, path="/?since=7"), "entry")
+
+    assert delta.status == HTTPStatus.OK
+    assert delta.content_type == "application/vnd.matic.slam-delta"
+    assert delta.body.startswith(b"MATICDLT")
+    assert delta.headers["X-Matic-Base-Revision"] == "7"
+    assert delta.headers["X-Matic-Revision"] == "8"
+
+    fallback = await view.get(_request(hass, path="/?since=1"), "entry")
+    assert fallback.status == HTTPStatus.OK
+    assert fallback.content_type == "application/vnd.matic.slam-scene"
+    assert fallback.body.startswith(b"MATIC3D\x00")
+
+
+async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
+    runtime = _runtime()
+    entry = _entry(runtime)
+    hass = _hass(entry)
+    view = MaticSlamDeltaView(MaticSlamSceneView())
+
+    assert (
+        await view.get(_request(hass, path="/?since=invalid"), "entry")
+    ).status == HTTPStatus.BAD_REQUEST
+    with pytest.raises(Unauthorized):
+        await view.get(_request(hass, admin=False, path="/?since=7"), "entry")
+
+    with patch("custom_components.matic_robot.slam_scene.DELTA_WAIT_SECONDS", 0):
+        timeout = await view.get(_request(hass, path="/?since=7"), "entry")
+    assert timeout.status == HTTPStatus.NO_CONTENT
+    remove = runtime.slam_map.async_add_listener.return_value
+    remove.assert_called_once()
+
+    entry.state = ConfigEntryState.NOT_LOADED
+    assert (
+        await view.get(_request(hass, path="/?since=7"), "entry")
+    ).status == HTTPStatus.NOT_FOUND
+
+
+@pytest.mark.parametrize(
+    ("result", "status"),
+    [(DecodeError(), HTTPStatus.CONFLICT), (None, HTTPStatus.NOT_FOUND)],
+)
+async def test_delta_view_handles_initial_scene_failure(result, status) -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = SimpleNamespace(async_scene=AsyncMock())
+    if isinstance(result, BaseException):
+        scene_view.async_scene.side_effect = result
+    else:
+        scene_view.async_scene.return_value = result
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == status
+
+
+@pytest.mark.parametrize(
+    ("second", "status"),
+    [
+        (DecodeError(), HTTPStatus.CONFLICT),
+        (None, HTTPStatus.NOT_FOUND),
+        ("same", HTTPStatus.NO_CONTENT),
+    ],
+)
+async def test_delta_view_revalidates_scene_after_wakeup(second, status) -> None:
+    runtime = _runtime()
+    current = SimpleNamespace(revision=7)
+    scene_view = SimpleNamespace(
+        async_scene=AsyncMock(),
+        scene_for_revision=MagicMock(),
+    )
+    if isinstance(second, BaseException):
+        scene_view.async_scene.side_effect = [current, second]
+    else:
+        scene_view.async_scene.side_effect = [
+            current,
+            current if second == "same" else second,
+        ]
+
+    def wake(listener):
+        listener()
+        return MagicMock()
+
+    runtime.slam_map.async_add_listener.side_effect = wake
+    hass = _hass(_entry(runtime))
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == status
+
+
+async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
+    runtime = _runtime()
+    entry = _entry(runtime)
+    current = SimpleNamespace(revision=7)
+    scene_view = SimpleNamespace(async_scene=AsyncMock(return_value=current))
+
+    def unload(listener):
+        entry.state = ConfigEntryState.NOT_LOADED
+        listener()
+        return MagicMock()
+
+    runtime.slam_map.async_add_listener.side_effect = unload
+    hass = _hass(entry)
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == HTTPStatus.NOT_FOUND
+
+
+async def test_history_views_list_serve_hide_and_require_admin() -> None:
+    runtime = _runtime()
+    snapshot = SimpleNamespace(
+        snapshot_id="0123456789abcdef01234567",
+        created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
+        revision=5,
+        point_count=1025,
+    )
+    runtime.slam_history.catalog.return_value = (snapshot,)
+    scene = (
+        await MaticSlamSceneView().get(_request(_hass(_entry(runtime))), "entry")
+    ).body
+    runtime.slam_history.async_scene.side_effect = lambda snapshot_id: (
+        scene if snapshot_id == snapshot.snapshot_id else None
+    )
+    hass = _hass(_entry(runtime))
+
+    catalog = await MaticSlamHistoryView().get(_request(hass), "entry")
+    assert json.loads(catalog.body) == {
+        "entry_id": "entry",
+        "snapshots": [
+            {
+                "id": snapshot.snapshot_id,
+                "created_at": "2026-07-26T12:00:00+00:00",
+                "revision": 5,
+                "point_count": 1025,
+                "scene_url": (
+                    "/api/matic_robot/slam_history_scene/entry/0123456789abcdef01234567"
+                ),
+            }
+        ],
+    }
+    response = await MaticSlamHistorySceneView().get(
+        _request(hass), "entry", snapshot.snapshot_id
+    )
+    assert response.status == HTTPStatus.OK
+    assert response.body == scene
+    assert response.headers["ETag"] == f'"{snapshot.snapshot_id}"'
+    assert (
+        await MaticSlamHistorySceneView().get(_request(hass), "entry", "missing")
+    ).status == HTTPStatus.NOT_FOUND
+
+    with pytest.raises(Unauthorized):
+        await MaticSlamHistoryView().get(_request(hass, admin=False), "entry")
+    with pytest.raises(Unauthorized):
+        await MaticSlamHistorySceneView().get(
+            _request(hass, admin=False), "entry", snapshot.snapshot_id
+        )
+
+    hass.config_entries.async_get_entry.return_value = None
+    assert (
+        await MaticSlamHistoryView().get(_request(hass), "entry")
+    ).status == HTTPStatus.NOT_FOUND
+    assert (
+        await MaticSlamHistorySceneView().get(
+            _request(hass), "entry", snapshot.snapshot_id
+        )
+    ).status == HTTPStatus.NOT_FOUND

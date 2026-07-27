@@ -5,6 +5,8 @@ const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
 const MATIC_MAP_PREFERENCES_VERSION = 2;
 const MATIC_CATALOG_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
+const MATIC_DELTA_REQUEST_TIMEOUT_MS = 30000;
+const MATIC_HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const MATIC_POSE_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_FALLBACK_IMAGE_TIMEOUT_MS = 15000;
 const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
@@ -118,6 +120,10 @@ class MaticMapStudio extends HTMLElement {
     this._latestSceneState = undefined;
     this._pendingSceneRefresh = false;
     this._pendingSceneForce = false;
+    this._deltaAbortController = undefined;
+    this._deltaGeneration = 0;
+    this._deltaUrl = undefined;
+    this._deltaRunning = false;
     this._poseLoading = false;
     this._poseAbortController = undefined;
     this._poseRequestUrl = undefined;
@@ -131,6 +137,15 @@ class MaticMapStudio extends HTMLElement {
     this._catalogLoading = false;
     this._catalogReady = false;
     this._catalogAbortController = undefined;
+    this._history = [];
+    this._historyUrl = undefined;
+    this._historyIdentity = undefined;
+    this._historyLoading = false;
+    this._historyAbortController = undefined;
+    this._historyRequestUrl = undefined;
+    this._historyEntryId = undefined;
+    this._historySceneAbortController = undefined;
+    this._selectedHistoryId = undefined;
     this._pointers = new Map();
     this._drag = undefined;
     this._pinch = undefined;
@@ -233,6 +248,11 @@ class MaticMapStudio extends HTMLElement {
     this._pendingSceneForce = false;
     this._sceneAbortController?.abort();
     this._sceneAbortController = undefined;
+    this._stopDeltaStream();
+    this._historyAbortController?.abort();
+    this._historyAbortController = undefined;
+    this._historySceneAbortController?.abort();
+    this._historySceneAbortController = undefined;
     this._pendingPoseRefresh = false;
     this._poseAbortController?.abort();
     this._poseAbortController = undefined;
@@ -430,15 +450,195 @@ class MaticMapStudio extends HTMLElement {
     };
   }
 
+  async _fetchHistory(state, force = false) {
+    const url = state?.attributes?.history_url;
+    const entryId = state?.attributes?.entry_id;
+    const identity = `${url || ""}:${state?.attributes?.history_count ?? ""}`;
+    if (!url) return;
+    if (entryId !== this._historyEntryId) {
+      this._historyAbortController?.abort();
+      this._historySceneAbortController?.abort();
+      this._history = [];
+      this._historyUrl = undefined;
+      this._historyIdentity = undefined;
+      this._historyEntryId = entryId;
+      this._selectedHistoryId = undefined;
+      this._syncTimeline();
+    }
+    if (!force && this._historyIdentity === identity) return;
+    if (this._historyLoading) {
+      if (!force && this._historyRequestUrl === url) return;
+      this._historyAbortController?.abort();
+    }
+    this._historyLoading = true;
+    const controller = new AbortController();
+    this._historyAbortController = controller;
+    this._historyRequestUrl = url;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      MATIC_HISTORY_REQUEST_TIMEOUT_MS,
+    );
+    try {
+      const response = await this._authenticatedFetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) return;
+      const payload = await response.json();
+      if (controller.signal.aborted) return;
+      this._history = (Array.isArray(payload?.snapshots) ? payload.snapshots : [])
+        .filter((snapshot) =>
+          snapshot
+          && typeof snapshot.id === "string"
+          && typeof snapshot.scene_url === "string"
+          && snapshot.scene_url.startsWith("/")
+          && Number.isFinite(Date.parse(snapshot.created_at)))
+        .slice(-12);
+      this._historyUrl = url;
+      this._historyIdentity = identity;
+      if (
+        this._selectedHistoryId
+        && !this._history.some(
+          (snapshot) => snapshot.id === this._selectedHistoryId,
+        )
+      ) {
+        this._selectedHistoryId = undefined;
+      }
+      this._syncTimeline();
+    } catch (_error) {
+      // The live scene remains available when timeline storage cannot be read.
+    } finally {
+      window.clearTimeout(timeout);
+      if (this._historyAbortController === controller) {
+        this._historyAbortController = undefined;
+        this._historyRequestUrl = undefined;
+        this._historyLoading = false;
+      }
+    }
+  }
+
+  _formatHistoryTime(value) {
+    const timestamp = Date.parse(value);
+    if (!Number.isFinite(timestamp)) return "";
+    return new Intl.DateTimeFormat(this._hass?.language, {
+      dateStyle: "medium",
+      timeStyle: "short",
+    }).format(timestamp);
+  }
+
+  _syncTimeline() {
+    const timeline = this.shadowRoot.querySelector(".timeline");
+    if (!timeline) return;
+    timeline.hidden = this._history.length === 0 || this._view === "rooms";
+    const range = timeline.querySelector(".timeline-range");
+    const livePosition = this._history.length;
+    const selectedIndex = this._history.findIndex(
+      (snapshot) => snapshot.id === this._selectedHistoryId,
+    );
+    const position = selectedIndex >= 0 ? selectedIndex : livePosition;
+    range.max = String(livePosition);
+    range.value = String(position);
+    range.disabled = this._history.length === 0;
+    timeline.querySelector(".timeline-earlier").disabled = position <= 0;
+    timeline.querySelector(".timeline-later").disabled = position >= livePosition;
+    const live = timeline.querySelector(".timeline-live");
+    live.classList.toggle("selected", position === livePosition);
+    live.setAttribute("aria-pressed", String(position === livePosition));
+    const label = timeline.querySelector(".timeline-label");
+    label.textContent = position === livePosition
+      ? this._localize("map_timeline_live", "Live map")
+      : this._formatHistoryTime(this._history[position]?.created_at);
+  }
+
+  _selectTimelinePosition(position) {
+    const bounded = maticClamp(
+      Math.round(Number(position) || 0),
+      0,
+      this._history.length,
+    );
+    if (bounded === this._history.length) {
+      this._selectedHistoryId = undefined;
+      this._historySceneAbortController?.abort();
+      this._syncTimeline();
+      const state = this._catalogState();
+      if (state) this._fetchScene(state, true);
+      return;
+    }
+    const snapshot = this._history[bounded];
+    if (!snapshot || snapshot.id === this._selectedHistoryId) return;
+    this._selectedHistoryId = snapshot.id;
+    this._syncTimeline();
+    this._loadHistoricalScene(snapshot);
+  }
+
+  async _loadHistoricalScene(snapshot) {
+    if (!snapshot.scene_url.startsWith("/")) return;
+    this._stopDeltaStream();
+    this._sceneAbortController?.abort();
+    this._historySceneAbortController?.abort();
+    const controller = new AbortController();
+    this._historySceneAbortController = controller;
+    const timeout = window.setTimeout(
+      () => controller.abort(),
+      MATIC_HISTORY_REQUEST_TIMEOUT_MS,
+    );
+    this._setLoading(true);
+    try {
+      const response = await this._authenticatedFetch(snapshot.scene_url, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error("historical scene request failed");
+      const scene = this._parseScene(await response.arrayBuffer());
+      if (
+        controller.signal.aborted
+        || this._selectedHistoryId !== snapshot.id
+      ) return;
+      this._scene = scene;
+      this._sceneUrl = snapshot.scene_url;
+      this._sceneIdentity = `history:${snapshot.id}`;
+      this._sceneRevision = snapshot.revision;
+      this._sceneEtag = response.headers.get("ETag") || undefined;
+      this._robot = undefined;
+      this._uploadScene(scene);
+      this._rebuildOverlays();
+      this._calculateHomeDistances();
+      this._showSpatialScene();
+      this._setStatus(
+        this._localize(
+          "map_status_historical",
+          "Map captured {time}",
+          { time: this._formatHistoryTime(snapshot.created_at) },
+        ),
+      );
+      this._requestRender();
+    } catch (_error) {
+      if (this._selectedHistoryId === snapshot.id) {
+        this._setStatus(
+          this._localize(
+            "map_status_history_unavailable",
+            "This map checkpoint is unavailable",
+          ),
+          "error",
+        );
+      }
+    } finally {
+      window.clearTimeout(timeout);
+      if (this._historySceneAbortController === controller) {
+        this._historySceneAbortController = undefined;
+        this._setLoading(false);
+      }
+    }
+  }
+
   _guardButton(button, action) {
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
-      event.preventDefault();
-      event.stopImmediatePropagation();
+      event.stopPropagation();
     });
     button.addEventListener("click", (event) => {
       event.preventDefault();
-      event.stopImmediatePropagation();
+      event.stopPropagation();
       action();
     });
   }
@@ -449,6 +649,9 @@ class MaticMapStudio extends HTMLElement {
     this._latestSceneKey = undefined;
     this._latestSceneState = undefined;
     this._sceneAbortController?.abort();
+    this._stopDeltaStream();
+    this._historyAbortController?.abort();
+    this._historySceneAbortController?.abort();
     this._pendingPoseRefresh = false;
     this._latestPoseState = undefined;
     this._poseAbortController?.abort();
@@ -457,6 +660,12 @@ class MaticMapStudio extends HTMLElement {
     this._sceneIdentity = undefined;
     this._sceneRevision = undefined;
     this._sceneEtag = undefined;
+    this._history = [];
+    this._historyUrl = undefined;
+    this._historyIdentity = undefined;
+    this._historyRequestUrl = undefined;
+    this._historyEntryId = undefined;
+    this._selectedHistoryId = undefined;
     this._robot = undefined;
     this._renderFloorCount = undefined;
     this._renderSurfaceCount = undefined;
@@ -468,6 +677,7 @@ class MaticMapStudio extends HTMLElement {
     if (marker) marker.hidden = true;
     const resolution = this.shadowRoot.querySelector(".resolution-value");
     if (resolution) resolution.textContent = "—";
+    this._syncTimeline();
     this._rebuildOverlays();
     if (this._gl && this._pointBuffer) {
       this._gl.bindBuffer(this._gl.ARRAY_BUFFER, this._pointBuffer);
@@ -719,6 +929,215 @@ class MaticMapStudio extends HTMLElement {
     };
   }
 
+  async _inflateSceneDelta(compressed, expectedLength) {
+    if (
+      !Number.isSafeInteger(expectedLength)
+      || expectedLength < 1
+      || expectedLength > 16 * 1024 * 1024
+    ) {
+      throw new Error("scene delta expands beyond its bounds");
+    }
+    const stream = new Blob([compressed])
+      .stream()
+      .pipeThrough(new DecompressionStream("deflate"));
+    const reader = stream.getReader();
+    const difference = new Uint8Array(expectedLength);
+    let offset = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        if (!(value instanceof Uint8Array) || offset + value.byteLength > expectedLength) {
+          await reader.cancel();
+          throw new Error("scene delta expands beyond its bounds");
+        }
+        difference.set(value, offset);
+        offset += value.byteLength;
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (offset !== expectedLength) {
+      throw new Error("scene delta does not match its declared length");
+    }
+    return difference;
+  }
+
+  async _applySceneDelta(buffer) {
+    if (buffer.byteLength < 36 || !this._scene) {
+      throw new Error("scene delta is incomplete");
+    }
+    const view = new DataView(buffer);
+    const magic = new TextDecoder().decode(new Uint8Array(buffer, 0, 8));
+    const version = view.getUint16(8, true);
+    const flags = view.getUint16(10, true);
+    const baseRevision = Number(view.getBigUint64(12, true));
+    const revision = Number(view.getBigUint64(20, true));
+    const sceneLength = view.getUint32(28, true);
+    const compressedLength = view.getUint32(32, true);
+    if (
+      magic !== "MATICDLT"
+      || version !== 1
+      || flags !== 1
+      || !Number.isSafeInteger(baseRevision)
+      || !Number.isSafeInteger(revision)
+      || baseRevision !== Number(this._sceneRevision)
+      || sceneLength > 16 * 1024 * 1024
+      || compressedLength > 16 * 1024 * 1024
+      || compressedLength + 36 !== buffer.byteLength
+      || typeof DecompressionStream !== "function"
+    ) {
+      throw new Error("scene delta is invalid");
+    }
+    const compressed = new Uint8Array(buffer, 36);
+    const base = new Uint8Array(this._scene.buffer);
+    const difference = await this._inflateSceneDelta(
+      compressed,
+      Math.max(base.byteLength, sceneLength),
+    );
+    const result = difference.slice();
+    const chunkBytes = 1024 * 1024;
+    for (let start = 0; start < base.length; start += chunkBytes) {
+      const end = Math.min(base.length, start + chunkBytes);
+      for (let index = start; index < end; index += 1) {
+        result[index] ^= base[index];
+      }
+      if (end < base.length) {
+        await new Promise((resolve) => window.setTimeout(resolve, 0));
+      }
+    }
+    return {
+      scene: this._parseScene(result.buffer.slice(0, sceneLength)),
+      revision,
+    };
+  }
+
+  _installLiveScene(scene, state, revision, etag) {
+    const url = state?.attributes?.scene_url;
+    this._scene = scene;
+    this._sceneUrl = url;
+    this._sceneIdentity = this._sceneRequestIdentity(state);
+    this._sceneRevision = revision;
+    this._sceneEtag = etag || undefined;
+    this._uploadScene(scene);
+    this._rebuildOverlays();
+    this._calculateHomeDistances();
+    if (this._cameraRestored) {
+      this._camera.distance = maticClamp(
+        this._camera.distance,
+        Math.max(0.3, this._radius * 0.08),
+        this._radius * 8,
+      );
+      this._constrainCameraTarget(this._camera);
+    }
+    if (!this._cameraRestored && this._savedCamera) {
+      this._restoreSavedCamera();
+    } else if (!this._cameraRestored) {
+      this._applyPreset(this._view === "top" ? "top" : "three", false);
+      this._cameraRestored = true;
+    }
+    this._showSpatialScene();
+    this._updateSceneStatus(state);
+    this._fetchPose(state);
+    this._requestRender();
+    this._startDeltaStream(state);
+  }
+
+  _stopDeltaStream() {
+    this._deltaGeneration += 1;
+    this._deltaAbortController?.abort();
+    this._deltaAbortController = undefined;
+    this._deltaUrl = undefined;
+    this._deltaRunning = false;
+  }
+
+  _startDeltaStream(state) {
+    const url = state?.attributes?.delta_url;
+    if (
+      !url
+      || this._selectedHistoryId
+      || !this._scene
+      || this._sceneUrl !== state?.attributes?.scene_url
+      || typeof DecompressionStream !== "function"
+    ) return;
+    if (this._deltaRunning && this._deltaUrl === url) return;
+    this._stopDeltaStream();
+    const generation = this._deltaGeneration;
+    this._deltaRunning = true;
+    this._deltaUrl = url;
+    this._runDeltaStream(state, generation);
+  }
+
+  async _runDeltaStream(state, generation) {
+    try {
+      while (
+        this.isConnected
+        && generation === this._deltaGeneration
+        && !this._selectedHistoryId
+      ) {
+        const controller = new AbortController();
+        this._deltaAbortController = controller;
+        const timeout = window.setTimeout(
+          () => controller.abort(),
+          MATIC_DELTA_REQUEST_TIMEOUT_MS,
+        );
+        try {
+          const separator = this._deltaUrl.includes("?") ? "&" : "?";
+          const response = await this._authenticatedFetch(
+            `${this._deltaUrl}${separator}since=${encodeURIComponent(this._sceneRevision)}`,
+            { cache: "no-store", signal: controller.signal },
+          );
+          if (response.status === 204) continue;
+          if (!response.ok) throw new Error("scene delta request failed");
+          const contentType = response.headers.get("Content-Type") || "";
+          let scene;
+          let revision = Number(response.headers.get("X-Matic-Revision"));
+          if (contentType.includes("application/vnd.matic.slam-delta")) {
+            const decoded = await this._applySceneDelta(
+              await response.arrayBuffer(),
+            );
+            scene = decoded.scene;
+            revision = decoded.revision;
+          } else if (contentType.includes("application/vnd.matic.slam-scene")) {
+            scene = this._parseScene(await response.arrayBuffer());
+          } else {
+            throw new Error("scene update has an unsupported content type");
+          }
+          if (
+            generation !== this._deltaGeneration
+            || this._selectedHistoryId
+            || !Number.isSafeInteger(revision)
+          ) return;
+          const latest = this._catalogState() || state;
+          this._installLiveScene(
+            scene,
+            latest,
+            revision,
+            response.headers.get("ETag"),
+          );
+        } catch (_error) {
+          if (
+            controller.signal.aborted
+            || generation !== this._deltaGeneration
+            || !this.isConnected
+          ) return;
+          this._deltaRunning = false;
+          this._fetchScene(this._catalogState() || state, true);
+          return;
+        } finally {
+          window.clearTimeout(timeout);
+          if (this._deltaAbortController === controller) {
+            this._deltaAbortController = undefined;
+          }
+        }
+      }
+    } finally {
+      if (generation === this._deltaGeneration) {
+        this._deltaRunning = false;
+      }
+    }
+  }
+
   _uploadScene(scene) {
     if (!this._gl) return;
     const source = new Uint8Array(
@@ -802,11 +1221,18 @@ class MaticMapStudio extends HTMLElement {
   async _fetchScene(state, force = false) {
     const url = state?.attributes?.scene_url;
     const revision = state?.attributes?.map_revision;
-    if (!url || !this._webglAvailable) return;
+    if (!url || !this._webglAvailable || this._selectedHistoryId) return;
     const requestKey = this._sceneRequestIdentity(state);
     this._latestSceneState = state;
     this._latestSceneKey = requestKey;
-    if (!force && this._scene && requestKey === this._sceneIdentity) return;
+    if (!force && this._scene && this._sceneUrl === url) {
+      this._startDeltaStream(state);
+      if (state?.attributes?.delta_url && typeof DecompressionStream === "function") {
+        return;
+      }
+      if (requestKey === this._sceneIdentity) return;
+    }
+    if (force) this._stopDeltaStream();
     if (this._sceneLoading) {
       const changed = requestKey !== this._sceneRequestKey;
       if (force || changed) {
@@ -841,7 +1267,10 @@ class MaticMapStudio extends HTMLElement {
       if (response.status === 304) {
         if (this._latestSceneKey !== requestKey) return;
         this._sceneIdentity = requestKey;
-        this._sceneRevision = revision;
+        this._sceneRevision = Number(
+          response.headers.get("X-Matic-Revision") ?? revision,
+        );
+        this._startDeltaStream(state);
         return;
       }
       if (!response.ok) {
@@ -851,32 +1280,15 @@ class MaticMapStudio extends HTMLElement {
       }
       const scene = this._parseScene(await response.arrayBuffer());
       if (this._latestSceneKey !== requestKey) return;
-      this._scene = scene;
-      this._sceneUrl = url;
-      this._sceneIdentity = requestKey;
-      this._sceneRevision = revision;
-      this._sceneEtag = response.headers.get("ETag") || undefined;
-      this._uploadScene(scene);
-      this._rebuildOverlays();
-      this._calculateHomeDistances();
-      if (this._cameraRestored) {
-        this._camera.distance = maticClamp(
-          this._camera.distance,
-          Math.max(0.3, this._radius * 0.08),
-          this._radius * 8,
-        );
-        this._constrainCameraTarget(this._camera);
-      }
-      if (!this._cameraRestored && this._savedCamera) {
-        this._restoreSavedCamera();
-      } else if (!this._cameraRestored) {
-        this._applyPreset(this._view === "top" ? "top" : "three", false);
-        this._cameraRestored = true;
-      }
-      this._showSpatialScene();
-      this._updateSceneStatus(state);
-      this._fetchPose(state);
-      this._requestRender();
+      const responseRevision = Number(
+        response.headers.get("X-Matic-Revision") ?? revision,
+      );
+      this._installLiveScene(
+        scene,
+        state,
+        Number.isSafeInteger(responseRevision) ? responseRevision : revision,
+        response.headers.get("ETag"),
+      );
     } catch (error) {
       if (!this.isConnected) return;
       const superseded = this._latestSceneKey !== requestKey
@@ -926,6 +1338,7 @@ class MaticMapStudio extends HTMLElement {
   }
 
   async _fetchPose(state) {
+    if (this._selectedHistoryId) return;
     const url = state?.attributes?.pose_url;
     const sceneUrl = state?.attributes?.scene_url;
     if (!url) return;
@@ -1054,8 +1467,23 @@ class MaticMapStudio extends HTMLElement {
       || this._panel?.config?.entry_id;
     const entities = this._entities(entryId);
     const photoState = catalogState || entities.photo?.[1];
+    if (photoState) await this._fetchHistory(photoState, force);
     if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
+    } else if (this._selectedHistoryId && this._scene) {
+      this._showSpatialScene();
+      const snapshot = this._history.find(
+        (candidate) => candidate.id === this._selectedHistoryId,
+      );
+      if (snapshot) {
+        this._setStatus(
+          this._localize(
+            "map_status_historical",
+            "Map captured {time}",
+            { time: this._formatHistoryTime(snapshot.created_at) },
+          ),
+        );
+      }
     } else if (photoState) {
       if (!this._webglAvailable) {
         this._showRenderingFallback(entities.rooms || entities.photo, force);
@@ -1486,6 +1914,7 @@ class MaticMapStudio extends HTMLElement {
     viewport.classList.toggle("top-down", view === "top");
     viewport.classList.toggle("spatial", view !== "rooms");
     this.shadowRoot.querySelector(".spatial-controls").hidden = view === "rooms";
+    this._syncTimeline();
     this._schedulePreferencesSave();
     if (view === "rooms") {
       this._cancelMotion();
@@ -2134,14 +2563,22 @@ class MaticMapStudio extends HTMLElement {
         .viewport.loading::after { content: ""; position: absolute; top: 16px; right: 16px; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--primary-color); border-radius: 50%; animation: spin .8s linear infinite; z-index: 3; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--secondary-text-color); font-size: 17px; text-align: center; padding: 40px; z-index: 2; }
-        .gesture-help { position: absolute; left: 16px; bottom: 16px; max-width: min(680px, calc(100% - 32px)); padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; color: #e3edf8; background: rgba(5,10,16,.76); box-shadow: 0 8px 32px rgba(0,0,0,.25); backdrop-filter: blur(14px); font-size: 12px; pointer-events: none; z-index: 3; }
+        .timeline { position: absolute; left: 50%; bottom: 18px; width: min(620px, calc(100% - 32px)); display: grid; grid-template-columns: auto minmax(120px, 1fr) auto auto; gap: 8px; align-items: center; padding: 10px; border: 1px solid rgba(255,255,255,.16); border-radius: 16px; color: #e3edf8; background: rgba(5,10,16,.82); box-shadow: 0 12px 38px rgba(0,0,0,.28); backdrop-filter: blur(18px) saturate(1.25); z-index: 4; }
+        .timeline button { min-width: 42px; min-height: 38px; padding: 0 10px; color: inherit; border-color: rgba(255,255,255,.16); background: rgba(255,255,255,.06); }
+        .timeline button:disabled { opacity: .38; cursor: default; transform: none; }
+        .timeline-track { min-width: 0; display: grid; gap: 3px; }
+        .timeline-range { width: 100%; accent-color: var(--primary-color); cursor: pointer; }
+        .timeline-label { overflow: hidden; text-overflow: ellipsis; font-size: 11px; font-variant-numeric: tabular-nums; text-align: center; white-space: nowrap; }
+        .top-down .timeline { color: #202833; background: rgba(255,255,255,.9); border-color: rgba(20,30,40,.16); }
+        .top-down .timeline button { border-color: rgba(20,30,40,.14); background: rgba(20,30,40,.04); }
+        .gesture-help { position: absolute; left: 16px; bottom: 82px; max-width: min(680px, calc(100% - 32px)); padding: 10px 13px; border: 1px solid rgba(255,255,255,.14); border-radius: 12px; color: #e3edf8; background: rgba(5,10,16,.76); box-shadow: 0 8px 32px rgba(0,0,0,.25); backdrop-filter: blur(14px); font-size: 12px; pointer-events: none; z-index: 3; }
         .top-down .gesture-help { color: #202833; background: rgba(255,255,255,.86); border-color: rgba(20,30,40,.16); }
         .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
         }
         @media (max-width: 1050px) { .heading { width: 100%; } .status { order: 10; width: 100%; } header { padding: 8px; gap: 6px; } }
-        @media (max-width: 650px) { button, a, select { min-height: 40px; padding: 0 9px; } .resolution-value, .angle-value, .cleaning-areas { display: none; } .zoom-slider { width: 72px; } .gesture-help { font-size: 11px; } .quality-control select { max-width: 105px; } }
+        @media (max-width: 650px) { button, a, select { min-height: 40px; padding: 0 9px; } .resolution-value, .angle-value, .cleaning-areas { display: none; } .zoom-slider { width: 72px; } .timeline { width: calc(100% - 20px); bottom: 10px; grid-template-columns: auto minmax(80px, 1fr) auto; gap: 5px; padding: 7px; } .timeline-live { grid-column: 1 / -1; min-height: 34px !important; } .gesture-help { bottom: 104px; font-size: 11px; } .quality-control select { max-width: 105px; } }
       </style>
       <div class="shell">
         <header>
@@ -2188,6 +2625,15 @@ class MaticMapStudio extends HTMLElement {
             <span class="robot-marker" role="img" hidden></span>
           </div>
           <div class="empty">${text("map_empty_loading", "Loading the private local map…")}</div>
+          <div class="timeline" role="group" aria-label="${text("map_timeline_label", "Map timeline")}" hidden>
+            <button class="timeline-earlier" aria-label="${text("map_timeline_earlier", "Earlier map")}">←</button>
+            <label class="timeline-track">
+              <span class="timeline-label">${text("map_timeline_live", "Live map")}</span>
+              <input class="timeline-range" type="range" min="0" max="0" step="1" value="0" aria-label="${text("map_timeline_position", "Map point in time")}">
+            </label>
+            <button class="timeline-later" aria-label="${text("map_timeline_later", "Later map")}">→</button>
+            <button class="timeline-live selected" aria-pressed="true">${text("map_timeline_live_action", "Live")}</button>
+          </div>
           <div class="gesture-help">${text("map_gesture_help", "Mouse: drag orbit · right/middle/Shift-drag pan · wheel zoom · Trackpad: two-finger pan · pinch zoom · twist rotate · Option-scroll tilt · 0 reset · ? help")}</div>
         </div>
       </div>
@@ -2235,6 +2681,26 @@ class MaticMapStudio extends HTMLElement {
       this._requestRender();
     });
     this._guardButton(this.shadowRoot.querySelector(".refresh"), () => this._update(true));
+    const timelineRange = this.shadowRoot.querySelector(".timeline-range");
+    this._guardButton(this.shadowRoot.querySelector(".timeline-earlier"), () => {
+      this._selectTimelinePosition(Number(timelineRange.value) - 1);
+    });
+    this._guardButton(this.shadowRoot.querySelector(".timeline-later"), () => {
+      this._selectTimelinePosition(Number(timelineRange.value) + 1);
+    });
+    this._guardButton(this.shadowRoot.querySelector(".timeline-live"), () => {
+      this._selectTimelinePosition(this._history.length);
+    });
+    timelineRange.addEventListener("input", (event) => {
+      const position = Number(event.target.value);
+      const label = this.shadowRoot.querySelector(".timeline-label");
+      label.textContent = position === this._history.length
+        ? this._localize("map_timeline_live", "Live map")
+        : this._formatHistoryTime(this._history[position]?.created_at);
+    });
+    timelineRange.addEventListener("change", (event) => {
+      this._selectTimelinePosition(event.target.value);
+    });
     this._guardButton(this.shadowRoot.querySelector(".fullscreen"), () => {
       if (document.fullscreenElement) document.exitFullscreen();
       else this.shadowRoot.querySelector(".shell").requestFullscreen();
@@ -2320,6 +2786,7 @@ class MaticMapStudio extends HTMLElement {
     this._resizeObserver.observe(viewport);
     this._resizeCanvas();
     this._syncFullscreenLabel();
+    this._syncTimeline();
     if (this._scene && this._webglAvailable) {
       this._uploadScene(this._scene);
       this._rebuildOverlays();

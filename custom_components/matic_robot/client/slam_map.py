@@ -33,6 +33,20 @@ _SCENE_HEADER = struct.Struct("<8sHHIII")
 
 
 @dataclass(frozen=True, slots=True)
+class SlamSceneHeader:
+    """Validated bounds and offsets for a binary SLAM scene."""
+
+    metadata_bytes: int
+    floor_points: int
+    surface_points: int
+
+    @property
+    def point_count(self) -> int:
+        """Return the total number of encoded points."""
+        return self.floor_points + self.surface_points
+
+
+@dataclass(frozen=True, slots=True)
 class SlamVoxel:
     """One colored surface voxel in map-global integer coordinates."""
 
@@ -220,6 +234,28 @@ def encode_slam_scene(
         surface_point_count,
     )
     return b"".join((header, metadata, *floor_chunks, *surface_chunks))
+
+
+def parse_slam_scene_header(payload: bytes) -> SlamSceneHeader:
+    """Validate a complete binary scene and return its bounded header."""
+    if len(payload) < _SCENE_HEADER.size:
+        raise DecodeError("SLAM scene header is incomplete")
+    magic, version, stride, metadata_bytes, floor_points, surface_points = (
+        _SCENE_HEADER.unpack_from(payload)
+    )
+    point_count = floor_points + surface_points
+    point_offset = _SCENE_HEADER.size + metadata_bytes
+    if (
+        magic != SCENE_MAGIC
+        or version != SCENE_VERSION
+        or stride != SCENE_POINT_STRIDE
+        or metadata_bytes > 1024 * 1024
+        or point_count < 1
+        or point_count > MAX_SCENE_POINTS
+        or point_offset + point_count * stride != len(payload)
+    ):
+        raise DecodeError("invalid SLAM scene payload")
+    return SlamSceneHeader(metadata_bytes, floor_points, surface_points)
 
 
 def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
