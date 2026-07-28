@@ -52,8 +52,15 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
     """Pin external actions while documenting the corresponding upstream ref."""
     for path in (ROOT / ".github" / "workflows").glob("*.yml"):
-        uses = list(ACTION_USE.finditer(path.read_text()))
-        assert uses, f"{path} has no actions"
+        content = path.read_text()
+        uses = list(ACTION_USE.finditer(content))
+        # A workflow with no `uses:` lines (pure-shell, e.g. auto-merge.yml) has
+        # nothing to pin; the non-empty assert only guards ACTION_USE against
+        # silently rotting, so anchor it to the lines it must parse.
+        has_uses_lines = re.search(r"^\s*(?:-\s*)?uses:", content, re.MULTILINE)
+        assert uses or not has_uses_lines, (
+            f"{path} has uses: lines ACTION_USE cannot parse"
+        )
 
         for use in uses:
             action = use.group("action")

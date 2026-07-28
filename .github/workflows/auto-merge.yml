@@ -1,0 +1,397 @@
+name: Enable PR Auto-Merge
+
+on:
+  pull_request_target:
+    # `unlabeled` matters as much as `labeled`: removing the override must reach
+    # the withdrawal path, or a PR armed by the escape hatch stays armed after the
+    # authorization for it is taken away.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  # The reviewer's verdict is what unblocks arming, so the workflow must re-run
+  # when it lands. Codex posts either a review object or an issue comment
+  # depending on the round, so both event types are needed.
+  # submitted/edited/DISMISSED: a dismissed review is withdrawn evidence, and an
+  # edited one can name a different commit. Both change the gate's answer.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  # created/edited/DELETED: the gate's evidence can be withdrawn as well as
+  # granted. A deleted verdict, or an edited one naming a different commit, must
+  # re-run the gate — otherwise the arm outlives the evidence that justified it.
+  issue_comment:
+    types: [created, edited, deleted]
+  # Answering an inline finding — the condition that CLEARS the gate — emits
+  # pull_request_review_comment, not issue_comment. Without this, dispositioning
+  # every finding would leave the PR unarmed until some unrelated event happened
+  # to re-run the workflow.
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        # NUMBER only. The concurrency key uses this value directly, so a URL form
+        # would key differently from the webhook runs for the same PR — they would
+        # run concurrently instead of queueing, and a stale dispatch could re-arm
+        # after a newer run withdrew the arm.
+        #
+        # REQUIRED. A workflow_dispatch payload carries no pull request of its own —
+        # no pull_request object, no issue number — so an omitted input leaves the
+        # run with nothing to evaluate and the default manual path died at "No pull
+        # request was provided." There is no meaningful fallback to invent here: the
+        # dispatcher is the only source of the PR, so ask for it up front.
+        description: "Pull request NUMBER (digits only)"
+        required: true
+        type: string
+
+concurrency:
+  # issue_comment payloads carry no pull_request, so without issue.number two PRs'
+  # verdicts landing together would share the default-branch key and cancel each
+  # other — leaving the first permanently unarmed with no later event to retry it.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
+  # NOT cancel-in-progress. This workflow's job is to CONVERGE on the true state
+  # of a PR, and the events that feed it arrive in bursts (a verdict plus several
+  # inline replies land within seconds). Cancelling means the surviving run is
+  # whichever fired last rather than whichever saw the most, and every cancelled
+  # run also surfaces as a FAILED check on the PR — indistinguishable from a real
+  # break at a glance. Runs are seconds long and every path is idempotent (it
+  # re-reads head, verdict, and findings, and both arm and withdraw are no-ops
+  # when already in that state), so queueing them is strictly safer than racing.
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  enable-auto-merge:
+    name: enable-auto-merge
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","ci"]') }}
+    # `issue_comment` carries `issue.pull_request` but NO top-level
+    # `pull_request`, so `github.event.pull_request.draft == false` is false and
+    # the job is skipped outright — the verdict path would never even start.
+    # Draft PRs are still excluded: the script re-checks `isDraft` from the API.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      || github.event.pull_request.draft == false
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          # Use a PAT (AUTO_MERGE_PAT) so the eventual merge push is attributed
+          # to a real user, not github-actions[bot]. Pushes by GITHUB_TOKEN do
+          # NOT trigger downstream workflows (GitHub anti-cascade), which means
+          # production-deploy.yml stops firing on merge to main. With a PAT, the
+          # merge push attributes to the PAT owner and downstream workflows fire.
+          # The github.token fallback keeps this workflow runnable in a repo where
+          # the secret has not been provisioned yet, but it is NOT a working
+          # configuration: the branch-protection read below requires repository
+          # Administration (read), which GITHUB_TOKEN cannot hold. Such a run now
+          # FAILS loudly there rather than quietly never arming anything.
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_IS_PR: ${{ github.event.issue.pull_request != null }}
+          REVIEW_BOT: chatgpt-codex-connector[bot]
+          OVERRIDE_LABEL: auto-merge-now
+          INPUT_PR: ${{ inputs.pull_request }}
+        run: |
+          set -euo pipefail
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # Digits only — see the input description: the concurrency key uses this
+            # verbatim, so any other form keys differently from the webhook runs for
+            # the same PR and the two would race instead of queueing. The input is
+            # required, so an empty value means the dispatch itself was malformed;
+            # say that here rather than falling through to the webhook branches,
+            # which carry no pull request at all on this event.
+            if [[ ! "${INPUT_PR:-}" =~ ^[0-9]+$ ]]; then
+              echo "Pull request input must be a number (got '${INPUT_PR:-}')."
+              exit 1
+            fi
+            pr_ref="https://github.com/$REPO/pull/$INPUT_PR"
+          elif [[ -n "${EVENT_ISSUE_NUMBER:-}" ]]; then
+            # issue_comment fires with an ISSUE payload; ignore plain issues.
+            if [[ "${EVENT_IS_PR:-}" != "true" ]]; then
+              echo "Comment was on an issue, not a pull request."
+              exit 0
+            fi
+            # Build the /pull/<n> form. The issue payload's html_url is
+            # /issues/<n> even for a pull request, and `gh pr view` treats that as
+            # a BRANCH selector: it fails with `no pull requests found for branch
+            # https://.../issues/<n>`, which under `set -euo pipefail` kills the
+            # job. Codex delivers some verdicts as issue comments, so that path
+            # dying meant those PRs never armed at all.
+            pr_ref="https://github.com/$REPO/pull/$EVENT_ISSUE_NUMBER"
+          else
+            pr_ref="$EVENT_PR_URL"
+          fi
+
+          if [[ -z "${pr_ref:-}" ]]; then
+            echo "No pull request was provided."
+            exit 1
+          fi
+
+          pr_url="$(gh pr view "$pr_ref" --json url --jq '.url')"
+          case "$pr_url" in
+            https://github.com/$REPO/pull/[0-9]*) ;;
+            *)
+              echo "Pull request resolved outside $REPO: $pr_url"
+              exit 1
+              ;;
+          esac
+
+          # WITHDRAW FIRST, UNCONDITIONALLY. Every precheck below can leave without
+          # arming — draft, cross-repo, unprotected base, no required checks, and an
+          # unreadable branch protection that now fails the run outright — and each of
+          # those paths would otherwise leave a live arm on a PR this run never cleared.
+          #
+          # This deliberately does NOT enumerate which events revoke authorization.
+          # That list was wrong twice: first it omitted every event (the arm survived
+          # the early exits), then it covered only `synchronize` (so removing the
+          # override label left the arm it had created). Any run may be the one that
+          # discovers the arm is no longer justified, so every run drops it and the
+          # gate below re-arms only if the CURRENT head is genuinely cleared.
+          # Failing here leaves the PR unarmed, which is the safe direction.
+          # Resolve the state OUTSIDE the conditional: a command substitution inside
+          # an `if` test is exempt from `set -e`, so a failed lookup would quietly
+          # evaluate false and skip the withdrawal — leaving a stale arm on a head
+          # this run never cleared. Read it explicitly, and treat an unreadable
+          # state as a reason to stop loudly rather than continue blind.
+          if ! auto_merge_state="$(gh pr view "$pr_ref" --json autoMergeRequest --jq '.autoMergeRequest != null')"; then
+            echo "Could not read the auto-merge state; attempting a blind withdrawal, then failing the run."
+            gh pr merge "$pr_ref" --disable-auto || true
+            exit 1
+          fi
+          if [[ "$auto_merge_state" == "true" ]]; then
+            echo "Withdrawing the existing auto-merge before re-evaluating this head."
+            # Plain command: `set -e` aborts the run if the withdrawal itself fails,
+            # rather than falling through to the prechecks with the arm still live.
+            gh pr merge "$pr_ref" --disable-auto
+          fi
+
+          is_draft="$(gh pr view "$pr_ref" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" == "true" ]]; then
+            echo "Draft pull request; leaving auto-merge disabled."
+            exit 0
+          fi
+
+          is_cross_repo="$(gh pr view "$pr_ref" --json isCrossRepository --jq '.isCrossRepository')"
+          if [[ "$is_cross_repo" == "true" ]]; then
+            echo "Cross-repository pull request; leaving auto-merge disabled."
+            exit 0
+          fi
+
+          base_ref="$(gh pr view "$pr_ref" --json baseRefName --jq '.baseRefName')"
+          protected="$(gh api "repos/$REPO/branches/$base_ref" --jq '.protected')"
+          if [[ "$protected" != "true" ]]; then
+            echo "Base branch $base_ref is not protected; refusing to enable auto-merge before CI gates."
+            exit 0
+          fi
+
+          # "This branch requires no checks" and "this token cannot read the answer"
+          # demand OPPOSITE responses, so they must not share a value. `2>/dev/null ||
+          # echo 0` collapsed them into `0`: the protection endpoint needs repository
+          # Administration (READ), which GITHUB_TOKEN cannot be granted at all — a
+          # workflow `permissions:` block has no `administration` key — so wherever
+          # AUTO_MERGE_PAT is unset the 403 was swallowed, every eligible PR looked
+          # check-free, and the gate exited 0 forever. A permanent never-arm that
+          # prints a plausible sentence and reports success is the worst shape a gate
+          # can fail in; it is invisible until someone wonders why nothing merges.
+          # Capture the read as a distinct success/failure: a genuine zero still
+          # refuses to arm (below), while an unreadable answer stops the run loudly.
+          if ! required_count="$(gh api "repos/$REPO/branches/$base_ref/protection" \
+            --jq '(.required_status_checks.contexts // []) | length')"; then
+            echo "Could not read branch protection for $base_ref (the API error is above)."
+            echo "That endpoint requires repository Administration (read) access, which"
+            echo "GITHUB_TOKEN does not have and cannot be granted. Configure the"
+            echo "AUTO_MERGE_PAT secret with a PAT whose owner has admin read on $REPO."
+            exit 1
+          fi
+          # A zero exit status that did not yield a number is the same unknown answer
+          # wearing a success, so it gets the same treatment rather than a comparison.
+          if [[ ! "$required_count" =~ ^[0-9]+$ ]]; then
+            echo "Branch protection for $base_ref returned no usable required-check count ('$required_count'); failing closed."
+            exit 1
+          fi
+          if [[ "$required_count" == "0" ]]; then
+            echo "Base branch $base_ref has no required status checks; refusing to enable auto-merge before CI gates."
+            exit 0
+          fi
+
+          # REVIEW GATE (2026-07-25). Arming on `opened`/`synchronize` alone raced
+          # the reviewer: checks go green in ~10 min, Codex takes ~10-20, and PRs
+          # merged before — or during — their review. In one session that produced
+          # findings arriving after merge, commits merging unreviewed, and a PR
+          # merging with NO review pass at all, where "zero findings" meant nobody
+          # looked. Manual disarming could not fix it, since the next push re-armed.
+          #
+          # Arm only once the reviewer has covered THIS head: its verdict carries
+          # "Reviewed commit: <sha>". A stale review of an older head does not count.
+          # Escape hatch: the OVERRIDE_LABEL arms regardless (reviewer down, quota
+          # exhausted, or a deliberate hotfix) — applying a label needs write access
+          # and leaves an audit trail, which a silent race did not.
+          head_sha="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"
+          pr_number="$(gh pr view "$pr_ref" --json number --jq '.number')"
+          # The sha is interpolated into the verdict-matching pattern below. An
+          # empty or malformed value would reduce that pattern to "any Reviewed
+          # commit line", arming on a review of some OLDER head — the precise
+          # failure this gate exists to prevent. Refuse to proceed instead.
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve a valid head sha ('$head_sha'); failing closed."
+            exit 1
+          fi
+          auto_merge_enabled="$(gh pr view "$pr_ref" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+
+          # Evidence is REVOCABLE — a disposition reply can be deleted and the
+          # override label removed — so this is a function, evaluated immediately
+          # before arming and again immediately after. `--match-head-commit` guards
+          # only the sha; it says nothing about replies or labels.
+          evaluate_evidence() {
+            if gh pr view "$pr_ref" --json labels --jq '.labels[].name' | grep -Fxq "$OVERRIDE_LABEL"; then
+              echo "Override label '$OVERRIDE_LABEL' present; skipping the review gate for $head_sha."
+              reviewed=true
+            else
+              # (a) A verdict must name THIS head. The verdict abbreviates the sha,
+              #     so match on its prefix; a pass on an older head does not count.
+              reviewed=false
+              for body in \
+                "$(gh api "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                    --jq '.[] | select(.user.login == env.REVIEW_BOT)
+                              | select(.state != "DISMISSED") | .body' 2>/dev/null || true)" \
+                "$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                    --jq '.[] | select(.user.login == env.REVIEW_BOT) | .body' 2>/dev/null || true)"
+              do
+                if printf '%s' "$body" | grep -qE "Reviewed commit:[^\`]*\`${head_sha:0:10}"; then
+                  reviewed=true
+                  break
+                fi
+              done
+
+              # (b) A verdict that REPORTS FINDINGS also names the reviewed commit, so
+              #     the sha alone is not consent — it would arm a PR whose defects were
+              #     just published. Require every inline finding to carry a reply
+              #     (fixed or explicitly dispositioned). Phrasing of the "clean" verdict
+              #     is not a contract, so it is deliberately not matched on.
+              if [[ "$reviewed" == "true" ]]; then
+                # FAIL CLOSED on retrieval failure. `|| true` here would turn a
+                # transient API or rate-limit error into an empty findings list,
+                # so the gate would arm precisely when the evidence it depends on
+                # is missing — the one moment it must not. No answer means no.
+                # Findings belonging to a DISMISSED review are withdrawn evidence too.
+                # Excluding dismissed reviews from the verdict read but NOT from here
+                # left their findings permanently unanswered, so a later clean pass on
+                # the current head could never arm — a wedge, not a false arm.
+                if ! dismissed_reviews="$(gh api "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                  --jq '.[] | select(.state == "DISMISSED") | .id')"; then
+                  echo "Could not read review states for $head_sha; failing closed."
+                  reviewed=false
+                elif ! finding_rows="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+                  --jq '.[] | select(.user.login == env.REVIEW_BOT) | select(.in_reply_to_id == null)
+                            | "\(.id) \(.pull_request_review_id // 0)"')"; then
+                  echo "Could not read review comments for $head_sha; failing closed."
+                  reviewed=false
+                # A disposition must come from someone who can actually accept the
+                # risk. Any participant can reply in a thread, so counting every
+                # non-bot reply would let an unaffiliated account clear the gate by
+                # answering each finding. Trust is by repository association.
+                elif ! answered="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+                  --jq '.[] | select(.user.login != env.REVIEW_BOT)
+                            | select(.author_association == "OWNER"
+                                  or .author_association == "MEMBER"
+                                  or .author_association == "COLLABORATOR")
+                            | .in_reply_to_id // empty')"; then
+                  echo "Could not read finding replies for $head_sha; failing closed."
+                  reviewed=false
+                else
+                  findings=""
+                  while read -r finding_id review_id; do
+                    [[ -z "$finding_id" ]] && continue
+                    if [[ -n "$dismissed_reviews" ]] \
+                      && printf '%s\n' "$dismissed_reviews" | grep -qxF "$review_id"; then
+                      continue
+                    fi
+                    findings+="$finding_id"$'\n'
+                  done <<< "$finding_rows"
+                  unanswered=0
+                  for finding_id in $findings; do
+                    printf '%s\n' "$answered" | grep -qxF "$finding_id" || unanswered=$((unanswered + 1))
+                  done
+                  if [[ "$unanswered" != "0" ]]; then
+                    echo "Review of $head_sha reported $unanswered unanswered finding(s); not arming."
+                    reviewed=false
+                  fi
+                fi
+              fi
+            fi
+          }
+
+          evaluate_evidence
+
+          # (c) Withdraw an arm that no longer holds. A PR reviewed at head A and
+          #     armed, then pushed to head B, previously exited at the
+          #     already-enabled check ABOVE this gate and merged head B unreviewed —
+          #     the exact failure this workflow exists to prevent.
+          if [[ "$reviewed" != "true" ]]; then
+            if [[ "$auto_merge_enabled" == "true" ]]; then
+              echo "Head $head_sha is not cleared; withdrawing the existing auto-merge."
+              gh pr merge "$pr_ref" --disable-auto
+            fi
+            echo "Leaving auto-merge disabled. This workflow re-runs when a review or comment lands;"
+            echo "apply the '$OVERRIDE_LABEL' label to arm without a review pass."
+            exit 0
+          fi
+
+          if [[ "$auto_merge_enabled" == "true" ]]; then
+            echo "Head $head_sha is cleared and auto-merge is already enabled."
+            exit 0
+          fi
+
+          # Re-read the revocable evidence as late as possible: a reply deleted or
+          # the override removed between the first evaluation and here would
+          # otherwise arm from a snapshot that no longer holds.
+          evaluate_evidence
+          if [[ "$reviewed" != "true" ]]; then
+            echo "Evidence changed while evaluating; not arming."
+            exit 0
+          fi
+
+          echo "Head $head_sha is cleared; arming auto-merge."
+          # Bind the arm to the head we actually cleared. Between reading head_sha
+          # and this call, commit B can land: the arm would then apply to B on the
+          # strength of a review of A, and B could merge on green checks before the
+          # queued synchronize run withdraws it. --match-head-commit makes GitHub
+          # refuse the request unless the head is still the reviewed one.
+          gh pr merge "$pr_ref" --auto --squash --delete-branch --match-head-commit "$head_sha"
+
+          # ...and verify AFTER arming. The window cannot be closed entirely — GitHub
+          # offers no compare-and-swap on auto-merge — so it is bounded from both
+          # sides: re-check immediately, and withdraw if anything the arm rests on
+          # moved while it was being placed. A queued run would eventually correct it,
+          # but the PR could merge before that run starts.
+          #
+          # THE HEAD IS PART OF WHAT IT RESTS ON, and it must be re-read rather than
+          # trusted from the cached value. `--match-head-commit` is a precondition on
+          # the arming request alone; once placed, the arm survives later pushes —
+          # GitHub only drops it when someone WITHOUT write access pushes, and every
+          # writer here has it. A commit landing in this window therefore inherits an
+          # arm justified by a review of its parent and can merge the moment its own
+          # checks go green, which is the unreviewed merge this whole gate exists to
+          # prevent, entered from the far side. An unreadable head is treated like a
+          # moved one: an arm that cannot be justified comes off.
+          evaluate_evidence
+          if ! post_arm_head="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"; then
+            echo "Could not re-read the head after arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          if [[ "$post_arm_head" != "$head_sha" ]]; then
+            echo "Head moved from $head_sha to $post_arm_head during arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          if [[ "$reviewed" != "true" ]]; then
+            echo "Evidence was withdrawn during arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          echo "Evidence still holds after arming $head_sha."
