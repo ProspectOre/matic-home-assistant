@@ -365,13 +365,33 @@ jobs:
 
           # ...and verify AFTER arming. The window cannot be closed entirely — GitHub
           # offers no compare-and-swap on auto-merge — so it is bounded from both
-          # sides: re-check immediately, and withdraw if the evidence moved while the
-          # arm was being placed. A queued run would eventually correct it, but the
-          # PR could merge before that run starts.
+          # sides: re-check immediately, and withdraw if anything the arm rests on
+          # moved while it was being placed. A queued run would eventually correct it,
+          # but the PR could merge before that run starts.
+          #
+          # THE HEAD IS PART OF WHAT IT RESTS ON, and it must be re-read rather than
+          # trusted from the cached value. `--match-head-commit` is a precondition on
+          # the arming request alone; once placed, the arm survives later pushes —
+          # GitHub only drops it when someone WITHOUT write access pushes, and every
+          # writer here has it. A commit landing in this window therefore inherits an
+          # arm justified by a review of its parent and can merge the moment its own
+          # checks go green, which is the unreviewed merge this whole gate exists to
+          # prevent, entered from the far side. An unreadable head is treated like a
+          # moved one: an arm that cannot be justified comes off.
           evaluate_evidence
+          if ! post_arm_head="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"; then
+            echo "Could not re-read the head after arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          if [[ "$post_arm_head" != "$head_sha" ]]; then
+            echo "Head moved from $head_sha to $post_arm_head during arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
           if [[ "$reviewed" != "true" ]]; then
             echo "Evidence was withdrawn during arming; disabling auto-merge again."
             gh pr merge "$pr_ref" --disable-auto
             exit 1
           fi
-          echo "Evidence still holds after arming."
+          echo "Evidence still holds after arming $head_sha."
