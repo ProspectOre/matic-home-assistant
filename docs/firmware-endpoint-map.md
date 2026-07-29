@@ -25,6 +25,8 @@ real robot actually returned after an OTA.
 | `kabuki_state` | Battery, state/error codes, activity, firmware fallback, channel/profile, current/previous area | Vacuum; activity, battery and current-area sensors; seven operational binary sensors; attributes |
 | `coverage_plan` | Mission, partition, named room IDs and geometry | Rooms sensor, map camera, vacuum segments/Areas, cleaning target |
 | `latest_pose` | Robot position and heading across both verified wire layouts; payload-free vector paths in endpoint inspection | Map camera |
+| `approximate_trajectory` | Mission-correlated, finite 2D route updates and mission-scoped clear markers | Typed client stream; no HA entity or map overlay yet |
+| `flythrough` | Mission-correlated native 3D camera locations and look-at targets | Typed client snapshot; no HA entity or browser response yet |
 | `current_version` | Software/profile, protocol version, feature flag | Software and protocol sensors; software attributes |
 | `update_config` | Update channel | Update-channel sensor |
 | `update_state` | Update lifecycle | Update-state sensor and update-available binary sensor |
@@ -32,6 +34,9 @@ real robot actually returned after an OTA.
 | `time_zone` | Robot timezone | Internal decoded telemetry; excluded from recorder attributes |
 | `schedule_events` | Local schedules, weekdays, time, rooms, ordering and enabled state | Scheduled-cleanings count; definitions excluded from attributes |
 | `coverage_session_history` | Local session count and native latest-session summary | Local-cleaning-session count; newer stale-firmware sessions are reconstructed from verified HA cleaning/area history |
+| `coverage_session_thumbnails` | Validated private WebP session maps joined by opaque history key | Typed client snapshot only; no HA state, cache or media endpoint |
+| `recap_history` | Monthly sweep/mop area and duration, session count and optional favorite-room label | Typed client snapshot only; no HA state or recorder data |
+| `map_semantics`, `map_semantics_override` | Mission-correlated 32 × 32 native semantic grids aligned by SLAM page key | Typed client tiles only; no HA entity or map overlay yet |
 | `dock_detections` | Collection count | Dock-detections sensor |
 | `sink_summon_locations` | Collection count | Sink-summon-locations sensor |
 | `coverage_time` | Accumulated coverage seconds | Coverage-time sensor |
@@ -54,20 +59,20 @@ firmware.
 
 | Collections | Possible safe HA use after evidence |
 | --- | --- |
-| `approximate_trajectory`, `planned_path` | Map path overlays or path-status diagnostics |
+| `planned_path` | Planned-path overlay or path-status diagnostics |
 | `coverage_corridor`, `coverage_marker` | Coverage/map annotations |
-| `coverage_session_thumbnails` | Local historical map thumbnail |
 | `displayed_mission`, `labeled_missions` | Mission identity/status sensor |
 | `jukebox_state` | Read-only robot media/voice status if privacy-safe |
 | `map_combined_coverage`, `map_compressed_rgb`, `map_compressed_rgb_higher`, `map_integrated` | Alternative local map layers |
-| `map_semantics`, `map_semantics_override`, `semantics_override`, `zones` | Room/zone semantics and map annotations |
+| `semantics_override`, `zones` | Room/zone semantics and map annotations |
 | `schedule_event_previews` | Schedule preview diagnostics |
 | `sink_summons` | Read-only sink event/history diagnostics |
 
-The authoritative typed registry is
+The authoritative Home Assistant inspection registry is
 `custom_components/matic_robot/client/endpoints.py`; it also includes every
-decoded property above and supplies kind/sensitivity metadata to polling,
-inspection, snapshots, and documentation. Recording-related endpoints,
+coordinator-polled property above and supplies kind/sensitivity metadata to
+polling, inspection, snapshots, and documentation. Privacy-sensitive client-only
+decoders are not automatically promoted into inspection or entity state. Recording-related endpoints,
 credentials, arbitrary names, and raw payload output are deliberately excluded.
 
 ## Verified writes

@@ -127,11 +127,28 @@ def test_area_editor_keeps_coordinates_private_and_bounds_marks() -> None:
     area = _JS[_JS.index("class MaticAreaEditor") :]
     assert "512" in area
     assert "detail: { value: this._cloneValue() }" in area
-    assert "count.textContent = `${this._value.length}" in area
+    assert 'this._localize("area_selected", "Area selected")' in area
+    assert 'this._localize("area_not_selected", "Paint an area to continue")' in area
     assert "group.append(mark)" in area
     assert "this._updateControls();" in area
     assert "async_call" not in area
-    assert "fetch(" not in area
+    assert "scene_url" in area
+    assert "this._hass.fetchWithAuth(path, init)" in area
+    assert 'cache: "no-store"' in area
+    assert "window.localStorage" not in area
+
+
+def test_area_editor_aligns_the_private_photo_scene_to_robot_coordinates() -> None:
+    """The photo map and drawing surface use the same verified metric frame."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert 'class="photo-map"' in area
+    assert "scene.origin[0] * scene.metersPerCell" in area
+    assert "-(scene.origin[1] + scene.span[1]) * scene.metersPerCell" in area
+    assert "scene.span[0] * scene.metersPerCell" in area
+    assert 'data-layer="${this._mapLayer}"' in area
+    assert 'data-layer="photo"' in area
+    assert 'data-layer="hybrid"' not in area
+    assert 'data-layer="rooms"' in area
 
 
 def test_area_editor_has_labeled_zoomable_draw_and_pan_map() -> None:
@@ -141,7 +158,11 @@ def test_area_editor_has_labeled_zoomable_draw_and_pan_map() -> None:
     assert 'label.setAttribute("class", "room-label")' in area
     assert "label.textContent = room.name" in area
     assert 'data-tool="draw"' in area
+    assert 'data-tool="erase"' in area
     assert 'data-tool="pan"' in area
+    assert 'this._localize("area_paint", "Paint")' in area
+    assert 'this._localize("area_erase", "Erase")' in area
+    assert 'this._localize("move_map", "Move")' in area
     assert 'class="zoom zoom-out"' in area
     assert 'class="zoom zoom-in"' in area
     assert 'class="fit"' in area
@@ -174,7 +195,9 @@ def test_area_editor_is_a_true_fullscreen_workspace() -> None:
     """The map must fill the viewport and return cleanly to HA's save form."""
     area = _JS[_JS.index("class MaticAreaEditor") :]
     assert '<dialog class="workspace' in area
-    assert ".workspace.expanded { width: 100vw; height: 100dvh;" in area
+    assert (
+        ".workspace.expanded { position: fixed; inset: 0; width: 100vw; height: 100dvh;"
+    ) in area
     assert "workspace.showModal();" in area
     assert "workspace.close();" in area
     assert 'document.body.style.overflow = "hidden";' in area
@@ -197,7 +220,7 @@ def test_area_editor_rejects_marks_started_off_the_floor_plan() -> None:
     """The browser and Python validator share the mapped-room safety boundary."""
     area = _JS[_JS.index("class MaticAreaEditor") :]
     assert "_pointInPolygon(x, y, boundary)" in area
-    assert "if (!this._pointIsMapped(circle.x, circle.y))" in area
+    assert "if (!this._pointIsMapped(sample.x, sample.y)) return;" in area
     assert 'this._localize("area_outside_map"' in area
 
 
@@ -216,13 +239,30 @@ def test_area_editor_does_not_rebuild_during_ha_refresh_or_value_echo() -> None:
     assert "this._syncMarks();" in value_setter
 
 
-def test_area_editor_drag_creates_one_circle_with_a_preview() -> None:
-    """One center-to-edge gesture commits one bounded cleaning circle."""
+def test_area_editor_drag_paints_one_bounded_continuous_footprint() -> None:
+    """One drag samples a continuous footprint and commits one undo step."""
     area = _JS[_JS.index("class MaticAreaEditor") :]
     assert 'class="preview"' in area
-    assert "_updateDraft(svg, event)" in area
+    assert "_sampleBrushSegment(start, end, callback)" in area
+    assert "const spacing = Math.max(0.04, this._radius * 0.55);" in area
+    assert "this._extendBrush(this._brushPoint(svg, event));" in area
+    assert "this._draftBaseValue = this._cloneValue();" in area
+    assert "this._draftEraseValue = this._cloneValue();" in area
+    assert "this._draftBaseValue.length + this._draftStroke.length >= 512" in area
     assert "_commitDraft()" in area
-    assert "Math.max(0.1, Math.min(2.5, distance))" in area
+    assert "this._setValue(next);" in area
+
+
+def test_area_editor_matches_the_map_navigation_model() -> None:
+    """The editor supports map-native trackpad, wheel, and multi-touch input."""
+    area = _JS[_JS.index("class MaticAreaEditor") :]
+    assert "this._pointers = new Map();" in area
+    assert "this._pointers.size === 2" in area
+    assert "start.distance / distance" in area
+    assert "centerX - start.centerX" in area
+    assert "this._isMouseWheel(event, deltaX, deltaY)" in area
+    assert "this._panByPixels(" in area
+    assert 'class="area-zoom-slider"' in area
 
 
 def test_map_panel_has_private_live_navigation_controls() -> None:
@@ -304,7 +344,9 @@ def test_map_panel_persists_only_bounded_view_preferences() -> None:
     assert "labels: this._labelsVisible" in panel
     assert "quality: this._quality" in panel
     assert "cameras," in panel
-    assert "zoom: maticClamp(home / camera.distance" in panel
+    assert "zoom: maticClamp(\n          home / camera.distance" in panel
+    assert "_zoomPercentageBounds(home)" in panel
+    assert "maximum: Math.max(1, Math.round(home / distance.minimum * 100))" in panel
     storage_block = panel[
         panel.index("\n  _savePreferences() {") : panel.index(
             "\n  _schedulePreferencesSave()"

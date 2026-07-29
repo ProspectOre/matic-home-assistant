@@ -33,6 +33,7 @@ from .area_binding import (
 from .area_selector import MaticAreaSelector
 from .bluetooth_pairing import (
     BluetoothPairingIncompleteError,
+    BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
     BluetoothPasskeyExchange,
     async_request_bluetooth_credential,
@@ -61,6 +62,7 @@ from .const import (
     SERVICE_TYPE,
 )
 from .room_plan_selector import MaticRoomPlanSelector
+from .slam_scene import scene_api_url
 
 PAIRING_RETRY_SECONDS = 2
 PAIRING_TIMEOUT_SECONDS = 300
@@ -440,23 +442,30 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 self._pairing_ui_progress = False
                 return self.async_show_progress_done(next_step_id="pairing_code")
         self._pairing_ui_progress = True
-        checkpoint = self._pairing_checkpoint_task
-        if checkpoint is None or checkpoint.done():
-            # Tasks start eagerly, so actionable state may already be waiting;
-            # clearing the update signal then would deadlock the dialog. Leave
-            # it set so the fresh checkpoint completes immediately and the
-            # next configure round performs the hand-off above.
-            if not (task_done or code_ready):
-                self._pairing_update.clear()
-            checkpoint = self.hass.async_create_task(
-                self._async_wait_for_pairing_checkpoint(),
-                "matic_robot_pairing_checkpoint",
-            )
-            self._pairing_checkpoint_task = checkpoint
+        if exchange is not None and exchange.submitted:
+            # No further user input is possible after passkey submission. Let
+            # Home Assistant observe the terminal pairing task directly so a
+            # late or coalesced stage update cannot strand the progress dialog.
+            progress_task = self._pairing_task
+        else:
+            checkpoint = self._pairing_checkpoint_task
+            if checkpoint is None or checkpoint.done():
+                # Tasks start eagerly, so actionable state may already be waiting;
+                # clearing the update signal then would deadlock the dialog. Leave
+                # it set so the fresh checkpoint completes immediately and the
+                # next configure round performs the hand-off above.
+                if not (task_done or code_ready):
+                    self._pairing_update.clear()
+                checkpoint = self.hass.async_create_task(
+                    self._async_wait_for_pairing_checkpoint(),
+                    "matic_robot_pairing_checkpoint",
+                )
+                self._pairing_checkpoint_task = checkpoint
+            progress_task = checkpoint
         return self.async_show_progress(
             step_id=step_id,
             progress_action=self._pairing_stage,
-            progress_task=checkpoint,
+            progress_task=progress_task,
         )
 
     async def async_step_pair(
@@ -584,7 +593,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                             self._pairing_user_id,
                             self._passkey_exchange,
                             stage_callback=self._async_set_pairing_stage,
+                            replace_existing_bond=True,
                         )
+                    except BluetoothPairingResetError as err:
+                        last_error = BluetoothPairingIncompleteError(str(err))
+                        self._pairing_diagnostic = str(err)
                     except (
                         BluetoothPairingIncompleteError,
                         PairingModeRequiredError,
@@ -592,6 +605,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         last_error = err
                         self._pairing_diagnostic = str(err)
                         self._async_note_code_outcome()
+                        if (
+                            self._passkey_exchange is not None
+                            and self._passkey_exchange.requested
+                        ):
+                            raise
                     elapsed = monotonic() - started_at
                     self.async_update_progress(
                         min(elapsed / PAIRING_TIMEOUT_SECONDS, 0.99)
@@ -614,8 +632,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             )
         except BluetoothPairingIncompleteError as err:
             self._pairing_diagnostic = str(err)
+            error = self._pairing_retry_note or "pairing_incomplete"
             self._pairing_result = self._show_pairing_form(
-                "reauth_confirm", {"base": "pairing_incomplete"}
+                "reauth_confirm", {"base": error}
             )
         except PairingModeRequiredError as err:
             self._pairing_diagnostic = str(err)
@@ -757,6 +776,15 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     error = (result.get("errors") or {}).get("base")
                     last_error = error
                     self._async_note_code_outcome()
+                    if (
+                        self._passkey_exchange is not None
+                        and self._passkey_exchange.requested
+                    ):
+                        self._pairing_result = self._show_pairing_form(
+                            "pair",
+                            {"base": self._pairing_retry_note or "pairing_incomplete"},
+                        )
+                        return
                     if error not in {
                         "cannot_connect",
                         "pairing_incomplete",
@@ -1046,7 +1074,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 vol.Required("name", default=defaults.get("name", "")): str,
                 vol.Required(
                     "area_editor", default=defaults.get("circles", [])
-                ): MaticAreaSelector({"rooms": rooms}),
+                ): MaticAreaSelector(
+                    {
+                        "rooms": rooms,
+                        "scene_url": scene_api_url(self.config_entry.entry_id),
+                    }
+                ),
                 vol.Required(
                     "cleaning_mode",
                     default=defaults.get("cleaning_mode", CleaningMode.VACUUM.value),

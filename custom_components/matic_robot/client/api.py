@@ -8,7 +8,7 @@ import math
 import socket
 import ssl
 import struct
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from time import monotonic
@@ -44,6 +44,13 @@ from .exceptions import (
     PairingModeRequiredError,
 )
 from .floor_plan import decode_floor_plan, decode_pose
+from .flythrough import Flythrough, decode_flythrough
+from .history import (
+    CleaningSessionImage,
+    MonthlyCleaningRecap,
+    decode_cleaning_session_image,
+    decode_monthly_cleaning_recap,
+)
 from .models import (
     CleaningSchedule,
     CleaningSession,
@@ -54,6 +61,7 @@ from .models import (
     RobotOperationalState,
     RobotPose,
     RobotTelemetry,
+    RobotTrajectory,
     WifiNetwork,
 )
 from .proto.hermes_auth_grpc import HermesAuthStub
@@ -74,6 +82,7 @@ from .tls import (
     async_robot_client_context,
     validate_certificate,
 )
+from .trajectory import decode_approximate_trajectory
 from .wire import decode_fields, first_bytes, first_varint
 
 _LOGGER = logging.getLogger(__name__)
@@ -83,6 +92,10 @@ _RPC_TIMEOUT = 10.0
 # Streamed collection reads have per-message timeouts; this caps the whole
 # read so a slow-dripping stream cannot hold a poll cycle open for minutes.
 _COLLECTION_TIMEOUT = 30.0
+_TRACKED_COLLECTION_MAX_BYTES = 64 * 1024 * 1024
+_SESSION_COMPLETED_STATUS = 0
+_ROOM_MODE_NON_COMPLETION_STATUS = 1
+_ROOM_MODE_COMPLETED_STATUS = 2
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -286,6 +299,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             try:
                 async with asyncio.timeout(_RPC_TIMEOUT):
                     await channel.__connect__()
+            except TimeoutError:
+                channel.close()
+                last_error = CannotConnectError("Hermes connection timed out")
+                continue
             except (OSError, StreamTerminatedError, ProtocolError) as err:
                 channel.close()
                 last_error = CannotConnectError(str(err) or "connection failed")
@@ -473,6 +490,35 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed robot pose") from err
 
+    async def async_get_flythrough(self, *, expected_mission_token: str) -> Flythrough:
+        """Read the native map tour correlated to the active SLAM mission."""
+        try:
+            return decode_flythrough(
+                await self.async_get_property("flythrough"),
+                expected_mission_token=expected_mission_token,
+            )
+        except DecodeError as err:
+            raise CannotConnectError(
+                "Hermes returned a malformed map flythrough"
+            ) from err
+
+    async def async_subscribe_approximate_trajectory(
+        self, floor_plan: FloorPlan
+    ) -> AsyncIterator[RobotTrajectory]:
+        """Yield bounded route updates for the active floor-plan mission."""
+        async for entry in self.async_subscribe_collection_entries(
+            "approximate_trajectory"
+        ):
+            try:
+                yield decode_approximate_trajectory(
+                    entry.value,
+                    expected_mission_id=floor_plan.mission_id,
+                )
+            except DecodeError as err:
+                raise CannotConnectError(
+                    "Hermes returned a malformed approximate trajectory"
+                ) from err
+
     async def async_has_active_cleaning_session(self) -> bool | None:
         """Read whether the vetted active-session property is present."""
         return _decode_presence_state(
@@ -483,7 +529,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
-        entries = await self.async_get_collection_entries(
+        entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
         return tuple(
@@ -492,6 +538,36 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             if entry.key
             and (session := _decode_cleaning_session(entry.value)) is not None
         )
+
+    async def async_get_cleaning_session_images(
+        self,
+    ) -> tuple[CleaningSessionImage, ...]:
+        """Read valid private session maps from the retained history window."""
+        entries = await self.async_get_tracked_collection_entries(
+            "coverage_session_thumbnails", limit=64
+        )
+        images: list[CleaningSessionImage] = []
+        for entry in entries:
+            try:
+                images.append(decode_cleaning_session_image(entry))
+            except DecodeError:
+                continue
+        return tuple(images)
+
+    async def async_get_monthly_cleaning_recaps(
+        self,
+    ) -> tuple[MonthlyCleaningRecap, ...]:
+        """Read valid private monthly cleaning totals in protocol-native units."""
+        entries = await self.async_get_tracked_collection_entries(
+            "recap_history", limit=120
+        )
+        recaps: list[MonthlyCleaningRecap] = []
+        for entry in entries:
+            try:
+                recaps.append(decode_monthly_cleaning_recap(entry))
+            except DecodeError:
+                continue
+        return tuple(recaps)
 
     async def async_get_telemetry(self) -> RobotTelemetry:
         """Read the complete decoded local telemetry surface."""
@@ -610,7 +686,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     ) -> tuple[HermesCollectionEntry, ...] | None:
         """Return an optional local collection without hiding core state."""
         try:
-            value = await self.async_get_collection_entries(name, limit=limit)
+            endpoint = HERMES_ENDPOINT_MAP.get(name)
+            if endpoint is not None and endpoint.tracked:
+                value = await self.async_get_tracked_collection_entries(
+                    name, limit=limit
+                )
+            else:
+                value = await self.async_get_collection_entries(name, limit=limit)
             self._endpoint_health[name] = "ok"
             return value
         except (AuthenticationRequiredError, CannotConnectError) as err:
@@ -749,7 +831,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_subscribe_collection_entries(
         self, collection_name: str
-    ) -> AsyncIterator[HermesCollectionEntry]:
+    ) -> AsyncGenerator[HermesCollectionEntry]:
         """Yield the initial snapshot and later updates from a collection.
 
         Unlike bounded diagnostic reads, this keeps the robot's server stream
@@ -798,6 +880,44 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     # timeout. Explicit cancellation is local, bounded cleanup.
                     await _async_cancel_stream(stream)
 
+    async def async_get_tracked_collection_entries(
+        self,
+        collection_name: str,
+        *,
+        limit: int = 256,
+        first_timeout: float = 3.0,
+        idle_timeout: float = 0.25,
+    ) -> tuple[HermesCollectionEntry, ...]:
+        """Return a bounded snapshot while acknowledging tracked updates."""
+        if not 1 <= limit <= 4096:
+            raise ValueError("Hermes collection limit must be between 1 and 4096")
+        entries: list[HermesCollectionEntry] = []
+        iterator = self.async_subscribe_collection_entries(collection_name)
+        received = False
+        collected_bytes = 0
+        deadline = monotonic() + _COLLECTION_TIMEOUT
+        try:
+            while len(entries) < limit:
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                timeout = min(idle_timeout if received else first_timeout, remaining)
+                try:
+                    async with asyncio.timeout(timeout):
+                        entry = await anext(iterator)
+                except StopAsyncIteration, TimeoutError:
+                    break
+                received = True
+                collected_bytes += len(entry.key) + len(entry.value)
+                if collected_bytes > _TRACKED_COLLECTION_MAX_BYTES:
+                    raise CannotConnectError(
+                        f"Hermes {collection_name} collection exceeds the byte limit"
+                    )
+                entries.append(entry)
+        finally:
+            await iterator.aclose()
+        return tuple(entries)
+
     async def async_inspect_endpoint(
         self, endpoint_name: str, *, limit: int = 1
     ) -> tuple[HermesCollectionEntry, ...]:
@@ -811,6 +931,10 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             if endpoint.kind is HermesEndpointKind.PROPERTY:
                 value = await self.async_get_property(endpoint_name)
                 result = (HermesCollectionEntry(b"", value),)
+            elif endpoint.tracked:
+                result = await self.async_get_tracked_collection_entries(
+                    endpoint_name, limit=limit
+                )
             else:
                 result = await self.async_get_collection_entries(
                     endpoint_name, limit=limit
@@ -1296,7 +1420,7 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
 
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
-    """Decode timestamps and room-level summaries from local cleaning history."""
+    """Decode native history without treating its global default as room proof."""
     try:
         summary = first_bytes(payload, 5)
     except DecodeError:
@@ -1305,6 +1429,8 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     ended_at = _decode_nested_timestamp(summary, 4)
     rooms: list[str] = []
     room_durations: dict[str, int] = {}
+    room_mode_statuses: dict[str, set[int]] = {}
+    rooms_with_unknown_status: set[str] = set()
     try:
         fields = decode_fields(summary)
     except DecodeError:
@@ -1321,6 +1447,7 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                 continue
             try:
                 details = first_bytes(room_field.value, 2)
+                detail_fields = decode_fields(details)
             except DecodeError:
                 continue
             name = _decode_text_field(details, 3)
@@ -1328,6 +1455,13 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                 continue
             if name not in rooms:
                 rooms.append(name)
+            status_fields = [field for field in detail_fields if field.number in (5, 6)]
+            statuses = room_mode_statuses.setdefault(name, set())
+            for field in status_fields:
+                if field.wire_type == 0 and isinstance(field.value, int):
+                    statuses.add(field.value)
+                else:
+                    rooms_with_unknown_status.add(name)
             try:
                 duration = first_bytes(details, 4)
                 room_durations[name] = first_varint(duration, 1)
@@ -1353,13 +1487,38 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         and isinstance(status_fields[0].value, int)
     ):
         completion_status = status_fields[0].value
+    room_completion: dict[str, bool | None] = {}
+    for name in rooms:
+        statuses = room_mode_statuses.get(name, set())
+        if _ROOM_MODE_COMPLETED_STATUS in statuses:
+            room_completion[name] = True
+        elif (
+            statuses == {_ROOM_MODE_NON_COMPLETION_STATUS}
+            and name not in rooms_with_unknown_status
+        ):
+            room_completion[name] = False
+        else:
+            room_completion[name] = None
+    completed_rooms = tuple(name for name in rooms if room_completion.get(name) is True)
+    completed: bool | None
+    if completion_status not in (None, _SESSION_COMPLETED_STATUS):
+        completed = False
+    elif completion_status is None or not room_completion:
+        completed = None
+    elif any(value is False for value in room_completion.values()):
+        completed = False
+    elif any(value is None for value in room_completion.values()):
+        completed = None
+    else:
+        completed = True
     return CleaningSession(
         started_at=started_at,
         ended_at=ended_at,
         duration_seconds=duration_seconds,
         rooms=tuple(rooms),
         room_durations=tuple(room_durations.items()),
-        completed=(completion_status == 0 if completion_status is not None else None),
+        completed=completed,
+        completed_rooms=completed_rooms,
     )
 
 

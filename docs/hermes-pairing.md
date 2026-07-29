@@ -20,10 +20,10 @@ supported by Matic Robots Inc.
    asks for it.
 4. Enter the code when prompted. Bluetooth gives roughly 20 seconds to enter
    it before the exchange times out, so type it right away. If the code expires
-   or is rejected while the pairing window remains open, Home Assistant starts
-   a fresh bond and prompts for the replacement code. Setup creates the entry
-   only after the new local credential and an authenticated robot connection
-   are both verified.
+   or is rejected, turn Pairing mode off and back on before retrying. Matic
+   firmware does not reliably issue a replacement code inside the same pairing
+   window. Setup creates the entry only after the new local credential and an
+   authenticated robot connection are both verified.
 
 Any displayed code applies only to the current attempt. The integration does
 not log, store, or include it in diagnostics. Routine operation uses the
@@ -81,8 +81,9 @@ only Bluetooth path presented to setup.
 ## Failure behavior
 
 - Invalid, expired, and rejected codes are never reused.
-- After an expired or rejected code, the open flow starts a fresh bond and
-  prompts for the new code. Reopen Pairing mode only if the app window closed.
+- After an expired or rejected code, the flow returns to Pairing-mode
+  confirmation. Turn Pairing mode off and back on before retrying so Matic
+  issues a fresh code.
 - Cancelling setup releases the temporary Bluetooth pairing agent.
 - Certificate, identity, credential, and authenticated-connection failures stop
   setup before an entry is created.

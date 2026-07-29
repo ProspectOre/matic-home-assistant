@@ -11,6 +11,7 @@ from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.matic_robot.bluetooth_pairing import (
     BluetoothPairingIncompleteError,
+    BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
@@ -575,12 +576,18 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
         ).SerializeToString(),
     )
     received_passkey = None
+    replaced_existing_bond = False
 
     async def request_credential(
-        _hass, _user_id, passkey_exchange=None, stage_callback=None
+        _hass,
+        _user_id,
+        passkey_exchange=None,
+        stage_callback=None,
+        **_kwargs,
     ):
-        nonlocal received_passkey
+        nonlocal received_passkey, replaced_existing_bond
         assert passkey_exchange is not None
+        replaced_existing_bond = _kwargs.get("replace_existing_bond", False)
         received_passkey = await passkey_exchange.async_request_passkey()
         return credential
 
@@ -610,6 +617,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     verifying = await flow.async_step_pairing_code({"passkey": "012345"})
     assert verifying["type"] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_task is not None
+    assert verifying["progress_task"] is flow._pairing_task
     await flow._pairing_task
     assert flow._pairing_checkpoint_task is not None
     await flow._pairing_checkpoint_task
@@ -619,6 +627,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
 
     assert result["reason"] == "reauth_successful"
     assert received_passkey == 12345
+    assert replaced_existing_bond is True
     flow._async_verify_existing_robot.assert_awaited_once()
     assert flow.async_update_reload_and_abort.call_args.kwargs["data_updates"] == {
         CONF_HERMES_CREDENTIAL: credential.to_storage()
@@ -626,6 +635,58 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     flow.async_set_unique_id.assert_awaited_once_with("synthetic")
     flow._abort_if_unique_id_mismatch.assert_called_once_with()
     assert flow._pairing_task is None
+
+
+async def test_reauthentication_retries_after_clearing_stale_bond(
+    hass, monkeypatch
+) -> None:
+    flow = _flow(hass)
+    request = AsyncMock(
+        side_effect=[
+            BluetoothPairingResetError("cleared"),
+            TEST_CREDENTIAL,
+        ]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        request,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
+    )
+    flow.async_update_progress = MagicMock()
+
+    assert await flow._async_reauth_credential() == TEST_CREDENTIAL
+    assert request.await_count == 2
+    assert flow._pairing_diagnostic == "cleared"
+
+
+async def test_reauthentication_stops_after_submitted_code_fails(
+    hass, monkeypatch
+) -> None:
+    flow = _flow(hass)
+
+    async def reject_code(
+        _hass,
+        _user_id,
+        passkey_exchange=None,
+        **_kwargs,
+    ):
+        assert passkey_exchange is not None
+        pending = asyncio.create_task(passkey_exchange.async_request_passkey())
+        await passkey_exchange.async_wait_until_requested()
+        passkey_exchange.submit(123456)
+        assert await pending == 123456
+        raise BluetoothPairingIncompleteError("rejected")
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        reject_code,
+    )
+
+    with pytest.raises(BluetoothPairingIncompleteError, match="rejected"):
+        await flow._async_reauth_credential()
+    assert flow._pairing_retry_note == "pairing_code_rejected"
 
 
 @pytest.mark.parametrize(

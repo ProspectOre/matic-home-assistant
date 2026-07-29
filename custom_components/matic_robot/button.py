@@ -28,6 +28,7 @@ async def async_setup_entry(
             MaticPlanButton(entry, "intelligent_clean"),
             MaticPlanButton(entry, "clean_entire_plan"),
             MaticPlanButton(entry, "stop_intelligent_cleaning"),
+            MaticAreaButton(entry),
         ]
     )
 
@@ -97,5 +98,68 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
             DOMAIN,
             self._service,
             {ATTR_ENTITY_ID: self._vacuum_entity_id()},
+            blocking=True,
+        )
+
+
+class MaticAreaButton(MaticEntity, ButtonEntity):
+    """Run the custom area selected on the Matic device page."""
+
+    _attr_translation_key = "clean_selected_area"
+    _attr_entity_registry_enabled_default = True
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._serial_number = self.coordinator.data.info.serial_number
+        self._areas = entry.runtime_data.cleaning_plans
+        self._attr_unique_id = f"{self._serial_number}_clean_selected_area"
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh availability when custom areas change."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._areas.async_add_listener(
+                self._serial_number, self._async_areas_updated
+            )
+        )
+
+    @callback
+    def _async_areas_updated(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def available(self) -> bool:
+        """Expose the action only while a current custom area can be resolved."""
+        if not super().available or self.coordinator.data.floor_plan is None:
+            return False
+        try:
+            self._areas.area(self._serial_number)
+        except KeyError:
+            return False
+        return True
+
+    def _vacuum_entity_id(self) -> str:
+        """Find the vacuum entity owned by this config entry."""
+        for entity in er.async_entries_for_config_entry(
+            er.async_get(self.hass), self._config_entry.entry_id
+        ):
+            if entity.domain == "vacuum" and entity.platform == DOMAIN:
+                return entity.entity_id
+        raise HomeAssistantError(
+            "The selected Matic robot is unavailable",
+            translation_domain=DOMAIN,
+            translation_key="robot_unavailable",
+        )
+
+    async def async_press(self) -> None:
+        """Run the selected private custom area through the validated action."""
+        area = self._areas.area(self._serial_number)
+        await self.hass.services.async_call(
+            DOMAIN,
+            "clean_area",
+            {
+                ATTR_ENTITY_ID: self._vacuum_entity_id(),
+                "area": area["id"],
+            },
             blocking=True,
         )

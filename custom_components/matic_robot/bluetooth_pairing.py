@@ -50,6 +50,10 @@ class BluetoothPairingIncompleteError(MaticError):
     """The robot was advertising, but Bluetooth pairing did not complete."""
 
 
+class BluetoothPairingResetError(MaticError):
+    """A stale host bond was removed before reauthentication."""
+
+
 HERMES_TOKEN_CHARACTERISTIC = "84b52f26-d3b7-5ebe-ba52-ff38a447788d"
 MATIC_BLE_SERVICE_UUID = "5b14adcd-e995-9e80-c55a-b6c6fb6c612f"
 MATIC_LOCAL_NAME = "matic"
@@ -309,6 +313,8 @@ async def async_request_bluetooth_credential(
     user_id: str,
     passkey_exchange: BluetoothPasskeyExchange | None = None,
     stage_callback: Callable[[str], None] | None = None,
+    *,
+    replace_existing_bond: bool = False,
 ) -> HermesCredential:
     """Request one Hermes credential through Matic's private GATT endpoint."""
 
@@ -364,7 +370,10 @@ async def async_request_bluetooth_credential(
                         # robot's request with a host-initiated exchange, which
                         # the kernel drops as an unexpected SMP command and the
                         # robot then cancels authentication.
-                        await bluez_session.async_pair(bluez_device_path)
+                        await bluez_session.async_pair(
+                            bluez_device_path,
+                            replace_existing=replace_existing_bond,
+                        )
                     failure_stage = "GATT service discovery"
                     services = getattr(client, "services", None)
                     characteristics = list(

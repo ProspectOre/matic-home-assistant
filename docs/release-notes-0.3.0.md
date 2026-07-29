@@ -4,54 +4,48 @@ Status: local release candidate — not published
 
 ## Summary
 
-0.3.0 adds a private, local 3D SLAM map workspace and precise reusable custom
-cleaning areas. It keeps the map, accumulated tiles, and drawn geometry inside
-Home Assistant while exposing saved areas to automations by name.
+0.3.0 adds a private local 3D SLAM workspace and reusable cleaning areas. Maps, accumulated tiles, and geometry remain in Home Assistant; automations use names.
 
-## Full-screen custom-area studio
+## Unified Cleaning workspace
 
-- **Configure → Custom cleaning areas** opens a viewport-sized editor instead
-  of putting the map inside a scrolling form field.
-- Every mapped room is labeled and can be focused directly. Draw and Pan are
-  separate tools; the mouse wheel zooms around the cursor, middle-button or
-  Space-drag pans temporarily, and pointer capture is released after every
-  completed or cancelled gesture.
+- **Matic Map → Cleaning** opens a viewport-sized workspace with **Plans** and
+  **Custom areas** views for creating, editing, running, and deleting definitions.
+  Configure remains a compatibility entry point.
+- The map exposes both views as first-class actions. Native room checkboxes use
+  full switch-sized hit targets and preserve saved settings reliably in Safari.
+- Photo, Rooms, and repaired boundary overlays share one coordinate
+  viewport, staying aligned across 2D, 3D, and navigation. A cache-busted module
+  supports Home Assistant sessions opened before integration startup.
+- Every mapped room is labeled and can be focused directly. Paint, Erase, and
+  Move are separate tools. Dragging paints continuously; wheel input zooms at the
+  cursor; middle-button or Space-drag pans. Pointer capture always releases.
 - Undo, Redo, and Clear mutate the existing editor without rebuilding it or
   escaping into Home Assistant's form. Clear is recoverable through Undo, and
   pointer guards preserve native Safari/WebKit button activation.
-- Keyboard controls include Command/Control-Z, Shift-Command/Control-Z, D, P,
-  plus, minus, 0 to fit, and Escape/Done editing to return to the name, mode,
-  coverage, and Submit fields.
+- Keyboard controls include undo/redo, D/E/P, plus, minus, 0 to fit, and
+  Escape/Done editing to return to the name, mode, coverage, and Submit fields.
 - Both the browser and server reject circle centers outside mapped rooms.
   Circle counts, radius, numeric bounds, and command payload size are bounded.
 
 ## Private 3D SLAM map
 
-- A new photorealistic camera decodes the robot's local color SLAM tiles and
-  integrated structural pages, accumulates both layers by the current
-  firmware's signed page coordinates, and persists them in a size-bounded
-  private Home Assistant store.
+- A photorealistic camera decodes local color SLAM tiles and structural pages,
+  accumulating signed page coordinates in a bounded private Home Assistant store.
 - A lifecycle-managed tracked Hermes subscription keeps both bidirectional
-  streams open and acknowledges every server sequence so emitted map pages and
-  later refinements advance into the private cache. Streams are explicitly
-  cancelled at unload, and a closed collector cannot reconnect during restart.
-  A settled/balanced health signal is not proof that every physical surface was
-  scanned.
+  streams open and acknowledges each server sequence. Streams cancel at unload;
+  closed collectors cannot reconnect during restart. Settled/balanced health
+  does not prove every physical surface was scanned.
 - The renderer transposes the robot's channel-major floor tensor into map space
-  before compositing pages. Neighboring live edges are continuous, eliminating
-  the repeated 32-by-32 texture squares caused by flat raster reversal.
+  before compositing. Continuous edges remove repeated 32-by-32 texture squares.
 - Vectorized voxel projection and bounded PNG compression keep the Home
   Assistant event loop responsive while rendering the full map. Concurrent
   camera requests share one render, and ordinary live refinements replace the
   image without covering the existing map with a loading spinner.
-- The admin-only **Matic Map** panel provides **3D**, orthographic
-  **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
-  twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
-  access, full-screen mode, loading/error feedback, room labels, and a live
-  robot marker. A compact Home Assistant-native toolbar keeps actions over the
-  workspace instead of consuming map height. Top-down opens aligned and fitted,
-  remains planar during gestures, and retains its camera independently from 3D.
-  The Rooms renderer centers non-square layouts inside the requested viewport.
+- The admin-only **Matic Map** panel provides **3D** and **2D** views; 2D switches
+  between photographic and labeled room maps. Orbit, pan, pinch, twist, tilt,
+  wheel/trackpad navigation, fit, refresh, keyboard control, full screen, status,
+  labels, and live pose share a compact native toolbar. 2D stays planar and keeps
+  independent framing; non-square room maps remain centered.
   Mouse movement stops on release, camera targets stay bounded, and Fit map
   reliably recenters the house. A failed refresh retains the last
   good 3D scene; the room map remains the initial-load fallback while SLAM pages
@@ -65,17 +59,14 @@ Home Assistant while exposing saved areas to automations by name.
   late responses from a previously selected entry are discarded.
   Unloading the final entry also clears retained map buffers and references from
   the browser instead of leaving the last private scene resident.
-  Catalog, scene, pose, and camera-image requests are time-bounded. A stalled
-  refresh retains the last usable local map, while a stalled first image load
-  exits the busy state with actionable reconnect-and-refresh guidance.
-  Private requests use Home Assistant's authenticated frontend transport with
-  its automatic token refresh, so a long-lived studio cannot fall back after a
-  session expires.
-  Room images are sized to the display (up to 2048 pixels) and coalesced while
-  rendering so periodic updates cannot cancel and restart the same expensive
-  image request.
-  Map controls stop gesture propagation without cancelling native button focus
-  or click synthesis.
+  Catalog, scene, pose, and camera requests are time-bounded. Stalled refreshes
+  retain the last map; a stalled first load exits with recovery guidance. Private
+  requests use Home Assistant transport and automatic token refresh.
+  Room images are sized to the display (up to 2048 pixels) and coalesced so
+  periodic updates cannot restart the same expensive render. Map controls stop
+  gesture propagation without cancelling native button focus or click synthesis.
+- The zoom slider uses the same camera bounds as gestures, exposing and
+  representing every reachable zoom level.
 - The photographic camera is disabled by default. Scene and pose endpoints
   require an administrator and use `private, no-store` responses. In-memory
   encoded scenes are purged on unload and removal. No cloud, analytics,
@@ -86,16 +77,20 @@ Home Assistant while exposing saved areas to automations by name.
   every surface was scanned. The viewer starts with a bounded complete scene,
   then applies compressed binary deltas through an authenticated long-poll.
   Missing or inefficient bases fall back to a complete scene in that request.
-- Stable scenes enter a private timeline capped at 12 checkpoints and 48 MiB
-  compressed. Removing the config entry removes both current tiles and history.
-- A guaranteed last-scanned timestamp is not exposed.
+- Mission rollover no longer replaces the usable workspace with the first sparse
+  page pair. Live keeps the last complete scene, overlays the current robot pose,
+  suppresses incompatible deltas, then switches when the new scene is complete.
+- Stable scenes enter a private timeline capped at 12 checkpoints and 48 MiB;
+  **History · Live** opens its upward scrubber or a clear empty state. Removing the entry clears tiles
+  and history; no guaranteed last-scanned timestamp is exposed.
 - Legacy mixed-mission cache repair retains a usable photographic layer instead
   of allowing a mismatched structural page to erase the 3D scene.
 
 ## Named custom-area actions
 
-- `matic_robot.clean_area` accepts a saved area name plus optional cleaning-mode
-  and coverage overrides.
+- `matic_robot.clean_area` accepts a saved area name plus optional mode and coverage overrides.
+- Native **Custom cleaning area** and **Clean selected area** entities expose
+  saved areas on the device page without publishing geometry.
 - Each area is bound to the coverage mission, standard partition, and canonical
   room geometry used by its editor. Legacy/unbound areas and any mismatch are
   blocked before a robot command; a privacy-safe Repair reports only the count
@@ -108,13 +103,23 @@ Home Assistant while exposing saved areas to automations by name.
 
 ## Plan and command safety
 
-- A room is credited only after the issued one-room command is observed cleaning
-  that target and a new robot-native history record confirms a successful,
-  overlapping single-room run with a positive room duration. The active-session
-  key disappearing means only that the task ended; it is never completion proof.
-  App/robot STOP, stale or malformed history, duplicate room-name ambiguity, and
-  takeover activity cannot advance last-cleaned, successful durations, run
-  counts, or intelligent rotation.
+- Intelligent rotation ranks target-room-confirmed cleaning starts across plans;
+  saved order breaks ties, rejected commands and lingering prior-room state do not
+  move a room. Unfinished starts rotate without credit; completion requires the
+  one-room command plus a new overlapping native single-room record, positive
+  duration, and verified completed status for a requested mode. The global
+  protobuf default and active-session disappearance are not completion evidence.
+  STOP, unknown/non-completed mode status, stale or malformed history, duplicate
+  room-name ambiguity, and takeover cannot advance last-cleaned, successful
+  durations, or run counts. Stable room IDs take precedence over colliding
+  display names throughout plan persistence, editing, and command dispatch.
+- Verified completions immediately notify room statistics and persist duration.
+  Startup recovers the newest retained record with explicit room completion and
+  positive duration; defaults, attempts, cancellations, failures, and unverified records remain ineligible.
+- Finish-current-room estimates reuse bounded successful durations across plans
+  only for the same robot, stable room ID, cleaning mode, and coverage. Aggregate
+  duration history from earlier releases requires at least three successful runs;
+  mismatched or malformed history remains unusable.
 - Low-charge return is suspended for automatic resume. Ordinary return while a
   firmware session is still active uses a neutral verification state, so it
   does not inflate pause/recharge counts. Cancelled and unverified elapsed time
@@ -124,13 +129,19 @@ Home Assistant while exposing saved areas to automations by name.
   dispatch; pause/resume preserves it. Commands from another client remain an
   external takeover that Home Assistant can detect only through later state.
 
+## Protocol foundations
+
+- Firmware compatibility snapshots are keyed by software and protocol. Staged
+  post-reboot metadata schedules a follow-up snapshot instead of leaving
+  compatibility pending.
+- Tracked snapshots acknowledge sequence IDs and enforce record, duration, and
+  byte limits, so history and semantic pages cannot stop after one record.
+- Bounded client decoders validate session images, monthly recaps, semantic grids,
+  the live route, and native 3D flythrough. Retained captures prove 20 images, one
+  recap, two 781-page layers, 444 route messages, and 1,606 flythrough poses.
+- These client-only foundations add no private content to entity state, Recorder,
+  diagnostics, map storage, media endpoints, or browser responses in 0.3.0.
+
 ## Verification posture
 
-The unpublished local candidate passes 713 Python tests / 6,955 statements at
-100% coverage and 25 real-browser interaction tests, plus strict typing,
-lint/format, privacy, wheel/source parity, and clean-wheel import. Live Home
-Assistant/Safari proof covered maximum-detail 3D, exact pose, orbit, top-down,
-labeled Rooms, forced
-refresh, repeated updates, expired-session recovery, and a second clean restart
-with no Matic task leak, authentication failure, or traceback. No push, PR,
-tag, or release was made.
+The unpublished candidate passes 865 Python tests / 8,011 statements at 100% coverage, 38 browser tests, strict typing, lint/format, privacy, exact-tree Hassfest, artifact parity, and clean-wheel import. The official HACS action passes all nine repository checks against the published default branch; validating this unpushed revision through HACS requires a remote ref. Live Safari covered the map lifecycle. Real-robot runs covered both coverage levels, all three cleaning modes, a two-room no-dock handoff, both intelligent-stop branches, and persisted custom-area cleaning with fail-closed credit. HAOS reauthentication was also exercised through credential revocation, stale-bond removal, passkey expiry/rejection recovery, fresh bonding, credential verification, and a clean Core restart. Post-passkey progress now follows the terminal pairing task directly, and BlueZ agent cleanup is bounded so successful setup cannot remain behind an indefinite progress dialog. Live Container Bluetooth proof and publishing remain open.

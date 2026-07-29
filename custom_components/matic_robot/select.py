@@ -28,6 +28,11 @@ SAVED_PLAN_DESCRIPTION = SelectEntityDescription(
     translation_key="saved_cleaning_plan",
 )
 
+CUSTOM_AREA_DESCRIPTION = SelectEntityDescription(
+    key="custom_cleaning_area",
+    translation_key="custom_cleaning_area",
+)
+
 
 async def async_setup_entry(
     hass: HomeAssistant,
@@ -40,6 +45,7 @@ async def async_setup_entry(
             MaticCleaningModeSelect(entry),
             MaticCoverageSettingSelect(entry),
             MaticSavedPlanSelect(entry),
+            MaticCustomAreaSelect(entry),
         ]
     )
 
@@ -137,3 +143,47 @@ class MaticSavedPlanSelect(MaticEntity, SelectEntity):
         """Select a saved plan by its displayed name."""
         plan = self._history.plan(self._serial_number, option)
         await self._history.async_select_plan(self._serial_number, plan["id"])
+
+
+class MaticCustomAreaSelect(MaticEntity, SelectEntity):
+    """Choose the private saved area used by the native clean-area button."""
+
+    entity_description = CUSTOM_AREA_DESCRIPTION
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._serial_number = self.coordinator.data.info.serial_number
+        self._areas = entry.runtime_data.cleaning_plans
+        self._attr_unique_id = f"{self._serial_number}_custom_cleaning_area"
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to custom-area changes."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._areas.async_add_listener(
+                self._serial_number, self._async_areas_updated
+            )
+        )
+
+    @callback
+    def _async_areas_updated(self) -> None:
+        self.async_write_ha_state()
+
+    @property
+    def options(self) -> list[str]:
+        """Return human-readable saved-area names."""
+        return [
+            str(area.get("name", area_id))
+            for area_id, area in self._areas.areas(self._serial_number).items()
+        ]
+
+    @property
+    def current_option(self) -> str | None:
+        """Return the selected area's human-readable name."""
+        value = self._areas.snapshot(self._serial_number)["selected_area_name"]
+        return str(value) if value is not None else None
+
+    async def async_select_option(self, option: str) -> None:
+        """Select a saved custom area by its displayed name."""
+        area = self._areas.area(self._serial_number, option)
+        await self._areas.async_select_area(self._serial_number, area["id"])

@@ -57,12 +57,23 @@ class FirmwareTracker:
             previous_protocol = robot.get("observed_protocol")
             if previous == version and previous_protocol == protocol:
                 return False
+            if (
+                previous == version
+                and previous_protocol is not None
+                and protocol is None
+            ):
+                return False
+            metadata_completed = (
+                previous == version
+                and previous_protocol is None
+                and protocol is not None
+            )
             robot["observed_version"] = version
             robot["observed_protocol"] = protocol
             robot["compatibility_status"] = "pending"
             await self._store.async_save(self._data)
         self._notify(robot_id)
-        if previous is None:
+        if previous is None or metadata_completed:
             return False
 
         self.hass.bus.async_fire(
@@ -126,10 +137,12 @@ class FirmwareTracker:
             await self._store.async_save(self._data)
         self._notify(robot_id)
         previous_version = previous.get("firmware_version") if previous else None
-        if (
+        previous_protocol = previous.get("protocol_version") if previous else None
+        release_changed = bool(
             release_comparison["firmware_changed"]
-            and release_comparison["changed_endpoints"]
-        ):
+            or release_comparison["protocol_changed"]
+        )
+        if release_changed and release_comparison["changed_endpoints"]:
             ir.async_create_issue(
                 self.hass,
                 DOMAIN,
@@ -141,10 +154,20 @@ class FirmwareTracker:
                 translation_placeholders={
                     "previous": str(previous_version),
                     "current": str(current.get("firmware_version")),
+                    "previous_protocol": (
+                        str(previous_protocol)
+                        if previous_protocol is not None
+                        else "unknown"
+                    ),
+                    "current_protocol": (
+                        str(current.get("protocol_version"))
+                        if current.get("protocol_version") is not None
+                        else "unknown"
+                    ),
                     "count": str(len(release_comparison["changed_endpoints"])),
                 },
             )
-        elif release_comparison["baseline"] or release_comparison["firmware_changed"]:
+        elif release_comparison["baseline"] or release_changed:
             ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
         return comparison
 
@@ -167,10 +190,13 @@ class FirmwareTracker:
             "content_changed_endpoints": comparison.get("content_changed_endpoints"),
         }
 
-    def needs_snapshot(self, robot_id: str, version: str) -> bool:
-        """Return whether this firmware lacks a completed endpoint snapshot."""
+    def needs_snapshot(self, robot_id: str, version: str, protocol: int | None) -> bool:
+        """Return whether this firmware/protocol pair lacks a completed snapshot."""
         snapshot = self._data.get("robots", {}).get(robot_id, {}).get("snapshot", {})
-        return bool(snapshot.get("firmware_version") != version)
+        return bool(
+            snapshot.get("firmware_version") != version
+            or snapshot.get("protocol_version") != protocol
+        )
 
     @callback
     def async_add_listener(
@@ -263,9 +289,12 @@ def _compatibility_status(current: str | None, comparison: Mapping[str, Any]) ->
     """Translate one snapshot comparison into durable HA-facing health."""
     if comparison["baseline"]:
         return "baseline"
-    if comparison["firmware_changed"] and comparison["changed_endpoints"]:
+    release_changed = bool(
+        comparison["firmware_changed"] or comparison.get("protocol_changed", False)
+    )
+    if release_changed and comparison["changed_endpoints"]:
         return "regression"
-    if comparison["firmware_changed"]:
+    if release_changed:
         return "compatible"
     return current or "current"
 

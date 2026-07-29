@@ -157,7 +157,7 @@ class CleaningSchedule:
 
 @dataclass(frozen=True, slots=True)
 class CleaningSession:
-    """Decoded summary of one robot-native cleaning session."""
+    """One native session with visited and verified-completed rooms separated."""
 
     started_at: str | None
     ended_at: str | None
@@ -165,6 +165,7 @@ class CleaningSession:
     rooms: tuple[str, ...]
     room_durations: tuple[tuple[str, int], ...]
     completed: bool | None
+    completed_rooms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -222,3 +223,11 @@ class RobotPose:
     x: float
     y: float
     z: float
+
+
+@dataclass(frozen=True, slots=True)
+class RobotTrajectory:
+    """Mission-scoped approximate route reported by the robot."""
+
+    mission_id: int
+    points: tuple[tuple[float, float], ...]

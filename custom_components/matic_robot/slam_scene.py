@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections import deque
 from dataclasses import dataclass
 from functools import partial
@@ -11,12 +12,22 @@ from http import HTTPStatus
 from time import monotonic
 from typing import TYPE_CHECKING, cast
 
+import voluptuous as vol
 from aiohttp import web
 from google.protobuf.message import DecodeError
 from homeassistant.components.http.decorators import require_admin
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.helpers.http import KEY_HASS, HomeAssistantView
+from homeassistant.util import slugify
 
+from .area_binding import (
+    AREA_SCHEMA_VERSION,
+    AreaBindingStatus,
+    area_binding_status,
+    binding_for_floor_plan,
+)
+from .area_selector import MaticAreaSelector
+from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
@@ -35,6 +46,8 @@ CATALOG_API_URL = "/api/matic_robot/slam_entries"
 DELTA_API_URL = "/api/matic_robot/slam_delta/{entry_id}"
 HISTORY_API_URL = "/api/matic_robot/slam_history/{entry_id}"
 HISTORY_SCENE_API_URL = "/api/matic_robot/slam_history_scene/{entry_id}/{snapshot_id}"
+AREAS_API_URL = "/api/matic_robot/areas/{entry_id}"
+PLANS_API_URL = "/api/matic_robot/plans/{entry_id}"
 POSE_CACHE_SECONDS = 1.0
 SCENE_ENCODE_ATTEMPTS = 2
 SCENE_CACHE_REVISIONS = 2
@@ -70,6 +83,16 @@ def history_api_url(entry_id: str) -> str:
 def history_scene_api_url(entry_id: str, snapshot_id: str) -> str:
     """Return the authenticated URL for one retained scene."""
     return HISTORY_SCENE_API_URL.format(entry_id=entry_id, snapshot_id=snapshot_id)
+
+
+def areas_api_url(entry_id: str) -> str:
+    """Return the authenticated custom-area workspace URL for one entry."""
+    return AREAS_API_URL.format(entry_id=entry_id)
+
+
+def plans_api_url(entry_id: str) -> str:
+    """Return the authenticated cleaning-plan workspace URL for one entry."""
+    return PLANS_API_URL.format(entry_id=entry_id)
 
 
 def _runtime_for_entry(hass: HomeAssistant, entry_id: str) -> MaticRuntimeData | None:
@@ -511,6 +534,10 @@ class MaticSlamCatalogView(HomeAssistantView):
     url = CATALOG_API_URL
     name = "api:matic_robot:slam_entries"
 
+    def __init__(self, area_editor_url: str) -> None:
+        """Initialize the catalog with the private area-editor module route."""
+        self._area_editor_url = area_editor_url
+
     @require_admin
     async def get(self, request: web.Request) -> web.Response:
         """Return non-persistent discovery data for the admin-only map panel."""
@@ -528,6 +555,9 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "delta_url": delta_api_url(entry.entry_id),
                     "pose_url": pose_api_url(entry.entry_id),
                     "history_url": history_api_url(entry.entry_id),
+                    "areas_url": areas_api_url(entry.entry_id),
+                    "plans_url": plans_api_url(entry.entry_id),
+                    "area_editor_url": self._area_editor_url,
                     "history_count": len(runtime.slam_history.catalog()),
                     "map_revision": runtime.slam_map.revision,
                     "map_health": health.state,
@@ -543,6 +573,233 @@ class MaticSlamCatalogView(HomeAssistantView):
                 }
             )
         return self.json({"entries": entries}, headers=PRIVATE_NO_STORE_HEADERS)
+
+
+class MaticAreasView(HomeAssistantView):
+    """Manage map-bound custom areas inside the private map workspace."""
+
+    url = AREAS_API_URL
+    name = "api:matic_robot:areas"
+
+    @staticmethod
+    def _rooms(runtime: MaticRuntimeData) -> list[dict[str, object]]:
+        floor_plan = runtime.coordinator.data.floor_plan
+        if floor_plan is None:
+            return []
+        return [
+            {
+                "room_id": room.id,
+                "name": room.name,
+                "boundary": [list(point) for point in room.boundary],
+            }
+            for room in floor_plan.rooms
+        ]
+
+    @require_admin
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        """Return the live map geometry and private saved-area definitions."""
+        hass = request.app[KEY_HASS]
+        runtime = _runtime_for_entry(hass, entry_id)
+        if runtime is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        floor_plan = runtime.coordinator.data.floor_plan
+        if floor_plan is None or not floor_plan.rooms:
+            return web.Response(
+                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        serial_number = str(runtime.coordinator.data.info.serial_number)
+        areas = []
+        for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
+            status = area_binding_status(area, floor_plan)
+            areas.append(
+                {
+                    "id": area_id,
+                    "name": str(area.get("name", area_id)),
+                    "circles": area.get("circles", [])
+                    if status is AreaBindingStatus.CURRENT
+                    else [],
+                    "cleaning_mode": area.get(
+                        "cleaning_mode", CleaningMode.VACUUM.value
+                    ),
+                    "coverage_setting": area.get(
+                        "coverage_setting", CoverageSetting.STANDARD.value
+                    ),
+                    "status": status.value,
+                }
+            )
+        return self.json(
+            {
+                "scene_url": scene_api_url(entry_id),
+                "rooms": self._rooms(runtime),
+                "areas": areas,
+            },
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )
+
+    @require_admin
+    async def post(self, request: web.Request, entry_id: str) -> web.Response:
+        """Create or replace one validated area on the current map."""
+        if request.content_length is not None and request.content_length > 131_072:
+            return web.Response(
+                status=HTTPStatus.REQUEST_ENTITY_TOO_LARGE,
+                headers=PRIVATE_NO_STORE_HEADERS,
+            )
+        hass = request.app[KEY_HASS]
+        runtime = _runtime_for_entry(hass, entry_id)
+        if runtime is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        floor_plan = runtime.coordinator.data.floor_plan
+        if floor_plan is None or not floor_plan.rooms:
+            return web.Response(
+                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        try:
+            body = await request.json(loads=json.loads)
+            if not isinstance(body, dict):
+                raise ValueError
+            name = str(body["name"]).strip()
+            if not 1 <= len(name) <= 128:
+                raise ValueError
+            rooms = self._rooms(runtime)
+            circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
+            cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
+            coverage_setting = CoverageSetting(str(body["coverage_setting"]))
+            binding = binding_for_floor_plan(floor_plan)
+        except KeyError, TypeError, ValueError, vol.Invalid:
+            return web.Response(
+                status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        serial_number = str(runtime.coordinator.data.info.serial_number)
+        saved = runtime.cleaning_plans.areas(serial_number)
+        requested_id = body.get("area_id")
+        if requested_id is None:
+            area_id = slugify(name)
+            if not area_id or area_id in saved:
+                return web.Response(
+                    status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+                )
+        else:
+            area_id = str(requested_id)
+            if area_id not in saved:
+                return web.Response(
+                    status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+                )
+        if any(
+            key != area_id and str(value.get("name", key)).casefold() == name.casefold()
+            for key, value in saved.items()
+        ):
+            return web.Response(
+                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        await runtime.cleaning_plans.async_save_area(
+            serial_number,
+            area_id,
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "name": name,
+                "circles": circles,
+                "cleaning_mode": cleaning_mode.value,
+                "coverage_setting": coverage_setting.value,
+                "map_binding": binding,
+            },
+        )
+        return self.json(
+            {"id": area_id},
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )
+
+    @require_admin
+    async def delete(self, request: web.Request, entry_id: str) -> web.Response:
+        """Delete one saved custom area by its stable identifier."""
+        hass = request.app[KEY_HASS]
+        runtime = _runtime_for_entry(hass, entry_id)
+        if runtime is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        area_id = str(request.query.get("area_id", ""))
+        serial_number = str(runtime.coordinator.data.info.serial_number)
+        if area_id not in runtime.cleaning_plans.areas(serial_number):
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        await runtime.cleaning_plans.async_delete_area(serial_number, area_id)
+        return web.Response(
+            status=HTTPStatus.NO_CONTENT, headers=PRIVATE_NO_STORE_HEADERS
+        )
+
+
+class MaticPlansView(HomeAssistantView):
+    """Expose saved plans and current room choices to the private workspace."""
+
+    url = PLANS_API_URL
+    name = "api:matic_robot:plans"
+
+    @require_admin
+    async def get(self, request: web.Request, entry_id: str) -> web.Response:
+        """Return a bounded plan editor model for one loaded robot."""
+        hass = request.app[KEY_HASS]
+        runtime = _runtime_for_entry(hass, entry_id)
+        if runtime is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        floor_plan = runtime.coordinator.data.floor_plan
+        if floor_plan is None or not floor_plan.rooms:
+            return web.Response(
+                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        serial_number = str(runtime.coordinator.data.info.serial_number)
+        plans = []
+        for plan_id, plan in runtime.cleaning_plans.plans(serial_number).items():
+            raw_rooms = plan.get("rooms", [])
+            rooms = [
+                {
+                    "room_id": str(room.get("room_id", "")),
+                    "cleaning_mode": str(
+                        room.get("cleaning_mode", CleaningMode.VACUUM.value)
+                    ),
+                    "coverage_setting": str(
+                        room.get("coverage_setting", CoverageSetting.STANDARD.value)
+                    ),
+                }
+                for room in raw_rooms
+                if isinstance(room, dict) and room.get("room_id")
+            ]
+            plans.append(
+                {
+                    "id": plan_id,
+                    "name": str(plan.get("name", plan_id)),
+                    "enabled": bool(plan.get("enabled", True)),
+                    "run_behavior": str(plan.get("run_behavior", "intelligent")),
+                    "rooms": rooms,
+                    "room_order": [
+                        str(room_id) for room_id in plan.get("room_order", [])
+                    ],
+                    "return_to_base": bool(plan.get("return_to_base", True)),
+                    "finish_current_room": bool(plan.get("finish_current_room", False)),
+                    "finish_current_room_threshold": int(
+                        plan.get("finish_current_room_threshold", 50)
+                    ),
+                }
+            )
+        selected_plan = runtime.cleaning_plans.snapshot(serial_number).get(
+            "selected_plan"
+        )
+        return self.json(
+            {
+                "rooms": [
+                    {"room_id": room.id, "name": room.name} for room in floor_plan.rooms
+                ],
+                "plans": plans[:256],
+                "selected_plan": selected_plan,
+            },
+            headers=PRIVATE_NO_STORE_HEADERS,
+        )
 
 
 def _encode_scene_entries(

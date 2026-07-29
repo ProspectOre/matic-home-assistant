@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import math
-from typing import Any, TypedDict
+from typing import Any, NotRequired, TypedDict
 
 import voluptuous as vol
 from homeassistant.helpers.selector import (
@@ -17,6 +17,8 @@ class MaticAreaSelectorConfig(TypedDict):
     """Configuration sent to the custom-area editor."""
 
     rooms: list[dict[str, Any]]
+    embedded: NotRequired[bool]
+    scene_url: NotRequired[str]
 
 
 POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
@@ -34,7 +36,16 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
     """Validate bounded circles drawn over the current local floor plan."""
 
     selector_type = "matic-area"
-    CONFIG_SCHEMA = make_selector_config_schema({vol.Required("rooms"): [ROOM_SCHEMA]})
+    CONFIG_SCHEMA = make_selector_config_schema(
+        {
+            vol.Required("rooms"): [ROOM_SCHEMA],
+            vol.Optional("embedded"): bool,
+            vol.Optional("scene_url"): vol.All(
+                str,
+                vol.Match(r"^/api/matic_robot/slam_scene/[A-Za-z0-9]+$"),
+            ),
+        }
+    )
 
     @staticmethod
     def _point_on_segment(

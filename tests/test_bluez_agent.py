@@ -176,6 +176,40 @@ async def test_pairing_session_reuses_an_existing_pairing() -> None:
     assert message.body == ["org.bluez.Device1", "Paired"]
 
 
+async def test_pairing_session_removes_existing_pairing_for_reauth() -> None:
+    bus = AsyncMock()
+    bus.call.side_effect = [_paired(True), _method_return()]
+    session = BlueZPairingSession(bus)
+    device_path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+
+    with pytest.raises(
+        bluez_agent.BluetoothPairingResetError,
+        match="pairing was cleared",
+    ):
+        await session.async_pair(device_path, replace_existing=True)
+
+    message = bus.call.await_args_list[1].args[0]
+    assert message.path == "/org/bluez/hci0"
+    assert message.interface == "org.bluez.Adapter1"
+    assert message.member == "RemoveDevice"
+    assert message.signature == "o"
+    assert message.body == [device_path]
+
+
+async def test_pairing_session_rejects_invalid_device_path_for_reauth() -> None:
+    bus = AsyncMock()
+    bus.call.return_value = _paired(True)
+    session = BlueZPairingSession(bus)
+
+    with pytest.raises(
+        bluez_agent.BluetoothPairingResetError,
+        match="invalid Matic device path",
+    ):
+        await session.async_pair(
+            "/org/bluez/hci0/device_invalid", replace_existing=True
+        )
+
+
 async def test_pairing_session_accepts_a_bond_completed_during_pairing() -> None:
     bus = AsyncMock()
     bus.call.side_effect = [
@@ -291,6 +325,26 @@ async def test_pairing_agent_survives_unregister_failure(monkeypatch) -> None:
     async with async_bluez_pairing_agent(TEST_ADDRESS) as session:
         assert isinstance(session, BlueZPairingSession)
 
+    bus.unexport.assert_called_once_with(_AGENT_PATH)
+    bus.disconnect.assert_called_once_with()
+
+
+async def test_pairing_agent_bounds_stalled_unregister(monkeypatch) -> None:
+    monkeypatch.setattr(bluez_agent, "_AGENT_CLEANUP_TIMEOUT_SECONDS", 0.01)
+    bus = _install_message_bus(monkeypatch, [])
+
+    async def call(message):
+        if message.member == "UnregisterAgent":
+            await asyncio.Event().wait()
+        return _method_return()
+
+    bus.call = AsyncMock(side_effect=call)
+
+    async with async_bluez_pairing_agent(TEST_ADDRESS) as session:
+        assert isinstance(session, BlueZPairingSession)
+
+    members = [request.args[0].member for request in bus.call.await_args_list]
+    assert members == ["RegisterAgent", "RequestDefaultAgent", "UnregisterAgent"]
     bus.unexport.assert_called_once_with(_AGENT_PATH)
     bus.disconnect.assert_called_once_with()
 

@@ -7,6 +7,7 @@ import struct
 from io import BytesIO
 from unittest.mock import patch
 
+import numpy as np
 import pytest
 from google.protobuf.message import DecodeError
 from PIL import Image, ImageOps
@@ -21,14 +22,17 @@ from custom_components.matic_robot.client.slam_map import (
     SCENE_MAGIC,
     SCENE_POINT_STRIDE,
     SCENE_VERSION,
+    SEMANTIC_BYTES,
     SURFACE_BYTES,
     SlamTile,
+    decode_slam_semantic_tile,
     decode_slam_structure_tile,
     decode_slam_tile,
     encode_slam_scene,
     parse_slam_scene_header,
     render_slam_map,
 )
+from custom_components.matic_robot.client.wire import first_bytes
 
 
 def _varint(value: int) -> bytes:
@@ -144,6 +148,58 @@ def synthetic_structure_entry(
         + _bytes_field(8, _bytes_field(1, b"\x22" * 512))
         + _bytes_field(9, _bytes_field(1, bytes(512))),
     )
+
+
+def synthetic_semantic_entry(
+    *,
+    page_x: int = 2,
+    page_y: int = -1,
+    mission_id: int = 0x1234ABCD,
+    malformed: str | None = None,
+) -> HermesCollectionEntry:
+    """Build a synthetic equivalent of an observed native semantic page."""
+    page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
+    mission = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
+    if malformed == "page_shape":
+        page += _varint_field(5, 1)
+    if malformed == "mission_shape":
+        mission = _bytes_field(2, b"invalid")
+    key = _bytes_field(1, page) + _bytes_field(2, mission)
+    if malformed == "key_shape":
+        key += _bytes_field(3, b"invalid")
+    dimensions = b"".join(
+        _varint_field(number, value)
+        for number, value in enumerate((1, 1, 32, 32), start=1)
+    )
+    if malformed == "dimensions":
+        dimensions += _varint_field(5, 1)
+    cells = bytes(index % 7 for index in range(SEMANTIC_BYTES))
+    if malformed == "cells":
+        cells = cells[:-1]
+    cells_wrapper = _bytes_field(1, cells)
+    if malformed == "cells_shape":
+        cells_wrapper = _bytes_field(2, cells)
+    layer = _bytes_field(4, dimensions) + _bytes_field(5, cells_wrapper)
+    if malformed == "layer_shape":
+        layer += _bytes_field(6, b"invalid")
+    value_mission = (
+        bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id + 1)
+        if malformed == "mission"
+        else mission
+    )
+    metadata = b""
+    if malformed == "metadata_shape":
+        metadata = _bytes_field(4, b"invalid")
+    elif malformed == "metadata_bound":
+        metadata = _varint_field(4, 4097)
+    value = (
+        _bytes_field(1, layer)
+        + _bytes_field(4, metadata)
+        + _bytes_field(8, value_mission)
+    )
+    if malformed == "envelope_shape":
+        value = _bytes_field(1, layer) + _bytes_field(8, value_mission)
+    return HermesCollectionEntry(key, value)
 
 
 def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
@@ -270,6 +326,7 @@ def test_encode_slam_scene_packs_floor_surface_rooms_and_neutral_color() -> None
             {
                 "name": "Synthetic room",
                 "boundary": [[0.0, 0.0], [32.0, 0.0], [32.0, 32.0], [0.0, 32.0]],
+                "boundary_closed": True,
                 "center": [16.0, 16.0],
             }
         ],
@@ -302,6 +359,92 @@ def test_encode_slam_scene_deterministically_bounds_point_count() -> None:
     )
     assert metadata["sample_step"] == 513
     assert floor_count + surface_count == 2
+
+
+def test_encode_slam_scene_clips_room_geometry_to_photographed_floor() -> None:
+    source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    floor = np.zeros((32, 32, 4), dtype=np.uint8)
+    floor[5:20, 7:25] = (40, 50, 60, 255)
+    tile = SlamTile(
+        source.page_x,
+        source.page_y,
+        source.mission_token,
+        floor.tobytes(),
+        source.surface_bits,
+        source.rgb_data,
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room-1",
+                "Synthetic room",
+                "protocol-1",
+                b"room",
+                ((0.0, 0.0), (0.48, 0.0), (0.48, 0.48), (0.0, 0.48)),
+            ),
+        ),
+    )
+
+    scene = encode_slam_scene((tile,), floor_plan=floor_plan)
+    metadata_size = struct.unpack_from("<8sHHIII", scene)[3]
+    metadata_start = struct.calcsize("<8sHHIII")
+    metadata = json.loads(
+        scene[metadata_start : metadata_start + metadata_size].decode()
+    )
+
+    assert metadata["rooms"] == [
+        {
+            "name": "Synthetic room",
+            "boundary": [[7.0, 5.0], [25.0, 5.0], [25.0, 20.0], [7.0, 20.0]],
+            "boundary_closed": True,
+            "center": [16.0, 12.5],
+        }
+    ]
+
+
+def test_encode_slam_scene_omits_rooms_without_photographed_floor() -> None:
+    source = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    tile = SlamTile(
+        source.page_x,
+        source.page_y,
+        source.mission_token,
+        bytes(32 * 32 * 4),
+        source.surface_bits,
+        source.rgb_data,
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "inside",
+                "Inside",
+                "inside",
+                b"inside",
+                ((0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
+            ),
+            Room(
+                "outside",
+                "Outside",
+                "outside",
+                b"outside",
+                ((10.0, 10.0), (11.0, 10.0), (11.0, 11.0), (10.0, 11.0)),
+            ),
+        ),
+    )
+
+    scene = encode_slam_scene((tile,), floor_plan=floor_plan)
+    metadata_size = struct.unpack_from("<8sHHIII", scene)[3]
+    metadata_start = struct.calcsize("<8sHHIII")
+    metadata = json.loads(
+        scene[metadata_start : metadata_start + metadata_size].decode()
+    )
+
+    assert metadata["rooms"] == []
 
 
 def test_scene_header_parser_rejects_incomplete_and_inconsistent_payloads() -> None:
@@ -347,6 +490,57 @@ def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None
     assert tile.occupancy[1023] == 3
     assert tile.occupancy[:4] == bytes((1, 1, 1, 1))
     assert tile.semantics == bytes((2,)) * (32 * 32)
+
+
+def test_decode_semantic_slam_tile_matches_page_and_mission() -> None:
+    tile = decode_slam_semantic_tile(synthetic_semantic_entry())
+
+    assert (tile.page_x, tile.page_y) == (2, -1)
+    assert len(tile.mission_token) == 64
+    assert len(tile.cells) == SEMANTIC_BYTES
+    assert tile.cells[:7] == bytes(range(7))
+
+    default_page = synthetic_semantic_entry(page_x=0, page_y=0)
+    default_page = HermesCollectionEntry(
+        _bytes_field(1, b"") + _bytes_field(2, first_bytes(default_page.key, 2)),
+        default_page.value,
+    )
+    assert decode_slam_semantic_tile(default_page).page_x == 0
+
+    metadata_page = synthetic_semantic_entry()
+    metadata_page = HermesCollectionEntry(
+        metadata_page.key,
+        _bytes_field(1, first_bytes(metadata_page.value, 1))
+        + _bytes_field(4, _varint_field(4, 63) + _varint_field(6, 1))
+        + _bytes_field(8, first_bytes(metadata_page.value, 8)),
+    )
+    assert decode_slam_semantic_tile(metadata_page).page_y == -1
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        HermesCollectionEntry(b"", b"value"),
+        HermesCollectionEntry(b"key", b""),
+        synthetic_semantic_entry(malformed="mission"),
+        synthetic_semantic_entry(malformed="cells"),
+        synthetic_semantic_entry(page_x=4097),
+        synthetic_semantic_entry(malformed="key_shape"),
+        synthetic_semantic_entry(malformed="page_shape"),
+        synthetic_semantic_entry(malformed="mission_shape"),
+        synthetic_semantic_entry(malformed="envelope_shape"),
+        synthetic_semantic_entry(malformed="layer_shape"),
+        synthetic_semantic_entry(malformed="dimensions"),
+        synthetic_semantic_entry(malformed="cells_shape"),
+        synthetic_semantic_entry(malformed="metadata_shape"),
+        synthetic_semantic_entry(malformed="metadata_bound"),
+    ],
+)
+def test_decode_semantic_slam_tile_rejects_invalid_entries(
+    entry: HermesCollectionEntry,
+) -> None:
+    with pytest.raises(DecodeError):
+        decode_slam_semantic_tile(entry)
 
 
 @pytest.mark.parametrize(

@@ -9,13 +9,14 @@ from custom_components.matic_robot.area_selector import MaticAreaSelector
 def _selector() -> MaticAreaSelector:
     return MaticAreaSelector(
         {
+            "scene_url": "/api/matic_robot/slam_scene/0123456789abcdef",
             "rooms": [
                 {
                     "room_id": "office",
                     "name": "Office",
                     "boundary": [[0, 0], [3, 0], [3, 2], [0, 2]],
                 }
-            ]
+            ],
         }
     )
 
@@ -25,6 +26,18 @@ def test_area_selector_preserves_private_geometry() -> None:
     assert _selector()(value) == [{"x": 1.0, "y": 1.25, "radius": 0.35}]
     serialized = _selector().serialize()["selector"]["matic-area"]
     assert serialized["rooms"][0]["name"] == "Office"
+    assert serialized["scene_url"] == ("/api/matic_robot/slam_scene/0123456789abcdef")
+
+
+def test_area_selector_rejects_an_external_scene_url() -> None:
+    """The editor can fetch only its private integration-owned scene route."""
+    with pytest.raises(vol.Invalid):
+        MaticAreaSelector(
+            {
+                "rooms": [],
+                "scene_url": "https://example.invalid/private-map",
+            }
+        )
 
 
 @pytest.mark.parametrize(

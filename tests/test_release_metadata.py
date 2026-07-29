@@ -324,13 +324,8 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         errors = translations["config"]["error"]
         for key in ("pairing_code_expired", "pairing_code_rejected"):
             recovery = errors[key].casefold()
-            # Expired and rejected codes renew automatically: the flow starts
-            # a fresh bond and re-prompts, so the copy must direct the user to
-            # the robot's new code without asking them to resubmit anything.
-            assert "new pairing was started" in recovery
+            assert "turn pairing mode off and back on" in recovery
             assert "enter the new code" in recovery
-            assert "select submit" not in recovery
-            assert "turn pairing mode off" not in recovery
 
         pairing = translations["config"]["step"]["pair"]["description"]
         assert "Confirm below only after the pairing window is open" in pairing
@@ -365,14 +360,27 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert selects["cleaning_mode"]["name"] == "Default cleaning mode"
         assert selects["coverage_setting"]["name"] == "Default coverage"
         assert selects["saved_cleaning_plan"]["name"] == "Default cleaning plan"
+        assert selects["custom_cleaning_area"]["name"] == "Custom cleaning area"
+        assert (
+            translations["entity"]["button"]["clean_selected_area"]["name"]
+            == "Clean selected area"
+        )
 
         services = translations["services"]
-        assert "waited longest" in services["intelligent_clean"]["description"]
-        assert "continues until stopped" in services["intelligent_clean"]["description"]
         assert (
-            "Unfinished rooms remain due"
+            "least recently confirmed as the current cleaning area"
             in services["intelligent_clean"]["description"]
         )
+        assert "continues until stopped" in services["intelligent_clean"]["description"]
+        assert (
+            "rooms that started remain due"
+            in services["intelligent_clean"]["description"]
+        )
+        assert (
+            "Rejected commands and lingering prior-room state"
+            in (services["intelligent_clean"]["description"])
+        )
+        assert "without monopolizing" in services["intelligent_clean"]["description"]
         assert "top to bottom" in services["clean_entire_plan"]["description"]
         assert "saved cleaning behavior" in services["run_selected_plan"]["description"]
         assert (
@@ -421,8 +429,8 @@ def test_documented_entity_surface_matches_release_contract() -> None:
     readme = " ".join((ROOT / "README.md").read_text().split())
     automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
     surface = (
-        "49 fixed entities — 21 sensors, 12 binary sensors, 4 buttons, "
-        "4 switches, 3 selects, 1 number, 2 cameras, 1 update, and 1 vacuum"
+        "51 fixed entities — 21 sensors, 12 binary sensors, 5 buttons, "
+        "4 switches, 4 selects, 1 number, 2 cameras, 1 update, and 1 vacuum"
     )
 
     assert surface in readme

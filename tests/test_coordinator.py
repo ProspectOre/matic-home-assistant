@@ -217,6 +217,7 @@ async def test_coordinator_records_observed_firmware(hass) -> None:
     tracker.async_observe_version.assert_awaited_once_with(
         "entry", "v168.11", 25, device_id=None
     )
+    tracker.needs_snapshot.assert_called_once_with("entry", "v168.11", 25)
 
 
 async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) -> None:
@@ -310,6 +311,7 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
             rooms=("Study",),
             room_durations=(("Study", 1800),),
             completed=True,
+            completed_rooms=("Study",),
         )
 
     client = _client()
@@ -334,6 +336,7 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
 
     assert len(events) == 1
     assert events[0].data["duration_seconds"] == 1800
+    assert events[0].data["completed_rooms"] == ["Study"]
     assert events[0].data["room_durations"] == {"Study": 1800}
     assert events[0].data["firmware_version"] == "v168.11"
     assert events[0].data["entry_id"] == "entry"

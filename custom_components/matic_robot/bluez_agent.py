@@ -14,7 +14,10 @@ from dbus_fast.aio import MessageBus
 from dbus_fast.annotations import DBusSignature
 from dbus_fast.service import ServiceInterface, method
 
-from .bluetooth_pairing import BluetoothPasskeyCancelledError
+from .bluetooth_pairing import (
+    BluetoothPairingResetError,
+    BluetoothPasskeyCancelledError,
+)
 
 if TYPE_CHECKING:
     from .bluetooth_pairing import BluetoothPasskeyExchange
@@ -24,10 +27,12 @@ _LOGGER = logging.getLogger(__name__)
 _AGENT_PATH = "/com/maticrobots/HomeAssistantPairingAgent"
 _AGENT_INTERFACE = "org.bluez.Agent1"
 _AGENT_MANAGER_INTERFACE = "org.bluez.AgentManager1"
+_ADAPTER_INTERFACE = "org.bluez.Adapter1"
 _DEVICE_INTERFACE = "org.bluez.Device1"
 _PROPERTIES_INTERFACE = "org.freedesktop.DBus.Properties"
 _BLUEZ_ALREADY_EXISTS = "org.bluez.Error.AlreadyExists"
 _BLUEZ_IN_PROGRESS = "org.bluez.Error.InProgress"
+_AGENT_CLEANUP_TIMEOUT_SECONDS = 2.0
 _PAIRED_POLL_SECONDS = 1.0
 # Matic displays the passkey and Home Assistant enters it. Advertising display
 # support would let BlueZ negotiate a confirmation flow that this headless
@@ -176,9 +181,35 @@ class BlueZPairingSession:
         while not await self._async_is_paired(device_path):  # noqa: ASYNC110
             await asyncio.sleep(_PAIRED_POLL_SECONDS)
 
-    async def async_pair(self, device_path: str) -> None:
+    async def async_pair(
+        self, device_path: str, *, replace_existing: bool = False
+    ) -> None:
         """Ask BlueZ to bond while this connection's agent is authoritative."""
         if await self._async_is_paired(device_path):
+            if replace_existing:
+                adapter_path, separator, _device = device_path.rpartition("/dev_")
+                if not separator or not adapter_path:
+                    raise BluetoothPairingResetError(
+                        "BlueZ returned an invalid Matic device path"
+                    )
+                reply = await self._bus.call(
+                    Message(
+                        destination=defs.BLUEZ_SERVICE,
+                        path=adapter_path,
+                        interface=_ADAPTER_INTERFACE,
+                        member="RemoveDevice",
+                        signature="o",
+                        body=[device_path],
+                    )
+                )
+                assert_reply(reply)
+                _LOGGER.debug(
+                    "Removed the previous Matic Bluetooth pairing before "
+                    "reauthentication"
+                )
+                raise BluetoothPairingResetError(
+                    "Previous Matic Bluetooth pairing was cleared"
+                )
             _LOGGER.debug("Reusing the existing Matic Bluetooth pairing")
             return
         _LOGGER.debug("Requesting the Matic bond through the scoped BlueZ agent")
@@ -259,16 +290,17 @@ async def async_bluez_pairing_agent(
             await asyncio.sleep(0)
         if registered:
             try:
-                reply = await bus.call(
-                    Message(
-                        destination=defs.BLUEZ_SERVICE,
-                        path="/org/bluez",
-                        interface=_AGENT_MANAGER_INTERFACE,
-                        member="UnregisterAgent",
-                        signature="o",
-                        body=[_AGENT_PATH],
+                async with asyncio.timeout(_AGENT_CLEANUP_TIMEOUT_SECONDS):
+                    reply = await bus.call(
+                        Message(
+                            destination=defs.BLUEZ_SERVICE,
+                            path="/org/bluez",
+                            interface=_AGENT_MANAGER_INTERFACE,
+                            member="UnregisterAgent",
+                            signature="o",
+                            body=[_AGENT_PATH],
+                        )
                     )
-                )
                 assert_reply(reply)
             except Exception:
                 _LOGGER.debug(

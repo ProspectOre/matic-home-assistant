@@ -80,33 +80,72 @@ async function installBrowserDoubles(page, { webgl = false, images = false } = {
   }, { enableWebgl: webgl, enableImages: images });
 }
 
-async function loadAreaEditor(page, value = []) {
+async function loadAreaEditor(page, value = [], sceneUrl = undefined) {
   await page.goto("/");
   await page.addScriptTag({ url: "/room_plan_editor.js" });
-  await page.evaluate(({ rooms, initialValue }) => {
+  await page.evaluate(({ rooms, initialValue, photoSceneUrl }) => {
+    window.__authenticatedPaths = [];
     const editor = document.createElement("ha-selector-matic-area");
     editor.hass = {
       locale: { language: "en" },
       localize: () => undefined,
+      fetchWithAuth: (path, init = {}) => {
+        window.__authenticatedPaths.push(path);
+        return fetch(path, {
+          ...init,
+          headers: {
+            ...(init.headers || {}),
+            Authorization: "Bearer synthetic-token",
+          },
+        });
+      },
     };
-    editor.selector = { rooms };
+    editor.selector = {
+      rooms,
+      ...(photoSceneUrl ? { scene_url: photoSceneUrl } : {}),
+    };
     editor.value = initialValue;
     document.body.append(editor);
     window.__areaEditor = editor;
-  }, { rooms: ROOMS, initialValue: value });
+  }, { rooms: ROOMS, initialValue: value, photoSceneUrl: sceneUrl });
   return page.locator("ha-selector-matic-area");
 }
 
-async function loadStudio(page, states = {}) {
+async function loadRoomPlanEditor(page) {
   await page.goto("/");
+  await page.addScriptTag({ url: "/room_plan_editor.js" });
+  await page.evaluate((rooms) => {
+    window.__roomPlanChanges = [];
+    const editor = document.createElement("ha-selector-matic-room-plan");
+    editor.hass = { locale: { language: "en" }, localize: () => undefined };
+    editor.selector = { rooms };
+    editor.value = rooms.map((room) => ({
+      room_id: room.room_id,
+      included: false,
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+    }));
+    editor.addEventListener("value-changed", (event) => {
+      window.__roomPlanChanges.push(event.detail.value);
+    });
+    document.body.append(editor);
+  }, ROOMS);
+  return page.locator("ha-selector-matic-room-plan");
+}
+
+async function loadStudio(page, states = {}, { areaEditor = true } = {}) {
+  await page.goto("/");
+  if (areaEditor) await page.addScriptTag({ url: "/room_plan_editor.js" });
   await page.addScriptTag({ url: "/matic_map_studio.js" });
   await page.evaluate((syntheticStates) => {
     window.__authenticatedPaths = [];
+    window.__serviceCalls = [];
     const studio = document.createElement("matic-map-panel-v0-3-0");
     studio.panel = {};
     studio.hass = {
       states: syntheticStates,
       auth: { data: { access_token: "stale-token-must-not-be-used" } },
+      localize: () => undefined,
       hassUrl: (path) => path,
       fetchWithAuth: (path, init = {}) => {
         window.__authenticatedPaths.push(path);
@@ -120,6 +159,10 @@ async function loadStudio(page, states = {}) {
             Authorization: "Bearer synthetic-token",
           },
         });
+      },
+      callService: (...args) => {
+        window.__serviceCalls.push(args);
+        return Promise.resolve();
       },
     };
     document.body.append(studio);
@@ -174,10 +217,33 @@ function syntheticDelta(base, scene, baseRevision, revision) {
   return Buffer.concat([header, compressed]);
 }
 
+test.describe("room-plan editor", () => {
+  test("uses reliable native room switches and preserves room settings", async ({ page }) => {
+    await installBrowserDoubles(page);
+    const editor = await loadRoomPlanEditor(page);
+    const kitchen = editor.getByLabel("Include Test kitchen");
+
+    await expect(kitchen).not.toBeChecked();
+    await kitchen.check({ force: true });
+    await expect(kitchen).toBeChecked();
+    await expect(editor.locator(".settings")).toHaveCount(1);
+    expect(await page.evaluate(() => window.__roomPlanChanges.at(-1)[0])).toEqual({
+      room_id: "synthetic-kitchen",
+      included: true,
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+    });
+
+    await kitchen.uncheck({ force: true });
+    await expect(kitchen).not.toBeChecked();
+    await expect(editor.locator(".settings")).toHaveCount(0);
+  });
+});
+
 test.describe("custom-area editor", () => {
   test.beforeEach(async ({ page }) => installBrowserDoubles(page));
 
-  test("draw, Undo, Redo, and reversible Clear update the selector value", async ({ page }) => {
+  test("paint, erase, Undo, Redo, and reversible Clear update one area", async ({ page }) => {
     const editor = await loadAreaEditor(page);
     const map = editor.locator(".map");
     await expect(map).toBeVisible();
@@ -192,8 +258,10 @@ test.describe("custom-area editor", () => {
     await page.mouse.move(centerX + 70, centerY, { steps: 4 });
     await page.mouse.up();
 
-    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(1);
-    await expect(editor.locator(".marks circle")).toHaveCount(1);
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length))
+      .toBeGreaterThan(1);
+    const paintedPoints = await page.evaluate(() => window.__areaEditor.value.length);
+    await expect(editor.locator(".marks circle")).toHaveCount(paintedPoints);
     expect(await editor.locator(".undo").evaluate((button) => {
       const event = new PointerEvent("pointerdown", {
         bubbles: true,
@@ -206,11 +274,20 @@ test.describe("custom-area editor", () => {
     await editor.locator(".undo").click();
     await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(0);
     await editor.locator(".redo").click();
-    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length))
+      .toBe(paintedPoints);
+    await editor.locator("[data-tool=erase]").click();
+    await page.mouse.click(centerX, centerY);
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length))
+      .toBeLessThan(paintedPoints);
+    await editor.locator(".undo").click();
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length))
+      .toBe(paintedPoints);
     await editor.locator(".clear").click();
     await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(0);
     await editor.locator(".undo").click();
-    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(1);
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length))
+      .toBe(paintedPoints);
   });
 
   test("full-screen workspace tracks a mobile viewport and restores page scroll", async ({ page }) => {
@@ -229,9 +306,335 @@ test.describe("custom-area editor", () => {
     await editor.locator(".launcher").click();
     await expect(workspace).toBeVisible();
   });
+
+  test("renders the authenticated photo map and keeps drawing overlays aligned", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/0123456789abcdef";
+    await page.route(sceneUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/vnd.matic.slam-scene",
+      body: syntheticScene("Test kitchen", 10),
+    }));
+    const editor = await loadAreaEditor(page, [], sceneUrl);
+
+    await expect(editor.locator(".photo-status")).toHaveText("Private photo map");
+    await expect(editor.locator(".map")).toHaveAttribute("data-layer", "photo");
+    await expect(editor.locator("[data-layer=hybrid]")).toHaveCount(0);
+    await expect(editor.locator(".photo-map")).toHaveAttribute("href", /^blob:/);
+    await expect(editor.locator(".photo-map")).toHaveAttribute("x", "0.15");
+    await expect(editor.locator(".photo-map")).toHaveAttribute("y", "-1.35");
+    await expect(editor.locator(".room").first()).toHaveAttribute(
+      "points",
+      "0.15,-0.15 0.16499999999999998,-0.15 0.16499999999999998,-0.16499999999999998",
+    );
+    await expect(editor.locator(".room-label").first()).toBeVisible();
+    await expect(editor.locator(".room").nth(1)).toBeHidden();
+    expect(await page.evaluate(() => window.__authenticatedPaths)).toEqual([sceneUrl]);
+
+    await editor.locator(".map-options > summary").click();
+    await editor.locator("[data-layer=rooms]").click();
+    await expect(editor.locator(".map")).toHaveAttribute("data-layer", "rooms");
+    await expect(editor.locator(".room").first()).toHaveAttribute(
+      "points",
+      "0,0 6,0 6,-5 0,-5",
+    );
+    await expect(editor.locator(".room").nth(1)).toBeVisible();
+    await editor.locator("[data-layer=photo]").click();
+    await expect(editor.locator(".map")).toHaveAttribute("data-layer", "photo");
+  });
+
+  test("falls back to the room map when the private photo scene is unavailable", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/0123456789abcdef";
+    await page.route(sceneUrl, async (route) => route.fulfill({ status: 409 }));
+    const editor = await loadAreaEditor(page, [], sceneUrl);
+
+    await expect(editor.locator(".photo-status")).toHaveText(
+      "Photo map unavailable · showing rooms",
+    );
+    await expect(editor.locator(".map")).toHaveAttribute("data-layer", "rooms");
+    await expect(editor.locator(".room-label")).toHaveCount(2);
+  });
+
+  test("matches map navigation with pinch zoom and two-axis trackpad pan", async ({ page }) => {
+    const editor = await loadAreaEditor(page);
+    const map = editor.locator(".map");
+    const before = await map.getAttribute("viewBox");
+    await page.evaluate((events) => {
+      const mapElement = window.__areaEditor.shadowRoot.querySelector(".map");
+      for (const event of events) {
+        mapElement.dispatchEvent(new PointerEvent(event.type, event.init));
+      }
+    }, [
+      pointer("pointerdown", 21, 120, 180),
+      pointer("pointerdown", 22, 240, 180),
+      pointer("pointermove", 21, 90, 160),
+      pointer("pointermove", 22, 290, 210),
+      pointer("pointerup", 21, 90, 160),
+      pointer("pointerup", 22, 290, 210),
+    ]);
+    const afterPinch = await map.getAttribute("viewBox");
+    expect(afterPinch).not.toBe(before);
+
+    const pinchParts = afterPinch.split(" ").map(Number);
+    await map.dispatchEvent("wheel", { deltaX: 32, deltaY: 18, deltaMode: 0 });
+    const afterTrackpad = (await map.getAttribute("viewBox")).split(" ").map(Number);
+    expect(afterTrackpad[0]).not.toBeCloseTo(pinchParts[0], 5);
+    expect(afterTrackpad[1]).not.toBeCloseTo(pinchParts[1], 5);
+    expect(afterTrackpad[2]).toBeCloseTo(pinchParts[2], 5);
+
+    await map.dispatchEvent("wheel", { deltaX: 0, deltaY: 120, deltaMode: 0 });
+    const afterWheel = (await map.getAttribute("viewBox")).split(" ").map(Number);
+    expect(afterWheel[2]).not.toBeCloseTo(afterTrackpad[2], 5);
+  });
+
+  test("declutters overlapping room labels", async ({ page }) => {
+    const editor = await loadAreaEditor(page);
+    await page.evaluate(() => {
+      window.__areaEditor.selector = {
+        rooms: [
+          {
+            room_id: "first",
+            name: "First long room label",
+            boundary: [[0, 0], [4, 0], [4, 4], [0, 4]],
+          },
+          {
+            room_id: "second",
+            name: "Second long room label",
+            boundary: [[0.1, 0], [4.1, 0], [4.1, 4], [0.1, 4]],
+          },
+        ],
+      };
+    });
+    await expect(editor.locator('.room-label[visibility="visible"]')).toHaveCount(1);
+  });
 });
 
 test.describe("map studio", () => {
+  test("creates and runs a photo-map area without leaving the map workspace", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/entry";
+    const areasUrl = "/api/matic_robot/areas/entry";
+    const plansUrl = "/api/matic_robot/plans/entry";
+    let savedArea;
+    let planRequests = 0;
+    await page.route("/api/matic_robot/slam_entries", async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "entry",
+        scene_url: sceneUrl,
+        areas_url: areasUrl,
+        plans_url: plansUrl,
+        area_editor_url: "/matic_robot/test/room-plan-editor.js",
+        map_revision: 1,
+        map_complete: true,
+        map_health: "ready",
+      }] }),
+    }));
+    await page.route(sceneUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/vnd.matic.slam-scene",
+      body: syntheticScene("Test kitchen", 10),
+    }));
+    await page.route(plansUrl, async (route) => {
+      planRequests += 1;
+      const savedPlan = {
+        id: "weekday",
+        name: "Weekday",
+        enabled: true,
+        run_behavior: "intelligent",
+        rooms: [{
+          room_id: "synthetic-kitchen",
+          cleaning_mode: "vacuum",
+          coverage_setting: "standard",
+        }],
+        room_order: ["synthetic-kitchen"],
+        return_to_base: true,
+        finish_current_room: true,
+        finish_current_room_threshold: 50,
+      };
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          rooms: ROOMS.map(({ room_id, name }) => ({ room_id, name })),
+          plans: planRequests > 1 ? [savedPlan] : [],
+          selected_plan: planRequests > 1 ? "weekday" : null,
+        }),
+      });
+    });
+    await page.route(areasUrl, async (route) => {
+      if (route.request().method() === "POST") {
+        savedArea = JSON.parse(route.request().postData());
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ id: "new_area" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          scene_url: sceneUrl,
+          rooms: ROOMS,
+          areas: savedArea ? [{ id: "new_area", status: "current", ...savedArea }] : [],
+        }),
+      });
+    });
+    const studio = await loadStudio(page, {
+      "vacuum.synthetic": { attributes: { matic_entry_id: "entry" } },
+    });
+
+    await studio.locator(".cleaning-plans").click();
+    await expect(studio.locator(".areas-workspace")).toBeVisible();
+    await expect(studio.locator(".areas-heading h2")).toHaveText("Cleaning");
+    await expect(studio.locator(".cleaning-tab-plans")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(studio.locator(".plan-detail")).toBeVisible();
+    await studio.locator(".plan-name").fill("Weekday");
+    await studio.locator(".plan-finish-room").check();
+    await studio.locator("ha-selector-matic-room-plan").evaluate((editor) => {
+      editor.value = editor.value.map((room, index) => ({
+        ...room,
+        included: index === 0,
+      }));
+      editor.dispatchEvent(new CustomEvent("value-changed", {
+        detail: { value: editor.value },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect(studio.locator(".plan-save")).toBeEnabled();
+    await studio.locator(".plan-save").click();
+    await expect(studio.locator(".plan-feedback")).toHaveText("Plan saved");
+    await expect(studio.locator(".plans-list")).toHaveValue("weekday");
+    expect((await page.evaluate(() => window.__serviceCalls))[0]).toEqual([
+      "matic_robot",
+      "save_plan",
+      expect.objectContaining({
+        name: "Weekday",
+        run_behavior: "intelligent",
+        finish_current_room: true,
+        finish_current_room_threshold: 50,
+        rooms: [{
+          room: "synthetic-kitchen",
+          cleaning_mode: "vacuum",
+          coverage_setting: "standard",
+        }],
+      }),
+      { entity_id: "vacuum.synthetic" },
+    ]);
+    await studio.locator(".plan-run").click();
+    await expect(studio.locator(".plan-feedback")).toHaveText("Plan started");
+
+    await studio.locator(".cleaning-tab-areas").click();
+    await expect(studio.locator(".cleaning-tab-areas")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(studio.locator(".area-detail")).toBeVisible();
+    await expect(studio.locator("ha-selector-matic-area .map"))
+      .toHaveAttribute("data-layer", "photo");
+    await expect(studio.locator("ha-selector-matic-area [data-layer=hybrid]"))
+      .toHaveCount(0);
+    await expect(studio.locator("details.area-settings")).toHaveCount(0);
+    await expect(studio.locator(".area-settings")).toBeVisible();
+    await expect(studio.locator(".area-settings label")).toHaveText([
+      "Cleaning modeVacuumMopVacuum + mop",
+      "CoverageQuickStandard",
+    ]);
+    expect(await studio.locator(".area-detail").evaluate((detail) => {
+      const map = detail.querySelector("ha-selector-matic-area")
+        .shadowRoot.querySelector(".map").getBoundingClientRect();
+      const bounds = detail.getBoundingClientRect();
+      return map.height / bounds.height;
+    })).toBeGreaterThan(0.95);
+    await studio.locator(".area-new").click();
+    await studio.locator(".area-name").fill("New area");
+    await studio.locator("ha-selector-matic-area").evaluate((editor) => {
+      editor.value = [{ x: 0.5, y: 0.5, radius: 0.35 }];
+      editor.dispatchEvent(new CustomEvent("value-changed", {
+        detail: { value: editor.value },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect(studio.locator(".photo-status")).toHaveText("Private photo map");
+    await studio.locator(".area-save").click();
+    await expect(studio.locator(".area-feedback")).toHaveText("Area saved");
+    await expect(studio.locator(".area-feedback"))
+      .toHaveAttribute("data-tone", "success");
+    await expect(studio.locator(".area-save")).toHaveText("Save area");
+    await expect(studio.locator(".areas-status")).toHaveText("1 saved areas");
+    expect(savedArea).toMatchObject({
+      name: "New area",
+      circles: [{ x: 0.5, y: 0.5, radius: 0.35 }],
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+    });
+
+    await studio.locator(".area-run").click();
+    await expect(studio.locator(".areas-status")).toHaveText(
+      "Area cleaning started",
+    );
+    expect((await page.evaluate(() => window.__serviceCalls)).at(-1)).toEqual([
+      "matic_robot",
+      "clean_area",
+      { area: "new_area" },
+      { entity_id: "vacuum.synthetic" },
+    ]);
+    await studio.locator(".areas-close").click();
+    await expect(studio.locator(".areas-workspace")).not.toBeVisible();
+  });
+
+  test("loads the area editor when Home Assistant opened before the integration", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/entry";
+    const areasUrl = "/api/matic_robot/areas/entry";
+    const plansUrl = "/api/matic_robot/plans/entry";
+    await page.route("/api/matic_robot/slam_entries", async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "entry",
+        scene_url: sceneUrl,
+        areas_url: areasUrl,
+        plans_url: plansUrl,
+        area_editor_url: "/matic_robot/test/room-plan-editor.js",
+        map_revision: 1,
+        map_complete: true,
+        map_health: "ready",
+      }] }),
+    }));
+    await page.route(areasUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ scene_url: sceneUrl, rooms: ROOMS, areas: [] }),
+    }));
+    await page.route(plansUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        rooms: ROOMS.map(({ room_id, name }) => ({ room_id, name })),
+        plans: [],
+        selected_plan: null,
+      }),
+    }));
+    await page.route("/matic_robot/test/room-plan-editor.js", async (route) => {
+      await route.fulfill({ path: new URL("../../custom_components/matic_robot/room_plan_editor.js", import.meta.url).pathname });
+    });
+    const studio = await loadStudio(page, {}, { areaEditor: false });
+
+    await studio.locator(".cleaning-areas").click();
+    await expect(studio.locator(".cleaning-tab-areas")).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await expect(studio.locator("ha-selector-matic-area .map")).toBeVisible();
+    await expect(studio.locator(".areas-status")).toHaveText("0 saved areas");
+  });
+
   test("streams bounded scene deltas without refetching the full map", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const initial = syntheticScene("Initial room", 10);
@@ -421,6 +824,15 @@ test.describe("map studio", () => {
     const timeline = studio.locator(".timeline");
     await expect(timeline).toBeVisible();
     await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+    expect(await timeline.locator(".timeline-summary").evaluate((summary) => {
+      const event = new PointerEvent("pointerdown", {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+      });
+      summary.dispatchEvent(event);
+      return event.defaultPrevented;
+    })).toBe(false);
     expect(await timeline.locator(".timeline-earlier").evaluate((button) => {
       const event = new PointerEvent("pointerdown", {
         bubbles: true,
@@ -430,6 +842,14 @@ test.describe("map studio", () => {
       button.dispatchEvent(event);
       return event.defaultPrevented;
     })).toBe(false);
+    await timeline.locator(".timeline-summary").click();
+    await expect(timeline).toHaveAttribute("open", "");
+    await expect(timeline.locator(".timeline-panel")).toBeVisible();
+    expect(await timeline.evaluate((element) => {
+      const viewport = element.closest(".viewport").getBoundingClientRect();
+      const panel = element.querySelector(".timeline-panel").getBoundingClientRect();
+      return panel.top >= viewport.top && panel.bottom <= viewport.bottom;
+    })).toBe(true);
     await timeline.locator(".timeline-earlier").click();
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
@@ -445,6 +865,174 @@ test.describe("map studio", () => {
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Live room");
     await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+  });
+
+  test("repairs self-intersecting room perimeters before projection", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const boundary = await studio.evaluate((element) =>
+      element._normaliseMetadata({
+        meters_per_cell: 0.015,
+        span_cells: [100, 80],
+        origin_cells: [0, 0],
+        sample_step: 1,
+        rooms: [{
+          name: "Synthetic room",
+          boundary: [[0, 0], [6, 5], [6, 0], [0, 5]],
+          center: [3, 2.5],
+        }],
+      }).rooms[0].boundary,
+    );
+    expect(boundary).toEqual([[0, 0], [6, 0], [6, 5], [0, 5]]);
+  });
+
+  test("splits dense room traces instead of drawing false closing chords", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const contours = await studio.evaluate((element) =>
+      element._normaliseMetadata({
+        meters_per_cell: 0.015,
+        span_cells: [100, 80],
+        origin_cells: [0, 0],
+        sample_step: 1,
+        rooms: [{
+          name: "Synthetic dense room",
+          boundary: [
+            ...Array.from({ length: 40 }, (_, index) => [index, 0]),
+            ...Array.from({ length: 40 }, (_, index) => [100 + index, 20]),
+          ],
+          center: [50, 10],
+        }],
+      }).rooms[0].contours,
+    );
+    expect(contours).toHaveLength(2);
+    expect(contours.map((contour) => contour.closed)).toEqual([false, false]);
+    expect(contours.map((contour) => contour.points.length)).toEqual([40, 40]);
+  });
+
+  test("preserves explicit closed room contours with long raster edges", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page);
+    const contours = await studio.evaluate((element) =>
+      element._normaliseMetadata({
+        meters_per_cell: 0.015,
+        span_cells: [200, 160],
+        origin_cells: [0, 0],
+        sample_step: 1,
+        rooms: [{
+          name: "Synthetic clipped room",
+          boundary: [
+            ...Array.from({ length: 35 }, (_, index) => [index, index % 2]),
+            [120, 2],
+            ...Array.from({ length: 35 }, (_, index) => [120 - index, 80]),
+            [0, 2],
+          ],
+          boundary_closed: true,
+          center: [60, 40],
+        }],
+      }).rooms[0].contours,
+    );
+    expect(contours).toHaveLength(1);
+    expect(contours[0].closed).toBe(true);
+    expect(contours[0].points).toHaveLength(72);
+  });
+
+  test("keeps a complete map under the live pose while a new mission rebuilds", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let currentComplete = true;
+    let revision = 1;
+    let deltaRequests = 0;
+    let stableRequests = 0;
+    const snapshot = {
+      id: "snapshot-stable",
+      created_at: "2026-07-26T09:45:00Z",
+      revision: 1,
+      point_count: 1000,
+      scene_url: "/stable-map",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/rebuilding-map",
+        pose_url: "/live-pose",
+        history_url: "/stable-history",
+        history_count: 1,
+        map_revision: revision,
+        map_complete: currentComplete,
+        ...(currentComplete ? {} : { delta_url: "/rebuilding-delta" }),
+      }] }),
+    }));
+    await page.route("**/stable-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    await page.route("**/stable-map", (route) => {
+      stableRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Complete retained room", 16),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
+    await page.route("**/rebuilding-map", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene(
+        currentComplete ? "Complete current room" : "Partial current room",
+        32,
+      ),
+      headers: {
+        "Content-Type": "application/vnd.matic.slam-scene",
+        "X-Matic-Revision": String(revision),
+      },
+    }));
+    await page.route("**/live-pose", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ position: [0.3, 0.3], source: "live_pose" }),
+    }));
+    await page.route("**/rebuilding-delta?since=*", (route) => {
+      deltaRequests += 1;
+      return route.fulfill({ status: 204 });
+    });
+
+    const studio = await loadStudio(page);
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Complete current room");
+    expect(stableRequests).toBe(0);
+
+    currentComplete = false;
+    revision = 2;
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Complete retained room");
+    await expect(studio.locator(".status")).toContainText("last complete map");
+    await expect(studio.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("live_pose");
+    expect(await page.evaluate(() => ({
+      sceneUrl: window.__studio._sceneUrl,
+      stableId: window.__studio._stableLiveSnapshotId,
+    }))).toEqual({ sceneUrl: "/stable-map", stableId: "snapshot-stable" });
+    expect(deltaRequests).toBe(0);
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneLoading)).toBe(false);
+    expect(stableRequests).toBe(1);
+
+    currentComplete = true;
+    revision = 3;
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Complete current room");
+    expect(await page.evaluate(() => ({
+      sceneUrl: window.__studio._sceneUrl,
+      stableId: window.__studio._stableLiveSnapshotId,
+    }))).toEqual({ sceneUrl: "/rebuilding-map", stableId: undefined });
+    await expect(studio.locator(".status")).toContainText("points · full capture");
   });
 
   test("isolates timeline requests when switching robots", async ({ page }) => {
@@ -512,7 +1100,15 @@ test.describe("map studio", () => {
     const studio = await loadStudio(page);
     const viewport = studio.locator(".viewport");
     await expect(viewport).toBeVisible();
-    await expect(studio.locator("[data-view]" )).toHaveCount(3);
+    await expect(studio.locator("[data-view]" )).toHaveCount(2);
+    await studio.locator(".map-more > summary").click();
+    await studio.locator(".map-style").selectOption("rooms");
+    await expect.poll(() => page.evaluate(() => window.__studio._view)).toBe("rooms");
+    await expect(studio.locator('[data-view="top"]')).toHaveAttribute("aria-pressed", "true");
+    await studio.locator('[data-view="three"]').click();
+    await studio.locator('[data-view="top"]').click();
+    await expect.poll(() => page.evaluate(() => window.__studio._view)).toBe("rooms");
+    await page.evaluate(() => window.__studio._setView("three"));
     const before = await page.evaluate(() => ({ ...window.__studio._camera }));
 
     const bounds = await viewport.boundingBox();
@@ -629,35 +1225,67 @@ test.describe("map studio", () => {
       const root = element.shadowRoot;
       const header = root.querySelector("header").getBoundingClientRect();
       const viewport = root.querySelector(".viewport");
+      const commandBar = root.querySelector(".map-command-bar");
       const actions = root.querySelector(".map-actions");
+      const cleaning = root.querySelector(".cleaning-actions");
       const fit = root.querySelector(".home-view").getBoundingClientRect();
       return {
         headerHeight: header.height,
-        actionsInsideViewport: actions.parentElement === viewport,
+        commandBarInsideViewport: commandBar.parentElement === viewport,
+        secondaryActionsGrouped: actions.parentElement === commandBar,
+        cleaningActionsGrouped: cleaning.parentElement === commandBar,
+        cleaningSeparated: !actions.contains(root.querySelector(".cleaning-areas")),
         actionRole: actions.getAttribute("role"),
+        cleaningLabel: cleaning.getAttribute("aria-label"),
         fitWidth: fit.width,
         fitHeight: fit.height,
+        roomOverlayLabel: root.querySelector(".layers .control-label").textContent,
+        roomBoundaryDisplay: getComputedStyle(root.querySelector(".room-lines")).display,
+        timelineSummary: root.querySelector(".timeline-summary-title").textContent,
+        timelineVisible: root.querySelector(".timeline").offsetParent !== null,
+        timelineEmpty: root.querySelector(".timeline-panel").dataset.empty,
+        plansLabel: root.querySelector(".cleaning-plans .control-label").textContent,
+        areaLabel: root.querySelector(".cleaning-areas .control-label").textContent,
+        menuOpen: root.querySelector(".map-more").open,
+        historyCollapsed: !root.querySelector(".timeline").open,
         viewportRole: viewport.getAttribute("role"),
       };
     });
     expect(desktop).toEqual({
       headerHeight: 64,
-      actionsInsideViewport: true,
+      commandBarInsideViewport: true,
+      secondaryActionsGrouped: true,
+      cleaningActionsGrouped: true,
+      cleaningSeparated: true,
       actionRole: "toolbar",
-      fitWidth: 42,
-      fitHeight: 42,
+      cleaningLabel: "Cleaning",
+      fitWidth: 38,
+      fitHeight: 38,
+      roomOverlayLabel: "Rooms",
+      roomBoundaryDisplay: "block",
+      timelineSummary: "History",
+      timelineVisible: true,
+      timelineEmpty: "true",
+      plansLabel: "Plans",
+      areaLabel: "Custom areas",
+      menuOpen: false,
+      historyCollapsed: true,
       viewportRole: "region",
     });
+
+    await studio.locator(".timeline-summary").click();
+    await expect(studio.locator(".timeline-empty")).toBeVisible();
+    await expect(studio.locator(".timeline-empty")).toContainText(
+      "No saved map snapshots yet",
+    );
 
     await page.setViewportSize({ width: 390, height: 844 });
     await expect.poll(() => studio.evaluate((element) => ({
       header: element.shadowRoot.querySelector("header").getBoundingClientRect().height,
-      qualityVisible: Boolean(
-        element.shadowRoot.querySelector(".quality-control").offsetParent,
-      ),
+      menuOpen: element.shadowRoot.querySelector(".map-more").open,
       cameraStepsVisible: [...element.shadowRoot.querySelectorAll(".camera-step")]
         .some((button) => button.offsetParent !== null),
-    }))).toEqual({ header: 56, qualityVisible: false, cameraStepsVisible: false });
+    }))).toEqual({ header: 56, menuOpen: false, cameraStepsVisible: false });
   });
 
   test("localizes accessible controls and persists per-user view preferences", async ({ page }) => {
@@ -694,6 +1322,7 @@ test.describe("map studio", () => {
     await expect(studio.locator(".quality")).toHaveValue("efficient");
     await expect(studio.locator(".layers")).toHaveAttribute("aria-pressed", "false");
 
+    await studio.locator(".map-more > summary").click();
     await studio.locator(".quality").selectOption("balanced");
     await studio.locator(".layers").click();
     await expect.poll(() => page.evaluate(() => {
@@ -742,6 +1371,26 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__studio._catalogState().attributes.map_revision)).toBe(4);
     await expect(studio.locator(".status")).toContainText("1 points");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
+
+    await page.evaluate(() => {
+      const studioElement = window.__studio;
+      studioElement._camera.distance = studioElement._cameraDistanceBounds().minimum;
+      studioElement._requestRender();
+    });
+    await expect.poll(() => studio.locator(".zoom-slider").getAttribute("max"))
+      .not.toBe("400");
+    const zoomRange = await studio.evaluate((element) => {
+      const root = element.shadowRoot;
+      const slider = root.querySelector(".zoom-slider");
+      return {
+        maximum: Number(slider.max),
+        value: Number(slider.value),
+        label: root.querySelector(".zoom-value").textContent,
+      };
+    });
+    expect(zoomRange.maximum).toBeGreaterThan(400);
+    expect(zoomRange.value).toBe(zoomRange.maximum);
+    expect(zoomRange.label).toBe(`${zoomRange.maximum}%`);
   });
 
   test("abandons a stalled catalog and continues from camera state", async ({ page }) => {
@@ -990,6 +1639,7 @@ test.describe("map studio", () => {
 
     failScene = true;
     revision = 2;
+    await studio.locator(".map-more > summary").click();
     await studio.locator(".refresh").click();
     await expect(studio.locator(".status")).toContainText("last local 3D scene");
     await expect(studio.locator(".scene-canvas")).toBeVisible();
@@ -1383,9 +2033,11 @@ test.describe("map studio", () => {
   test("enters and exits browser full screen from the studio control", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const studio = await loadStudio(page);
+    await studio.locator(".map-more > summary").click();
     await studio.locator(".fullscreen").click();
     await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(true);
     await expect(studio.locator(".fullscreen")).toHaveText("Exit full screen");
+    await studio.locator(".map-more > summary").click();
     await studio.locator(".fullscreen").click();
     await expect.poll(() => page.evaluate(() => Boolean(document.fullscreenElement))).toBe(false);
   });

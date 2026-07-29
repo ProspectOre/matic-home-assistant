@@ -22,8 +22,8 @@ Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
 HACS. Compatibility with other Home Assistant releases has not been validated.
 
 The integration has been tested on a real robot and a stock Home Assistant
-Yellow. One robot creates 49 fixed entities — 21 sensors, 12 binary sensors,
-4 buttons, 4 switches, 3 selects, 1 number, 2 cameras, 1 update, and 1 vacuum —
+Yellow. One robot creates 51 fixed entities — 21 sensors, 12 binary sensors,
+5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 update, and 1 vacuum —
 plus two opt-in room statistics sensors per mapped room.
 Setup, state, map, cleaning, and settings paths have been exercised on the robot,
 and the integration is covered by automated tests.
@@ -51,16 +51,21 @@ The integration adds Home Assistant-native planning and automation:
 
 - **Saved cleaning plans.** Named, reusable plans with a per-room cleaning
   mode and coverage level, include toggles, and drag-orderable room lists,
-  managed in one Configure screen with live preview. Each plan can stop
+  managed alongside custom areas in the Matic Map **Cleaning** workspace. Each plan can stop
   immediately or finish a sufficiently progressed current room without
   starting the next one. During an uninterrupted plan, the next room starts
   as soon as the current room finishes; the robot docks only after the final
   room.
-- **Least-recently-cleaned rotation.** A plan run can start with the rooms
-  that have waited longest, using the saved order to break ties — no manual
-  bookkeeping of what was cleaned last. A room advances only after a new
-  robot-native successful history record matches that exact managed run;
-  stopping partway never credits the room or changes its learned duration.
+- **Fair intelligent rotation.** A plan run starts with the room least recently
+  given a cleaning opportunity, using shared room opportunity history and saved
+  order to break ties. Priority changes only after the robot reports the
+  commanded room as its current cleaning area; a rejected command or lingering
+  prior-room state does not move it. Last-cleaned history advances only after a
+  matching robot-native record reports verified completion.
+  Stopping partway never credits the room or changes its learned duration, but a
+  room that started cannot monopolize every short run if it later fails. Duration
+  learning is shared across plans only when the robot, stable room ID, cleaning
+  mode, and coverage level all match.
 - **Top-to-bottom runs.** Deterministic whole-plan runs in the exact saved
   room order, every time.
 - **Plan operations as actions.** Preview, run, stop-and-dock, history
@@ -75,18 +80,23 @@ The integration adds Home Assistant-native planning and automation:
 - **A dashboard map.** The live floor-plan camera renders rooms, labels,
   and robot pose on any dashboard with a standard Picture Entity card.
 - **A private 3D map workspace.** The admin-only Matic Map sidebar panel renders
-  the robot's local color SLAM point cloud in **3D**, orthographic
-  **Top-down**, and labeled **Rooms** views. It supports orbit, pan, pinch,
+  the robot's local color SLAM point cloud through clear **3D** and **2D** views.
+  The 2D appearance can use the photo map or stable labeled room map. It supports orbit, pan, pinch,
   twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
   control, full-screen use, live point-cloud deltas, a private map timeline,
   mode-specific camera framing, and last-good-scene recovery. A compact native
-  toolbar preserves map space, Top-down stays aligned and planar, and Rooms
+  toolbar preserves map space, 2D stays aligned and planar, and the room map
   stays centered at any aspect ratio. No map is uploaded to a vendor or third
   party.
-- **Drawn custom areas.** Paint a reusable subset of one or more rooms in
-  **Configure**, save it by name, and clean only that footprint from an
-  automation. Geometry stays in Home Assistant; action calls contain only the
-  saved name.
+- **Painted custom areas.** Open **Matic Map → Cleaning → Custom areas**, focus a labeled
+  room, and paint over the authenticated Photo or Rooms layer without
+  leaving the map workspace. Erase mistakes or move the map independently,
+  then save the footprint by name, run it immediately,
+  or call it from an automation. Geometry stays in Home Assistant; action calls
+  contain only the saved name. The device page also exposes a **Custom cleaning
+  area** select and **Clean selected area** button for native dashboards and
+  automations. The Configure flow remains available as a compatibility entry
+  point.
 
 Camera and microphone recording, clip retrieval and caching, recording metadata,
 and vendor share or discard decisions are not included because these
@@ -127,12 +137,13 @@ pairing and platform requirements.
 ## Cleaning UX and automation
 
 The map is a visible camera entity and can be added directly to any dashboard
-with a Picture Entity card. Each plan is created or edited on one room-aware
-**Configure** screen: plan name, cleaning order, return-to-dock, every mapped
+with a Picture Entity card. Each plan is created or edited in the room-aware
+**Matic Map → Cleaning → Plans** view: plan name, cleaning order, return-to-dock, every mapped
 room, include toggles, per-room mode/coverage dropdowns, and saved top-to-bottom
-order.
+order. The Configure flow remains available as a compatibility entry point.
 
-The same **Configure** flow includes **Custom cleaning areas**. Draw over the
+The adjacent **Matic Map → Cleaning → Custom areas** view uses the same private photo map,
+room geometry, and saved-area store as **Configure → Custom cleaning areas**. Draw over the
 local room map, choose the saved mode and coverage, and name the result (for
 example, `Litter box`). Automations call `matic_robot.clean_area` with that
 name, so coordinates never appear in automation YAML, Logbook service data, or
@@ -144,9 +155,11 @@ reversible Clear, keyboard controls, and a clear return to Home Assistant's
 name/settings form.
 
 Use **Intelligent rotation** when cleaning windows vary: it starts with rooms
-that have waited longest and uses the saved list order to break ties. Use
+that have waited longest since their last cleaning opportunity and uses shared
+opportunity history plus saved order to break ties. Use
 **Run all — top to bottom** when every selected room should clean in the saved
-order every time.
+order every time. Room actions resolve stable map IDs before display names and
+reject ambiguous names instead of targeting an arbitrary room.
 
 Entities and actions work with standard Home Assistant automations, scripts,
 scenes, schedules, and dashboards. Ready-to-import blueprints live in
@@ -222,18 +235,21 @@ uses the LAN.
 - Map Studio starts with one bounded full scene, then long-polls authenticated
   revision changes and applies compressed point-cloud deltas. If its retained
   base is unavailable or a delta would be inefficient, the same request returns
-  a complete scene. Private, time-spaced map checkpoints are limited to 12
-  items and 48 MiB of compressed data; deleting the integration removes them.
-  Map health is not proof that every part of the home has been scanned.
+  a complete scene. During mission rollover, the live workspace keeps the last
+  complete checkpoint under the current robot-position overlay until the new
+  scene is complete; the status identifies that retained-map state. Private,
+  time-spaced map checkpoints are limited to 12 items and 48 MiB of compressed
+  data; deleting the integration removes them. Map health is not proof that
+  every part of the home has been scanned.
 - Pairing credentials, certificate secrets, Wi-Fi passwords, account tokens,
   Matter setup codes, and arbitrary raw writes are never exposed.
 - If discovery fails, confirm the robot and Home Assistant share a
   multicast-capable LAN.
 - Every Bluetooth pairing displays a fresh six-digit code on Matic. Enter that
   code only in the active Home Assistant setup dialog.
-- If a displayed code expires or is rejected, the open flow starts a fresh bond
-  and asks for the new code. If the app's pairing window has closed, turn
-  Pairing mode off and back on before retrying.
+- If a displayed code expires or is rejected, turn Pairing mode off and back on
+  before retrying. The flow returns to confirmation instead of waiting on a
+  replacement code that current Matic firmware may not issue.
 - If setup times out, review **Settings → System → Logs** for the sanitized
   `matic_robot` pairing-timeout entry before retrying.
 - A new Bluetooth pairing deliberately proves physical access: someone at the

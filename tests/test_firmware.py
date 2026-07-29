@@ -101,8 +101,9 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "content_changed_endpoints": 0,
     }
     assert tracker.summary("missing")["snapshot_count"] == 0
-    assert tracker.needs_snapshot("entry", "v169.0") is False
-    assert tracker.needs_snapshot("entry", "v170") is True
+    assert tracker.needs_snapshot("entry", "v169.0", 25) is False
+    assert tracker.needs_snapshot("entry", "v169.0", None) is True
+    assert tracker.needs_snapshot("entry", "v170", 25) is True
     assert FirmwareTracker.issue_id("entry") == "firmware_changed_923fe53966c6"
     delete_issue.assert_called_once()
 
@@ -111,7 +112,13 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
     ) as create_issue:
         await tracker.async_record_snapshot("entry", _snapshot("v170", status="error"))
     assert create_issue.call_args.kwargs["translation_key"] == "firmware_regression"
-    assert create_issue.call_args.kwargs["translation_placeholders"]["count"] == "1"
+    assert create_issue.call_args.kwargs["translation_placeholders"] == {
+        "previous": "v169.0",
+        "current": "v170",
+        "previous_protocol": "25",
+        "current_protocol": "25",
+        "count": "1",
+    }
     assert "entry" not in create_issue.call_args.args[2]
 
     with patch(
@@ -149,6 +156,63 @@ def test_activity_dependent_population_is_not_availability_drift() -> None:
     assert comparison["firmware_changed"] is True
     assert comparison["changed_endpoints"] == []
     assert comparison["content_changed_endpoints"] == ["current_version"]
+
+
+async def test_protocol_metadata_arriving_after_firmware_triggers_resnapshot(
+    hass,
+) -> None:
+    old_release = _snapshot("v168.11")
+    staged_release = _snapshot("v169.9")
+    staged_release["protocol_version"] = None
+    stored = {
+        "robots": {
+            "entry": {
+                "observed_version": "v169.9",
+                "observed_protocol": None,
+                "compatibility_status": "compatible",
+                "snapshot": staged_release,
+                "history": [old_release, staged_release],
+            }
+        }
+    }
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "v169.9", 25) is False
+    assert tracker.summary("entry")["compatibility_status"] == "pending"
+    assert tracker.needs_snapshot("entry", "v169.9", 25) is True
+
+    final_release = _snapshot("v169.9")
+    await tracker.async_record_snapshot("entry", final_release)
+
+    summary = tracker.summary("entry")
+    assert summary["observed_protocol"] == 25
+    assert summary["compatibility_status"] == "compatible"
+    assert tracker.needs_snapshot("entry", "v169.9", 25) is False
+
+
+async def test_transient_protocol_omission_preserves_last_observation(hass) -> None:
+    stored = {
+        "robots": {
+            "entry": {
+                "observed_version": "v169.9",
+                "observed_protocol": 25,
+                "compatibility_status": "compatible",
+            }
+        }
+    }
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+
+    assert await tracker.async_observe_version("entry", "v169.9", None) is False
+    assert tracker.summary("entry")["observed_protocol"] == 25
+    tracker._store.async_save.assert_not_awaited()
 
 
 def test_snapshot_comparison_separates_availability_from_content() -> None:
@@ -191,6 +255,13 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
         "changed_endpoints": [],
     }
     assert _compatibility_status("pending", clean) == "compatible"
+    protocol_only = {
+        "baseline": False,
+        "firmware_changed": False,
+        "protocol_changed": True,
+        "changed_endpoints": [],
+    }
+    assert _compatibility_status("pending", protocol_only) == "compatible"
     unchanged = {
         "baseline": False,
         "firmware_changed": False,

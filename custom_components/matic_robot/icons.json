@@ -17,7 +17,8 @@
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
       "intelligent_clean": { "default": "mdi:brain" },
       "clean_entire_plan": { "default": "mdi:home-floor-0" },
-      "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" }
+      "stop_intelligent_cleaning": { "default": "mdi:home-import-outline" },
+      "clean_selected_area": { "default": "mdi:vector-square" }
     },
     "camera": {
       "map": { "default": "mdi:floor-plan" },
@@ -29,7 +30,8 @@
     "select": {
       "cleaning_mode": { "default": "mdi:robot-vacuum" },
       "coverage_setting": { "default": "mdi:map-marker-path" },
-      "saved_cleaning_plan": { "default": "mdi:playlist-check" }
+      "saved_cleaning_plan": { "default": "mdi:playlist-check" },
+      "custom_cleaning_area": { "default": "mdi:vector-square" }
     },
     "sensor": {
       "activity": {

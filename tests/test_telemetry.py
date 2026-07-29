@@ -105,14 +105,19 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     def timestamp(value: int) -> bytes:
         return _bfield(1, _vfield(1, value))
 
-    details = _bfield(3, b"Kitchen") + _bfield(4, _vfield(1, 60))
+    details = (
+        _bfield(3, b"Kitchen")
+        + _bfield(4, _vfield(1, 60))
+        + _vfield(5, 2)
+        + _vfield(6, 2)
+    )
     summary = (
         _bfield(3, timestamp(1_700_000_000))
         + _bfield(4, timestamp(1_700_000_060))
         + _bfield(6, _bfield(1, _bfield(2, details)))
     )
     client = MaticHermesClient("192.0.2.1", 16320)
-    client.async_get_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"opaque-synthetic-key", _bfield(5, summary)),
             HermesCollectionEntry(b"", _bfield(5, summary)),
@@ -125,7 +130,8 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     assert len(records) == 1
     assert records[0].key == b"opaque-synthetic-key"
     assert records[0].session.completed is True
-    client.async_get_collection_entries.assert_awaited_once_with(
+    assert records[0].session.completed_rooms == ("Kitchen",)
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
 
@@ -151,6 +157,7 @@ async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:
     }
     client.async_get_property = AsyncMock(side_effect=lambda name: values[name])
     client.async_get_collection_entries = AsyncMock(return_value=())
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=())
     client.async_get_collection_count = AsyncMock(side_effect=(4, 1))
 
     telemetry = await client.async_get_telemetry()
@@ -226,7 +233,12 @@ def test_decode_wifi_schedule_and_history() -> None:
     def timestamp(value: int) -> bytes:
         return _bfield(1, _vfield(1, value))
 
-    details = _bfield(3, b"Kitchen") + _bfield(4, _vfield(1, 600))
+    details = (
+        _bfield(3, b"Kitchen")
+        + _bfield(4, _vfield(1, 600))
+        + _vfield(5, 2)
+        + _vfield(6, 1)
+    )
     room = _bfield(2, details)
     summary = (
         _bfield(3, timestamp(1_700_000_000))
@@ -239,15 +251,86 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert session.rooms == ("Kitchen",)
     assert session.room_durations == (("Kitchen", 600),)
     assert session.completed is True
-    interrupted = _decode_cleaning_session(_bfield(5, summary + _vfield(5, 2)))
+    assert session.completed_rooms == ("Kitchen",)
+
+    interrupted_details = (
+        _bfield(3, b"Kitchen")
+        + _bfield(4, _vfield(1, 43))
+        + _vfield(5, 1)
+        + _vfield(6, 1)
+    )
+    interrupted_summary = (
+        _bfield(3, timestamp(1_700_000_000))
+        + _bfield(4, timestamp(1_700_000_083))
+        + _bfield(6, _bfield(1, _bfield(2, interrupted_details)))
+    )
+    interrupted = _decode_cleaning_session(_bfield(5, interrupted_summary))
     assert interrupted is not None
     assert interrupted.completed is False
+    assert interrupted.rooms == ("Kitchen",)
+    assert interrupted.room_durations == (("Kitchen", 43),)
+    assert interrupted.completed_rooms == ()
+
+    failed = _decode_cleaning_session(_bfield(5, summary + _vfield(5, 2)))
+    assert failed is not None
+    assert failed.completed is False
+    assert failed.completed_rooms == ("Kitchen",)
     malformed_status = _decode_cleaning_session(
         _bfield(5, summary + _bfield(5, b"wrong-wire-type"))
     )
     assert malformed_status is not None
     assert malformed_status.completed is None
+    assert malformed_status.completed_rooms == ("Kitchen",)
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
+
+
+def test_decode_room_completion_statuses_fail_closed() -> None:
+    def details(
+        name: bytes,
+        duration: int,
+        *statuses: tuple[int, int],
+    ) -> bytes:
+        return (
+            _bfield(3, name)
+            + _bfield(4, _vfield(1, duration))
+            + b"".join(_vfield(field, value) for field, value in statuses)
+        )
+
+    completed = details(b"Kitchen", 600, (5, 2), (6, 1))
+    interrupted = details(b"Hallway", 120, (5, 1), (6, 1))
+    summary = _bfield(6, _bfield(1, _bfield(2, completed))) + _bfield(
+        6, _bfield(1, _bfield(2, interrupted))
+    )
+
+    session = _decode_cleaning_session(_bfield(5, summary))
+
+    assert session is not None
+    assert session.rooms == ("Kitchen", "Hallway")
+    assert session.room_durations == (("Kitchen", 600), ("Hallway", 120))
+    assert session.completed_rooms == ("Kitchen",)
+    assert session.completed is False
+
+    unknown = details(b"Office", 90, (5, 3))
+    unknown_session = _decode_cleaning_session(
+        _bfield(5, _bfield(6, _bfield(1, _bfield(2, unknown))))
+    )
+    assert unknown_session is not None
+    assert unknown_session.completed is None
+    assert unknown_session.completed_rooms == ()
+
+    malformed = details(b"Office", 90, (5, 1)) + _bfield(6, b"unknown")
+    malformed_session = _decode_cleaning_session(
+        _bfield(5, _bfield(6, _bfield(1, _bfield(2, malformed))))
+    )
+    assert malformed_session is not None
+    assert malformed_session.completed is None
+
+    missing = details(b"Office", 90)
+    missing_session = _decode_cleaning_session(
+        _bfield(5, _bfield(6, _bfield(1, _bfield(2, missing))))
+    )
+    assert missing_session is not None
+    assert missing_session.completed is None
 
 
 def test_decode_auxiliary_states() -> None:

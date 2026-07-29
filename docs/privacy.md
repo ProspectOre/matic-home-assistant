@@ -22,16 +22,17 @@ The entity state machine contains activity, battery, firmware metadata,
 current/previous Area context, preference state, summary counts, and diagnostic
 state. High-context diagnostic entities are disabled by default. Attributes
 that carry home context — the connected Wi-Fi SSID, schedule definitions, room
-names and IDs, the latest session's rooms and durations, and full plan/history
-records — stay live on the state machine for templates but are declared
-unrecorded, so Home Assistant's recorder never writes them to the history
-database. The neighbor Wi-Fi scan list is not exposed at all. Two exceptions
-are deliberate and opt-in or explicit: the per-room statistics sensors are
-disabled by default and, when a user enables them, record that room's name and
-cleaning durations as long-term statistics; and the
-`matic_robot_cleaning_finished` event includes the finished session's rooms
-and per-room durations in its payload. Home Assistant's recorder retains
-enabled entity states according to the user's recorder settings.
+names and IDs, the latest session's visited/completed rooms and durations, and
+full plan/history records — stay live on the state machine for templates but
+are declared unrecorded, so Home Assistant's recorder never writes them to the
+history database. The neighbor Wi-Fi scan list is not exposed at all. Two
+exceptions are deliberate and opt-in or explicit: the per-room statistics
+sensors are disabled by default and, when a user enables them, record that
+room's name and cleaning durations as long-term statistics; and the
+`matic_robot_cleaning_finished` event includes the finished session's visited
+rooms, verified completed rooms, and per-room durations in its payload. Home
+Assistant's recorder retains enabled entity states according to the user's
+recorder settings.
 
 The visible-by-default room-map camera renders geometry and pose and contains
 no photographic pixels. The separate photographic SLAM camera accumulates the
@@ -41,6 +42,13 @@ stream. The photographic camera is disabled by default; the Matic Map panel and
 its scene/pose endpoints require a Home Assistant administrator. If an
 administrator enables the camera entity, Home Assistant's ordinary camera and
 user permissions govern who can view it.
+
+The standalone local client can validate retained session-map WebP images,
+monthly recaps, semantic grids, and a mission-scoped native flythrough. Those
+decoders are protocol foundations, not Home Assistant data surfaces: the
+integration does not currently place their content in entity state, Recorder,
+diagnostics, map storage, media endpoints, or browser responses. Session images
+and favorite-room labels remain private even though their wire formats are known.
 
 The integration does not start camera or microphone recordings, request clip
 bytes or thumbnails, cache media, expose recording metadata, or send vendor

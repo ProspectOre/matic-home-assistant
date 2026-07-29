@@ -8,8 +8,8 @@ settings, cleaning, and saved plans.
 
 ## Entity contract
 
-One configured robot creates 49 fixed entities — 21 sensors, 12 binary
-sensors, 4 buttons, 4 switches, 3 selects, 1 number, 2 cameras, 1 update, and
+One configured robot creates 51 fixed entities — 21 sensors, 12 binary
+sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 update, and
 1 vacuum — plus two opt-in statistics sensors per mapped room.
 
 - `vacuum`: primary robot state plus start/resume, pause, stop, dock, Area
@@ -18,9 +18,10 @@ sensors, 4 buttons, 4 switches, 3 selects, 1 number, 2 cameras, 1 update, and
   pose, plus a default-disabled photographic SLAM map. The latter contains
   private accumulated color/structure map data, so enable it only for users and
   dashboards that should see the interior map.
-- `select`: default cleaning mode, default coverage, and default cleaning plan.
+- `select`: default cleaning mode, default coverage, default cleaning plan, and
+  selected custom cleaning area.
 - `button`: run the default plan, intelligent-rotation override,
-  top-to-bottom override, and stop-plan-and-dock.
+  top-to-bottom override, stop-plan-and-dock, and clean the selected custom area.
 - `sensor`: activity, battery, rooms, cleaning history, active plan, next room,
   firmware/protocol/update/compatibility state, current area, Wi-Fi state and
   signal, schedules, local sessions, last run duration, dock/sink, coverage,
@@ -87,21 +88,29 @@ rooms are selected until the user chooses them:
 A plan defines **what** to clean. Home Assistant schedules, presence
 automations, buttons, and scripts decide **when** it runs.
 
-## Drawn custom areas
+## Painted custom areas
 
-Open the integration's **Configure** flow, choose **Custom cleaning areas**, and
-draw over the exact part of the local map that should be cleaned. A saved area
+Open **Matic Map** from the Home Assistant sidebar, choose **Custom areas**,
+and paint over the exact part of the private Photo or Rooms map that
+should be cleaned. Use Erase for corrections and Move to navigate without
+changing the selection. The same editor remains available through the integration's
+**Configure → Custom cleaning areas** flow. A saved area
 can cross room boundaries and keeps its own cleaning mode and coverage default.
 Home Assistant stores the geometry locally and the action accepts only its
 name. The saved record also binds it to the exact coverage mission, standard
 partition, and canonical room geometry it was drawn on. A legacy unbound area,
 remap, floor change, or geometry mismatch is blocked before any robot command.
 Home Assistant raises one privacy-safe Repair with only the number of affected
-areas and directs an administrator to **Configure → Custom cleaning areas**.
+areas and directs an administrator to **Matic Map → Cleaning areas**.
 Editing preserves name/mode/coverage but requires redrawing on the live map; no
 automatic coordinate transform or cross-floor migration is attempted. A
 temporarily unavailable live map reports that condition without creating or
 clearing mismatch state.
+
+The robot device page exposes the saved definitions through **Custom cleaning
+area** and **Clean selected area**. Select an area once, then use the button in a
+dashboard or automation without handling coordinates. Creating and changing
+geometry remains in the private Matic Map workspace.
 
 For example, after saving an area named `Litter box`, this automation cleans
 only that footprint when a litter box reports that its cycle completed:
@@ -131,20 +140,22 @@ saved with the area for that run.
 
 ## Map Studio
 
-Administrators can open **Matic Map** from the Home Assistant sidebar. Its
-three views use the same local map coordinate system:
+Administrators can open **Matic Map** from the Home Assistant sidebar. Its two
+primary views use the same local map coordinate system:
 
 - **3D** renders the accumulated color and structural point cloud. Mouse drag
   orbits; right-, middle-, or Shift-drag pans; and the wheel zooms. A trackpad
   uses two-finger pan, pinch zoom, twist rotation, and Option-scroll tilt.
-- **Top-down** provides an aligned orthographic plan view for precise
+- **2D** provides an aligned orthographic plan view for precise
   exploration. It supports pan, zoom, and rotation while remaining planar and
-  keeps its framing separate from 3D.
-- **Rooms** provides a centered, stable labeled geometry fallback when
-  photographic pages are absent or unhealthy.
+  keeps its framing separate from 3D. Its appearance selector switches between
+  the photographic map and a centered labeled room map.
 
-The compact map toolbar exposes Fit map, room labels, refresh, full screen,
-help, and cleaning-area editing without reducing the workspace height.
+The compact map toolbar keeps Fit, the **Rooms** boundary-and-label overlay,
+and **Custom areas** visible;
+refresh, full screen, help, and 2D appearance live in the overflow menu.
+The overlay repairs sparse self-intersections and separates discontinuous dense
+cell-edge traces before projecting them over the photographic scene.
 **Fit map** or `0` safely recenters the scene. Mouse movement stops on
 release; touch retains momentum. Camera targets remain bounded so the house
 cannot be stranded off-screen, and a transient refresh failure keeps the last
@@ -156,9 +167,11 @@ Clicking, dragging, or scrolling the map gives it keyboard focus, so the arrow
 keys and shortcuts work immediately after mouse navigation without an extra
 click. The studio loads one coherent scene, then holds a bounded authenticated
 long-poll and applies compressed binary deltas. A stale base or inefficient
-delta falls back to a complete scene in the same request. The timeline beneath
-the map browses private, time-spaced checkpoints and returns to live updates
-with **Live**. Checkpoints are capped at 12 items and 48 MiB compressed.
+delta falls back to a complete scene in the same request. Select
+**History · Live** beneath the map to open the scrubber above the control, browse
+private time-spaced checkpoints, and return to live updates with **Live**. The
+panel remains discoverable and explains when no checkpoints have been saved yet.
+Checkpoints are capped at 12 items and 48 MiB compressed.
 
 Multiple entries keep scene, pose, ETag, timeline, and fallback state isolated.
 Unload clears browser buffers and backend scene caches. Catalog, scene, delta,
@@ -184,10 +197,13 @@ ordinary dashboards when photographic household detail is unnecessary.
 
 Use **Intelligent rotation** for large plans and short or unpredictable cleaning
 windows. Instead of beginning with the same first room every time, it starts
-with rooms that have never completed, then rooms that have waited longest. The
-saved room order breaks ties. Failed, cancelled, timed-out, or
-restart-interrupted rooms remain due because history advances only after
-verified completion.
+with the room least recently given a confirmed cleaning opportunity. Priority
+changes only after the robot reports the commanded room as its current cleaning
+area; a rejected command or the previous room's lingering `cleaning` state does
+not move it. A successful clean also updates shared last-cleaned history. Failed,
+cancelled, timed-out, or restart-interrupted rooms remain due, but a confirmed
+start moves them behind rooms that waited longer so one problem room cannot
+monopolize short runs. Saved room order breaks ties.
 
 Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:
@@ -205,13 +221,16 @@ robot, so an unexplained terminal transition is treated as interrupted rather
 than completed.
 
 The finish-current-room policy estimates progress from elapsed time versus
-successful managed runs of the same room with the same cleaning settings. A
-stop below the configured threshold remains immediate; at or above it, the
-current room completes, the next room is never started, and the robot docks.
-Until the plan has learned a duration for that room, enabling the policy means
-the current room finishes. Set the threshold to `0%` to always finish it. This
-is a time-based estimate, not a measured area percentage; pauses, recharge, and
-other delays can reduce its accuracy.
+successful managed runs of the same stable room with the same cleaning mode and
+coverage. Compatible samples are shared across plans on the same robot, so a new
+plan does not need to relearn an unchanged room. Stored aggregate duration data
+from earlier integration versions remains usable only when it represents at
+least three successful runs. A stop below the configured threshold remains
+immediate; at or above it, the current room completes, the next room is never
+started, and the robot docks. Until a confident compatible duration exists,
+enabling the policy means the current room finishes. Set the threshold to `0%`
+to always finish it. This is a time-based estimate, not a measured area
+percentage; pauses, recharge, and other delays can reduce its accuracy.
 
 Use **Run all — top to bottom** when every selected room should always clean in
 the visible saved order regardless of history.
@@ -234,8 +253,10 @@ the visible saved order regardless of history.
   `save_plan_room`, `move_plan_room`, and `delete_plan_room`: management API for
   scripts, backup/restore, provisioning, and advanced automations.
 
-Plan actions accept human names or stable IDs where appropriate. Action fields
-are defined in `custom_components/matic_robot/services.yaml`.
+Plan actions accept human names or stable IDs where appropriate. Stable IDs take
+precedence over colliding display names; ambiguous names are rejected rather
+than resolved by map order. Action fields are defined in
+`custom_components/matic_robot/services.yaml`.
 
 ## Payload-free endpoint inspection
 
@@ -296,8 +317,12 @@ Template-visible attributes and recorded history follow one deliberate model:
   Brief disconnects are ignored, firmware phrases such as `the Living Room`
   are matched to the mapped room name, and an active run is recovered from
   Recorder after an integration or Home Assistant restart. Robot-native
-  session summaries now retain their explicit completed/interrupted outcome;
-  interrupted summaries never update per-room last-cleaned or duration sensors.
+  session summaries keep visited rooms separate from rooms whose native mode
+  status proves completion. Interrupted and unknown room results never update
+  per-room last-cleaned or duration sensors. Verified managed-room completion
+  writes both sensors immediately, and storage migration repairs older global
+  records from the newest verified per-plan completion without crediting an
+  unverified room.
 
 ## Events and observability
 
@@ -313,9 +338,10 @@ of being written into recorder-backed attributes.
 
 When the robot finishes a cleaning session the integration fires
 `matic_robot_cleaning_finished` with the session's start/end timestamps,
-duration, completion flag, rooms, per-room durations, the firmware version
-that produced the run, and the `device_id`/`entry_id` of the robot — one
-payload for post-clean notifications or custom logging.
+duration, completion flag, visited rooms, verified completed rooms, per-room
+durations, the firmware version that produced the run, and the
+`device_id`/`entry_id` of the robot — one payload for post-clean notifications
+or custom logging.
 `matic_robot_firmware_changed` likewise carries `device_id`/`entry_id` so
 multi-robot homes can tell which robot updated.
 

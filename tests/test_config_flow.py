@@ -484,27 +484,24 @@ async def test_automatic_pairing_retries_until_the_window_opens(monkeypatch) -> 
     assert create.await_count == 2
 
 
-async def test_expired_code_renews_with_a_fresh_bond_and_exchange(monkeypatch) -> None:
+async def test_expired_code_requires_a_fresh_pairing_window(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
     exchanges = []
 
     async def fake_create(_data, _step):
         exchange = flow._passkey_exchange
         assert exchange is not None
         exchanges.append(exchange)
-        if len(exchanges) == 1:
-            request = asyncio.create_task(exchange.async_request_passkey())
-            await exchange.async_wait_until_requested()
-            exchange.cancel()
-            await asyncio.gather(request, return_exceptions=True)
-            return {
-                "type": FlowResultType.FORM,
-                "step_id": "pair",
-                "errors": {"base": "pairing_incomplete"},
-            }
-        return expected
+        request = asyncio.create_task(exchange.async_request_passkey())
+        await exchange.async_wait_until_requested()
+        exchange.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        return {
+            "type": FlowResultType.FORM,
+            "step_id": "pair",
+            "errors": {"base": "pairing_incomplete"},
+        }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
     monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
@@ -514,33 +511,30 @@ async def test_expired_code_renews_with_a_fresh_bond_and_exchange(monkeypatch) -
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result == expected
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["errors"] == {"base": "pairing_code_expired"}
     assert flow._pairing_retry_note == "pairing_code_expired"
-    assert len(exchanges) == 2
-    assert exchanges[0] is not exchanges[1]
+    assert len(exchanges) == 1
 
 
-async def test_rejected_code_renews_and_notes_the_rejection(monkeypatch) -> None:
+async def test_rejected_code_requires_a_fresh_pairing_window(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
     attempts = []
 
     async def fake_create(_data, _step):
         exchange = flow._passkey_exchange
         assert exchange is not None
         attempts.append(exchange)
-        if len(attempts) == 1:
-            request = asyncio.create_task(exchange.async_request_passkey())
-            await exchange.async_wait_until_requested()
-            exchange.submit(123456)
-            assert await request == 123456
-            return {
-                "type": FlowResultType.FORM,
-                "step_id": "pair",
-                "errors": {"base": "pairing_incomplete"},
-            }
-        return expected
+        request = asyncio.create_task(exchange.async_request_passkey())
+        await exchange.async_wait_until_requested()
+        exchange.submit(123456)
+        assert await request == 123456
+        return {
+            "type": FlowResultType.FORM,
+            "step_id": "pair",
+            "errors": {"base": "pairing_incomplete"},
+        }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
     monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
@@ -550,9 +544,10 @@ async def test_rejected_code_renews_and_notes_the_rejection(monkeypatch) -> None
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result == expected
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["errors"] == {"base": "pairing_code_rejected"}
     assert flow._pairing_retry_note == "pairing_code_rejected"
-    assert len(attempts) == 2
+    assert len(attempts) == 1
 
 
 async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) -> None:
@@ -677,9 +672,8 @@ async def test_pairing_code_resubmission_waits_for_the_live_bond(hass) -> None:
 
     progress = await flow.async_step_pairing_code({"passkey": "654321"})
     assert progress["type"] is FlowResultType.SHOW_PROGRESS
+    assert progress["progress_task"] is flow._pairing_task
     await flow._pairing_task
-    assert flow._pairing_checkpoint_task is not None
-    await flow._pairing_checkpoint_task
     done = await flow.async_step_pairing_code()
     assert done["type"] is FlowResultType.SHOW_PROGRESS_DONE
 
@@ -1113,6 +1107,11 @@ async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
     entry, manager = await _options_entry(hass)
     result = await _start_options_step(hass, entry, "manage_areas")
     assert result["step_id"] == "add_area"
+    area_marker = list(result["data_schema"].schema)[1]
+    area_selector = result["data_schema"].schema[area_marker]
+    assert area_selector.config["scene_url"] == (
+        f"/api/matic_robot/slam_scene/{entry.entry_id}"
+    )
 
     result = await hass.config_entries.options.async_configure(
         result["flow_id"],

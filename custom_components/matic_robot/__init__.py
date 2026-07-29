@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
@@ -18,6 +19,7 @@ from .area_binding import (
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
+from .client.exceptions import MaticError
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -43,6 +45,8 @@ from .slam_history import (
 from .slam_map_store import SlamMapStore
 
 __all__ = ["async_migrate_entry"]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -101,6 +105,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
+        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        try:
+            native_history = await client.async_get_cleaning_session_records()
+        except MaticError as err:
+            _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
+        else:
+            await plans.async_import_native_history(
+                serial_number,
+                coordinator.data.floor_plan,
+                native_history,
+            )
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
         slam_history = SlamHistoryStore(hass, entry.entry_id)
@@ -129,7 +144,6 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             ),
             f"{DOMAIN} map history collector",
         )
-        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
 
         def _async_sync_area_issue() -> None:
             async_sync_custom_area_issue(

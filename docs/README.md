@@ -17,8 +17,8 @@ the integration so instructions and behavior stay aligned with each release.
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
 - [Firmware compatibility](firmware-compatibility.md) — Track observed robot
   versions, validation status, regressions, and newly discovered capabilities.
-- [Release notes — 0.3.0](release-notes-0.3.0.md) — Private 3D/Top-down/Rooms
-  Map Studio and full-screen custom-area editor
+- [Release notes — 0.3.0](release-notes-0.3.0.md) — Private 3D/2D map workspace
+  Map Studio with an integrated photo-backed cleaning-area workspace
 - [Release notes — 0.2.3](release-notes-0.2.3.md) — Room-to-room plans and
   accurate interrupted-run history
 - [Release notes — 0.2.2](release-notes-0.2.2.md) — Connection, session-history,
@@ -32,8 +32,8 @@ the integration so instructions and behavior stay aligned with each release.
   complete Home Assistant surface exposed by one robot.
 - [Saved cleaning plans](automation.md#saved-plans) — Choose rooms, customize
   per-room cleaning, and save the top-to-bottom order.
-- [Intelligent rotation](automation.md#intelligent-rotation) — Prioritize rooms
-  that have waited longest when a cleaning window ends early.
+- [Intelligent rotation](automation.md#intelligent-rotation) — Rotate fairly
+  when a cleaning window ends early, without one unfinished room monopolizing it.
 - [Events and blueprints](automation.md#events-and-observability) — Build
   presence, schedule, dashboard, and custom automation workflows.
 - [Map and cleaning experience](../README.md#cleaning-ux-and-automation) — Add

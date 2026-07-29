@@ -18,7 +18,7 @@ from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
-from .plans import PLAN_MOTION_TOKEN
+from .plans import PLAN_MOTION_TOKEN, resolve_room_reference
 
 PARALLEL_UPDATES = 1
 
@@ -59,7 +59,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     """Authenticated local Matic vacuum controls."""
 
     _attr_supported_features = SUPPORTED_FEATURES
-    _unrecorded_attributes = frozenset({"rooms", "current_area", "previous_area"})
+    _unrecorded_attributes = frozenset(
+        {"matic_entry_id", "rooms", "current_area", "previous_area"}
+    )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
@@ -91,6 +93,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         state = self.coordinator.data.operational
         floor_plan = self.coordinator.data.floor_plan
         return {
+            "matic_entry_id": self._config_entry.entry_id,
             "low_charge": state.low_charge,
             "problem": bool(state.error_codes),
             "current_area": state.current_area,
@@ -177,6 +180,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             serial_number
         ) or self.activity in {
             VacuumActivity.CLEANING,
+            VacuumActivity.ERROR,
             VacuumActivity.PAUSED,
             VacuumActivity.RETURNING,
         }
@@ -307,25 +311,25 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if not identifiers:
             raise _validation_error("Select at least one Matic room", "no_rooms")
         rooms = self._floor_plan().rooms
-        lookup = {
-            key: room
-            for room in rooms
-            for key in (room.id.casefold(), room.name.casefold())
-        }
+        room_map = {room.id: room.name for room in rooms}
+        rooms_by_id = {room.id: room for room in rooms}
         resolved: list[Room] = []
-        missing: list[str] = []
+        invalid: list[str] = []
         for identifier in identifiers:
-            room = lookup.get(identifier.casefold())
-            if room is None:
-                missing.append(identifier)
-            elif room not in resolved:
+            try:
+                room_id, _room_name = resolve_room_reference(identifier, room_map)
+            except ValueError as err:
+                invalid.append(str(err))
+                continue
+            room = rooms_by_id[room_id]
+            if room not in resolved:
                 resolved.append(room)
-        if missing:
-            missing_names = ", ".join(missing)
+        if invalid:
+            invalid_names = ", ".join(invalid)
             raise _validation_error(
-                f"Unknown Matic room(s): {missing_names}",
+                f"Unknown Matic room(s): {invalid_names}",
                 "unknown_rooms",
-                {"rooms": missing_names},
+                {"rooms": invalid_names},
             )
         return resolved
 

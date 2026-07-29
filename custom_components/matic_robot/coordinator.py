@@ -134,7 +134,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     and version not in self._snapshot_versions_in_progress
                     and monotonic() >= self._snapshot_retry_after
                     and self.firmware_tracker.needs_snapshot(
-                        self.config_entry.entry_id, version
+                        self.config_entry.entry_id,
+                        version,
+                        telemetry.protocol_version,
                     )
                 ):
                     self._snapshot_versions_in_progress.add(version)
@@ -385,6 +387,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "duration_seconds": session.duration_seconds,
                 "completed": session.completed,
                 "rooms": list(session.rooms),
+                "completed_rooms": list(session.completed_rooms),
                 "room_durations": dict(session.room_durations),
                 "firmware_version": version,
             },

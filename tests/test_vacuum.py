@@ -49,10 +49,49 @@ async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
             await entity.async_send_command("clean_all", {PLAN_MOTION_TOKEN: value})
 
 
+async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> None:
+    entry = _entry()
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    assert floor_plan is not None
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data,
+        floor_plan=replace(
+            floor_plan,
+            rooms=(
+                replace(
+                    floor_plan.rooms[0],
+                    id="stable-bedroom",
+                    name="Primary Bedroom",
+                ),
+                replace(floor_plan.rooms[1], name="stable-bedroom"),
+            ),
+        ),
+    )
+    entity = vacuum.MaticVacuum(entry)
+
+    await entity.async_send_command("clean_rooms", {"rooms": ["stable-bedroom"]})
+    call = entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    assert call.args[1] == ["protocol-1"]
+
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data,
+        floor_plan=replace(
+            entry.runtime_data.coordinator.data.floor_plan,
+            rooms=(
+                replace(floor_plan.rooms[0], name="Bedroom"),
+                replace(floor_plan.rooms[1], name="BEDROOM"),
+            ),
+        ),
+    )
+    with pytest.raises(ServiceValidationError, match="ambiguous room name"):
+        await entity.async_send_command("clean_rooms", {"rooms": ["Bedroom"]})
+
+
 @pytest.mark.parametrize(
     "operational_changes",
     [
         {"cleaning": False, "returning": True},
+        {"cleaning": False, "error_codes": (327,)},
         {"cleaning": False, "charging": True, "low_charge": True},
     ],
 )

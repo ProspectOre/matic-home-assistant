@@ -154,6 +154,7 @@ class CleaningSessionTracker:
                 rooms=native_session.rooms,
                 room_durations=native_session.room_durations,
                 completed=native_session.completed,
+                completed_rooms=native_session.completed_rooms,
             )
         native_started = _parse_timestamp(native_session.started_at)
         tracked_started = _parse_timestamp(tracked.started_at)
@@ -311,6 +312,7 @@ def _build_session(
             (room, max(0, round(durations[room]))) for room in cleaned_rooms
         ),
         completed=bool(cleaned_rooms),
+        completed_rooms=tuple(cleaned_rooms),
     )
 
 

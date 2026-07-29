@@ -119,6 +119,7 @@ def _state(
                 ("Kitchen",),
                 (("Kitchen", 600),),
                 True,
+                completed_rooms=("Kitchen",),
             ),
         ),
     )
@@ -185,6 +186,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
                 },
                 "selected_plan": "whole_home",
                 "selected_plan_name": "Whole home",
+                "selected_area": "litter_box",
+                "selected_area_name": "Litter box",
                 "active_plan": None,
                 "last_interrupted_plan": None,
             }
@@ -198,6 +201,8 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             }
         ),
         plan=MagicMock(return_value={"id": "whole_home", "name": "Whole home"}),
+        areas=MagicMock(return_value={"litter_box": {"name": "Litter box"}}),
+        area=MagicMock(return_value={"id": "litter_box", "name": "Litter box"}),
         preview=MagicMock(
             return_value={
                 "valid": True,
@@ -206,6 +211,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             }
         ),
         async_select_plan=AsyncMock(),
+        async_select_area=AsyncMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
@@ -269,20 +275,20 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 49 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 51 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
         "binary_sensor": 12,
-        "button": 4,
+        "button": 5,
         "camera": 2,
         "number": 1,
-        "select": 3,
+        "select": 4,
         "sensor": 25,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 53
-    assert len({entity.unique_id for entity in entities}) == 53
+    assert len(entities) == 55
+    assert len({entity.unique_id for entity in entities}) == 55
     assert all(entity.device_info["manufacturer"] == "Matic" for entity in entities)
 
 
@@ -417,6 +423,32 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     assert last_cleaned.native_value is not None
     assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
 
+    # A partially completed native run updates only its verified rooms.
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                "2026-01-03T08:00:00+00:00",
+                "2026-01-03T08:10:00+00:00",
+                600,
+                ("Kitchen", "Study"),
+                (("Kitchen", 420), ("Study", 180)),
+                False,
+                completed_rooms=("Kitchen",),
+            ),
+        ),
+    )
+    duration._async_apply_session()
+    last_cleaned._async_apply_session()
+    study_duration._async_apply_session()
+    study_last._async_apply_session()
+    assert duration.native_value == 420
+    assert last_cleaned.native_value is not None
+    assert last_cleaned.native_value.isoformat() == "2026-01-03T08:10:00+00:00"
+    assert study_duration.native_value == 120
+    assert study_last.native_value == stored_when.native_value
+
     # Coordinator updates re-apply the latest session.
     coordinator.data = replace(
         coordinator.data,
@@ -544,6 +576,45 @@ def test_managed_room_statistics_validate_session_and_unmatched_room() -> None:
     ) == (True, ("2025-12-31T07:05:00+00:00", 300))
 
 
+def test_room_statistics_apply_newer_verified_plan_history() -> None:
+    entry = _entry()
+    history = entry.runtime_data.cleaning_plans
+    snapshot = history.snapshot.return_value
+    snapshot["last_completed_by_room"] = {
+        "room-1": {
+            "name": "Kitchen",
+            "at": "2026-01-04T08:10:00+00:00",
+            "duration_seconds": 510,
+            "runs": 2,
+        }
+    }
+    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
+    duration = sensor.MaticRoomDurationSensor(entry, kitchen)
+    last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, kitchen)
+    duration.async_write_ha_state = MagicMock()
+    last_cleaned.async_write_ha_state = MagicMock()
+
+    duration._async_history_updated()
+    last_cleaned._async_history_updated()
+
+    assert duration.native_value == 510
+    assert last_cleaned.native_value is not None
+    assert last_cleaned.native_value.isoformat() == "2026-01-04T08:10:00+00:00"
+    duration.async_write_ha_state.assert_called_once()
+    last_cleaned.async_write_ha_state.assert_called_once()
+    assert sensor._managed_room_history_value(snapshot, "room-1") == (
+        "2026-01-04T08:10:00+00:00",
+        510,
+    )
+    assert sensor._managed_room_history_value(snapshot, "missing") is None
+    snapshot["last_completed_by_room"]["invalid"] = {
+        "at": "2026-01-04T08:10:00+00:00",
+        "duration_seconds": None,
+    }
+    assert sensor._managed_room_history_value(snapshot, "invalid") is None
+    assert sensor._latest_room_statistics_value(None, None) is None
+
+
 def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     entry = _entry(with_floor_plan=False)
     room = _floor_plan().rooms[0]
@@ -571,6 +642,26 @@ def test_room_statistics_sensors_skip_unmatched_sessions() -> None:
     entity = sensor.MaticRoomLastCleanedSensor(entry, study)
     entity._async_apply_session()
     assert entity.native_value is None
+
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    kitchen = coordinator.data.floor_plan.rooms[0]
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=CleaningSession(
+                "2026-01-02T08:00:00+00:00",
+                "2026-01-02T08:05:00+00:00",
+                300,
+                ("Kitchen",),
+                (),
+                True,
+                completed_rooms=("Kitchen",),
+            ),
+        ),
+    )
+    assert sensor.MaticRoomDurationSensor(entry, kitchen)._room_session_value() is None
 
 
 async def test_update_entity_mirrors_robot_managed_ota_state() -> None:
@@ -740,6 +831,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert sessions is not None
     assert sessions["latest_duration_seconds"] == 600
     assert sessions["latest_rooms"] == ["Kitchen"]
+    assert sessions["latest_completed_rooms"] == ["Kitchen"]
     assert sessions["latest_room_durations"] == {"Kitchen": 600}
     assert state_sensors["protocol_version"].extra_state_attributes is None
 
@@ -895,6 +987,73 @@ async def test_saved_plan_select_and_native_button() -> None:
         pytest.raises(HomeAssistantError, match="unavailable"),
     ):
         plan_button._vacuum_entity_id()
+
+
+async def test_custom_area_select_and_native_button() -> None:
+    entry = _entry()
+    history = entry.runtime_data.cleaning_plans
+    area_select = select.MaticCustomAreaSelect(entry)
+
+    assert area_select.options == ["Litter box"]
+    assert area_select.current_option == "Litter box"
+    await area_select.async_select_option("Litter box")
+    history.async_select_area.assert_awaited_once_with("synthetic-serial", "litter_box")
+    area_select.async_write_ha_state = MagicMock()
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        await area_select.async_added_to_hass()
+    serial, listener = history.async_add_listener.call_args.args
+    assert serial == "synthetic-serial"
+    listener()
+    area_select.async_write_ha_state.assert_called_once()
+
+    area_button = button.MaticAreaButton(entry)
+    assert area_button.available is True
+    local_hass = SimpleNamespace(services=SimpleNamespace(async_call=AsyncMock()))
+    area_button.hass = local_hass
+    with patch.object(
+        area_button, "_vacuum_entity_id", return_value="vacuum.test_robot"
+    ):
+        await area_button.async_press()
+    local_hass.services.async_call.assert_awaited_once_with(
+        "matic_robot",
+        "clean_area",
+        {"entity_id": "vacuum.test_robot", "area": "litter_box"},
+        blocking=True,
+    )
+
+    history.area.side_effect = KeyError(None)
+    assert area_button.available is False
+    assert button.MaticAreaButton(_entry(with_floor_plan=False)).available is False
+
+    history.area.side_effect = None
+    area_button.async_write_ha_state = MagicMock()
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        await area_button.async_added_to_hass()
+    serial, listener = history.async_add_listener.call_args.args
+    assert serial == "synthetic-serial"
+    listener()
+    area_button.async_write_ha_state.assert_called_once()
+
+    registry_entry = SimpleNamespace(
+        domain="vacuum", platform="matic_robot", entity_id="vacuum.test_robot"
+    )
+    with (
+        patch("custom_components.matic_robot.button.er.async_get"),
+        patch(
+            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            return_value=[registry_entry],
+        ),
+    ):
+        assert area_button._vacuum_entity_id() == "vacuum.test_robot"
+    with (
+        patch("custom_components.matic_robot.button.er.async_get"),
+        patch(
+            "custom_components.matic_robot.button.er.async_entries_for_config_entry",
+            return_value=[],
+        ),
+        pytest.raises(HomeAssistantError, match="unavailable"),
+    ):
+        area_button._vacuum_entity_id()
 
 
 async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
@@ -1188,6 +1347,7 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
 async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> None:
     entity = vacuum.MaticVacuum(_entry())
     assert entity.extra_state_attributes == {
+        "matic_entry_id": "entry",
         "low_charge": False,
         "problem": False,
         "current_area": None,
@@ -1195,11 +1355,12 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
         "rooms": {"room-1": "Kitchen", "room-2": "Study"},
     }
     assert vacuum.MaticVacuum._unrecorded_attributes == frozenset(
-        {"rooms", "current_area", "previous_area"}
+        {"matic_entry_id", "rooms", "current_area", "previous_area"}
     )
 
     bare = vacuum.MaticVacuum(_entry(with_floor_plan=False))
     assert bare.extra_state_attributes == {
+        "matic_entry_id": "entry",
         "low_charge": False,
         "problem": False,
         "current_area": None,

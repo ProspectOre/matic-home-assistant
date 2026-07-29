@@ -189,7 +189,14 @@ class MaticRoomPlanEditor extends HTMLElement {
         .icon-button:hover:not(:disabled) { background: var(--secondary-background-color); }
         .icon-button:disabled { opacity: .3; cursor: default; }
         .drag { cursor: grab; touch-action: none; }
-        .switch { margin-left: 6px; }
+        .switch { position: relative; width: 50px; height: 30px; margin-left: 6px; cursor: pointer; }
+        .switch input { position: absolute; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; }
+        .switch-track { position: absolute; inset: 0; border: 1px solid color-mix(in srgb, var(--primary-text-color) 24%, transparent); border-radius: 999px; background: color-mix(in srgb, var(--primary-text-color) 14%, transparent); transition: border-color .16s ease, background .16s ease; }
+        .switch-track::after { content: ""; position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--primary-background-color, #fff); box-shadow: 0 1px 4px rgba(0, 0, 0, .28); transition: transform .16s ease; }
+        .switch input:checked + .switch-track { border-color: var(--primary-color); background: var(--primary-color); }
+        .switch input:checked + .switch-track::after { transform: translateX(20px); }
+        .switch input:focus-visible + .switch-track { outline: 2px solid var(--primary-color); outline-offset: 2px; }
+        .switch input:disabled + .switch-track { opacity: .42; cursor: default; }
         .settings { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin: 12px 4px 2px 42px; }
         .field-label { color: var(--secondary-text-color); font-size: 12px; margin-bottom: 4px; }
         @media (max-width: 600px) {
@@ -244,18 +251,25 @@ class MaticRoomPlanEditor extends HTMLElement {
       );
       header.children[2].classList.add("move");
       header.children[3].classList.add("move");
-      const enabled = document.createElement("ha-switch");
-      enabled.className = "switch";
+      const switchLabel = document.createElement("label");
+      switchLabel.className = "switch";
+      const enabled = document.createElement("input");
+      enabled.type = "checkbox";
       enabled.checked = row.included;
       enabled.disabled = this._disabled;
       enabled.setAttribute(
         "aria-label",
         this._localize("include_room", `Include ${roomName}`, { room: roomName }),
       );
-      enabled.addEventListener("change", (event) =>
-        this._update(row.room_id, { included: event.target.checked }),
-      );
-      header.append(enabled);
+      enabled.addEventListener("change", (event) => {
+        event.stopPropagation();
+        this._update(row.room_id, { included: enabled.checked });
+      });
+      const switchTrack = document.createElement("span");
+      switchTrack.className = "switch-track";
+      switchTrack.setAttribute("aria-hidden", "true");
+      switchLabel.append(enabled, switchTrack);
+      header.append(switchLabel);
       container.append(header);
 
       if (row.included) {
@@ -304,17 +318,30 @@ class MaticAreaEditor extends HTMLElement {
     this.attachShadow({ mode: "open" });
     this._selector = {};
     this._value = [];
-    this._radius = 0.35;
+    this._radius = 0.3;
     this._tool = "draw";
     this._viewBox = undefined;
     this._baseViewBox = undefined;
     this._panStart = undefined;
-    this._draftCircle = undefined;
+    this._draftStroke = undefined;
+    this._draftBaseValue = undefined;
+    this._draftEraseValue = undefined;
+    this._lastBrushPoint = undefined;
     this._activePointerId = undefined;
+    this._pointers = new Map();
+    this._pinch = undefined;
     this._expanded = true;
     this._undoStack = [];
     this._redoStack = [];
     this._spacePressed = false;
+    this._mapLayer = "photo";
+    this._preferredMapLayer = "photo";
+    this._photoAbortController = undefined;
+    this._photoLoadGeneration = 0;
+    this._photoObjectUrl = undefined;
+    this._photoRooms = undefined;
+    this._labelFrame = undefined;
+    this._focusedRoomId = undefined;
     this._previousBodyOverflow = undefined;
     this._onKeyDown = (event) => this._handleKeyDown(event);
     this._onKeyUp = (event) => {
@@ -335,9 +362,14 @@ class MaticAreaEditor extends HTMLElement {
 
   set selector(value) {
     const previousRooms = JSON.stringify(this._rooms());
+    const previousSceneUrl = this._sceneUrl();
     this._selector = value || {};
     const roomsChanged = previousRooms !== JSON.stringify(this._rooms());
-    if (roomsChanged || !this.shadowRoot?.hasChildNodes()) this._render();
+    if (
+      roomsChanged
+      || previousSceneUrl !== this._sceneUrl()
+      || !this.shadowRoot?.hasChildNodes()
+    ) this._render();
   }
 
   set value(value) {
@@ -384,6 +416,12 @@ class MaticAreaEditor extends HTMLElement {
   disconnectedCallback() {
     window.removeEventListener("keydown", this._onKeyDown);
     window.removeEventListener("keyup", this._onKeyUp);
+    this._photoAbortController?.abort();
+    if (this._labelFrame !== undefined) {
+      window.cancelAnimationFrame(this._labelFrame);
+      this._labelFrame = undefined;
+    }
+    this._releasePhotoObjectUrl();
     this._restorePageScroll();
   }
 
@@ -395,8 +433,317 @@ class MaticAreaEditor extends HTMLElement {
     return this._selector?.rooms || this._selector?.["matic-area"]?.rooms || [];
   }
 
+  _sceneUrl() {
+    const url = this._selector?.scene_url
+      || this._selector?.["matic-area"]?.scene_url;
+    return typeof url === "string"
+      && /^\/api\/matic_robot\/slam_scene\/[A-Za-z0-9]+$/.test(url)
+      ? url
+      : undefined;
+  }
+
+  _embedded() {
+    return Boolean(
+      this._selector?.embedded
+      || this._selector?.["matic-area"]?.embedded,
+    );
+  }
+
   _localize(key, fallback) {
     return this._hass?.localize(`component.matic_robot.common.${key}`) || fallback;
+  }
+
+  _authenticatedFetch(path, init = {}) {
+    if (typeof this._hass?.fetchWithAuth === "function") {
+      return this._hass.fetchWithAuth(path, init);
+    }
+    const token = this._hass?.auth?.accessToken
+      || this._hass?.auth?.data?.access_token;
+    const url = this._hass?.hassUrl ? this._hass.hassUrl(path) : path;
+    return fetch(url, {
+      ...init,
+      headers: {
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        ...(init.headers || {}),
+      },
+    });
+  }
+
+  _releasePhotoObjectUrl() {
+    if (!this._photoObjectUrl) return;
+    URL.revokeObjectURL(this._photoObjectUrl);
+    this._photoObjectUrl = undefined;
+  }
+
+  _setPhotoStatus(state, message) {
+    const status = this.shadowRoot?.querySelector(".photo-status");
+    if (!status) return;
+    status.dataset.state = state;
+    status.textContent = message;
+  }
+
+  _parsePhotoScene(buffer) {
+    const headerBytes = 24;
+    const pointStride = 8;
+    const maximumPoints = 2_000_000;
+    if (!(buffer instanceof ArrayBuffer) || buffer.byteLength < headerBytes) {
+      throw new Error("scene header is incomplete");
+    }
+    const bytes = new Uint8Array(buffer, 0, 8);
+    const view = new DataView(buffer);
+    const magic = new TextDecoder().decode(bytes);
+    const metadataBytes = view.getUint32(12, true);
+    const floorCount = view.getUint32(16, true);
+    const surfaceCount = view.getUint32(20, true);
+    const pointCount = floorCount + surfaceCount;
+    const pointOffset = headerBytes + metadataBytes;
+    if (
+      magic !== "MATIC3D\u0000"
+      || view.getUint16(8, true) !== 1
+      || view.getUint16(10, true) !== pointStride
+      || metadataBytes > 1024 * 1024
+      || floorCount < 1
+      || pointCount > maximumPoints
+      || pointOffset + pointCount * pointStride !== buffer.byteLength
+    ) {
+      throw new Error("scene payload is invalid");
+    }
+    const metadata = JSON.parse(new TextDecoder().decode(
+      new Uint8Array(buffer, headerBytes, metadataBytes),
+    ));
+    const metersPerCell = Number(metadata?.meters_per_cell);
+    const origin = Array.isArray(metadata?.origin_cells)
+      ? metadata.origin_cells.map(Number)
+      : [];
+    const span = Array.isArray(metadata?.span_cells)
+      ? metadata.span_cells.map(Number)
+      : [];
+    if (
+      !Number.isFinite(metersPerCell)
+      || metersPerCell < 0.001
+      || metersPerCell > 0.1
+      || origin.length !== 2
+      || origin.some((value) => !Number.isFinite(value))
+      || span.length !== 2
+      || span.some((value) =>
+        !Number.isInteger(value) || value < 1 || value > 65536)
+    ) {
+      throw new Error("scene metadata is invalid");
+    }
+    const roomMetadata = Array.isArray(metadata.rooms) ? metadata.rooms : undefined;
+    const rooms = roomMetadata?.slice(0, 128).flatMap((room) => {
+      if (typeof room?.name !== "string" || !Array.isArray(room.boundary)) return [];
+      const boundary = room.boundary.slice(0, 8192).flatMap((point) => {
+        if (!Array.isArray(point) || point.length !== 2) return [];
+        const localX = Number(point[0]);
+        const localY = Number(point[1]);
+        if (
+          !Number.isFinite(localX)
+          || !Number.isFinite(localY)
+          || localX < 0
+          || localY < 0
+          || localX > span[0]
+          || localY > span[1]
+        ) return [];
+        return [[
+          (localX + origin[0]) * metersPerCell,
+          (localY + origin[1]) * metersPerCell,
+        ]];
+      });
+      return boundary.length >= 3
+        ? [{ name: room.name.slice(0, 128), boundary }]
+        : [];
+    });
+    return {
+      buffer,
+      floorCount,
+      pointOffset,
+      pointStride,
+      metersPerCell,
+      origin,
+      span,
+      sampleStep: Math.max(1, Number(metadata.sample_step) || 1),
+      rooms,
+    };
+  }
+
+  async _photoSceneObjectUrl(scene) {
+    const maximumDimension = 4096;
+    const scale = Math.min(
+      1,
+      maximumDimension / scene.span[0],
+      maximumDimension / scene.span[1],
+    );
+    const width = Math.max(1, Math.ceil(scene.span[0] * scale));
+    const height = Math.max(1, Math.ceil(scene.span[1] * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const context = canvas.getContext("2d", { alpha: true });
+    if (!context) throw new Error("2D map rendering is unavailable");
+    const image = context.createImageData(width, height);
+    const pixels = image.data;
+    const view = new DataView(scene.buffer);
+    const pointSize = Math.max(
+      1,
+      Math.min(4, Math.ceil(Math.sqrt(scene.sampleStep) * scale)),
+    );
+    for (let index = 0; index < scene.floorCount; index += 1) {
+      const offset = scene.pointOffset + index * scene.pointStride;
+      const pointX = Math.min(
+        width - 1,
+        Math.floor(view.getUint16(offset, true) * scale),
+      );
+      const pointY = Math.max(
+        0,
+        height - 1 - Math.floor(view.getUint16(offset + 2, true) * scale),
+      );
+      for (let deltaY = 0; deltaY < pointSize; deltaY += 1) {
+        for (let deltaX = 0; deltaX < pointSize; deltaX += 1) {
+          const x = pointX + deltaX;
+          const y = pointY - deltaY;
+          if (x >= width || y < 0) continue;
+          const pixel = (y * width + x) * 4;
+          pixels[pixel] = view.getUint8(offset + 5);
+          pixels[pixel + 1] = view.getUint8(offset + 6);
+          pixels[pixel + 2] = view.getUint8(offset + 7);
+          pixels[pixel + 3] = 255;
+        }
+      }
+    }
+    context.putImageData(image, 0, 0);
+    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+    if (!blob) throw new Error("photo map encoding failed");
+    return URL.createObjectURL(blob);
+  }
+
+  async _loadPhotoMap() {
+    const url = this._sceneUrl();
+    const image = this.shadowRoot?.querySelector(".photo-map");
+    if (!image) return;
+    this._photoAbortController?.abort();
+    const generation = ++this._photoLoadGeneration;
+    if (!url) {
+      image.removeAttribute("href");
+      this._photoRooms = undefined;
+      this._setMapLayer("rooms", { remember: false });
+      this._setPhotoStatus(
+        "unavailable",
+        this._localize("area_photo_unavailable", "Photo map unavailable · showing rooms"),
+      );
+      return;
+    }
+    const controller = new AbortController();
+    this._photoAbortController = controller;
+    this._setPhotoStatus(
+      "loading",
+      this._localize("area_photo_loading", "Loading private photo map…"),
+    );
+    try {
+      const response = await this._authenticatedFetch(url, {
+        cache: "no-store",
+        signal: controller.signal,
+      });
+      if (!response.ok) throw new Error(`scene request failed: ${response.status}`);
+      const scene = this._parsePhotoScene(await response.arrayBuffer());
+      const objectUrl = await this._photoSceneObjectUrl(scene);
+      if (generation !== this._photoLoadGeneration || !this.isConnected) {
+        URL.revokeObjectURL(objectUrl);
+        return;
+      }
+      this._releasePhotoObjectUrl();
+      this._photoObjectUrl = objectUrl;
+      image.setAttribute("href", objectUrl);
+      image.setAttribute(
+        "x",
+        Number((scene.origin[0] * scene.metersPerCell).toFixed(6)),
+      );
+      image.setAttribute(
+        "y",
+        Number((
+          -(scene.origin[1] + scene.span[1]) * scene.metersPerCell
+        ).toFixed(6)),
+      );
+      image.setAttribute(
+        "width",
+        Number((scene.span[0] * scene.metersPerCell).toFixed(6)),
+      );
+      image.setAttribute(
+        "height",
+        Number((scene.span[1] * scene.metersPerCell).toFixed(6)),
+      );
+      this._photoRooms = scene.rooms;
+      this._setPhotoStatus(
+        "ready",
+        this._localize("area_photo_ready", "Private photo map"),
+      );
+      this._setMapLayer(this._preferredMapLayer, { remember: false });
+    } catch (error) {
+      if (error?.name === "AbortError" || generation !== this._photoLoadGeneration) {
+        return;
+      }
+      image.removeAttribute("href");
+      this._photoRooms = undefined;
+      this._setMapLayer("rooms", { remember: false });
+      this._setPhotoStatus(
+        "unavailable",
+        this._localize("area_photo_unavailable", "Photo map unavailable · showing rooms"),
+      );
+    }
+  }
+
+  _setMapLayer(layer, { remember = true } = {}) {
+    if (remember) this._preferredMapLayer = layer;
+    const available = Boolean(this._photoObjectUrl);
+    this._mapLayer = available || layer === "rooms" ? layer : "rooms";
+    const svg = this.shadowRoot?.querySelector(".map");
+    if (svg) svg.dataset.layer = this._mapLayer;
+    this._syncRoomGeometry();
+    for (const button of this.shadowRoot?.querySelectorAll("[data-layer]") || []) {
+      const selected = button.dataset.layer === this._mapLayer;
+      button.classList.toggle("selected", selected);
+      button.setAttribute("aria-pressed", selected ? "true" : "false");
+    }
+  }
+
+  _roomKey(name) {
+    return String(name || "").trim().toLocaleLowerCase();
+  }
+
+  _syncRoomGeometry() {
+    const polygons = this.shadowRoot?.querySelectorAll(".room") || [];
+    const labels = this.shadowRoot?.querySelectorAll(".room-label") || [];
+    const usePhotoGeometry = this._mapLayer !== "rooms"
+      && Array.isArray(this._photoRooms);
+    const photoRooms = new Map();
+    for (const room of this._photoRooms || []) {
+      const key = this._roomKey(room.name);
+      const matches = photoRooms.get(key) || [];
+      matches.push(room);
+      photoRooms.set(key, matches);
+    }
+    this._rooms().forEach((room, index) => {
+      const polygon = polygons[index];
+      const label = labels[index];
+      if (!polygon || !label) return;
+      const matches = photoRooms.get(this._roomKey(room.name));
+      const photoRoom = usePhotoGeometry ? matches?.shift() : undefined;
+      const boundary = photoRoom?.boundary || room.boundary || [];
+      const hidden = usePhotoGeometry && !photoRoom;
+      label.dataset.geometryVisible = hidden ? "false" : "true";
+      label.dataset.roomArea = String(this._roomArea(boundary));
+      polygon.setAttribute("visibility", hidden ? "hidden" : "visible");
+      label.setAttribute("visibility", hidden ? "hidden" : "visible");
+      if (hidden) return;
+      polygon.setAttribute(
+        "points",
+        boundary.map((point) => `${point[0]},${-point[1]}`).join(" "),
+      );
+      const center = this._roomCenter(boundary);
+      label.setAttribute("x", center.x);
+      label.setAttribute("y", -center.y);
+    });
+    this._scheduleRoomLabelLayout();
   }
 
   _cloneValue(circles = this._value) {
@@ -480,6 +827,52 @@ class MaticAreaEditor extends HTMLElement {
     };
   }
 
+  _roomArea(boundary) {
+    let twiceArea = 0;
+    for (let index = 0; index < boundary.length; index += 1) {
+      const current = boundary[index];
+      const next = boundary[(index + 1) % boundary.length];
+      twiceArea += Number(current[0]) * Number(next[1])
+        - Number(next[0]) * Number(current[1]);
+    }
+    return Math.abs(twiceArea) / 2;
+  }
+
+  _scheduleRoomLabelLayout() {
+    if (!this.isConnected || !this._baseViewBox || !this._viewBox) return;
+    if (this._labelFrame !== undefined) {
+      window.cancelAnimationFrame(this._labelFrame);
+    }
+    this._labelFrame = window.requestAnimationFrame(() => {
+      this._labelFrame = undefined;
+      const zoom = this._baseViewBox.width / this._viewBox.width;
+      const labels = [...this.shadowRoot.querySelectorAll(".room-label")]
+        .filter((label) => label.dataset.geometryVisible !== "false");
+      for (const label of labels) {
+        const baseSize = Number(label.dataset.baseSize);
+        label.setAttribute("font-size", baseSize / Math.max(1, zoom));
+        label.setAttribute("visibility", "visible");
+      }
+      labels.sort((first, second) => {
+        const firstFocused = first.dataset.roomId === this._focusedRoomId;
+        const secondFocused = second.dataset.roomId === this._focusedRoomId;
+        if (firstFocused !== secondFocused) return firstFocused ? -1 : 1;
+        return Number(second.dataset.roomArea) - Number(first.dataset.roomArea);
+      });
+      const occupied = [];
+      for (const label of labels) {
+        const bounds = label.getBoundingClientRect();
+        const collides = occupied.some((other) =>
+          bounds.left < other.right + 14
+          && bounds.right + 14 > other.left
+          && bounds.top < other.bottom + 5
+          && bounds.bottom + 5 > other.top);
+        label.setAttribute("visibility", collides ? "hidden" : "visible");
+        if (!collides) occupied.push(bounds);
+      }
+    });
+  }
+
   _setViewBox(svg, viewBox) {
     const base = this._baseViewBox;
     const width = Math.max(base.width * 0.1, Math.min(base.width, viewBox.width));
@@ -503,6 +896,7 @@ class MaticAreaEditor extends HTMLElement {
       `${this._viewBox.x} ${this._viewBox.y} ${this._viewBox.width} ${this._viewBox.height}`,
     );
     this._updateZoomButtons();
+    this._scheduleRoomLabelLayout();
   }
 
   _zoom(svg, factor, center) {
@@ -523,11 +917,26 @@ class MaticAreaEditor extends HTMLElement {
     });
   }
 
+  _isMouseWheel(event, deltaX, deltaY) {
+    return event.deltaMode !== 0
+      || (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) >= 50);
+  }
+
+  _panByPixels(svg, deltaX, deltaY, viewBox = this._viewBox) {
+    const bounds = svg.getBoundingClientRect();
+    this._setViewBox(svg, {
+      ...viewBox,
+      x: viewBox.x - deltaX * viewBox.width / Math.max(1, bounds.width),
+      y: viewBox.y - deltaY * viewBox.height / Math.max(1, bounds.height),
+    });
+  }
+
   _fitMap(svg) {
     this._setViewBox(svg, { ...this._baseViewBox });
   }
 
   _focusRoom(svg, roomId) {
+    this._focusedRoomId = roomId || undefined;
     if (!roomId) {
       this._fitMap(svg);
       return;
@@ -551,6 +960,7 @@ class MaticAreaEditor extends HTMLElement {
   }
 
   _toggleExpanded() {
+    if (this._embedded()) return;
     this._expanded = !this._expanded;
     const workspace = this.shadowRoot.querySelector(".workspace");
     workspace.classList.toggle("expanded", this._expanded);
@@ -570,6 +980,10 @@ class MaticAreaEditor extends HTMLElement {
     if (!this.isConnected) return;
     const workspace = this.shadowRoot.querySelector(".workspace");
     if (!workspace) return;
+    if (this._embedded()) {
+      this._restorePageScroll();
+      return;
+    }
     if (this._expanded) {
       if (this._previousBodyOverflow === undefined) {
         this._previousBodyOverflow = document.body.style.overflow;
@@ -589,19 +1003,32 @@ class MaticAreaEditor extends HTMLElement {
   }
 
   _setTool(tool) {
+    if (!["draw", "erase", "pan"].includes(tool)) return;
     this._tool = tool;
     this._panStart = undefined;
     const svg = this.shadowRoot.querySelector(".map");
     svg.dataset.tool = tool;
+    this.shadowRoot.querySelector(".workspace").dataset.tool = tool;
     for (const button of this.shadowRoot.querySelectorAll("[data-tool]")) {
       const selected = button.dataset.tool === tool;
       button.classList.toggle("selected", selected);
       button.setAttribute("aria-pressed", selected ? "true" : "false");
     }
-    this.shadowRoot.querySelector(".map-help").textContent =
-      tool === "draw"
-        ? this._localize("area_draw_help", "Drag from the center to the edge of the area. Add more circles if needed.")
-        : this._localize("area_pan_help", "Drag the map to move around. Use + and − to zoom.");
+    const help = tool === "draw"
+      ? this._localize(
+        "area_draw_help",
+        "Paint over the floor to clean. Tap for a spot or drag for a path.",
+      )
+      : tool === "erase"
+        ? this._localize(
+          "area_erase_help",
+          "Brush over the highlight to remove it.",
+        )
+        : this._localize(
+          "area_pan_help",
+          "Drag to move the map. Scroll or pinch to zoom.",
+        );
+    this.shadowRoot.querySelector(".map-help").textContent = help;
   }
 
   _guardButton(button, onAction) {
@@ -653,59 +1080,102 @@ class MaticAreaEditor extends HTMLElement {
     return point.matrixTransform(matrix);
   }
 
-  _showDraft(circle) {
+  _showDraft(circles) {
     const preview = this.shadowRoot.querySelector(".preview");
-    if (!circle) {
+    if (!preview) return;
+    preview.replaceChildren();
+    if (!circles?.length) {
       preview.setAttribute("visibility", "hidden");
       return;
     }
-    preview.setAttribute("cx", circle.x);
-    preview.setAttribute("cy", -circle.y);
-    preview.setAttribute("r", circle.radius);
+    const namespace = "http://www.w3.org/2000/svg";
+    for (const circle of circles) {
+      const mark = document.createElementNS(namespace, "circle");
+      mark.setAttribute("cx", circle.x);
+      mark.setAttribute("cy", -circle.y);
+      mark.setAttribute("r", circle.radius);
+      preview.append(mark);
+    }
     preview.setAttribute("visibility", "visible");
   }
 
-  _updateDraft(svg, event) {
-    if (!this._draftCircle) return;
+  _brushPoint(svg, event) {
     const point = this._mapPoint(svg, event);
-    const distance = Math.hypot(
-      point.x - this._draftCircle.x,
-      -point.y - this._draftCircle.y,
-    );
-    const pixelDistance = Math.hypot(
-      event.clientX - this._draftCircle.clientX,
-      event.clientY - this._draftCircle.clientY,
-    );
-    this._draftCircle.radius = Number(
-      (pixelDistance < 5 ? this._radius : Math.max(0.1, Math.min(2.5, distance)))
-        .toFixed(2),
-    );
-    this._showDraft(this._draftCircle);
+    return {
+      x: Number(point.x.toFixed(4)),
+      y: Number((-point.y).toFixed(4)),
+    };
+  }
+
+  _sampleBrushSegment(start, end, callback) {
+    const distance = start ? Math.hypot(end.x - start.x, end.y - start.y) : 0;
+    const spacing = Math.max(0.04, this._radius * 0.55);
+    const steps = start ? Math.max(1, Math.ceil(distance / spacing)) : 1;
+    for (let index = 1; index <= steps; index += 1) {
+      const progress = index / steps;
+      callback({
+        x: Number((start ? start.x + (end.x - start.x) * progress : end.x).toFixed(4)),
+        y: Number((start ? start.y + (end.y - start.y) * progress : end.y).toFixed(4)),
+      });
+    }
+  }
+
+  _extendBrush(point) {
+    const start = this._lastBrushPoint;
+    this._sampleBrushSegment(start, point, (sample) => {
+      if (!this._pointIsMapped(sample.x, sample.y)) return;
+      if (this._tool === "erase") {
+        this._draftEraseValue = this._draftEraseValue.filter((circle) =>
+          Math.hypot(circle.x - sample.x, circle.y - sample.y)
+          > this._radius + Number(circle.radius),
+        );
+        return;
+      }
+      if (this._draftBaseValue.length + this._draftStroke.length >= 512) return;
+      const previous = this._draftStroke.at(-1);
+      if (
+        previous
+        && Math.hypot(previous.x - sample.x, previous.y - sample.y)
+          < Math.max(0.025, this._radius * 0.28)
+      ) return;
+      this._draftStroke.push({
+        x: sample.x,
+        y: sample.y,
+        radius: Number(this._radius.toFixed(2)),
+      });
+    });
+    this._lastBrushPoint = point;
+    if (this._tool === "erase") this._syncMarks(this._draftEraseValue);
+    else this._showDraft(this._draftStroke);
   }
 
   _commitDraft() {
-    if (!this._draftCircle) return;
-    const circle = {
-      x: this._draftCircle.x,
-      y: this._draftCircle.y,
-      radius: this._draftCircle.radius,
-    };
-    this._draftCircle = undefined;
+    const base = this._draftBaseValue;
+    if (!base) return;
+    const next = this._tool === "erase"
+      ? this._draftEraseValue
+      : [...base, ...(this._draftStroke || [])];
+    const changed = JSON.stringify(next) !== JSON.stringify(base);
+    this._draftStroke = undefined;
+    this._draftBaseValue = undefined;
+    this._draftEraseValue = undefined;
+    this._lastBrushPoint = undefined;
     this._showDraft(undefined);
-    if (!this._pointIsMapped(circle.x, circle.y)) {
-      this._announce(this._localize("area_outside_map", "Start the circle inside a mapped room."));
+    if (!changed) {
+      this._syncMarks();
+      this._announce(this._localize("area_outside_map", "Paint inside a mapped room."));
       return;
     }
-    this._setValue([...this._value, circle]);
-    this._announce(this._localize("area_added", "Cleaning area added."));
+    this._setValue(next);
+    this._announce(this._localize("area_added", "Cleaning area updated."));
   }
 
-  _syncMarks() {
+  _syncMarks(circles = this._value) {
     const group = this.shadowRoot.querySelector(".marks");
     if (!group) return;
     group.replaceChildren();
     const namespace = "http://www.w3.org/2000/svg";
-    for (const circle of this._value) {
+    for (const circle of circles) {
       const mark = document.createElementNS(namespace, "circle");
       mark.setAttribute("class", "drawn");
       mark.setAttribute("cx", circle.x);
@@ -718,11 +1188,9 @@ class MaticAreaEditor extends HTMLElement {
   _updateControls() {
     const count = this.shadowRoot.querySelector(".count");
     if (!count) return;
-    const totalArea = this._value.reduce(
-      (sum, circle) => sum + Math.PI * Number(circle.radius) ** 2,
-      0,
-    );
-    count.textContent = `${this._value.length} ${this._localize("area_marks", "area marks")} · ${totalArea.toFixed(1)} m²`;
+    count.textContent = this._value.length
+      ? this._localize("area_selected", "Area selected")
+      : this._localize("area_not_selected", "Paint an area to continue");
     for (const control of this.shadowRoot.querySelectorAll("button, input, select")) {
       control.disabled = Boolean(this._disabled);
     }
@@ -747,6 +1215,10 @@ class MaticAreaEditor extends HTMLElement {
       Boolean(this._disabled || this._viewBox.width >= this._baseViewBox.width - epsilon);
     this.shadowRoot.querySelector(".zoom-in").disabled =
       Boolean(this._disabled || this._viewBox.width <= this._baseViewBox.width * 0.1 + epsilon);
+    const slider = this.shadowRoot.querySelector(".area-zoom-slider");
+    const value = Math.round(this._baseViewBox.width / this._viewBox.width * 100);
+    slider.value = String(Math.max(100, Math.min(1000, value)));
+    this.shadowRoot.querySelector(".area-zoom-value").textContent = `${value}%`;
   }
 
   _handleKeyDown(event) {
@@ -764,11 +1236,13 @@ class MaticAreaEditor extends HTMLElement {
       event.preventDefault();
       if (event.shiftKey) this._redo();
       else this._undo();
-    } else if (event.key === "Escape") {
+    } else if (event.key === "Escape" && !this._embedded()) {
       event.preventDefault();
       this._toggleExpanded();
     } else if (event.key.toLowerCase() === "d") {
       this._setTool("draw");
+    } else if (event.key.toLowerCase() === "e") {
+      this._setTool("erase");
     } else if (event.key.toLowerCase() === "p" || event.key.toLowerCase() === "m") {
       this._setTool("pan");
     } else if (event.key === "+" || event.key === "=") {
@@ -797,79 +1271,120 @@ class MaticAreaEditor extends HTMLElement {
         .launcher { width: 100%; min-height: 58px; border: 1px solid var(--primary-color); border-radius: 16px; color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 10%, var(--card-background-color)); font-weight: 650; cursor: pointer; }
         .workspace { color: var(--primary-text-color); background: var(--card-background-color); }
         .workspace::backdrop { background: rgba(0, 0, 0, .68); backdrop-filter: blur(3px); }
-        .workspace.expanded { width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; padding: 0; box-sizing: border-box; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; background: #0b1118; overflow: hidden; }
-        .topbar { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; padding: 12px 16px; background: color-mix(in srgb, var(--card-background-color) 94%, transparent); border-bottom: 1px solid var(--divider-color); z-index: 3; }
+        .workspace.expanded { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; padding: 0; box-sizing: border-box; background: #0b1118; overflow: hidden; }
+        .workspace.embedded { position: relative; width: 100%; height: 100%; min-height: 0; max-width: none; max-height: none; border: 0; padding: 0; box-sizing: border-box; background: #0b1118; overflow: hidden; }
+        .workspace.embedded .expand, .workspace.embedded .title-group { display: none; }
+        .topbar { position: absolute; top: 14px; right: 14px; left: 14px; display: flex; gap: 10px; align-items: flex-start; pointer-events: none; z-index: 5; }
+        .topbar > * { pointer-events: auto; }
         .title-group { display: grid; gap: 2px; margin-right: 8px; }
         .title { font-size: 18px; font-weight: 650; color: var(--primary-text-color); }
         .intro { color: var(--secondary-text-color); font-size: 12px; }
-        .map-stage { position: relative; min-height: 0; overflow: hidden; padding: 12px; }
-        .map-shell { position: relative; height: 100%; min-height: 420px; }
-        .map { display: block; width: 100%; height: 100%; min-height: 420px; border: 1px solid rgba(143, 171, 202, .3); border-radius: 18px; background: radial-gradient(circle at 50% 40%, #182538, #0c131d 72%); touch-action: none; user-select: none; outline: none; }
+        .map-stage { position: absolute; inset: 0; min-height: 0; overflow: hidden; }
+        .map-shell { position: relative; height: 100%; min-height: 0; }
+        .map { display: block; width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; background: radial-gradient(circle at 50% 40%, #182538, #0c131d 72%); touch-action: none; user-select: none; outline: none; }
         .map:focus-visible { border-color: var(--primary-color); box-shadow: inset 0 0 0 2px var(--primary-color); }
-        .map[data-tool="draw"] { cursor: crosshair; }
+        .map[data-tool="draw"], .map[data-tool="erase"] { cursor: none; }
         .map[data-tool="pan"] { cursor: grab; }
         .map[data-tool="pan"].moving { cursor: grabbing; }
-        .room { fill: rgba(76, 126, 204, .42); stroke: rgba(226, 238, 252, .7); stroke-width: 1px; vector-effect: non-scaling-stroke; }
+        .photo-map { pointer-events: none; transition: opacity .18s ease; }
+        .map[data-layer="rooms"] .photo-map { opacity: 0; }
+        .room { fill: rgba(76, 126, 204, .42); stroke: rgba(226, 238, 252, .82); stroke-width: 1px; vector-effect: non-scaling-stroke; transition: fill .18s ease; }
+        .map[data-layer="photo"] .room { fill: transparent; stroke: rgba(255, 255, 255, .72); }
         .room-label { fill: #fff; font-weight: 650; text-anchor: middle; dominant-baseline: middle; paint-order: stroke; stroke: rgba(7, 12, 19, .94); stroke-width: .12; stroke-linejoin: round; pointer-events: none; }
-        .drawn { fill: rgba(255, 193, 7, .46); stroke: #ffd54f; stroke-width: .025; vector-effect: non-scaling-stroke; pointer-events: none; }
-        .preview { fill: rgba(255, 213, 79, .28); stroke: #fff176; stroke-width: 2px; stroke-dasharray: 6 5; vector-effect: non-scaling-stroke; pointer-events: none; }
-        .map-controls { display: contents; }
+        .marks { opacity: .5; pointer-events: none; }
+        .drawn { fill: var(--primary-color, #03a9f4); stroke: none; pointer-events: none; }
+        .preview { opacity: .34; pointer-events: none; }
+        .preview circle { fill: #76d5ff; stroke: none; }
+        .brush-cursor { fill: rgba(118, 213, 255, .16); stroke: #d8f4ff; stroke-width: 1.5px; vector-effect: non-scaling-stroke; pointer-events: none; }
+        .map[data-tool="erase"] .brush-cursor { fill: rgba(255, 90, 90, .12); stroke: #ff8a80; }
+        .map[data-tool="pan"] .brush-cursor { display: none; }
+        .map-controls { width: 100%; display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+        .navigation-controls, .tool-picker { display: inline-flex; align-items: center; gap: 4px; padding: 4px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 14%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--card-background-color) 88%, transparent); box-shadow: 0 10px 30px rgba(0,0,0,.24); backdrop-filter: blur(20px) saturate(1.18); }
+        .navigation-controls button, .tool-picker button, .map-options > summary { min-width: 40px; min-height: 40px; padding: 0 11px; border: 0; border-radius: 10px; background: transparent; }
+        .tool-picker button.selected { color: var(--text-primary-color, #fff); background: var(--primary-color); }
+        .zoom-control { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 0 8px; }
+        .zoom-control ha-icon { width: 19px; height: 19px; color: var(--secondary-text-color); }
+        .area-zoom-slider { width: 118px; accent-color: var(--primary-color); }
+        .area-zoom-value { min-width: 42px; color: var(--secondary-text-color); font-size: 12px; font-variant-numeric: tabular-nums; text-align: right; }
+        .map-options { position: relative; }
+        .map-options-panel { position: absolute; top: calc(100% + 9px); left: 0; width: 240px; display: grid; gap: 8px; padding: 10px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 14%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--card-background-color) 95%, transparent); box-shadow: 0 16px 38px rgba(0,0,0,.3); }
         .spacer { flex: 1 1 auto; }
         .room-focus { min-height: 46px; max-width: 190px; padding: 0 34px 0 12px; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color); color: var(--primary-text-color); }
-        .map-help { position: absolute; left: 26px; bottom: 26px; max-width: min(520px, calc(100% - 52px)); padding: 8px 11px; border-radius: 10px; color: #d8e4f2; background: rgba(5, 10, 16, .78); backdrop-filter: blur(8px); font-size: 12px; pointer-events: none; }
-        .footer { display: grid; grid-template-columns: minmax(180px, 1fr) auto auto auto auto; gap: 10px; align-items: center; padding: 10px 16px 14px; background: color-mix(in srgb, var(--card-background-color) 94%, transparent); border-top: 1px solid var(--divider-color); }
+        .layer-picker { display: inline-flex; padding: 3px; border: 1px solid var(--divider-color); border-radius: 14px; background: color-mix(in srgb, var(--card-background-color) 88%, #0b1118); }
+        .layer-picker button { min-height: 38px; min-width: auto; padding: 0 11px; border: 0; border-radius: 10px; background: transparent; }
+        .layer-picker button.selected { background: var(--card-background-color); box-shadow: 0 1px 5px rgba(0, 0, 0, .3); }
+        .photo-status { color: var(--secondary-text-color); font-size: 12px; white-space: nowrap; }
+        .photo-status[data-state="ready"]::before { content: ""; display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; background: #44d17a; }
+        .map-help { position: absolute; left: 16px; bottom: 82px; max-width: min(520px, calc(100% - 32px)); padding: 8px 11px; border-radius: 10px; color: #d8e4f2; background: rgba(5, 10, 16, .72); backdrop-filter: blur(10px); font-size: 12px; pointer-events: none; }
+        .footer { position: absolute; left: 16px; bottom: 16px; display: flex; gap: 6px; align-items: center; max-width: calc(100% - 460px); padding: 5px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 14%, transparent); border-radius: 14px; background: color-mix(in srgb, var(--card-background-color) 88%, transparent); box-shadow: 0 10px 30px rgba(0,0,0,.24); backdrop-filter: blur(20px) saturate(1.18); z-index: 5; }
         .radius { display: grid; gap: 4px; color: var(--secondary-text-color); font-size: 12px; }
-        input[type=range] { width: 100%; }
+        .workspace[data-tool="pan"] .radius { visibility: hidden; }
+        .radius input[type=range] { width: 150px; }
         button { min-height: 46px; min-width: 46px; padding: 0 15px; border: 1px solid var(--divider-color); border-radius: 12px; background: var(--card-background-color); color: var(--primary-text-color); cursor: pointer; touch-action: manipulation; }
         button.selected { border-color: var(--primary-color); color: var(--primary-color); background: color-mix(in srgb, var(--primary-color) 14%, transparent); }
         button.primary { border-color: var(--primary-color); background: var(--primary-color); color: var(--text-primary-color, #fff); font-weight: 650; }
         button.zoom { min-width: 42px; padding: 0 11px; font-size: 20px; }
         button:disabled { opacity: .4; cursor: default; }
-        .count { color: var(--secondary-text-color); font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+        .count { max-width: 150px; overflow: hidden; color: var(--secondary-text-color); font-size: 12px; font-variant-numeric: tabular-nums; text-overflow: ellipsis; white-space: nowrap; }
         .announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+        .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
         @media (max-width: 820px) {
-          .workspace.expanded { grid-template-rows: auto minmax(0, 1fr) auto; }
-          .topbar { padding: 8px; gap: 6px; }
+          .topbar { top: 8px; right: 8px; left: 8px; gap: 6px; }
           .title-group { width: 100%; }
+          .photo-status { display: none; }
           .room-focus { flex: 1 1 140px; max-width: none; }
           button { min-height: 42px; padding: 0 10px; }
-          .map-stage { padding: 6px; }
-          .map { border-radius: 12px; min-height: 260px; }
-          .map-help { left: 14px; bottom: 14px; max-width: calc(100% - 28px); }
-          .footer { grid-template-columns: 1fr auto auto auto; padding: 8px; gap: 6px; }
-          .radius { grid-column: 1 / -1; }
+          .map { min-height: 260px; }
+          .map-help { display: none; }
+          .footer { right: 8px; bottom: 8px; left: 8px; max-width: none; overflow-x: auto; }
+          .radius input[type=range] { width: 110px; }
+          .area-zoom-slider { width: 76px; }
+          .area-zoom-value { display: none; }
+          .tool-picker .tool-label { display: none; }
           .count { display: none; }
         }
       </style>
-      <button class="launcher" type="button" ${this._expanded ? "hidden" : ""}>${this._localize("expand_map", "Open full-screen editor")}</button>
-      <dialog class="workspace ${this._expanded ? "expanded" : ""}">
+      <button class="launcher" type="button" ${this._expanded || this._embedded() ? "hidden" : ""}>${this._localize("expand_map", "Open full-screen editor")}</button>
+      <dialog class="workspace ${this._embedded() ? "embedded" : (this._expanded ? "expanded" : "")}" ${this._embedded() ? "open" : ""}>
         <div class="topbar">
           <div class="title-group">
             <span class="title">${this._localize("area_editor_title", "Custom area studio")}</span>
-            <span class="intro">${this._localize("area_editor_intro", "Draw one or more cleaning circles over the map.")}</span>
+            <span class="intro">${this._localize("area_editor_intro", "Paint over the floor you want the robot to clean.")}</span>
           </div>
           <div class="map-controls" role="toolbar" aria-label="${this._localize("area_map_controls", "Map controls")}">
-            <button class="tool selected" data-tool="draw" type="button" aria-pressed="true">${this._localize("draw", "Draw")}</button>
-            <button class="tool" data-tool="pan" type="button" aria-pressed="false">${this._localize("move_map", "Pan")}</button>
-            <select class="room-focus" aria-label="${this._localize("focus_room", "Focus room")}"></select>
-            <span class="spacer"></span>
-            <button class="zoom zoom-out" type="button" aria-label="${this._localize("zoom_out", "Zoom out")}" title="${this._localize("zoom_out", "Zoom out")}">−</button>
-            <button class="zoom zoom-in" type="button" aria-label="${this._localize("zoom_in", "Zoom in")}" title="${this._localize("zoom_in", "Zoom in")}">+</button>
-            <button class="fit" type="button">${this._localize("fit_map", "Fit")}</button>
+            <div class="navigation-controls">
+              <button class="fit" type="button" aria-label="${this._localize("fit_map", "Fit map")}" title="${this._localize("fit_map", "Fit map")}"><ha-icon icon="mdi:fit-to-screen-outline" aria-hidden="true"></ha-icon></button>
+              <label class="zoom-control"><ha-icon icon="mdi:magnify" aria-hidden="true"></ha-icon><input class="area-zoom-slider" type="range" min="100" max="1000" step="10" value="100" aria-label="${this._localize("map_scene_zoom", "Map zoom")}"><span class="area-zoom-value">100%</span></label>
+              <details class="map-options"><summary aria-label="${this._localize("map_more", "Map options")}" title="${this._localize("map_more", "Map options")}"><ha-icon icon="mdi:tune-variant" aria-hidden="true"></ha-icon></summary><div class="map-options-panel">
+                <div class="layer-picker" role="group" aria-label="${this._localize("area_map_layer", "Map appearance")}">
+                  <button data-layer="photo" class="selected" type="button" aria-pressed="true">${this._localize("area_layer_photo", "Photo")}</button>
+                  <button data-layer="rooms" type="button" aria-pressed="false">${this._localize("area_layer_rooms", "Rooms")}</button>
+                </div>
+                <select class="room-focus" aria-label="${this._localize("focus_room", "Focus room")}"></select>
+                <span class="photo-status" data-state="loading" role="status" aria-live="polite">${this._localize("area_photo_loading", "Loading private photo map…")}</span>
+                <button class="refresh-photo" type="button">${this._localize("area_photo_refresh", "Refresh photo map")}</button>
+                <span class="visually-hidden"><button class="zoom zoom-out" type="button" aria-label="${this._localize("zoom_out", "Zoom out")}">−</button><button class="zoom zoom-in" type="button" aria-label="${this._localize("zoom_in", "Zoom in")}">+</button></span>
+              </div></details>
+            </div>
+            <div class="tool-picker" role="group">
+              <button class="tool selected" data-tool="draw" type="button" aria-pressed="true" aria-keyshortcuts="D"><ha-icon icon="mdi:brush" aria-hidden="true"></ha-icon><span class="tool-label">${this._localize("area_paint", "Paint")}</span></button>
+              <button class="tool" data-tool="erase" type="button" aria-pressed="false" aria-keyshortcuts="E"><ha-icon icon="mdi:eraser" aria-hidden="true"></ha-icon><span class="tool-label">${this._localize("area_erase", "Erase")}</span></button>
+              <button class="tool" data-tool="pan" type="button" aria-pressed="false" aria-keyshortcuts="P"><ha-icon icon="mdi:hand-back-right-outline" aria-hidden="true"></ha-icon><span class="tool-label">${this._localize("move_map", "Move")}</span></button>
+            </div>
             <button class="expand primary" type="button" aria-expanded="${this._expanded ? "true" : "false"}">${this._expanded ? this._localize("done_editing", "Done editing") : this._localize("expand_map", "Open full-screen editor")}</button>
           </div>
         </div>
         <div class="map-stage">
           <div class="map-shell">
-            <svg class="map" tabindex="0" data-tool="${this._tool}" role="application" aria-label="${this._localize("area_map", "Custom cleaning area map")}" viewBox="${this._viewBox.x} ${this._viewBox.y} ${this._viewBox.width} ${this._viewBox.height}" preserveAspectRatio="xMidYMid meet">
-              <g class="rooms"></g><g class="marks"></g><circle class="preview" visibility="hidden"></circle><g class="labels"></g>
+            <svg class="map" tabindex="0" data-tool="${this._tool}" data-layer="${this._mapLayer}" role="application" aria-label="${this._localize("area_map", "Custom cleaning area map")}" viewBox="${this._viewBox.x} ${this._viewBox.y} ${this._viewBox.width} ${this._viewBox.height}" preserveAspectRatio="xMidYMid meet">
+              <image class="photo-map" preserveAspectRatio="none"></image><g class="rooms"></g><g class="marks"></g><g class="preview" visibility="hidden"></g><g class="labels"></g><circle class="brush-cursor" visibility="hidden" r="${this._radius}"></circle>
             </svg>
           </div>
           <div class="map-help"></div>
         </div>
         <div class="footer">
-        <label class="radius">${this._localize("brush_size", "Tap size")} · <span class="radius-value">${this._radius.toFixed(2)} m</span><input type="range" min="0.10" max="2.50" step="0.05" value="${this._radius}" ${this._disabled ? "disabled" : ""}></label>
-        <span class="count">${this._value.length} ${this._localize("area_marks", "area marks")}</span>
+        <label class="radius">${this._localize("brush_size", "Brush width")} · <span class="radius-value">${(this._radius * 2).toFixed(2)} m</span><input type="range" min="0.10" max="1.25" step="0.05" value="${this._radius}" ${this._disabled ? "disabled" : ""}></label>
+        <span class="count">${this._value.length ? this._localize("area_selected", "Area selected") : this._localize("area_not_selected", "Paint an area to continue")}</span>
         <button class="undo" type="button" disabled>${this._localize("undo", "Undo")}</button>
         <button class="redo" type="button" disabled>${this._localize("redo", "Redo")}</button>
         <button class="clear" type="button" ${this._disabled || !this._value.length ? "disabled" : ""}>${this._localize("clear", "Clear")}</button>
@@ -897,9 +1412,12 @@ class MaticAreaEditor extends HTMLElement {
       label.setAttribute("x", center.x);
       label.setAttribute("y", -center.y);
       label.setAttribute("font-size", labelSize);
+      label.dataset.baseSize = String(labelSize);
+      label.dataset.roomId = room.room_id;
       label.textContent = room.name;
       labelsGroup.append(label);
     }
+    this._syncRoomGeometry();
     const focus = this.shadowRoot.querySelector(".room-focus");
     const allRooms = document.createElement("option");
     allRooms.value = "";
@@ -916,72 +1434,152 @@ class MaticAreaEditor extends HTMLElement {
       this._focusRoom(svg, event.target.value);
     });
     this._syncMarks();
+    const cancelDraft = () => {
+      this._draftStroke = undefined;
+      this._draftBaseValue = undefined;
+      this._draftEraseValue = undefined;
+      this._lastBrushPoint = undefined;
+      this._showDraft(undefined);
+      this._syncMarks();
+    };
     svg.addEventListener("pointerdown", (event) => {
       if (
         this._disabled ||
-        ![0, 1].includes(event.button) ||
-        event.isPrimary === false ||
-        this._activePointerId !== undefined
+        (event.pointerType === "mouse" && ![0, 1].includes(event.button))
       ) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      svg.focus({ preventScroll: true });
+      try {
+        svg.setPointerCapture(event.pointerId);
+      } catch (_error) {
+        return;
+      }
+      this._pointers.set(event.pointerId, {
+        x: event.clientX,
+        y: event.clientY,
+      });
+      if (this._pointers.size === 2) {
+        cancelDraft();
+        this._activePointerId = undefined;
+        this._panStart = undefined;
+        const [first, second] = [...this._pointers.values()];
+        const centerX = (first.x + second.x) / 2;
+        const centerY = (first.y + second.y) / 2;
+        const point = svg.createSVGPoint();
+        point.x = centerX;
+        point.y = centerY;
+        this._pinch = {
+          distance: Math.max(1, Math.hypot(second.x - first.x, second.y - first.y)),
+          centerX,
+          centerY,
+          focus: point.matrixTransform(svg.getScreenCTM().inverse()),
+          viewBox: { ...this._viewBox },
+        };
+        svg.classList.add("moving");
+        return;
+      }
+      if (this._pointers.size > 2) return;
       this._activePointerId = event.pointerId;
-      svg.setPointerCapture(event.pointerId);
       if (this._tool === "pan" || event.button === 1 || this._spacePressed) {
-        const matrix = svg.getScreenCTM().inverse();
         this._panStart = {
-          point: this._mapPoint(svg, event, matrix),
-          matrix,
+          x: event.clientX,
+          y: event.clientY,
           viewBox: { ...this._viewBox },
         };
         svg.classList.add("moving");
       } else {
-        if (this._value.length >= 512) {
+        if (this._tool === "draw" && this._value.length >= 512) {
           this._activePointerId = undefined;
           svg.releasePointerCapture(event.pointerId);
           return;
         }
-        const point = this._mapPoint(svg, event);
-        this._draftCircle = {
-          x: Number(point.x.toFixed(4)),
-          y: Number((-point.y).toFixed(4)),
-          radius: this._radius,
-          clientX: event.clientX,
-          clientY: event.clientY,
-        };
-        this._showDraft(this._draftCircle);
+        this._draftBaseValue = this._cloneValue();
+        this._draftStroke = [];
+        this._draftEraseValue = this._cloneValue();
+        this._lastBrushPoint = undefined;
+        this._extendBrush(this._brushPoint(svg, event));
       }
     });
     svg.addEventListener("pointermove", (event) => {
-      if (event.pointerId !== this._activePointerId) return;
-      if (this._draftCircle) {
+      if (this._pointers.has(event.pointerId)) {
+        this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+      }
+      const brushCursor = this.shadowRoot.querySelector(".brush-cursor");
+      if (
+        event.pointerId !== this._activePointerId
+        && this._tool !== "pan"
+        && this._pointers.size === 0
+      ) {
+        const point = this._brushPoint(svg, event);
+        brushCursor.setAttribute("cx", point.x);
+        brushCursor.setAttribute("cy", -point.y);
+        brushCursor.setAttribute("r", this._radius);
+        brushCursor.setAttribute("visibility", "visible");
+      }
+      if (this._pinch && this._pointers.size >= 2) {
         event.preventDefault();
-        this._updateDraft(svg, event);
+        const [first, second] = [...this._pointers.values()];
+        const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
+        const centerX = (first.x + second.x) / 2;
+        const centerY = (first.y + second.y) / 2;
+        const start = this._pinch;
+        const factor = start.distance / distance;
+        const width = start.viewBox.width * factor;
+        const height = start.viewBox.height * factor;
+        const ratioX = (start.focus.x - start.viewBox.x) / start.viewBox.width;
+        const ratioY = (start.focus.y - start.viewBox.y) / start.viewBox.height;
+        const bounds = svg.getBoundingClientRect();
+        this._setViewBox(svg, {
+          x: start.focus.x - width * ratioX
+            - (centerX - start.centerX) * width / Math.max(1, bounds.width),
+          y: start.focus.y - height * ratioY
+            - (centerY - start.centerY) * height / Math.max(1, bounds.height),
+          width,
+          height,
+        });
+        return;
+      }
+      if (event.pointerId !== this._activePointerId) return;
+      if (this._draftBaseValue) {
+        event.preventDefault();
+        this._extendBrush(this._brushPoint(svg, event));
       } else if (this._panStart) {
         event.preventDefault();
-        const point = this._mapPoint(svg, event, this._panStart.matrix);
-        this._setViewBox(svg, {
-          ...this._panStart.viewBox,
-          x: this._panStart.viewBox.x + this._panStart.point.x - point.x,
-          y: this._panStart.viewBox.y + this._panStart.point.y - point.y,
-        });
+        this._panByPixels(
+          svg,
+          event.clientX - this._panStart.x,
+          event.clientY - this._panStart.y,
+          this._panStart.viewBox,
+        );
+      }
+    });
+    svg.addEventListener("pointerleave", () => {
+      if (this._activePointerId === undefined) {
+        this.shadowRoot.querySelector(".brush-cursor")
+          .setAttribute("visibility", "hidden");
       }
     });
     const finishPointer = (event) => {
-      if (event.pointerId !== this._activePointerId) return;
-      this._commitDraft();
-      this._panStart = undefined;
-      this._activePointerId = undefined;
-      svg.classList.remove("moving");
+      if (event.pointerId === this._activePointerId) this._commitDraft();
+      this._pointers.delete(event.pointerId);
+      if (this._pointers.size < 2) this._pinch = undefined;
+      if (this._pointers.size === 0) {
+        this._panStart = undefined;
+        this._activePointerId = undefined;
+        svg.classList.remove("moving");
+      }
       if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
     };
     const cancelPointer = (event) => {
-      if (event.pointerId !== this._activePointerId) return;
-      this._draftCircle = undefined;
-      this._showDraft(undefined);
-      this._panStart = undefined;
-      this._activePointerId = undefined;
-      svg.classList.remove("moving");
+      cancelDraft();
+      this._pointers.delete(event.pointerId);
+      if (this._pointers.size < 2) this._pinch = undefined;
+      if (this._pointers.size === 0) {
+        this._panStart = undefined;
+        this._activePointerId = undefined;
+        svg.classList.remove("moving");
+      }
       if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
     };
     svg.addEventListener("pointerup", finishPointer);
@@ -989,24 +1587,64 @@ class MaticAreaEditor extends HTMLElement {
     svg.addEventListener("wheel", (event) => {
       event.preventDefault();
       event.stopPropagation();
-      const point = svg.createSVGPoint();
-      point.x = event.clientX;
-      point.y = event.clientY;
-      const center = point.matrixTransform(svg.getScreenCTM().inverse());
-      const factor = Math.max(0.85, Math.min(1.15, Math.exp(event.deltaY * 0.001)));
-      this._zoom(svg, factor, center);
+      const unit = event.deltaMode === 1
+        ? 16
+        : event.deltaMode === 2
+          ? Math.max(1, svg.clientHeight)
+          : 1;
+      const deltaX = event.deltaX * unit;
+      const deltaY = event.deltaY * unit;
+      if (event.ctrlKey || event.metaKey || this._isMouseWheel(event, deltaX, deltaY)) {
+        const point = svg.createSVGPoint();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        const center = point.matrixTransform(svg.getScreenCTM().inverse());
+        const factor = Math.exp(Math.max(-0.28, Math.min(0.28, deltaY * 0.0025)));
+        this._zoom(svg, factor, center);
+      } else {
+        this._panByPixels(
+          svg,
+          -Math.max(-80, Math.min(80, deltaX)),
+          -Math.max(-80, Math.min(80, deltaY)),
+        );
+      }
     }, { passive: false });
-    const range = this.shadowRoot.querySelector("input[type=range]");
+    const range = this.shadowRoot.querySelector(".radius input[type=range]");
     range.addEventListener("input", (event) => {
       event.stopPropagation();
       this._radius = Number(event.target.value);
       this.shadowRoot.querySelector(".radius-value").textContent =
-        `${this._radius.toFixed(2)} m`;
+        `${(this._radius * 2).toFixed(2)} m`;
+      this.shadowRoot.querySelector(".brush-cursor")
+        .setAttribute("r", this._radius);
     });
+    this.shadowRoot.querySelector(".area-zoom-slider").addEventListener(
+      "input",
+      (event) => {
+        event.stopPropagation();
+        const scale = Number(event.target.value) / 100;
+        const center = {
+          x: this._viewBox.x + this._viewBox.width / 2,
+          y: this._viewBox.y + this._viewBox.height / 2,
+        };
+        this._zoom(
+          svg,
+          (this._baseViewBox.width / scale) / this._viewBox.width,
+          center,
+        );
+      },
+    );
     this._guardButton(this.shadowRoot.querySelector("[data-tool=draw]"), () =>
       this._setTool("draw"));
+    this._guardButton(this.shadowRoot.querySelector("[data-tool=erase]"), () =>
+      this._setTool("erase"));
     this._guardButton(this.shadowRoot.querySelector("[data-tool=pan]"), () =>
       this._setTool("pan"));
+    for (const button of this.shadowRoot.querySelectorAll("[data-layer]")) {
+      this._guardButton(button, () => this._setMapLayer(button.dataset.layer));
+    }
+    this._guardButton(this.shadowRoot.querySelector(".refresh-photo"), () =>
+      this._loadPhotoMap());
     this._guardButton(this.shadowRoot.querySelector(".zoom-out"), () =>
       this._zoom(svg, 1.15));
     this._guardButton(this.shadowRoot.querySelector(".zoom-in"), () =>
@@ -1027,6 +1665,7 @@ class MaticAreaEditor extends HTMLElement {
       this._setValue([]);
     });
     this._setTool(this._tool);
+    this._setMapLayer(this._preferredMapLayer, { remember: false });
     this._updateControls();
     this._updateZoomButtons();
     workspace.addEventListener("cancel", (event) => {
@@ -1034,6 +1673,7 @@ class MaticAreaEditor extends HTMLElement {
       if (this._expanded) this._toggleExpanded();
     });
     this._syncFullscreen();
+    this._loadPhotoMap();
   }
 }
 

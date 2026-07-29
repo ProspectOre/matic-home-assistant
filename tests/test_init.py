@@ -16,6 +16,7 @@ from custom_components.matic_robot import (
     async_setup_entry,
     async_unload_entry,
 )
+from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -94,7 +95,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         assert await async_setup(hass, {}) is True
 
     hass.http.async_register_static_paths.assert_awaited_once()
-    assert hass.http.register_view.call_count == 6
+    assert hass.http.register_view.call_count == 8
     from custom_components.matic_robot.frontend import (
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
@@ -121,12 +122,16 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_PATH
 
 
-async def test_setup_refreshes_before_forwarding_platforms() -> None:
+@pytest.mark.parametrize("native_history_error", [False, True])
+async def test_setup_refreshes_before_forwarding_platforms(
+    native_history_error: bool,
+) -> None:
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
     plans = MagicMock()
     plans.areas.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
+    plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
@@ -139,6 +144,12 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
     )
     entry = _entry()
     client = MagicMock()
+    client.async_get_cleaning_session_records = AsyncMock(
+        side_effect=CannotConnectError("history unavailable")
+        if native_history_error
+        else None,
+        return_value=(),
+    )
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
@@ -182,6 +193,12 @@ async def test_setup_refreshes_before_forwarding_platforms() -> None:
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
+    if native_history_error:
+        plans.async_import_native_history.assert_not_awaited()
+    else:
+        plans.async_import_native_history.assert_awaited_once_with(
+            "synthetic-serial", None, ()
+        )
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, PLATFORMS
     )
@@ -285,6 +302,8 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
+    plans = MagicMock()
+    plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),
         config_entries=SimpleNamespace(
@@ -294,14 +313,18 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
         ),
         data={
             DOMAIN: {
-                DATA_PLAN_MANAGER: MagicMock(),
+                DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
             }
         },
     )
     entry = _entry()
     client = MagicMock()
-    coordinator = SimpleNamespace(async_config_entry_first_refresh=AsyncMock())
+    client.async_get_cleaning_session_records = AsyncMock(return_value=())
+    coordinator = SimpleNamespace(
+        async_config_entry_first_refresh=AsyncMock(),
+        data=SimpleNamespace(floor_plan=None),
+    )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         async_collect=MagicMock(),

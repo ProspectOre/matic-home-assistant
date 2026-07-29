@@ -44,6 +44,7 @@ from custom_components.matic_robot.services import (
     _async_wait_for_vacuum_state,
     _entry_for_entity,
     _resolve_loaded_matic_vacuums,
+    _resolve_room_id,
     _saved_plan_context,
     async_register_services,
 )
@@ -114,6 +115,35 @@ def _execution_call(hass) -> ServiceCall:
             "return_to_base": False,
         },
     )
+
+
+def test_room_management_reference_is_stable_and_fail_closed() -> None:
+    assert (
+        _resolve_room_id(
+            "stable-bedroom",
+            {
+                "stable-bedroom": "Primary Bedroom",
+                "other-room": "stable-bedroom",
+            },
+        )
+        == "stable-bedroom"
+    )
+
+    with pytest.raises(ServiceValidationError, match="Ambiguous Matic room") as err:
+        _resolve_room_id(
+            "Bedroom",
+            {
+                "room-bedroom-east": "Bedroom",
+                "room-bedroom-west": "BEDROOM",
+            },
+        )
+    assert err.value.translation_key == "unknown_rooms"
+    assert err.value.translation_placeholders == {
+        "rooms": "ambiguous room name: Bedroom"
+    }
+
+    with pytest.raises(ServiceValidationError, match="Unknown Matic room"):
+        _resolve_room_id("Missing", {"room-bedroom": "Bedroom"})
 
 
 async def test_clean_action_routes_every_verified_preference() -> None:
@@ -695,7 +725,11 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         "vacuum.test",
         SimpleNamespace(),
         "serial",
-        {"room-kitchen": "Kitchen", "room-study": "Study"},
+        {
+            "room-kitchen": "Kitchen",
+            "room-study": "Study",
+            "other-room": "room-study",
+        },
     )
     save = ServiceCall(
         hass,
@@ -732,7 +766,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
                 "entity_id": ["vacuum.test"],
                 "plan": "Away cleaning",
                 "room": {
-                    "room": "Study",
+                    "room": "room-study",
                     "cleaning_mode": "vacuum",
                     "coverage_setting": "quick",
                 },
@@ -1507,7 +1541,7 @@ async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> 
 
 
 async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> None:
-    """A direct idle transition is an interruption, even after target evidence."""
+    """A direct idle transition ends unverified and receives no credit."""
 
     async def send_command(*_args, **_kwargs) -> None:
         hass.states.async_set("vacuum.test", "cleaning", {"current_area": "Study"})
@@ -1532,24 +1566,23 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
     session_reader = AsyncMock(return_value=False)
     sender = AsyncMock()
 
-    with pytest.raises(ServiceValidationError) as interrupted:
-        await _async_run_room(
-            hass,
-            _execution_call(hass),
-            manager,
-            "vacuum.test",
-            "serial",
-            CleaningRoom("room-study", "Study", "vacuum", "quick"),
-            motion_token=17,
-            active_session=session_reader,
-            managed_user_command=sender,
-        )
+    completed = await _async_run_room(
+        hass,
+        _execution_call(hass),
+        manager,
+        "vacuum.test",
+        "serial",
+        CleaningRoom("room-study", "Study", "vacuum", "quick"),
+        motion_token=17,
+        active_session=session_reader,
+        managed_user_command=sender,
+    )
 
-    assert interrupted.value.translation_key == "room_interrupted"
-    session_reader.assert_not_awaited()
-    sender.assert_awaited_once_with(17, UserCommand.STOP)
-    manager.async_mark_interrupted.assert_awaited_once()
-    manager.async_mark_ended_unverified.assert_not_awaited()
+    assert completed is False
+    session_reader.assert_awaited_once()
+    sender.assert_not_awaited()
+    manager.async_mark_interrupted.assert_not_awaited()
+    manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
 
 

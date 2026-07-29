@@ -98,6 +98,7 @@ def test_live_tracking_handles_room_changes_and_idle_updates() -> None:
     assert result.duration_seconds == 300
     assert dict(result.room_durations) == {"Office": 120, "Living Room": 180}
     assert result.completed is True
+    assert result.completed_rooms == ("Office", "Living Room")
     assert (
         tracker.update(
             cleaning=False,
@@ -236,6 +237,7 @@ def test_session_preference_uses_newest_and_richer_source() -> None:
         ("Office",),
         (("Office", 600),),
         True,
+        completed_rooms=("Office",),
     )
     assert tracker.preferred_session(overlapping_native) is tracked
 
@@ -255,6 +257,7 @@ def test_session_preference_uses_newest_and_richer_source() -> None:
         overlapping_native.rooms,
         overlapping_native.room_durations,
         True,
+        completed_rooms=("Office",),
     )
     assert (
         _sessions_overlap(
@@ -336,6 +339,7 @@ def test_pause_and_recharge_time_are_excluded_before_managed_confirmation() -> N
     assert result.duration_seconds == 300
     assert result.room_durations == (("Office", 300),)
     assert result.completed is True
+    assert result.completed_rooms == ("Office",)
 
 
 def test_external_stop_keeps_run_duration_but_omits_unproven_room_credit() -> None:
@@ -397,6 +401,7 @@ def test_external_takeover_does_not_erase_a_previously_confirmed_room() -> None:
     assert result.duration_seconds == 240
     assert result.rooms == ("Office",)
     assert result.room_durations == (("Office", 120),)
+    assert result.completed_rooms == ("Office",)
 
 
 def test_helpers_reject_non_rooms_and_handle_timestamp_edges() -> None:

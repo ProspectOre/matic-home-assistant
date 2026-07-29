@@ -15,15 +15,18 @@ from google.protobuf.message import DecodeError
 from PIL import Image, ImageDraw, ImageFont, ImageOps
 
 from .models import FloorPlan, HermesCollectionEntry
-from .wire import first_bytes, first_varint
+from .wire import decode_fields, first_bytes, first_varint
 
 TILE_SIDE = 32
 TILE_HEIGHT = 24
 SURFACE_BYTES = TILE_SIDE * TILE_SIDE * TILE_HEIGHT // 8
 FLOOR_RGBA_BYTES = TILE_SIDE * TILE_SIDE * 4 * 2
+SEMANTIC_BYTES = TILE_SIDE * TILE_SIDE
 # Each page covers 32 x 32 cells at the robot's verified 1.5 cm map resolution.
 VOXEL_SCALE_METERS = 0.015
 _MAX_TILES = 1024
+_MAX_TILE_PAGE_COORDINATE = 4096
+_MAX_SEMANTIC_PAYLOAD_BYTES = 2048
 SCENE_MAGIC = b"MATIC3D\x00"
 SCENE_VERSION = 1
 SCENE_POINT_STRIDE = 8
@@ -84,6 +87,135 @@ class SlamStructureTile:
     semantics: bytes
 
 
+@dataclass(frozen=True, slots=True)
+class SlamSemanticTile:
+    """One mission-correlated 32 by 32 native semantic page."""
+
+    page_x: int
+    page_y: int
+    mission_token: str
+    cells: bytes
+
+
+def _mask_contours(mask: np.ndarray) -> tuple[tuple[tuple[int, int], ...], ...]:
+    """Trace closed pixel-edge contours with occupied cells on the right."""
+    height, width = mask.shape
+    edges: set[tuple[tuple[int, int], tuple[int, int]]] = set()
+    for y, x in np.argwhere(mask):
+        x = int(x)
+        y = int(y)
+        if y == 0 or not mask[y - 1, x]:
+            edges.add(((x, y), (x + 1, y)))
+        if x == width - 1 or not mask[y, x + 1]:
+            edges.add(((x + 1, y), (x + 1, y + 1)))
+        if y == height - 1 or not mask[y + 1, x]:
+            edges.add(((x + 1, y + 1), (x, y + 1)))
+        if x == 0 or not mask[y, x - 1]:
+            edges.add(((x, y + 1), (x, y)))
+
+    outgoing: dict[tuple[int, int], set[tuple[int, int]]] = {}
+    for start, end in edges:
+        outgoing.setdefault(start, set()).add(end)
+    directions = {(1, 0): 0, (0, 1): 1, (-1, 0): 2, (0, -1): 3}
+    contours: list[tuple[tuple[int, int], ...]] = []
+    while edges:
+        first = min(edges)
+        edges.remove(first)
+        points = [first[0], first[1]]
+        while points[-1] != points[0]:
+            current = points[-1]
+            candidates = [
+                (current, end)
+                for end in outgoing.get(current, ())
+                if (current, end) in edges
+            ]
+            incoming = directions[
+                (
+                    current[0] - points[-2][0],
+                    current[1] - points[-2][1],
+                )
+            ]
+            candidate = min(
+                candidates,
+                key=lambda edge: (
+                    (
+                        directions[
+                            (
+                                edge[1][0] - edge[0][0],
+                                edge[1][1] - edge[0][1],
+                            )
+                        ]
+                        - incoming
+                    )
+                    % 4
+                ),
+            )
+            edges.remove(candidate)
+            points.append(candidate[1])
+        contour = points[:-1]
+        simplified = tuple(
+            point
+            for index, point in enumerate(contour)
+            if (
+                contour[index - 1][0] - point[0],
+                contour[index - 1][1] - point[1],
+            )
+            != (
+                point[0] - contour[(index + 1) % len(contour)][0],
+                point[1] - contour[(index + 1) % len(contour)][1],
+            )
+        )
+        contours.append(simplified)
+    return tuple(contours)
+
+
+def _room_floor_geometry(
+    boundary: list[list[float]],
+    floor_occupancy: np.ndarray,
+) -> tuple[list[list[float]], list[float]] | None:
+    """Clip one planning region to photographed floor and return its outer edge."""
+    height, width = floor_occupancy.shape
+    left = max(0, math.floor(min(point[0] for point in boundary)))
+    top = max(0, math.floor(min(point[1] for point in boundary)))
+    right = min(width, math.ceil(max(point[0] for point in boundary)) + 1)
+    bottom = min(height, math.ceil(max(point[1] for point in boundary)) + 1)
+    if left >= right or top >= bottom:
+        return None
+    region_image = Image.new("L", (right - left, bottom - top), 0)
+    ImageDraw.Draw(region_image).polygon(
+        [(x - left, y - top) for x, y in boundary],
+        fill=255,
+    )
+    region = (
+        np.asarray(region_image, dtype=bool) & floor_occupancy[top:bottom, left:right]
+    )
+    if not np.any(region):
+        return None
+    contours = _mask_contours(region)
+
+    def area(contour: tuple[tuple[int, int], ...]) -> int:
+        return abs(
+            sum(
+                x1 * y2 - x2 * y1
+                for (x1, y1), (x2, y2) in zip(
+                    contour,
+                    contour[1:] + contour[:1],
+                    strict=True,
+                )
+            )
+        )
+
+    contour = max(contours, key=area)
+    rows, columns = np.nonzero(region)
+    return (
+        [[float(x + left), float(y + top)] for x, y in contour],
+        [
+            float(columns.mean() + left + 0.5),
+            float(rows.mean() + top + 0.5),
+        ],
+    )
+
+
 def encode_slam_scene(
     tiles: tuple[SlamTile, ...],
     *,
@@ -138,6 +270,7 @@ def encode_slam_scene(
     )
     floor_chunks: list[bytes] = []
     surface_chunks: list[bytes] = []
+    floor_occupancy = np.zeros((span_y, span_x), dtype=bool)
     floor_point_count = 0
     surface_point_count = 0
     global_ordinal = 0
@@ -146,6 +279,12 @@ def encode_slam_scene(
         floor = np.frombuffer(tile.floor_rgba, dtype=np.uint8).reshape(
             TILE_SIDE, TILE_SIDE, 4
         )
+        offset_x = tile.page_x * TILE_SIDE - min_cell_x
+        offset_y = tile.page_y * TILE_SIDE - min_cell_y
+        floor_occupancy[
+            offset_y : offset_y + TILE_SIDE,
+            offset_x : offset_x + TILE_SIDE,
+        ] |= floor[:, :, 3] != 0
         local_y, local_x = np.nonzero(floor[:, :, 3])
         keep = (global_ordinal + np.arange(count)) % sample_step == 0
         global_ordinal += count
@@ -204,14 +343,16 @@ def encode_slam_scene(
                 ]
                 for x, y in room.boundary
             ]
+            geometry = _room_floor_geometry(boundary, floor_occupancy)
+            if geometry is None:
+                continue
+            boundary, center = geometry
             rooms.append(
                 {
                     "name": room.name,
                     "boundary": boundary,
-                    "center": [
-                        sum(point[0] for point in boundary) / len(boundary),
-                        sum(point[1] for point in boundary) / len(boundary),
-                    ],
+                    "boundary_closed": True,
+                    "center": center,
                 }
             )
     metadata = json.dumps(
@@ -349,6 +490,100 @@ def decode_slam_structure_tile(entry: HermesCollectionEntry) -> SlamStructureTil
         hashlib.sha256(mission).hexdigest(),
         occupancy,
         semantics,
+    )
+
+
+def decode_slam_semantic_tile(entry: HermesCollectionEntry) -> SlamSemanticTile:
+    """Decode one bounded native semantic or semantic-override map page."""
+    if (
+        not entry.key
+        or not entry.value
+        or len(entry.key) > 64
+        or len(entry.value) > _MAX_SEMANTIC_PAYLOAD_BYTES
+    ):
+        raise DecodeError("semantic SLAM tile is empty or oversized")
+
+    key_fields = decode_fields(entry.key)
+    if tuple((field.number, field.wire_type) for field in key_fields) != (
+        (1, 2),
+        (2, 2),
+    ):
+        raise DecodeError("semantic SLAM key has an invalid shape")
+    page = first_bytes(entry.key, 1)
+    mission = first_bytes(entry.key, 2)
+    page_fields = decode_fields(page)
+    if any(
+        field.number not in (3, 4)
+        or field.wire_type != 0
+        or not isinstance(field.value, int)
+        for field in page_fields
+    ) or len({field.number for field in page_fields}) != len(page_fields):
+        raise DecodeError("semantic SLAM page has an invalid shape")
+    mission_fields = decode_fields(mission)
+    if (
+        len(mission_fields) != 1
+        or mission_fields[0].number != 2
+        or mission_fields[0].wire_type != 5
+        or not isinstance(mission_fields[0].value, bytes)
+    ):
+        raise DecodeError("semantic SLAM mission has an invalid shape")
+    page_x = _optional_sint32(page, 3)
+    page_y = _optional_sint32(page, 4)
+    if max(abs(page_x), abs(page_y)) > _MAX_TILE_PAGE_COORDINATE:
+        raise DecodeError("semantic SLAM page is outside safe bounds")
+
+    fields = decode_fields(entry.value)
+    if tuple((field.number, field.wire_type) for field in fields) != (
+        (1, 2),
+        (4, 2),
+        (8, 2),
+    ):
+        raise DecodeError("semantic SLAM envelope has an invalid shape")
+    metadata = decode_fields(first_bytes(entry.value, 4))
+    if tuple(field.number for field in metadata) != tuple(
+        sorted({field.number for field in metadata})
+    ) or any(
+        field.number not in (4, 5, 6)
+        or field.wire_type != 0
+        or not isinstance(field.value, int)
+        or field.value > _MAX_TILE_PAGE_COORDINATE
+        for field in metadata
+    ):
+        raise DecodeError("semantic SLAM metadata has an invalid shape")
+    if first_bytes(entry.value, 8) != mission:
+        raise DecodeError("semantic SLAM mission does not match its page key")
+
+    layer = first_bytes(entry.value, 1)
+    layer_fields = decode_fields(layer)
+    if tuple((field.number, field.wire_type) for field in layer_fields) != (
+        (4, 2),
+        (5, 2),
+    ):
+        raise DecodeError("semantic SLAM layer has an invalid shape")
+    dimensions = first_bytes(layer, 4)
+    if (
+        tuple(_optional_varint(dimensions, number) for number in range(1, 5))
+        != (
+            1,
+            1,
+            TILE_SIDE,
+            TILE_SIDE,
+        )
+        or len(decode_fields(dimensions)) != 4
+    ):
+        raise DecodeError("unsupported semantic SLAM dimensions")
+    cells_wrapper = first_bytes(layer, 5)
+    cell_fields = decode_fields(cells_wrapper)
+    if tuple((field.number, field.wire_type) for field in cell_fields) != ((1, 2),):
+        raise DecodeError("semantic SLAM cells have an invalid shape")
+    cells = first_bytes(cells_wrapper, 1)
+    if len(cells) != SEMANTIC_BYTES:
+        raise DecodeError("invalid semantic SLAM cell length")
+    return SlamSemanticTile(
+        page_x=page_x,
+        page_y=page_y,
+        mission_token=hashlib.sha256(mission).hexdigest(),
+        cells=cells,
     )
 
 

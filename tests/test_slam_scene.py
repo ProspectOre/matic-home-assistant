@@ -16,6 +16,10 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import Unauthorized
 from homeassistant.helpers.http import KEY_HASS
 
+from custom_components.matic_robot.area_binding import (
+    AREA_SCHEMA_VERSION,
+    binding_for_floor_plan,
+)
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -24,22 +28,28 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.slam_scene import (
+    AREAS_API_URL,
     CATALOG_API_URL,
     DELTA_API_URL,
     HISTORY_API_URL,
     HISTORY_SCENE_API_URL,
+    PLANS_API_URL,
     POSE_API_URL,
     PRIVATE_NO_STORE_HEADERS,
     SCENE_API_URL,
+    MaticAreasView,
+    MaticPlansView,
     MaticSlamCatalogView,
     MaticSlamDeltaView,
     MaticSlamHistorySceneView,
     MaticSlamHistoryView,
     MaticSlamPoseView,
     MaticSlamSceneView,
+    areas_api_url,
     delta_api_url,
     history_api_url,
     history_scene_api_url,
+    plans_api_url,
     pose_api_url,
     scene_api_url,
 )
@@ -94,6 +104,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         ),
         coordinator=SimpleNamespace(
             data=SimpleNamespace(
+                info=SimpleNamespace(serial_number="synthetic-serial"),
                 floor_plan=floor_plan,
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
@@ -102,6 +113,13 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         slam_history=SimpleNamespace(
             catalog=MagicMock(return_value=()),
             async_scene=AsyncMock(return_value=None),
+        ),
+        cleaning_plans=SimpleNamespace(
+            areas=MagicMock(return_value={}),
+            plans=MagicMock(return_value={}),
+            snapshot=MagicMock(return_value={"selected_plan": None}),
+            async_save_area=AsyncMock(),
+            async_delete_area=AsyncMock(),
         ),
     )
 
@@ -126,6 +144,29 @@ def _request(
     headers = {"If-None-Match": etag} if etag is not None else None
     request = make_mocked_request("GET", path, headers=headers, app={KEY_HASS: hass})
     request["hass_user"] = SimpleNamespace(is_admin=admin)
+    return request
+
+
+def _json_request(
+    hass,
+    method: str,
+    body: object,
+    path: str = "/",
+    *,
+    content_length: int | None = None,
+):
+    encoded = json.dumps(body).encode()
+    request = make_mocked_request(
+        method,
+        path,
+        headers={
+            "Content-Type": "application/json",
+            "Content-Length": str(content_length or len(encoded)),
+        },
+        app={KEY_HASS: hass},
+    )
+    request["hass_user"] = SimpleNamespace(is_admin=True)
+    request._read_bytes = encoded
     return request
 
 
@@ -555,9 +596,13 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     with pytest.raises(Unauthorized):
         await MaticSlamSceneView().get(_request(hass, admin=False), "entry")
     with pytest.raises(Unauthorized):
-        await MaticSlamCatalogView().get(_request(hass, admin=False))
+        await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
+            _request(hass, admin=False)
+        )
 
-    response = await MaticSlamCatalogView().get(_request(hass))
+    response = await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
+        _request(hass)
+    )
 
     assert response.status == HTTPStatus.OK
     assert (
@@ -571,6 +616,9 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "delta_url": f"/api/matic_robot/slam_delta/{loaded.entry_id}",
                 "pose_url": f"/api/matic_robot/slam_pose/{loaded.entry_id}",
                 "history_url": f"/api/matic_robot/slam_history/{loaded.entry_id}",
+                "areas_url": f"/api/matic_robot/areas/{loaded.entry_id}",
+                "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
+                "area_editor_url": "/matic_robot/test/room-plan-editor.js",
                 "history_count": 0,
                 "map_revision": 7,
                 "map_health": "ready",
@@ -586,6 +634,258 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
             }
         ]
     }
+
+
+async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
+    runtime = _runtime()
+    current_binding = binding_for_floor_plan(runtime.coordinator.data.floor_plan)
+    runtime.cleaning_plans.areas.return_value = {
+        "table": {
+            "name": "Table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "quick",
+            "map_binding": current_binding,
+            "schema_version": AREA_SCHEMA_VERSION,
+        },
+        "legacy": {"name": "Legacy"},
+    }
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert json.loads(response.body) == {
+        "scene_url": "/api/matic_robot/slam_scene/entry",
+        "rooms": [
+            {
+                "room_id": "room-1",
+                "name": "Kitchen",
+                "boundary": [[0.0, 0.0], [0.3, 0.0], [0.3, 0.3], [0.0, 0.3]],
+            }
+        ],
+        "areas": [
+            {
+                "id": "table",
+                "name": "Table",
+                "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "quick",
+                "status": "current",
+            },
+            {
+                "id": "legacy",
+                "name": "Legacy",
+                "circles": [],
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "status": "legacy",
+            },
+        ],
+    }
+    assert areas_api_url("entry") == AREAS_API_URL.format(entry_id="entry")
+    with pytest.raises(Unauthorized):
+        await view.get(_request(hass, admin=False), "entry")
+
+
+async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "weekday": {
+            "name": "Weekday",
+            "enabled": True,
+            "run_behavior": "intelligent",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum_and_mop",
+                    "coverage_setting": "standard",
+                }
+            ],
+            "room_order": ["room-1"],
+            "return_to_base": False,
+            "finish_current_room": True,
+            "finish_current_room_threshold": 60,
+        }
+    }
+    runtime.cleaning_plans.snapshot.return_value = {"selected_plan": "weekday"}
+    hass = _hass(_entry(runtime))
+    view = MaticPlansView()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.OK
+    assert (
+        response.headers["Cache-Control"] == PRIVATE_NO_STORE_HEADERS["Cache-Control"]
+    )
+    assert json.loads(response.body) == {
+        "rooms": [{"room_id": "room-1", "name": "Kitchen"}],
+        "plans": [
+            {
+                "id": "weekday",
+                "name": "Weekday",
+                "enabled": True,
+                "run_behavior": "intelligent",
+                "rooms": [
+                    {
+                        "room_id": "room-1",
+                        "cleaning_mode": "vacuum_and_mop",
+                        "coverage_setting": "standard",
+                    }
+                ],
+                "room_order": ["room-1"],
+                "return_to_base": False,
+                "finish_current_room": True,
+                "finish_current_room_threshold": 60,
+            }
+        ],
+        "selected_plan": "weekday",
+    }
+    assert plans_api_url("entry") == PLANS_API_URL.format(entry_id="entry")
+    with pytest.raises(Unauthorized):
+        await view.get(_request(hass, admin=False), "entry")
+
+
+async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
+    view = MaticPlansView()
+    assert (
+        await view.get(_request(_hass(None)), "entry")
+    ).status == HTTPStatus.NOT_FOUND
+
+    runtime = _runtime()
+    runtime.coordinator.data.floor_plan = None
+    assert (
+        await view.get(_request(_hass(_entry(runtime))), "entry")
+    ).status == HTTPStatus.CONFLICT
+
+
+async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    values = {
+        "name": "Under table",
+        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "standard",
+    }
+
+    created = await view.post(_json_request(hass, "POST", values), "entry")
+
+    assert json.loads(created.body) == {"id": "under_table"}
+    runtime.cleaning_plans.async_save_area.assert_awaited_once_with(
+        "synthetic-serial",
+        "under_table",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(runtime.coordinator.data.floor_plan),
+        },
+    )
+
+    runtime.cleaning_plans.areas.return_value = {"under_table": {"name": "Under table"}}
+    updated = await view.post(
+        _json_request(hass, "POST", {**values, "area_id": "under_table"}),
+        "entry",
+    )
+    assert updated.status == HTTPStatus.OK
+
+    deleted = await view.delete(_request(hass, path="/?area_id=under_table"), "entry")
+    assert deleted.status == HTTPStatus.NO_CONTENT
+    runtime.cleaning_plans.async_delete_area.assert_awaited_once_with(
+        "synthetic-serial", "under_table"
+    )
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        [],
+        {},
+        {
+            "name": "",
+            "circles": [],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+        {
+            "name": "Bad geometry",
+            "circles": [{"x": 2, "y": 2, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+        {
+            "name": "Bad mode",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "invalid",
+            "coverage_setting": "standard",
+        },
+    ],
+)
+async def test_area_workspace_rejects_malformed_saves(body) -> None:
+    runtime = _runtime()
+    response = await MaticAreasView().post(
+        _json_request(_hass(_entry(runtime)), "POST", body), "entry"
+    )
+    assert response.status == HTTPStatus.BAD_REQUEST
+
+
+async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> None:
+    view = MaticAreasView()
+    missing_hass = _hass(None)
+    assert (await view.get(_request(missing_hass), "entry")).status == 404
+    assert (
+        await view.post(_json_request(missing_hass, "POST", {}), "entry")
+    ).status == 404
+    assert (
+        await view.delete(_request(missing_hass, path="/?area_id=x"), "entry")
+    ).status == 404
+
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    runtime.coordinator.data.floor_plan = None
+    assert MaticAreasView._rooms(runtime) == []
+    assert (await view.get(_request(hass), "entry")).status == 409
+    assert (await view.post(_json_request(hass, "POST", {}), "entry")).status == 409
+    runtime.coordinator.data.floor_plan = _floor_plan()
+
+    oversized = _json_request(hass, "POST", {}, content_length=131_073)
+    assert (await view.post(oversized, "entry")).status == 413
+
+    values = {
+        "name": "Table",
+        "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "quick",
+    }
+    runtime.cleaning_plans.areas.return_value = {"table": {"name": "Table"}}
+    assert (await view.post(_json_request(hass, "POST", values), "entry")).status == 409
+    assert (
+        await view.post(
+            _json_request(hass, "POST", {**values, "area_id": "missing"}),
+            "entry",
+        )
+    ).status == 404
+    runtime.cleaning_plans.areas.return_value = {
+        "table": {"name": "Table"},
+        "other": {"name": "Other"},
+    }
+    assert (
+        await view.post(
+            _json_request(
+                hass,
+                "POST",
+                {**values, "name": "Other", "area_id": "table"},
+            ),
+            "entry",
+        )
+    ).status == 409
+    assert (
+        await view.delete(_request(hass, path="/?area_id=missing"), "entry")
+    ).status == 404
 
 
 def test_scene_view_can_purge_one_entries_private_cache() -> None:
