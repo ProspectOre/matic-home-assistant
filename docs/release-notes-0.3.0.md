@@ -9,16 +9,12 @@ Released: 2026-07-29
 ## Unified Cleaning workspace
 
 - **Matic Map → Cleaning** opens a viewport-sized workspace with **Plans** and
-  **Custom areas** views for creating, editing, running, and deleting definitions.
-  Configure remains a compatibility entry point.
-- The map exposes both views as first-class actions. Native room checkboxes use
-  full switch-sized hit targets and preserve saved settings reliably in Safari.
-- Photo, Rooms, and repaired boundary overlays share one coordinate
-  viewport, staying aligned across 2D, 3D, and navigation. A cache-busted module
-  supports Home Assistant sessions opened before integration startup.
-- Every mapped room is labeled and can be focused directly. Paint, Erase, and
-  Move are separate tools. Dragging paints continuously; wheel input zooms at the
-  cursor; middle-button or Space-drag pans. Pointer capture always releases.
+  **Custom areas** for creating, editing, running, and deleting definitions; Configure remains a compatibility entry point.
+- Both views are first-class actions. Native room checkboxes use full switch-sized hit targets and preserve saved settings reliably in Safari.
+- Photo, Rooms, and repaired boundary overlays share one coordinate viewport,
+  staying aligned across 2D, 3D, and navigation. A cache-busted module supports sessions opened before integration startup.
+- Every mapped room is labeled and can be focused directly. Paint, Erase, and Move are separate tools.
+  Dragging paints continuously; wheel input zooms at the cursor; middle-button or Space-drag pans. Pointer capture always releases.
 - Undo, Redo, and Clear mutate the existing editor without rebuilding it or
   escaping into Home Assistant's form. Clear is recoverable through Undo, and
   pointer guards preserve native Safari/WebKit button activation.
@@ -148,8 +144,5 @@ The release passes 866 Python tests / 8,015 statements at 100% coverage, 38 brow
 
 ## Upgrading from 0.2.3
 
-Install 0.3.0 through HACS and restart Home Assistant. Existing config entries,
-plans, custom areas, and room history are preserved; re-pairing is not required.
-The administrator-only **Matic Map** panel appears after restart. The private
-photographic camera remains disabled by default and can be enabled from the
-robot's device page when needed.
+Install 0.3.0 through HACS and restart Home Assistant. Existing config entries, plans, custom areas, and room history are preserved; re-pairing is not required.
+The administrator-only **Matic Map** panel appears after restart. The private photographic camera remains disabled by default and can be enabled from the robot's device page.
