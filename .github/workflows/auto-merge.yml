@@ -1,0 +1,610 @@
+name: Enable PR Auto-Merge
+
+on:
+  pull_request_target:
+    # `unlabeled` matters as much as `labeled`: removing the override must reach
+    # the withdrawal path, or a PR armed by the escape hatch stays armed after the
+    # authorization for it is taken away.
+    types: [opened, reopened, synchronize, ready_for_review, labeled, unlabeled]
+  # The reviewer's verdict is what unblocks arming, so the workflow must re-run
+  # when it lands. Codex posts either a review object or an issue comment
+  # depending on the round, so both event types are needed.
+  # submitted/edited/DISMISSED: a dismissed review is withdrawn evidence, and an
+  # edited one can name a different commit. Both change the gate's answer.
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  # created/edited/DELETED: the gate's evidence can be withdrawn as well as
+  # granted. A deleted verdict, or an edited one naming a different commit, must
+  # re-run the gate — otherwise the arm outlives the evidence that justified it.
+  issue_comment:
+    types: [created, edited, deleted]
+  # Answering an inline finding — the condition that CLEARS the gate — emits
+  # pull_request_review_comment, not issue_comment. Without this, dispositioning
+  # every finding would leave the PR unarmed until some unrelated event happened
+  # to re-run the workflow.
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        # NUMBER only, in CANONICAL form. The concurrency key uses this value
+        # verbatim, so it has to be the same string the webhook runs produce for the
+        # same PR — they carry `1`, never `01`. Any other spelling keys a separate
+        # group, and separate groups do not queue: a stale dispatch then runs
+        # alongside a verdict-triggered run and can stamp `pending` on a head the
+        # other run just stamped `success` and armed, leaving the required gate
+        # wedged until some later event happens to re-run it. A URL form fails the
+        # same way, and so does a zero-padded number, which is why the validation
+        # below is `^[1-9][0-9]*$` rather than "any digits".
+        #
+        # REQUIRED. A workflow_dispatch payload carries no pull request of its own —
+        # no pull_request object, no issue number — so an omitted input leaves the
+        # run with nothing to evaluate and the default manual path died at "No pull
+        # request was provided." There is no meaningful fallback to invent here: the
+        # dispatcher is the only source of the PR, so ask for it up front.
+        description: "Pull request NUMBER (digits only, no leading zeros)"
+        required: true
+        type: string
+
+concurrency:
+  # issue_comment payloads carry no pull_request, so without issue.number two PRs'
+  # verdicts landing together would share the default-branch key and cancel each
+  # other — leaving the first permanently unarmed with no later event to retry it.
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
+  # NOT cancel-in-progress. This workflow's job is to CONVERGE on the true state
+  # of a PR, and the events that feed it arrive in bursts (a verdict plus several
+  # inline replies land within seconds). Cancelling means the surviving run is
+  # whichever fired last rather than whichever saw the most, and every cancelled
+  # run also surfaces as a FAILED check on the PR — indistinguishable from a real
+  # break at a glance. Runs are seconds long and every path is idempotent (it
+  # re-reads head, verdict, and findings, and both arm and withdraw are no-ops
+  # when already in that state), so queueing them is strictly safer than racing.
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  # The verdict and the override's audit trail are read through issue endpoints
+  # (issue comments, and the timeline that names who applied the label).
+  issues: read
+  # The gate stamps its verdict onto the head commit as a status, which is what
+  # makes the decision outlive this run. Unlike the Administration (read) the
+  # branch-protection lookup needs, `statuses` IS a grantable workflow permission.
+  statuses: write
+
+jobs:
+  enable-auto-merge:
+    name: enable-auto-merge
+    # The self-hosted fallback asks for `mbp`, the one label the whole runner fleet
+    # carries. It previously asked for `ci`, which only this repo's runner happens to
+    # have: in any other repo the expression resolved to a label set matching no
+    # runner, and the job queued until it timed out. A canonical file has to name a
+    # label that is true fleet-wide, because per-repo variation belongs in the repo
+    # vars below, not in forked copies of the file.
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    # `issue_comment` carries `issue.pull_request` but NO top-level
+    # `pull_request`, so `github.event.pull_request.draft == false` is false and
+    # the job is skipped outright — the verdict path would never even start.
+    # Draft PRs are still excluded: the script re-checks `isDraft` from the API.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      || github.event.pull_request.draft == false
+    steps:
+      - name: Enable squash auto-merge
+        env:
+          # Use a PAT (AUTO_MERGE_PAT) so the eventual merge push is attributed
+          # to a real user, not github-actions[bot]. Pushes by GITHUB_TOKEN do
+          # NOT trigger downstream workflows (GitHub anti-cascade), which means
+          # production-deploy.yml stops firing on merge to main. With a PAT, the
+          # merge push attributes to the PAT owner and downstream workflows fire.
+          # The github.token fallback keeps this workflow runnable in a repo where
+          # the secret has not been provisioned yet, but it is NOT a working
+          # configuration: the branch-protection read below requires repository
+          # Administration (read), which GITHUB_TOKEN cannot hold. Such a run now
+          # FAILS loudly there rather than quietly never arming anything.
+          GH_TOKEN: ${{ secrets.AUTO_MERGE_PAT || github.token }}
+          # The status stamp authenticates with THIS token instead — see the stamping
+          # block. `permissions:` grants scopes to github.token and to nothing else,
+          # so the statuses:write declared above says nothing about what the operator's
+          # PAT is allowed to do.
+          STATUS_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_PR_URL: ${{ github.event.pull_request.html_url }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_IS_PR: ${{ github.event.issue.pull_request != null }}
+          REVIEW_BOT: chatgpt-codex-connector[bot]
+          OVERRIDE_LABEL: auto-merge-now
+          # The status context stamped on each reviewed head. Adding this name to a
+          # branch's REQUIRED status checks is what turns the gate from advisory into
+          # enforcement — see the stamping block for the ordering that requires.
+          REVIEW_GATE_CONTEXT: review-gate
+          INPUT_PR: ${{ inputs.pull_request }}
+        run: |
+          set -euo pipefail
+
+          # A self-hosted runner service caches its PATH when the service starts, so a
+          # service launched before Homebrew existed — or restarted from a stale
+          # environment — executes this script without /opt/homebrew/bin, and every gh
+          # call dies with "command not found". That is not hypothetical: it took down
+          # the gate on Operator-Insights on 2026-07-29, exiting 127 on the first gh
+          # invocation with no indication of why. Export the path here so the gate
+          # depends on its own script rather than on the runner service's environment,
+          # and if the CLI is genuinely absent say so in a sentence instead of leaving
+          # a bare 127. Harmless on hosted runners, where gh is already on PATH and
+          # the prepended directories simply do not exist.
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is not on PATH for this runner."
+            echo "It must be preinstalled on self-hosted runners; hosted runners ship it."
+            exit 1
+          }
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            # CANONICAL digits — see the input description. The concurrency key uses
+            # this verbatim, so `01` is not a harmless spelling of `1`: it keys a
+            # different group from the webhook runs for the same PR, and the two then
+            # run concurrently instead of queueing. `^[0-9]+$` accepted it, and also
+            # accepted `0`, which resolves to no pull request at all. The input is
+            # required, so an empty value means the dispatch itself was malformed;
+            # say that here rather than falling through to the webhook branches,
+            # which carry no pull request at all on this event.
+            if [[ ! "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Pull request input must be a number with no leading zeros (got '${INPUT_PR:-}')."
+              echo "The concurrency key uses this value verbatim, so '01' would run alongside"
+              echo "the webhook runs for pull request 1 instead of queueing behind them."
+              exit 1
+            fi
+            pr_ref="https://github.com/$REPO/pull/$INPUT_PR"
+          elif [[ -n "${EVENT_ISSUE_NUMBER:-}" ]]; then
+            # issue_comment fires with an ISSUE payload; ignore plain issues.
+            if [[ "${EVENT_IS_PR:-}" != "true" ]]; then
+              echo "Comment was on an issue, not a pull request."
+              exit 0
+            fi
+            # Build the /pull/<n> form. The issue payload's html_url is
+            # /issues/<n> even for a pull request, and `gh pr view` treats that as
+            # a BRANCH selector: it fails with `no pull requests found for branch
+            # https://.../issues/<n>`, which under `set -euo pipefail` kills the
+            # job. Codex delivers some verdicts as issue comments, so that path
+            # dying meant those PRs never armed at all.
+            pr_ref="https://github.com/$REPO/pull/$EVENT_ISSUE_NUMBER"
+          else
+            pr_ref="$EVENT_PR_URL"
+          fi
+
+          if [[ -z "${pr_ref:-}" ]]; then
+            echo "No pull request was provided."
+            exit 1
+          fi
+
+          pr_url="$(gh pr view "$pr_ref" --json url --jq '.url')"
+          case "$pr_url" in
+            https://github.com/$REPO/pull/[0-9]*) ;;
+            *)
+              echo "Pull request resolved outside $REPO: $pr_url"
+              exit 1
+              ;;
+          esac
+
+          # WITHDRAW FIRST, UNCONDITIONALLY. Every precheck below can leave without
+          # arming — draft, cross-repo, unprotected base, no required checks, and an
+          # unreadable branch protection that now fails the run outright — and each of
+          # those paths would otherwise leave a live arm on a PR this run never cleared.
+          #
+          # This deliberately does NOT enumerate which events revoke authorization.
+          # That list was wrong twice: first it omitted every event (the arm survived
+          # the early exits), then it covered only `synchronize` (so removing the
+          # override label left the arm it had created). Any run may be the one that
+          # discovers the arm is no longer justified, so every run drops it and the
+          # gate below re-arms only if the CURRENT head is genuinely cleared.
+          # Failing here leaves the PR unarmed, which is the safe direction.
+          # Resolve the state OUTSIDE the conditional: a command substitution inside
+          # an `if` test is exempt from `set -e`, so a failed lookup would quietly
+          # evaluate false and skip the withdrawal — leaving a stale arm on a head
+          # this run never cleared. Read it explicitly, and treat an unreadable
+          # state as a reason to stop loudly rather than continue blind.
+          if ! auto_merge_state="$(gh pr view "$pr_ref" --json autoMergeRequest --jq '.autoMergeRequest != null')"; then
+            echo "Could not read the auto-merge state; attempting a blind withdrawal, then failing the run."
+            gh pr merge "$pr_ref" --disable-auto || true
+            exit 1
+          fi
+          if [[ "$auto_merge_state" == "true" ]]; then
+            echo "Withdrawing the existing auto-merge before re-evaluating this head."
+            # Plain command: `set -e` aborts the run if the withdrawal itself fails,
+            # rather than falling through to the prechecks with the arm still live.
+            gh pr merge "$pr_ref" --disable-auto
+          fi
+
+          is_draft="$(gh pr view "$pr_ref" --json isDraft --jq '.isDraft')"
+          if [[ "$is_draft" == "true" ]]; then
+            echo "Draft pull request; leaving auto-merge disabled."
+            exit 0
+          fi
+
+          is_cross_repo="$(gh pr view "$pr_ref" --json isCrossRepository --jq '.isCrossRepository')"
+          if [[ "$is_cross_repo" == "true" ]]; then
+            echo "Cross-repository pull request; leaving auto-merge disabled."
+            exit 0
+          fi
+
+          base_ref="$(gh pr view "$pr_ref" --json baseRefName --jq '.baseRefName')"
+          protected="$(gh api "repos/$REPO/branches/$base_ref" --jq '.protected')"
+          if [[ "$protected" != "true" ]]; then
+            echo "Base branch $base_ref is not protected; refusing to enable auto-merge before CI gates."
+            exit 0
+          fi
+
+          # "This branch requires no checks" and "this token cannot read the answer"
+          # demand OPPOSITE responses, so they must not share a value. `2>/dev/null ||
+          # echo 0` collapsed them into `0`: the protection endpoint needs repository
+          # Administration (READ), which GITHUB_TOKEN cannot be granted at all — a
+          # workflow `permissions:` block has no `administration` key — so wherever
+          # AUTO_MERGE_PAT is unset the 403 was swallowed, every eligible PR looked
+          # check-free, and the gate exited 0 forever. A permanent never-arm that
+          # prints a plausible sentence and reports success is the worst shape a gate
+          # can fail in; it is invisible until someone wonders why nothing merges.
+          # Capture the read as a distinct success/failure: a genuine zero still
+          # refuses to arm (below), while an unreadable answer stops the run loudly.
+          #
+          # $REVIEW_GATE_CONTEXT is EXCLUDED from the count, because this gate's own
+          # status must not satisfy the CI precondition the gate sits behind. Once that
+          # context is added to a branch's required checks — the rollout step this
+          # workflow asks for — it would otherwise be the one entry counted here on a
+          # branch with no build or test gates, turning "at least one required check
+          # exists" from a real precondition into a statement about this workflow
+          # itself, and arming reviewed PRs with nothing verifying that they build.
+          if ! required_count="$(gh api "repos/$REPO/branches/$base_ref/protection" \
+            --jq '(.required_status_checks.contexts // [])
+                  | map(select(. != env.REVIEW_GATE_CONTEXT)) | length')"; then
+            echo "Could not read branch protection for $base_ref (the API error is above)."
+            echo "That endpoint requires repository Administration (read) access, which"
+            echo "GITHUB_TOKEN does not have and cannot be granted. Configure the"
+            echo "AUTO_MERGE_PAT secret with a PAT whose owner has admin read on $REPO."
+            exit 1
+          fi
+          # A zero exit status that did not yield a number is the same unknown answer
+          # wearing a success, so it gets the same treatment rather than a comparison.
+          if [[ ! "$required_count" =~ ^[0-9]+$ ]]; then
+            echo "Branch protection for $base_ref returned no usable required-check count ('$required_count'); failing closed."
+            exit 1
+          fi
+          if [[ "$required_count" == "0" ]]; then
+            echo "Base branch $base_ref has no required CI checks apart from '$REVIEW_GATE_CONTEXT',"
+            echo "which does not count as one; refusing to enable auto-merge before CI gates."
+            exit 0
+          fi
+
+          # REVIEW GATE (2026-07-25). Arming on `opened`/`synchronize` alone raced
+          # the reviewer: checks go green in ~10 min, Codex takes ~10-20, and PRs
+          # merged before — or during — their review. In one session that produced
+          # findings arriving after merge, commits merging unreviewed, and a PR
+          # merging with NO review pass at all, where "zero findings" meant nobody
+          # looked. Manual disarming could not fix it, since the next push re-armed.
+          #
+          # Arm only once the reviewer has covered THIS head: its verdict carries
+          # "Reviewed commit: <sha>". A stale review of an older head does not count.
+          # Escape hatch: the OVERRIDE_LABEL arms regardless (reviewer down, quota
+          # exhausted, or a deliberate hotfix) — a label leaves an audit trail, which
+          # a silent race did not, and the account that applied it is checked below.
+          head_sha="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"
+          pr_number="$(gh pr view "$pr_ref" --json number --jq '.number')"
+          # The sha is interpolated into the verdict-matching pattern below. An
+          # empty or malformed value would reduce that pattern to "any Reviewed
+          # commit line", arming on a review of some OLDER head — the precise
+          # failure this gate exists to prevent. Refuse to proceed instead.
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve a valid head sha ('$head_sha'); failing closed."
+            exit 1
+          fi
+          auto_merge_enabled="$(gh pr view "$pr_ref" --json autoMergeRequest --jq '.autoMergeRequest != null')"
+
+          # STAMP THE VERDICT ONTO THE HEAD, so enforcement outlives this run.
+          #
+          # Everything below arms and withdraws, and all of it is bounded by how fast
+          # this workflow can react. Push B onto a PR armed for reviewed head A and the
+          # arm survives the push; the `synchronize` run that would withdraw it is only
+          # QUEUED, behind whatever else is in this workflow's concurrency group and
+          # behind everything else on the runner. Gate runs have queued minutes behind
+          # iOS jobs on the shared runner, and B's required checks can finish first — at
+          # which point GitHub merges B on the strength of a review of A. No amount of
+          # re-checking inside a run closes that, because the danger lives between runs.
+          #
+          # A commit status does. It is attached to a SHA, so a new commit simply does
+          # not have one, and once `$REVIEW_GATE_CONTEXT` is a required check the merge
+          # is blocked by GitHub itself rather than by this workflow winning a race.
+          #
+          # ORDERING, and it matters: adding this context to a branch's required checks
+          # before the stamping workflow is live on that branch's default branch wedges
+          # every PR — nothing would ever post the context. Ship the workflow first,
+          # then require the check.
+          #
+          # Only two states are ever stamped. `success` says this exact head cleared the
+          # gate. `pending` says it has not, which is also what an unstamped head looks
+          # like to a required check — so pending adds legibility (a description saying
+          # what is being waited on) without changing the outcome. `failure` is never
+          # stamped: an interim push has not failed anything, and painting it red would
+          # train everyone to ignore the signal that matters.
+          #
+          # Revocation boundary, stated honestly: statuses are per-sha, so a new push
+          # cannot inherit an old verdict. Evidence deleted AFTER a success stamp on the
+          # SAME sha is the residual case, and it is largely covered — deleting a reply
+          # or a review fires the `deleted` events this workflow listens for, and that
+          # run re-evaluates and re-stamps `pending`. What is not covered is a deletion
+          # whose run never happens or fails; the withdraw path still removes the arm on
+          # the next event, but a stale `success` could sit on that sha until then.
+          # TOKEN SPLIT, and it is deliberate. Every other call here runs as GH_TOKEN,
+          # the PAT, because they need things only it has: Administration (read) for
+          # the branch-protection lookup, and a real user's attribution on the merge so
+          # downstream workflows fire. This one call runs as github.token instead.
+          # `permissions:` grants scopes to github.token and to NOTHING else, so the
+          # statuses:write declared at the top of this file says nothing about what an
+          # operator-provided PAT may do — a fine-grained PAT without "Commit statuses:
+          # write" would 403 here while the workflow appeared to hold the permission.
+          # Authenticating the stamp with the token the permission actually governs
+          # makes the declaration load-bearing instead of decorative, and keeps the
+          # enforcement backstop working regardless of how the PAT was scoped.
+          # (Statuses posted by github.token do not trigger workflow runs, which costs
+          # nothing here: no workflow listens on `status`, and branch protection
+          # evaluates the context regardless of who posted it.)
+          stamp_review_gate() {
+            GH_TOKEN="$STATUS_TOKEN" gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state="$1" \
+              -f context="$REVIEW_GATE_CONTEXT" \
+              -f description="$2" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          # Evidence is REVOCABLE — a disposition reply can be deleted and the
+          # override label removed — so this is a function, evaluated immediately
+          # before arming and again immediately after. `--match-head-commit` guards
+          # only the sha; it says nothing about replies or labels.
+          evaluate_evidence() {
+            # The override is an AUTHORIZATION, so the authority behind it is verified
+            # rather than inferred from the platform. On a personal-account repository
+            # the only people who can label are collaborators with write, which made
+            # "the label implies write access" accidentally true; an organization
+            # grants the triage role labelling rights WITHOUT write, so converting
+            # this account would quietly widen who can bypass a review — a weakening
+            # nothing would announce. Read who applied the label and check them.
+            # Anything unverifiable simply is not an override: the run falls back to
+            # requiring a review pass, which is the safe direction and is stated in
+            # the log rather than assumed.
+            override_authorized=false
+            if gh pr view "$pr_ref" --json labels --jq '.labels[].name' | grep -Fxq "$OVERRIDE_LABEL"; then
+              # Stream the logins and take the last line rather than filtering with
+              # `| last`: --paginate applies --jq to EACH page, so a per-page `last`
+              # would emit one login per page instead of the most recent one. The
+              # most recent labelling is the live one — the label can be removed and
+              # re-applied by a different account.
+              if ! label_actor="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate \
+                --jq '.[] | select(.event == "labeled" and .label.name == env.OVERRIDE_LABEL)
+                          | .actor.login' | tail -n 1)"; then
+                echo "Could not read who applied '$OVERRIDE_LABEL'; not honoring the override."
+              elif [[ -z "$label_actor" ]]; then
+                echo "No 'labeled' event names who applied '$OVERRIDE_LABEL'; not honoring the override."
+              # `.permission` is the legacy triple: maintain reports as write, and
+              # triage reports as read. Matching on it is what excludes triage;
+              # `.role_name` would need every writing role enumerated instead.
+              elif ! actor_permission="$(gh api "repos/$REPO/collaborators/$label_actor/permission" \
+                --jq '.permission')"; then
+                echo "Could not verify $label_actor's access; not honoring the override."
+              elif [[ "$actor_permission" != "admin" && "$actor_permission" != "write" ]]; then
+                echo "'$OVERRIDE_LABEL' was applied by $label_actor ($actor_permission), who cannot authorize a merge; not honoring the override."
+              else
+                override_authorized=true
+              fi
+            fi
+
+            if [[ "$override_authorized" == "true" ]]; then
+              echo "Override label '$OVERRIDE_LABEL' applied by $label_actor ($actor_permission); skipping the review gate for $head_sha."
+              reviewed=true
+            else
+              # (a) A verdict must name THIS head. The verdict abbreviates the sha,
+              #     so match on its prefix; a pass on an older head does not count.
+              reviewed=false
+              for body in \
+                "$(gh api "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                    --jq '.[] | select(.user.login == env.REVIEW_BOT)
+                              | select(.state != "DISMISSED") | .body' 2>/dev/null || true)" \
+                "$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                    --jq '.[] | select(.user.login == env.REVIEW_BOT) | .body' 2>/dev/null || true)"
+              do
+                if printf '%s' "$body" | grep -qE "Reviewed commit:[^\`]*\`${head_sha:0:10}"; then
+                  reviewed=true
+                  break
+                fi
+              done
+
+              # (b) A verdict that REPORTS FINDINGS also names the reviewed commit, so
+              #     the sha alone is not consent — it would arm a PR whose defects were
+              #     just published. Require every inline finding to carry a reply
+              #     (fixed or explicitly dispositioned). Phrasing of the "clean" verdict
+              #     is not a contract, so it is deliberately not matched on.
+              if [[ "$reviewed" == "true" ]]; then
+                # FAIL CLOSED on retrieval failure. `|| true` here would turn a
+                # transient API or rate-limit error into an empty findings list,
+                # so the gate would arm precisely when the evidence it depends on
+                # is missing — the one moment it must not. No answer means no.
+                # Findings belonging to a DISMISSED review are withdrawn evidence too.
+                # Excluding dismissed reviews from the verdict read but NOT from here
+                # left their findings permanently unanswered, so a later clean pass on
+                # the current head could never arm — a wedge, not a false arm.
+                if ! dismissed_reviews="$(gh api "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                  --jq '.[] | select(.state == "DISMISSED") | .id')"; then
+                  echo "Could not read review states for $head_sha; failing closed."
+                  reviewed=false
+                elif ! finding_rows="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+                  --jq '.[] | select(.user.login == env.REVIEW_BOT) | select(.in_reply_to_id == null)
+                            | "\(.id) \(.pull_request_review_id // 0)"')"; then
+                  echo "Could not read review comments for $head_sha; failing closed."
+                  reviewed=false
+                # A disposition must come from someone who can actually accept the
+                # risk. Any participant can reply in a thread, so counting every
+                # non-bot reply would let an unaffiliated account clear the gate by
+                # answering each finding. This resolves each author's ACCESS, the
+                # same standard the override label is held to: `author_association`
+                # is not it, because MEMBER and COLLABORATOR describe attachment to
+                # the repository rather than write permission — on an organization,
+                # or wherever a read/triage collaborator exists, both are reachable
+                # without any ability to merge. Today these are personal-account
+                # repositories where every collaborator has write, so this is the
+                # same future-proofing as the label path, kept consistent with it
+                # rather than left as the one authorization still taken on trust.
+                elif ! reply_rows="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+                  --jq '.[] | select(.user.login != env.REVIEW_BOT) | select(.in_reply_to_id != null)
+                            | "\(.user.login) \(.in_reply_to_id)"')"; then
+                  echo "Could not read finding replies for $head_sha; failing closed."
+                  reviewed=false
+                else
+                  # One permission lookup per distinct author, not per reply. The
+                  # cache is per evaluation rather than per run, so the late
+                  # re-evaluations re-resolve access for the same reason they
+                  # re-read the replies themselves: both can be revoked.
+                  answered=""
+                  checked_authors=""
+                  authorized_authors=""
+                  while read -r reply_author reply_target; do
+                    [[ -z "$reply_author" || -z "$reply_target" ]] && continue
+                    if ! printf '%s\n' "$checked_authors" | grep -qxF "$reply_author"; then
+                      checked_authors+="$reply_author"$'\n'
+                      if ! reply_author_access="$(gh api "repos/$REPO/collaborators/$reply_author/permission" \
+                        --jq '.permission')"; then
+                        # Unreadable access is not permission. Only this author's
+                        # replies stop counting; the rest of the evidence stands.
+                        echo "Could not verify $reply_author's access; their replies do not disposition findings."
+                        reply_author_access="unreadable"
+                      fi
+                      if [[ "$reply_author_access" == "admin" || "$reply_author_access" == "write" ]]; then
+                        authorized_authors+="$reply_author"$'\n'
+                      else
+                        echo "Replies from $reply_author ($reply_author_access) do not disposition findings; that needs write access."
+                      fi
+                    fi
+                    if printf '%s\n' "$authorized_authors" | grep -qxF "$reply_author"; then
+                      answered+="$reply_target"$'\n'
+                    fi
+                  done <<< "$reply_rows"
+
+                  findings=""
+                  while read -r finding_id review_id; do
+                    [[ -z "$finding_id" ]] && continue
+                    if [[ -n "$dismissed_reviews" ]] \
+                      && printf '%s\n' "$dismissed_reviews" | grep -qxF "$review_id"; then
+                      continue
+                    fi
+                    findings+="$finding_id"$'\n'
+                  done <<< "$finding_rows"
+                  unanswered=0
+                  for finding_id in $findings; do
+                    printf '%s\n' "$answered" | grep -qxF "$finding_id" || unanswered=$((unanswered + 1))
+                  done
+                  if [[ "$unanswered" != "0" ]]; then
+                    echo "Review of $head_sha reported $unanswered unanswered finding(s); not arming."
+                    reviewed=false
+                  fi
+                fi
+              fi
+            fi
+          }
+
+          evaluate_evidence
+
+          # (c) Withdraw an arm that no longer holds. A PR reviewed at head A and
+          #     armed, then pushed to head B, previously exited at the
+          #     already-enabled check ABOVE this gate and merged head B unreviewed —
+          #     the exact failure this workflow exists to prevent.
+          if [[ "$reviewed" != "true" ]]; then
+            if [[ "$auto_merge_enabled" == "true" ]]; then
+              echo "Head $head_sha is not cleared; withdrawing the existing auto-merge."
+              gh pr merge "$pr_ref" --disable-auto
+            fi
+            # A failed stamp here is reported, not fatal: the arm is already withdrawn,
+            # which is the protection that matters, and failing the run would paint
+            # every waiting-for-review PR red — the state most PRs are in most of the
+            # time. The next event re-runs this and tries again.
+            if ! stamp_review_gate pending "Waiting for a review pass on ${head_sha:0:10}"; then
+              echo "Could not update the '$REVIEW_GATE_CONTEXT' status for $head_sha."
+            fi
+            echo "Leaving auto-merge disabled. This workflow re-runs when a review or comment lands;"
+            echo "apply the '$OVERRIDE_LABEL' label to arm without a review pass."
+            exit 0
+          fi
+
+          # Cleared: stamp BEFORE the already-armed exit below, so every path that
+          # accepts this head also records that acceptance on the head itself. A PR
+          # armed by an earlier run must still end up with the context, or the required
+          # check would block a merge this gate has already approved.
+          if ! stamp_review_gate success "Review gate cleared for ${head_sha:0:10}"; then
+            # Loud, unlike the pending case: without the context a required check has
+            # nothing to satisfy it, so the PR silently stops merging. Not withdrawing
+            # the arm — the evidence held, so the arm is legitimate; only the backstop
+            # is missing, and a queued run will re-stamp it.
+            echo "Could not post the '$REVIEW_GATE_CONTEXT' status for $head_sha."
+            echo "The verdict is not recorded on the head, so a required '$REVIEW_GATE_CONTEXT'"
+            echo "check has nothing to satisfy it. Failing so this is visible."
+            exit 1
+          fi
+
+          if [[ "$auto_merge_enabled" == "true" ]]; then
+            echo "Head $head_sha is cleared and auto-merge is already enabled."
+            exit 0
+          fi
+
+          # Re-read the revocable evidence as late as possible: a reply deleted or
+          # the override removed between the first evaluation and here would
+          # otherwise arm from a snapshot that no longer holds.
+          evaluate_evidence
+          if [[ "$reviewed" != "true" ]]; then
+            echo "Evidence changed while evaluating; not arming."
+            # Take the stamp back with it — this sha was marked cleared moments ago.
+            if ! stamp_review_gate pending "Review evidence for ${head_sha:0:10} was withdrawn"; then
+              echo "Could not withdraw the '$REVIEW_GATE_CONTEXT' status for $head_sha."
+            fi
+            exit 0
+          fi
+
+          echo "Head $head_sha is cleared; arming auto-merge."
+          # Bind the arm to the head we actually cleared. Between reading head_sha
+          # and this call, commit B can land: the arm would then apply to B on the
+          # strength of a review of A, and B could merge on green checks before the
+          # queued synchronize run withdraws it. --match-head-commit makes GitHub
+          # refuse the request unless the head is still the reviewed one.
+          gh pr merge "$pr_ref" --auto --squash --delete-branch --match-head-commit "$head_sha"
+
+          # ...and verify AFTER arming. The window cannot be closed entirely — GitHub
+          # offers no compare-and-swap on auto-merge — so it is bounded from both
+          # sides: re-check immediately, and withdraw if anything the arm rests on
+          # moved while it was being placed. A queued run would eventually correct it,
+          # but the PR could merge before that run starts.
+          #
+          # THE HEAD IS PART OF WHAT IT RESTS ON, and it must be re-read rather than
+          # trusted from the cached value. `--match-head-commit` is a precondition on
+          # the arming request alone; once placed, the arm survives later pushes —
+          # GitHub only drops it when someone WITHOUT write access pushes, and every
+          # writer here has it. A commit landing in this window therefore inherits an
+          # arm justified by a review of its parent and can merge the moment its own
+          # checks go green, which is the unreviewed merge this whole gate exists to
+          # prevent, entered from the far side. An unreadable head is treated like a
+          # moved one: an arm that cannot be justified comes off.
+          evaluate_evidence
+          if ! post_arm_head="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"; then
+            echo "Could not re-read the head after arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          if [[ "$post_arm_head" != "$head_sha" ]]; then
+            echo "Head moved from $head_sha to $post_arm_head during arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            exit 1
+          fi
+          if [[ "$reviewed" != "true" ]]; then
+            echo "Evidence was withdrawn during arming; disabling auto-merge again."
+            gh pr merge "$pr_ref" --disable-auto
+            if ! stamp_review_gate pending "Review evidence for ${head_sha:0:10} was withdrawn"; then
+              echo "Could not withdraw the '$REVIEW_GATE_CONTEXT' status for $head_sha."
+            fi
+            exit 1
+          fi
+          echo "Evidence still holds after arming $head_sha."
