@@ -27,17 +27,22 @@ on:
   workflow_dispatch:
     inputs:
       pull_request:
-        # NUMBER only. The concurrency key uses this value directly, so a URL form
-        # would key differently from the webhook runs for the same PR — they would
-        # run concurrently instead of queueing, and a stale dispatch could re-arm
-        # after a newer run withdrew the arm.
+        # NUMBER only, in CANONICAL form. The concurrency key uses this value
+        # verbatim, so it has to be the same string the webhook runs produce for the
+        # same PR — they carry `1`, never `01`. Any other spelling keys a separate
+        # group, and separate groups do not queue: a stale dispatch then runs
+        # alongside a verdict-triggered run and can stamp `pending` on a head the
+        # other run just stamped `success` and armed, leaving the required gate
+        # wedged until some later event happens to re-run it. A URL form fails the
+        # same way, and so does a zero-padded number, which is why the validation
+        # below is `^[1-9][0-9]*$` rather than "any digits".
         #
         # REQUIRED. A workflow_dispatch payload carries no pull request of its own —
         # no pull_request object, no issue number — so an omitted input leaves the
         # run with nothing to evaluate and the default manual path died at "No pull
         # request was provided." There is no meaningful fallback to invent here: the
         # dispatcher is the only source of the PR, so ask for it up front.
-        description: "Pull request NUMBER (digits only)"
+        description: "Pull request NUMBER (digits only, no leading zeros)"
         required: true
         type: string
 
@@ -119,15 +124,36 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A self-hosted runner service caches its PATH when the service starts, so a
+          # service launched before Homebrew existed — or restarted from a stale
+          # environment — executes this script without /opt/homebrew/bin, and every gh
+          # call dies with "command not found". That is not hypothetical: it took down
+          # the gate on Operator-Insights on 2026-07-29, exiting 127 on the first gh
+          # invocation with no indication of why. Export the path here so the gate
+          # depends on its own script rather than on the runner service's environment,
+          # and if the CLI is genuinely absent say so in a sentence instead of leaving
+          # a bare 127. Harmless on hosted runners, where gh is already on PATH and
+          # the prepended directories simply do not exist.
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is not on PATH for this runner."
+            echo "It must be preinstalled on self-hosted runners; hosted runners ship it."
+            exit 1
+          }
+
           if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-            # Digits only — see the input description: the concurrency key uses this
-            # verbatim, so any other form keys differently from the webhook runs for
-            # the same PR and the two would race instead of queueing. The input is
+            # CANONICAL digits — see the input description. The concurrency key uses
+            # this verbatim, so `01` is not a harmless spelling of `1`: it keys a
+            # different group from the webhook runs for the same PR, and the two then
+            # run concurrently instead of queueing. `^[0-9]+$` accepted it, and also
+            # accepted `0`, which resolves to no pull request at all. The input is
             # required, so an empty value means the dispatch itself was malformed;
             # say that here rather than falling through to the webhook branches,
             # which carry no pull request at all on this event.
-            if [[ ! "${INPUT_PR:-}" =~ ^[0-9]+$ ]]; then
-              echo "Pull request input must be a number (got '${INPUT_PR:-}')."
+            if [[ ! "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Pull request input must be a number with no leading zeros (got '${INPUT_PR:-}')."
+              echo "The concurrency key uses this value verbatim, so '01' would run alongside"
+              echo "the webhook runs for pull request 1 instead of queueing behind them."
               exit 1
             fi
             pr_ref="https://github.com/$REPO/pull/$INPUT_PR"
