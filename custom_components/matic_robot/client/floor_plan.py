@@ -110,12 +110,23 @@ def decode_pose(payload: bytes) -> RobotPose:
     try:
         add_message = first_bytes(payload, 2)
         pose_info = first_bytes(add_message, 1)
-        translation = packed_floats(first_bytes(pose_info, 1), 3)
+        components = tuple(
+            field.value
+            for field in decode_fields(pose_info)
+            if field.number == 1
+            and field.wire_type in (2, 5)
+            and isinstance(field.value, bytes)
+        )
+        if len(components) == 1:
+            translation = packed_floats(components[0], 3)
+        elif len(components) >= 3:
+            translation = tuple(packed_floats(value, 1)[0] for value in components[:3])
+        else:
+            raise DecodeError("pose translation is incomplete")
     except DecodeError:
-        # Current v168 firmware stores the same three-float translation under
-        # field 5 -> field 1. Keep the original layout for older fixtures and
-        # accept only this second live-verified path rather than scanning for a
-        # plausible vector and risking a quaternion or unrelated map value.
+        # An earlier observed layout stores the packed translation under field
+        # 5 -> field 1. Accept only this verified fallback rather than scanning
+        # for a plausible vector and risking a quaternion or unrelated value.
         pose_info = first_bytes(payload, 5)
         translation = packed_floats(first_bytes(pose_info, 1), 3)
     return RobotPose(x=translation[0], y=translation[1], z=translation[2])
@@ -182,12 +193,16 @@ def render_floor_plan(
         (width - 2 * padding) / max(max_x - min_x, 0.1),
         (height - 2 * padding) / max(max_y - min_y, 0.1),
     )
+    rendered_width = (max_x - min_x) * scale
+    rendered_height = (max_y - min_y) * scale
+    origin_x = (width - rendered_width) / 2
+    origin_y = (height - rendered_height) / 2
 
     def project(value: tuple[float, float]) -> tuple[float, float]:
         x, y = value
         return (
-            padding + (x - min_x) * scale,
-            height - padding - (y - min_y) * scale,
+            origin_x + (x - min_x) * scale,
+            height - origin_y - (y - min_y) * scale,
         )
 
     # Semi-transparent fills only blend if drawn onto their own RGBA layer and

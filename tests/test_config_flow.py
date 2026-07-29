@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import socket
 from base64 import b64encode
+from dataclasses import replace
 from ipaddress import ip_address
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import voluptuous as vol
 from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 from homeassistant.helpers.service_info.zeroconf import ZeroconfServiceInfo
@@ -15,6 +17,10 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from zeroconf import ServiceStateChange
 
 from custom_components.matic_robot import config_flow as flow_module
+from custom_components.matic_robot.area_binding import (
+    AREA_SCHEMA_VERSION,
+    binding_for_floor_plan,
+)
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.proto.hermes_bot_info_pb2 import (
@@ -478,27 +484,24 @@ async def test_automatic_pairing_retries_until_the_window_opens(monkeypatch) -> 
     assert create.await_count == 2
 
 
-async def test_expired_code_renews_with_a_fresh_bond_and_exchange(monkeypatch) -> None:
+async def test_expired_code_requires_a_fresh_pairing_window(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
     exchanges = []
 
     async def fake_create(_data, _step):
         exchange = flow._passkey_exchange
         assert exchange is not None
         exchanges.append(exchange)
-        if len(exchanges) == 1:
-            request = asyncio.create_task(exchange.async_request_passkey())
-            await exchange.async_wait_until_requested()
-            exchange.cancel()
-            await asyncio.gather(request, return_exceptions=True)
-            return {
-                "type": FlowResultType.FORM,
-                "step_id": "pair",
-                "errors": {"base": "pairing_incomplete"},
-            }
-        return expected
+        request = asyncio.create_task(exchange.async_request_passkey())
+        await exchange.async_wait_until_requested()
+        exchange.cancel()
+        await asyncio.gather(request, return_exceptions=True)
+        return {
+            "type": FlowResultType.FORM,
+            "step_id": "pair",
+            "errors": {"base": "pairing_incomplete"},
+        }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
     monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
@@ -508,33 +511,30 @@ async def test_expired_code_renews_with_a_fresh_bond_and_exchange(monkeypatch) -
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result == expected
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["errors"] == {"base": "pairing_code_expired"}
     assert flow._pairing_retry_note == "pairing_code_expired"
-    assert len(exchanges) == 2
-    assert exchanges[0] is not exchanges[1]
+    assert len(exchanges) == 1
 
 
-async def test_rejected_code_renews_and_notes_the_rejection(monkeypatch) -> None:
+async def test_rejected_code_requires_a_fresh_pairing_window(monkeypatch) -> None:
     flow = MaticRobotConfigFlow()
     flow._pairing_data = {"host": "robot.invalid", "port": 16320}
-    expected = {"type": FlowResultType.CREATE_ENTRY, "title": "Matic", "data": {}}
     attempts = []
 
     async def fake_create(_data, _step):
         exchange = flow._passkey_exchange
         assert exchange is not None
         attempts.append(exchange)
-        if len(attempts) == 1:
-            request = asyncio.create_task(exchange.async_request_passkey())
-            await exchange.async_wait_until_requested()
-            exchange.submit(123456)
-            assert await request == 123456
-            return {
-                "type": FlowResultType.FORM,
-                "step_id": "pair",
-                "errors": {"base": "pairing_incomplete"},
-            }
-        return expected
+        request = asyncio.create_task(exchange.async_request_passkey())
+        await exchange.async_wait_until_requested()
+        exchange.submit(123456)
+        assert await request == 123456
+        return {
+            "type": FlowResultType.FORM,
+            "step_id": "pair",
+            "errors": {"base": "pairing_incomplete"},
+        }
 
     monkeypatch.setattr(flow, "_async_create_or_error", fake_create)
     monkeypatch.setattr(flow, "async_update_progress", lambda progress: None)
@@ -544,9 +544,10 @@ async def test_rejected_code_renews_and_notes_the_rejection(monkeypatch) -> None
 
     await flow._async_wait_for_pairing()
 
-    assert flow._pairing_result == expected
+    assert flow._pairing_result is not None
+    assert flow._pairing_result["errors"] == {"base": "pairing_code_rejected"}
     assert flow._pairing_retry_note == "pairing_code_rejected"
-    assert len(attempts) == 2
+    assert len(attempts) == 1
 
 
 async def test_pairing_form_progress_completion_and_finish(hass, monkeypatch) -> None:
@@ -671,9 +672,8 @@ async def test_pairing_code_resubmission_waits_for_the_live_bond(hass) -> None:
 
     progress = await flow.async_step_pairing_code({"passkey": "654321"})
     assert progress["type"] is FlowResultType.SHOW_PROGRESS
+    assert progress["progress_task"] is flow._pairing_task
     await flow._pairing_task
-    assert flow._pairing_checkpoint_task is not None
-    await flow._pairing_checkpoint_task
     done = await flow.async_step_pairing_code()
     assert done["type"] is FlowResultType.SHOW_PROGRESS_DONE
 
@@ -836,8 +836,8 @@ async def _options_entry(hass):
         partition_protocol_id="partition",
         partition_id_wire=b"partition",
         rooms=(
-            Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 1))),
-            Room("room-2", "Study", "two", b"two", ((1, 1), (2, 2))),
+            Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 0), (1, 1))),
+            Room("room-2", "Study", "two", b"two", ((1, 0), (2, 0), (2, 1))),
         ),
     )
     await manager.async_save_plan(
@@ -901,6 +901,15 @@ def _direct_options_flow(hass, entry) -> MaticRobotOptionsFlow:
     flow.hass = hass
     flow.handler = entry.entry_id
     return flow
+
+
+def _form_defaults(result) -> dict[str, object]:
+    """Return concrete defaults from one options-flow form schema."""
+    return {
+        str(marker.schema): marker.default()
+        for marker in result["data_schema"].schema
+        if marker.default is not vol.UNDEFINED
+    }
 
 
 async def _start_options_step(hass, entry, step: str):
@@ -1094,10 +1103,286 @@ async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None
     assert result["errors"]["name"] == "duplicate_plan"
 
 
+async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    assert result["step_id"] == "add_area"
+    area_marker = list(result["data_schema"].schema)[1]
+    area_selector = result["data_schema"].schema[area_marker]
+    assert area_selector.config["scene_url"] == (
+        f"/api/matic_robot/slam_scene/{entry.entry_id}"
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    assert result["step_id"] == "area_menu"
+    saved = manager.area("synthetic-serial", "Litter box")
+    assert saved["circles"] == [{"x": 0.5, "y": 0.5, "radius": 0.35}]
+    assert saved["schema_version"] == AREA_SCHEMA_VERSION
+    assert saved["map_binding"] == binding_for_floor_plan(
+        entry.runtime_data.coordinator.data.floor_plan
+    )
+
+    result = await _select_menu_step(hass, result, "edit_area")
+    assert _form_defaults(result)["area_editor"] == [
+        {"x": 0.5, "y": 0.5, "radius": 0.35}
+    ]
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter station",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        },
+    )
+    assert manager.area("synthetic-serial", "litter_box")["name"] == ("Litter station")
+
+    result = await _select_menu_step(hass, result, "delete_area")
+    assert result["step_id"] == "delete_area"
+    result = await hass.config_entries.options.async_configure(result["flow_id"], {})
+    assert result["step_id"] == "add_area"
+    assert manager.areas("synthetic-serial") == {}
+
+
+async def test_custom_area_editor_blocks_map_changes_and_rebinds_after_redraw(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    original = entry.runtime_data.coordinator.data.floor_plan
+    entry.runtime_data.coordinator.data.floor_plan = replace(original, mission_id=2)
+    values = {
+        "name": "Table",
+        "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+
+    assert result["step_id"] == "add_area"
+    assert result["errors"] == {"base": "area_map_changed"}
+    defaults = _form_defaults(result)
+    assert defaults["name"] == "Table"
+    assert defaults["cleaning_mode"] == "vacuum"
+    assert defaults["coverage_setting"] == "standard"
+    assert defaults["area_editor"] == []
+    assert manager.areas("synthetic-serial") == {}
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], values
+    )
+    assert result["step_id"] == "area_menu"
+    assert manager.area("synthetic-serial", "table")["map_binding"] == (
+        binding_for_floor_plan(entry.runtime_data.coordinator.data.floor_plan)
+    )
+
+
+async def test_custom_area_editor_requires_a_live_drawable_map(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    entry.runtime_data.coordinator.data.floor_plan = None
+
+    result = await _start_options_step(hass, entry, "manage_areas")
+
+    assert result["step_id"] == "add_area"
+    assert result["errors"] == {"base": "room_plan_unavailable"}
+    assert result["data_schema"].schema == {}
+    assert result["description_placeholders"] == {"area_status": "Map unavailable"}
+    assert manager.areas("synthetic-serial") == {}
+
+    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
+        1, "partition", b"partition", ()
+    )
+    flow = _direct_options_flow(hass, entry)
+    invalid = await flow.async_step_add_area()
+    assert invalid["errors"] == {"base": "room_plan_unavailable"}
+    assert invalid["data_schema"].schema == {}
+
+
+async def test_custom_area_editor_blocks_when_map_disappears_before_submit(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "manage_areas")
+    entry.runtime_data.coordinator.data.floor_plan = None
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Table",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+
+    assert result["errors"] == {"base": "room_plan_unavailable"}
+    assert result["data_schema"].schema == {}
+    assert manager.areas("synthetic-serial") == {}
+
+
+async def test_legacy_area_is_labeled_and_must_be_redrawn_on_current_map(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+    assert flow._area_options() == [{"value": "litter_box", "label": "⚠ Litter box"}]
+    flow._area_id = "litter_box"
+
+    menu = await flow.async_step_area_menu()
+    assert menu["description_placeholders"] == {
+        "area_name": "Litter box",
+        "area_status": "Redraw required",
+    }
+    form = await flow.async_step_edit_area()
+    defaults = _form_defaults(form)
+    assert defaults == {
+        "name": "Litter box",
+        "area_editor": [],
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "quick",
+    }
+    assert form["description_placeholders"] == {"area_status": "Redraw required"}
+
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        }
+    )
+    assert result["step_id"] == "area_menu"
+    saved = manager.area("synthetic-serial", "litter_box")
+    assert saved["circles"] == [{"x": 0.6, "y": 0.5, "radius": 0.4}]
+    assert saved["schema_version"] == AREA_SCHEMA_VERSION
+    assert saved["map_binding"] == binding_for_floor_plan(
+        entry.runtime_data.coordinator.data.floor_plan
+    )
+
+
+@pytest.mark.parametrize(
+    ("replacement", "error"),
+    [
+        (None, "room_plan_unavailable"),
+        ("changed", "area_map_changed"),
+    ],
+)
+async def test_custom_area_edit_rechecks_map_before_overwriting_saved_geometry(
+    hass, replacement, error
+) -> None:
+    entry, manager = await _options_entry(hass)
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    original = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "name": "Litter box",
+        "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "map_binding": binding_for_floor_plan(floor_plan),
+    }
+    await manager.async_save_area("synthetic-serial", "litter_box", original)
+    flow = _direct_options_flow(hass, entry)
+    flow._area_id = "litter_box"
+    await flow.async_step_edit_area()
+    entry.runtime_data.coordinator.data.floor_plan = (
+        None if replacement is None else replace(floor_plan, mission_id=2)
+    )
+
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Changed name",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        }
+    )
+
+    assert result["errors"] == {"base": error}
+    assert manager.area("synthetic-serial", "litter_box") == {
+        "id": "litter_box",
+        **original,
+    }
+
+
+async def test_options_flow_rejects_duplicate_custom_area_name(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    result = await _start_options_step(hass, entry, "manage_areas")
+    result = await _select_menu_step(hass, result, "add_area")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    assert result["errors"]["name"] == "duplicate_area"
+
+
+async def test_custom_area_flow_chooser_and_missing_context_recover(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+
+    chooser = await flow.async_step_choose_area()
+    assert chooser["step_id"] == "choose_area"
+    menu = await flow.async_step_choose_area({"area": "litter_box"})
+    assert menu["step_id"] == "area_menu"
+
+    for step in (
+        flow.async_step_area_menu,
+        flow.async_step_edit_area,
+        flow.async_step_delete_area,
+    ):
+        flow._area_id = None
+        recovered = await step()
+        assert recovered["step_id"] == "choose_area"
+
+
 async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> None:
     entry, manager = await _options_entry(hass)
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["description_placeholders"] == {
+        "area_count": "0",
         "plan_count": "1",
         "room_count": "2",
         "selected_plan": "Whole home",
@@ -1115,9 +1400,9 @@ async def test_options_flow_guides_selection_switching_and_safe_delete(hass) -> 
     result = await _select_menu_step(hass, result, "delete_plan")
     assert result["type"] is FlowResultType.FORM
     result = await hass.config_entries.options.async_configure(result["flow_id"], {})
-    # Deleting the only plan lands on the creation screen directly.
-    assert result["type"] is FlowResultType.FORM
-    assert result["step_id"] == "add_plan"
+    # Drawn areas remain available even when no room plan exists.
+    assert result["type"] is FlowResultType.MENU
+    assert result["step_id"] == "init"
     assert manager.plans("synthetic-serial") == {}
 
 

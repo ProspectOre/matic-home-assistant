@@ -2,6 +2,8 @@
 
 from pathlib import Path
 
+import pytest
+
 from scripts.check_public_tree import scan_file, scan_tree
 
 
@@ -76,3 +78,55 @@ def test_privacy_scan_ignores_local_and_non_routable_addresses(
     )
 
     assert scan_file(candidate, tmp_path) == []
+
+
+@pytest.mark.parametrize(
+    "filename",
+    ("house.png", "room.webp", "slam.npz", "map.sqlite3", "capture.pcapng"),
+)
+def test_privacy_scan_rejects_household_map_artifacts(
+    tmp_path: Path, filename: str
+) -> None:
+    """Treat household imagery and persisted map stores as private by default."""
+    candidate = tmp_path / filename
+    candidate.write_bytes(b"synthetic private-map placeholder")
+
+    assert any(
+        "private artifact type" in item for item in scan_file(candidate, tmp_path)
+    )
+
+
+def test_privacy_scan_allows_only_reviewed_public_brand_rasters(
+    tmp_path: Path,
+) -> None:
+    """Allow packaged brand art without broadly allowing household PNG files."""
+    candidate = tmp_path / "custom_components" / "matic_robot" / "brand" / "icon.png"
+    candidate.parent.mkdir(parents=True)
+    candidate.write_bytes(b"synthetic public brand icon")
+
+    assert scan_file(candidate, tmp_path) == []
+
+
+def test_privacy_scan_rejects_home_assistant_storage(tmp_path: Path) -> None:
+    """Reject persisted plans and map coordinates regardless of file suffix."""
+    candidate = tmp_path / ".storage" / "matic_robot.slam_map"
+    candidate.parent.mkdir()
+    candidate.write_text('{"synthetic_map_coordinate": [1, 2]}')
+
+    assert scan_file(candidate, tmp_path) == [
+        ".storage/matic_robot.slam_map: private Home Assistant storage"
+    ]
+
+
+@pytest.mark.parametrize(
+    "generated_directory", ("node_modules", "playwright-report", "test-results")
+)
+def test_privacy_scan_skips_generated_browser_artifacts(
+    tmp_path: Path, generated_directory: str
+) -> None:
+    """Do not scan generated browser dependencies, reports, or screenshots."""
+    generated = tmp_path / generated_directory / "generated.txt"
+    generated.parent.mkdir(parents=True)
+    generated.write_text("host=" + ".".join(("192", "168", "50", "12")))
+
+    assert scan_tree(tmp_path) == []

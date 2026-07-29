@@ -7,10 +7,12 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.matic_robot.bluetooth_pairing import (
     BluetoothPairingIncompleteError,
+    BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
 )
 from custom_components.matic_robot.client.auth import HermesCredential
@@ -575,12 +577,18 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
         ).SerializeToString(),
     )
     received_passkey = None
+    replaced_existing_bond = False
 
     async def request_credential(
-        _hass, _user_id, passkey_exchange=None, stage_callback=None
+        _hass,
+        _user_id,
+        passkey_exchange=None,
+        stage_callback=None,
+        **_kwargs,
     ):
-        nonlocal received_passkey
+        nonlocal received_passkey, replaced_existing_bond
         assert passkey_exchange is not None
+        replaced_existing_bond = _kwargs.get("replace_existing_bond", False)
         received_passkey = await passkey_exchange.async_request_passkey()
         return credential
 
@@ -610,6 +618,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     verifying = await flow.async_step_pairing_code({"passkey": "012345"})
     assert verifying["type"] is FlowResultType.SHOW_PROGRESS
     assert flow._pairing_task is not None
+    assert verifying["progress_task"] is flow._pairing_task
     await flow._pairing_task
     assert flow._pairing_checkpoint_task is not None
     await flow._pairing_checkpoint_task
@@ -619,6 +628,7 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
 
     assert result["reason"] == "reauth_successful"
     assert received_passkey == 12345
+    assert replaced_existing_bond is True
     flow._async_verify_existing_robot.assert_awaited_once()
     assert flow.async_update_reload_and_abort.call_args.kwargs["data_updates"] == {
         CONF_HERMES_CREDENTIAL: credential.to_storage()
@@ -626,6 +636,58 @@ async def test_reauthentication_pauses_for_the_code_shown_on_matic(
     flow.async_set_unique_id.assert_awaited_once_with("synthetic")
     flow._abort_if_unique_id_mismatch.assert_called_once_with()
     assert flow._pairing_task is None
+
+
+async def test_reauthentication_retries_after_clearing_stale_bond(
+    hass, monkeypatch
+) -> None:
+    flow = _flow(hass)
+    request = AsyncMock(
+        side_effect=[
+            BluetoothPairingResetError("cleared"),
+            TEST_CREDENTIAL,
+        ]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        request,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.asyncio.sleep", AsyncMock()
+    )
+    flow.async_update_progress = MagicMock()
+
+    assert await flow._async_reauth_credential() == TEST_CREDENTIAL
+    assert request.await_count == 2
+    assert flow._pairing_diagnostic == "cleared"
+
+
+async def test_reauthentication_stops_after_submitted_code_fails(
+    hass, monkeypatch
+) -> None:
+    flow = _flow(hass)
+
+    async def reject_code(
+        _hass,
+        _user_id,
+        passkey_exchange=None,
+        **_kwargs,
+    ):
+        assert passkey_exchange is not None
+        pending = asyncio.create_task(passkey_exchange.async_request_passkey())
+        await passkey_exchange.async_wait_until_requested()
+        passkey_exchange.submit(123456)
+        assert await pending == 123456
+        raise BluetoothPairingIncompleteError("rejected")
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        reject_code,
+    )
+
+    with pytest.raises(BluetoothPairingIncompleteError, match="rejected"):
+        await flow._async_reauth_credential()
+    assert flow._pairing_retry_note == "pairing_code_rejected"
 
 
 @pytest.mark.parametrize(
@@ -686,8 +748,13 @@ async def test_reconfigure_verifies_pinned_robot_before_saving(hass) -> None:
         }
     )
 
-    assert (await flow.async_step_reconfigure())["step_id"] == "reconfigure"
-    result = await flow.async_step_reconfigure({"host": "192.0.2.2", "port": 16320})
+    menu = await flow.async_step_reconfigure()
+    assert menu["type"] is FlowResultType.MENU
+    assert menu["menu_options"] == ["update_address", "replace_local_access"]
+
+    form = await flow.async_step_update_address()
+    assert form["step_id"] == "update_address"
+    result = await flow.async_step_update_address({"host": "192.0.2.2", "port": 16320})
 
     assert result["reason"] == "reconfigure_successful"
     flow._async_verify_existing_robot.assert_awaited_once()
@@ -714,9 +781,35 @@ async def test_reconfigure_keeps_existing_address_after_errors(
     flow._get_reconfigure_entry = lambda: SimpleNamespace(data=ENTRY_DATA)
     flow._async_verify_existing_robot = AsyncMock(side_effect=error)
 
-    result = await flow.async_step_reconfigure({"host": "192.0.2.2", "port": 16320})
+    result = await flow.async_step_update_address({"host": "192.0.2.2", "port": 16320})
 
     assert result["errors"] == {"base": expected}
+
+
+async def test_reconfigure_can_replace_local_access(hass) -> None:
+    flow = _flow(hass)
+    flow.context["source"] = config_entries.SOURCE_RECONFIGURE
+    entry = SimpleNamespace(data=ENTRY_DATA, unique_id="synthetic")
+    flow._get_reconfigure_entry = lambda: entry
+    flow._async_reauth_credential = AsyncMock(return_value=TEST_CREDENTIAL)
+    flow._async_verify_existing_robot = AsyncMock()
+    expected = {
+        "type": FlowResultType.ABORT,
+        "reason": "reauth_successful",
+    }
+    flow.async_update_reload_and_abort = MagicMock(return_value=expected)
+
+    form = await flow.async_step_replace_local_access()
+    assert form["step_id"] == "reauth_confirm"
+    await flow._async_reauth()
+
+    assert flow._pairing_result == expected
+    flow._async_verify_existing_robot.assert_awaited_once()
+    flow.async_update_reload_and_abort.assert_called_once_with(
+        entry,
+        data_updates={CONF_HERMES_CREDENTIAL: TEST_CREDENTIAL.to_storage()},
+        reason="reauth_successful",
+    )
 
 
 async def test_existing_robot_verification_reuses_every_pinned_field(

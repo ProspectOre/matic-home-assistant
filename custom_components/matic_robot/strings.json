@@ -1,23 +1,194 @@
 {
   "common": {
+    "area_added": "Cleaning area updated.",
+    "area_draw_help": "Paint over the floor to clean. Tap for a spot or drag for a path.",
+    "area_editor_intro": "Paint over the floor you want the robot to clean.",
+    "area_editor_title": "Create cleaning area",
+    "area_erase": "Erase",
+    "area_erase_help": "Brush over the highlight to remove it.",
+    "area_layer_photo": "Photo",
+    "area_layer_rooms": "Rooms",
+    "area_confirm_delete": "Confirm delete",
+    "area_delete": "Delete",
+    "area_map": "Custom cleaning area map",
+    "area_map_controls": "Map controls",
+    "area_map_layer": "Map appearance",
+    "area_marks": "brush points",
+    "area_name": "Area name",
+    "area_new": "New area",
+    "area_not_selected": "Paint an area to continue",
+    "area_outside_map": "Paint inside a mapped room.",
+    "area_paint": "Paint",
+    "area_pan_help": "Drag to move the map. Scroll or pinch to zoom.",
+    "area_photo_loading": "Loading private photo map…",
+    "area_photo_ready": "Private photo map",
+    "area_photo_refresh": "Refresh photo map",
+    "area_photo_unavailable": "Photo map unavailable · showing rooms",
+    "area_run": "Clean now",
+    "area_save": "Save area",
+    "area_settings": "Cleaning settings",
+    "area_selected": "Area selected",
+    "area_workspace_close": "Back to map",
+    "area_workspace_count": "{count} saved areas",
+    "area_workspace_delete_failed": "Area could not be deleted",
+    "area_workspace_empty": "No saved areas yet",
+    "area_workspace_incomplete": "Add a name and paint an area",
+    "area_workspace_loading": "Loading custom cleaning areas…",
+    "area_workspace_ready": "Ready",
+    "area_workspace_redraw": "Redraw required",
+    "area_workspace_run_failed": "Robot is unavailable",
+    "area_workspace_save_failed": "Area could not be saved",
+    "area_workspace_saved": "Area saved",
+    "area_workspace_saving": "Saving area…",
+    "area_workspace_started": "Area cleaning started",
+    "area_workspace_title": "Custom cleaning areas",
+    "area_workspace_unavailable": "Custom cleaning areas are unavailable",
+    "brush_size": "Brush width",
+    "clear": "Clear",
+    "cleaning_workspace_areas": "Custom areas",
+    "cleaning_workspace_close": "Back to map",
+    "cleaning_workspace_plans": "Plans",
+    "cleaning_workspace_title": "Cleaning",
+    "cleaning_workspace_unavailable": "Cleaning workspace is unavailable",
     "cleaning_mode": "Cleaning mode",
     "coverage": "Coverage",
+    "draw": "Draw",
+    "done_editing": "Done editing",
     "drag_room": "Drag {room}",
+    "fit_map": "Fit map",
+    "focus_room": "Focus room",
+    "all_rooms": "All rooms",
+    "expand_map": "Full screen",
+    "exit_fullscreen": "Close full screen",
     "include_room": "Include {room}",
     "mop": "Mop",
+    "move_map": "Move map",
     "move_room_down": "Move {room} down",
     "move_room_up": "Move {room} up",
+    "plan_confirm_delete": "Confirm delete",
+    "plan_delete": "Delete",
+    "plan_editor_intro": "Choose the rooms, order, and stop behavior for this plan.",
+    "plan_editor_title": "Cleaning plan",
+    "plan_enabled": "Plan enabled",
+    "plan_enabled_hint": "Allow this plan to run from Home Assistant.",
+    "plan_finish_room": "Finish current room when stopping",
+    "plan_finish_room_hint": "Never starts another room after a stop request.",
+    "plan_intelligent": "Intelligent rotation",
+    "plan_name": "Plan name",
+    "plan_new": "New plan",
+    "plan_ordered": "Saved order",
+    "plan_return_to_base": "Return to dock when finished",
+    "plan_return_to_base_hint": "Dock after the last selected room.",
+    "plan_rooms": "Rooms",
+    "plan_rooms_hint": "Turn rooms on, then drag to set saved order.",
+    "plan_run": "Run now",
+    "plan_run_behavior": "Cleaning order",
+    "plan_save": "Save plan",
+    "plan_select": "Set as default",
+    "plan_threshold": "Finish threshold",
+    "plan_threshold_hint": "Finish only when estimated progress reaches this percentage.",
+    "plan_workspace_count": "{count} saved plans",
+    "plan_workspace_delete_failed": "Plan could not be deleted",
+    "plan_workspace_incomplete": "Add a name and at least one room",
+    "plan_workspace_loading": "Loading plans…",
+    "plan_workspace_run_failed": "Plan could not be started",
+    "plan_workspace_save_failed": "Plan could not be saved",
+    "plan_workspace_saved": "Plan saved",
+    "plan_workspace_saving": "Saving plan…",
+    "plan_workspace_select_failed": "Default plan could not be updated",
+    "plan_workspace_selected": "Default plan updated",
+    "plan_workspace_started": "Plan started",
+    "plan_workspace_unavailable": "Plans are unavailable",
     "quick": "Quick",
+    "redo": "Redo",
     "room_editor_intro": "Turn on rooms to include them. Drag or use the arrows to set the cleaning order.",
     "standard": "Standard",
+    "undo": "Undo",
     "vacuum": "Vacuum",
-    "vacuum_and_mop": "Vacuum + mop"
+    "vacuum_and_mop": "Vacuum + mop",
+    "zoom_in": "Zoom in",
+    "zoom_out": "Zoom out",
+    "map_actions_label": "Map actions",
+    "map_camera_controls": "Map camera controls",
+    "map_canvas_aria": "Matic local 3D SLAM scene",
+    "map_cleaning_areas": "Cleaning",
+    "map_custom_areas_hint": "Manage plans and custom cleaning areas",
+    "map_empty_load_error": "The local map could not be loaded. Try Refresh after reconnecting.",
+    "map_empty_loading": "Loading the private local map…",
+    "map_empty_waiting": "The local map will appear when the Matic integration is ready.",
+    "map_fallback_alt": "Matic local fallback map",
+    "map_gesture_help": "Drag to orbit · Shift-drag to pan · scroll or pinch to zoom · 0 fits map",
+    "map_gesture_help_rooms": "Use Refresh for the newest room map · F enters full screen",
+    "map_gesture_help_top": "Drag to pan · scroll or pinch to zoom · twist to rotate · 0 fits map",
+    "map_health_building": "Map building",
+    "map_health_error": "Map stream needs attention",
+    "map_health_limited": "Map cache limit reached",
+    "map_health_live": "Live",
+    "map_health_ready": "Ready",
+    "map_health_updated": "Updated {relative}",
+    "map_help": "Map help",
+    "map_home_view": "Fit map",
+    "map_labels": "Room overlay",
+    "map_rooms": "Rooms",
+    "map_loading": "Loading…",
+    "map_more": "More map options",
+    "map_quality_auto": "Auto detail",
+    "map_quality_balanced": "Balanced",
+    "map_quality_efficient": "Efficient",
+    "map_quality_label": "Scene detail",
+    "map_quality_maximum": "Maximum",
+    "map_refresh": "Refresh map",
+    "map_resolution_full": "{points} pts · 1.5 cm",
+    "map_resolution_sampled": "{rendered} of {total} pts · 1.5 cm",
+    "map_room_default": "Room",
+    "map_robot_position": "Robot position · {source}",
+    "map_rotate_left": "Rotate left",
+    "map_rotate_right": "Rotate right",
+    "map_sampling_adaptive": "adaptive 1:{step} sampling",
+    "map_sampling_all": "full capture",
+    "map_scene_zoom": "Scene zoom",
+    "map_style_label": "2D map style",
+    "map_style_photo": "Photo map",
+    "map_status_building_scene": "Building local map · {points} points",
+    "map_status_full_scene": "{points} points · {sampling}",
+    "map_status_historical": "Map captured {time}",
+    "map_status_history_unavailable": "This map checkpoint is unavailable",
+    "map_status_loading_data": "Loading local 3D data…",
+    "map_status_loading_scene": "Loading local map…",
+    "map_status_no_map": "No local map data is available yet",
+    "map_status_image_retained": "Showing the last local map · reconnecting…",
+    "map_status_image_unavailable": "Local map image is unavailable",
+    "map_status_room_map": "Live labeled room map",
+    "map_status_scene_collecting": "Building local 3D scene · showing the local map",
+    "map_status_scene_fallback": "3D scene is not ready · showing the local map",
+    "map_status_stable_live": "Live robot position · showing the last complete map while new map data builds",
+    "map_status_rendering_fallback": "3D rendering paused · showing the local map",
+    "map_status_scene_retained": "Showing the last local 3D scene · reconnecting…",
+    "map_studio_privacy": "Live, local and private",
+    "map_studio_title": "Matic map",
+    "map_timeline_earlier": "Earlier map",
+    "map_timeline_empty": "No saved map snapshots yet. The live map is current.",
+    "map_timeline_history": "History",
+    "map_timeline_label": "Map timeline",
+    "map_timeline_later": "Later map",
+    "map_timeline_live": "Live map",
+    "map_timeline_live_action": "Live",
+    "map_timeline_position": "Map point in time",
+    "map_tilt_down": "Lower viewing angle",
+    "map_tilt_up": "Raise viewing angle",
+    "map_view_3d": "3D",
+    "map_view_label": "Map view",
+    "map_view_rooms": "Room map",
+    "map_view_top": "2D",
+    "map_viewport_aria": "Interactive Matic 3D map",
+    "map_viewport_aria_rooms": "Matic labeled room map",
+    "map_viewport_aria_top": "Interactive top-down Matic map"
   },
   "config": {
     "abort": {
       "already_configured": "This robot is already set up.",
       "already_in_progress": "Setup is already running — return to the open dialog.",
-      "bluetooth_unavailable": "Pairing needs a Bluetooth adapter built into or plugged into this Home Assistant machine — Bluetooth proxies cannot run setup. Resolve any Bluetooth repair under Settings → System → Repairs, then try again.",
+      "bluetooth_unavailable": "Pairing needs a local Bluetooth adapter; proxies cannot complete setup. For Home Assistant Container, verify host BlueZ, /run/dbus, NET_ADMIN, and NET_RAW. Resolve any Bluetooth Repair, then retry.",
       "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then start setup again.",
       "invalid_certificate": "The robot's identity could not be verified.",
       "invalid_credential": "The robot rejected the saved local access.",
@@ -26,13 +197,13 @@
       "reconfigure_successful": "Robot address updated."
     },
     "error": {
-      "bluetooth_unavailable": "Pairing needs a Bluetooth adapter built into or plugged into this Home Assistant machine — Bluetooth proxies cannot run setup. Resolve any Bluetooth repair under Settings → System → Repairs, then try again.",
+      "bluetooth_unavailable": "Pairing needs a local Bluetooth adapter; proxies cannot complete setup. For Home Assistant Container, verify host BlueZ, /run/dbus, NET_ADMIN, and NET_RAW. Resolve any Bluetooth Repair, then retry.",
       "cannot_connect": "Could not connect to the robot. Check that it is powered on and on the same network, then try again.",
       "invalid_certificate": "The robot's identity could not be verified.",
       "invalid_credential": "The robot rejected the saved local access. Pairing again will issue a new one.",
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
-      "pairing_code_expired": "That code expired, so a new pairing was started. Enter the new code the robot is showing right away.",
-      "pairing_code_rejected": "The robot did not accept that code, so a new pairing was started. Enter the new code the robot is showing right away.",
+      "pairing_code_expired": "That code expired. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
+      "pairing_code_rejected": "Matic did not accept that code. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
       "pairing_incomplete": "Pairing started but did not finish. Keep the robot near Home Assistant's Bluetooth adapter, turn Pairing mode off and on, then try again.",
       "pairing_mode_confirmation_required": "Turn on Pairing mode first, then check the box to continue.",
       "pairing_mode_off": "Home Assistant's local Bluetooth adapter did not receive a fresh pairing advertisement. Turn Pairing mode off and on, put the adapter within a few feet of Matic with minimal obstruction, temporarily disable Bluetooth proxies, then try again.",
@@ -80,13 +251,21 @@
         "title": "Enter the code shown on Matic"
       },
       "reauth_confirm": {
-        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it before replacing its local access.",
+        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. Home Assistant will replace its saved credential after you enter the six-digit code shown on the robot. Matic does not expose individual credential revocation in the app.",
         "data": {
           "pairing_mode_enabled": "Pairing mode is on"
         },
         "title": "Restore local access"
       },
       "reconfigure": {
+        "description": "Choose what to update without removing the integration.",
+        "title": "Manage Matic connection",
+        "menu_options": {
+          "update_address": "Update robot address",
+          "replace_local_access": "Pair Home Assistant again"
+        }
+      },
+      "update_address": {
         "data": {
           "host": "Host",
           "port": "Port"
@@ -108,18 +287,87 @@
     "error": {
       "confirmation_required": "Check the confirmation box to continue.",
       "duplicate_plan": "Use a unique plan name with at least one letter or number.",
+      "duplicate_area": "Use a unique area name with at least one letter or number.",
+      "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
-      "no_rooms": "Turn on at least one room."
+      "no_rooms": "Turn on at least one room.",
+      "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
+      "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map."
     },
     "step": {
       "init": {
         "title": "Cleaning plans",
-        "description": "Reusable room plans for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}.",
+        "description": "Reusable room plans and drawn areas for dashboards and automations. Default plan: {selected_plan}. Saved plans: {plan_count}. Saved areas: {area_count}.",
         "menu_options": {
           "manage_plan": "Manage a plan",
           "add_plan": "Create a plan",
+          "manage_areas": "Custom cleaning areas",
           "finish": "Done"
         }
+      },
+      "manage_areas": {
+        "title": "Custom cleaning areas",
+        "description": "Saved areas: {area_count}. Draw a small area once, then use its name in automations.",
+        "menu_options": {
+          "choose_area": "Manage an area",
+          "add_area": "Draw a new area",
+          "finish": "Done"
+        }
+      },
+      "choose_area": {
+        "title": "Choose a custom area",
+        "data": {
+          "area": "Area"
+        },
+        "data_description": {
+          "area": "Choose the saved area to edit or delete."
+        }
+      },
+      "area_menu": {
+        "title": "Manage custom area",
+        "description": "{area_name} — map status: {area_status}.",
+        "menu_options": {
+          "edit_area": "Edit area",
+          "delete_area": "Delete area",
+          "manage_areas": "Back to custom areas",
+          "finish": "Done"
+        }
+      },
+      "add_area": {
+        "title": "Draw a custom cleaning area",
+        "description": "Map status: {area_status}. Draw only where Matic should clean. The map and coordinates stay inside Home Assistant.",
+        "data": {
+          "name": "Area name",
+          "area_editor": "Area",
+          "cleaning_mode": "Cleaning mode",
+          "coverage_setting": "Coverage"
+        },
+        "data_description": {
+          "name": "For example, Litter box or Kitchen table.",
+          "area_editor": "Drag over the map to paint the cleaning area. Overlapping marks form one task.",
+          "cleaning_mode": "Saved default for this area; an automation can override it.",
+          "coverage_setting": "Saved default for this area; an automation can override it."
+        }
+      },
+      "edit_area": {
+        "title": "Edit custom cleaning area",
+        "description": "Map status: {area_status}. Changes apply after you save. If the map changed, redraw the area before saving.",
+        "data": {
+          "name": "Area name",
+          "area_editor": "Area",
+          "cleaning_mode": "Cleaning mode",
+          "coverage_setting": "Coverage"
+        },
+        "data_description": {
+          "name": "The exact name used by dashboards and automations.",
+          "area_editor": "Drag over the map to replace or extend the saved cleaning area.",
+          "cleaning_mode": "Saved default for this area; an automation can override it.",
+          "coverage_setting": "Saved default for this area; an automation can override it."
+        }
+      },
+      "delete_area": {
+        "title": "Delete custom area",
+        "description": "Submitting permanently deletes {area_name}."
       },
       "manage_plan": {
         "title": "Choose a plan",
@@ -157,7 +405,7 @@
         },
         "data_description": {
           "name": "Shown in dashboards and automations — for example Away, Weekdays, or Deep clean.",
-          "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
+          "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
           "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
           "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
@@ -178,7 +426,7 @@
         },
         "data_description": {
           "name": "Shown in dashboards, automations, and plan management.",
-          "run_behavior": "Intelligent rotation favors rooms that have waited longest and suits short runs. Saved order always runs from top to bottom.",
+          "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
           "enabled": "Disabled plans stay saved but cannot start.",
           "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
@@ -303,11 +551,17 @@
       },
       "stop_intelligent_cleaning": {
         "name": "Stop plan and dock"
+      },
+      "clean_selected_area": {
+        "name": "Clean selected area"
       }
     },
     "camera": {
       "map": {
         "name": "Map"
+      },
+      "photorealistic_map": {
+        "name": "3D photo map"
       }
     },
     "number": {
@@ -333,6 +587,9 @@
       },
       "saved_cleaning_plan": {
         "name": "Default cleaning plan"
+      },
+      "custom_cleaning_area": {
+        "name": "Custom cleaning area"
       }
     },
     "sensor": {
@@ -459,6 +716,15 @@
     }
   },
   "exceptions": {
+    "invalid_area": {
+      "message": "The saved custom area is invalid: {error}"
+    },
+    "area_map_changed": {
+      "message": "This custom area was saved for a different room map. Open Configure and redraw it on the current map before cleaning."
+    },
+    "ambiguous_room_name": {
+      "message": "Rename duplicate mapped rooms named {room} before using managed plans so completion can be verified safely."
+    },
     "invalid_cleaning_option": {
       "message": "The cleaning option is invalid: {error}"
     },
@@ -483,11 +749,23 @@
     "plan_timeout": {
       "message": "Timed out while cleaning {room}."
     },
+    "plan_start_timeout": {
+      "message": "The robot did not begin cleaning {room} before the start timeout."
+    },
     "robot_unavailable": {
       "message": "The selected Matic robot is unavailable."
     },
     "robot_error": {
       "message": "The selected Matic robot reported an error."
+    },
+    "robot_command_failed": {
+      "message": "The robot could not complete the requested command."
+    },
+    "room_interrupted": {
+      "message": "{room} stopped without verified completion."
+    },
+    "room_taken_over": {
+      "message": "Another cleaning task replaced the managed run in {room}."
     },
     "room_plan_unavailable": {
       "message": "The robot's room map is unavailable."
@@ -504,6 +782,9 @@
     "unknown_plan": {
       "message": "Unknown Matic cleaning plan: {plan}"
     },
+    "unknown_area": {
+      "message": "Unknown Matic custom area: {area}"
+    },
     "unsupported_command": {
       "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, or return_home."
     }
@@ -511,14 +792,36 @@
   "issues": {
     "firmware_regression": {
       "title": "Matic firmware compatibility changed",
-      "description": "After Matic updated from {previous} to {current}, {count} Hermes endpoint(s) changed availability or transport status. Review the **Firmware snapshot** response and compatibility ledger."
+      "description": "After Matic changed from firmware {previous} (protocol {previous_protocol}) to {current} (protocol {current_protocol}), {count} Hermes endpoint(s) changed availability or transport status. Review the **Firmware snapshot** response and compatibility ledger."
     },
     "robot_identity_changed": {
       "title": "Matic robot identity changed",
       "description": "The device at the configured Matic address presented a TLS certificate that does not match the pinned robot identity. Communication is blocked until the certificate matches again. If the robot was factory reset or replaced, re-pair it through **Settings > Devices & Services > Matic Robot > Reconfigure**."
+    },
+    "custom_area_map_changed": {
+      "title": "Matic custom areas need to be redrawn",
+      "description": "Saved custom areas requiring redraw: {count}. Their map identity no longer matches the robot's current room map, so Home Assistant will not start them. Open **Settings > Devices & services > Matic Robot > Configure > Custom cleaning areas**, redraw each marked area, and save it again."
     }
   },
   "services": {
+    "clean_area": {
+      "name": "Clean custom area",
+      "description": "Cleans a named area drawn on the local map. Coordinates stay private inside Home Assistant.",
+      "fields": {
+        "area": {
+          "name": "Custom area",
+          "description": "Exact saved area name or stable ID."
+        },
+        "cleaning_mode": {
+          "name": "Cleaning mode",
+          "description": "Override the mode saved with this area."
+        },
+        "coverage_setting": {
+          "name": "Coverage",
+          "description": "Override the coverage saved with this area."
+        }
+      }
+    },
     "clean": {
       "name": "Clean",
       "description": "Starts a cleaning run with the selected rooms, mode, coverage, and order.",
@@ -543,7 +846,7 @@
     },
     "intelligent_clean": {
       "name": "Intelligent cleaning",
-      "description": "Starts with rooms that have waited longest since a successful clean, then continues until stopped or every selected room finishes. Unfinished rooms remain due.",
+      "description": "Starts with the room least recently confirmed as the current cleaning area, then continues until stopped or every selected room finishes. Rejected commands and lingering prior-room state do not change priority; rooms that started remain due without monopolizing later runs.",
       "fields": {
         "plan": {
           "name": "Cleaning plan",
@@ -623,7 +926,7 @@
         },
         "run_behavior": {
           "name": "Cleaning order",
-          "description": "Intelligent rotation starts with rooms that have waited longest; the saved order breaks ties. Run all cleans every selected room from top to bottom."
+          "description": "Intelligent rotation uses target-room-confirmed cleaning starts and shared opportunity history; saved order breaks ties. Rejected commands and lingering prior-room state do not change priority. Run all cleans every selected room from top to bottom."
         },
         "rooms": {
           "name": "Rooms and settings",
@@ -685,7 +988,7 @@
         },
         "room": {
           "name": "Room and settings",
-          "description": "Mapped room with its cleaning mode and coverage setting."
+          "description": "Mapped room name or stable room ID with its cleaning mode and coverage setting. Stable IDs take precedence."
         }
       }
     },
@@ -699,7 +1002,7 @@
         },
         "room": {
           "name": "Room",
-          "description": "Mapped room name or stable room ID."
+          "description": "Mapped room name or stable room ID. Stable IDs take precedence."
         }
       }
     },
@@ -713,7 +1016,7 @@
         },
         "room": {
           "name": "Room",
-          "description": "Mapped room name or stable room ID."
+          "description": "Mapped room name or stable room ID. Stable IDs take precedence."
         },
         "new_position": {
           "name": "New position",

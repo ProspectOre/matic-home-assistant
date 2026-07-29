@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.2.3"
+    assert manifest["version"] == "0.3.0"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -96,6 +96,7 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
     )
 
     assert "manifest.json" in package_data
+    assert "quality_scale.yaml" in package_data
     assert "brand/*.png" in package_data
     assert "translations/*.json" in package_data
     assert "client/matic_intermediate_ca.pem" in package_data

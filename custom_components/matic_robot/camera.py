@@ -1,7 +1,8 @@
-"""Local floor-map camera for Matic Hermes."""
+"""Local room and photorealistic map cameras for Matic Hermes."""
 
 from __future__ import annotations
 
+import asyncio
 from functools import partial
 
 from homeassistant.components.camera import Camera
@@ -10,9 +11,17 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client.floor_plan import render_floor_plan, resolve_robot_map_position
+from .client.models import HermesCollectionEntry, RobotState
+from .client.slam_map import (
+    decode_slam_structure_tile,
+    decode_slam_tile,
+    render_slam_map,
+)
 from .entity import MaticEntity
+from .slam_scene import pose_api_url, scene_api_url
 
 PARALLEL_UPDATES = 0
+MAX_CAMERA_DIMENSION = 4096
 
 
 async def async_setup_entry(
@@ -20,18 +29,18 @@ async def async_setup_entry(
     entry: MaticConfigEntry,
     async_add_entities: AddConfigEntryEntitiesCallback,
 ) -> None:
-    """Set up the local Matic map."""
-    async_add_entities([MaticMapCamera(entry)])
+    """Set up both entirely local Matic map views."""
+    async_add_entities([MaticMapCamera(entry), MaticPhotorealisticMapCamera(entry)])
 
 
 class MaticMapCamera(MaticEntity, Camera):
-    """Render Matic's local room polygons and latest pose."""
+    """Render the stable labeled room map."""
 
     _attr_translation_key = "map"
     _attr_content_type = "image/png"
+    _unrecorded_attributes = frozenset({"matic_entry_id"})
 
     def __init__(self, entry: MaticConfigEntry) -> None:
-        # Camera does not call super(), so initialize both sides of the mixin.
         Camera.__init__(self)
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
@@ -39,17 +48,12 @@ class MaticMapCamera(MaticEntity, Camera):
         self._cached_image: bytes | None = None
 
     async def async_camera_image(
-        self,
-        width: int | None = None,
-        height: int | None = None,
+        self, width: int | None = None, height: int | None = None
     ) -> bytes:
-        """Return a current, entirely local map image."""
+        """Return the current labeled room map."""
         data = self.coordinator.data
-        requested_width = min(max(width or 1024, 256), 2048)
-        requested_height = min(max(height or 1024, 256), 2048)
-        # The floor plan object is cached by the coordinator between map
-        # refreshes, so identity is stable; the pose is re-fetched every
-        # cycle and must be compared by value.
+        requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
+        requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         cache_key = (
             id(data.floor_plan),
             data.pose,
@@ -81,7 +85,114 @@ class MaticMapCamera(MaticEntity, Camera):
             data.floor_plan, data.pose, data.operational.current_area
         )
         return {
+            "matic_entry_id": self._config_entry.entry_id,
             "robot_location_source": position[2]
             if position is not None
-            else "unavailable"
+            else "unavailable",
         }
+
+
+class MaticPhotorealisticMapCamera(MaticEntity, Camera):
+    """Accumulate and render Matic's private local color SLAM tiles."""
+
+    _attr_translation_key = "photorealistic_map"
+    _attr_content_type = "image/png"
+    _unrecorded_attributes = frozenset({"matic_entry_id"})
+    # Unlike the geometric room map, this image can reveal the interior of a
+    # home. Keep it out of the state machine and camera proxy unless an
+    # administrator makes the explicit decision to enable it.
+    _attr_entity_registry_enabled_default = False
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        Camera.__init__(self)
+        MaticEntity.__init__(self, entry)
+        self._attr_unique_id = (
+            f"{self.coordinator.data.info.serial_number}_photorealistic_map"
+        )
+        self._store = entry.runtime_data.slam_map
+        self._cached_key: tuple[object, ...] | None = None
+        self._cached_image: bytes | None = None
+        self._render_lock = asyncio.Lock()
+
+    async def async_camera_image(
+        self, width: int | None = None, height: int | None = None
+    ) -> bytes:
+        """Fetch one current tile and render the accumulated isometric map."""
+        requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
+        requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
+        data = self.coordinator.data
+        key = (
+            self._store.revision,
+            id(data.floor_plan),
+            data.pose,
+            data.operational.current_area,
+            requested_width,
+            requested_height,
+        )
+        if key == self._cached_key and self._cached_image is not None:
+            return self._cached_image
+        async with self._render_lock:
+            data = self.coordinator.data
+            key = (
+                self._store.revision,
+                id(data.floor_plan),
+                data.pose,
+                data.operational.current_area,
+                requested_width,
+                requested_height,
+            )
+            if key == self._cached_key and self._cached_image is not None:
+                return self._cached_image
+            entries = self._store.entries()
+            structure_entries = self._store.structure_entries()
+            image = await self.hass.async_add_executor_job(
+                partial(
+                    _render_photorealistic_entries,
+                    entries,
+                    structure_entries,
+                    data,
+                    width=requested_width,
+                    height=requested_height,
+                )
+            )
+            self._cached_key = key
+            self._cached_image = image
+            return image
+
+    @property
+    def extra_state_attributes(self) -> dict[str, object]:
+        """Expose cache readiness without exposing private map content."""
+        return {
+            "matic_entry_id": self._config_entry.entry_id,
+            "cached_tiles": self._store.tile_count,
+            "structural_tiles": self._store.structure_tile_count,
+            "map_complete": self._store.map_complete,
+            "map_revision": self._store.revision,
+            "source": "local_robot_slam",
+            "scene_url": scene_api_url(self._config_entry.entry_id),
+            "pose_url": pose_api_url(self._config_entry.entry_id),
+        }
+
+
+def _render_photorealistic_entries(
+    entries: tuple[HermesCollectionEntry, ...],
+    structure_entries: tuple[HermesCollectionEntry, ...],
+    state: RobotState,
+    *,
+    width: int,
+    height: int,
+) -> bytes:
+    """Decode and render the full private map away from the event loop."""
+    tiles = tuple(decode_slam_tile(entry) for entry in entries)
+    structures = tuple(decode_slam_structure_tile(entry) for entry in structure_entries)
+    position = resolve_robot_map_position(
+        state.floor_plan, state.pose, state.operational.current_area
+    )
+    return render_slam_map(
+        tiles,
+        structure_tiles=structures,
+        floor_plan=state.floor_plan,
+        robot_position=position,
+        width=width,
+        height=height,
+    )

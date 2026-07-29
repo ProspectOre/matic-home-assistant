@@ -388,7 +388,13 @@ class MaticStateSensor(MaticEntity, SensorEntity):
 
     entity_description: MaticStateSensorDescription
     _unrecorded_attributes = frozenset(
-        {"ssid", "schedules", "latest_rooms", "latest_room_durations"}
+        {
+            "ssid",
+            "schedules",
+            "latest_rooms",
+            "latest_completed_rooms",
+            "latest_room_durations",
+        }
     )
 
     def __init__(
@@ -462,6 +468,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
                 "latest_ended_at": latest.ended_at,
                 "latest_duration_seconds": latest.duration_seconds,
                 "latest_rooms": list(latest.rooms),
+                "latest_completed_rooms": list(latest.completed_rooms),
                 "latest_room_durations": dict(latest.room_durations),
                 "latest_completed": latest.completed,
             }
@@ -660,10 +667,27 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         suffix = self.entity_description.key.removeprefix("room_")
         return slugify(f"{self._suggested_suffix}_{suffix}")
 
+    async def async_added_to_hass(self) -> None:
+        """Subscribe to verified managed-room outcomes."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._history.async_add_listener(
+                self._serial_number, self._async_history_updated
+            )
+        )
+
+    @callback
+    def _async_history_updated(self) -> None:
+        self._async_apply_session()
+        self.async_write_ha_state()
+
     @property
     def available(self) -> bool:
-        """Keep historical room facts visible while the robot is offline."""
-        return True
+        """Keep history offline, but retire rooms removed from the active map."""
+        floor_plan = self.coordinator.data.floor_plan
+        return floor_plan is None or any(
+            room.id == self._room_id for room in floor_plan.rooms
+        )
 
     def _room_session_value(self) -> tuple[str, int] | None:
         """Return this room's (ended_at, seconds) from the latest session."""
@@ -672,9 +696,11 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
     def _room_session_result(self) -> tuple[bool, tuple[str, int] | None]:
         """Return whether a managed run owns the session and its room result."""
         state = self.coordinator.data
+        snapshot = self._history.snapshot(self._serial_number)
+        historical = _managed_room_history_value(snapshot, self._room_id)
         session = state.telemetry.latest_session
         if session is None or session.ended_at is None or state.floor_plan is None:
-            return False, None
+            return historical is not None, historical
         room = next(
             (item for item in state.floor_plan.rooms if item.id == self._room_id),
             None,
@@ -682,17 +708,23 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         if room is None:
             return False, None
         managed, managed_value = _managed_room_session_value(
-            self._history.snapshot(self._serial_number),
+            snapshot,
             self._room_id,
             session.started_at,
             session.ended_at,
         )
         if managed:
-            return True, managed_value
+            return True, _latest_room_statistics_value(managed_value, historical)
+        completed_rooms = session.completed_rooms
+        if not completed_rooms and session.completed is True:
+            completed_rooms = session.rooms
+        if room.name not in completed_rooms:
+            return historical is not None, historical
         durations = dict(session.room_durations)
         if room.name not in durations:
-            return False, None
-        return False, (session.ended_at, durations[room.name])
+            return historical is not None, historical
+        native = (session.ended_at, durations[room.name])
+        return historical is not None, _latest_room_statistics_value(native, historical)
 
     @callback
     def _async_apply_session(self) -> None:
@@ -758,6 +790,36 @@ class MaticRoomLastCleanedSensor(_MaticRoomStatisticsSensor):
                 self._attr_native_value = dt_util.as_utc(ended_at)
         elif managed:
             self._attr_native_value = None
+
+
+def _managed_room_history_value(
+    snapshot: dict[str, Any], room_id: str
+) -> tuple[str, int] | None:
+    """Return the latest verified managed result for one room."""
+    record = snapshot.get("last_completed_by_room", {}).get(room_id)
+    if not isinstance(record, dict):
+        return None
+    completed = record.get("at")
+    duration = record.get("duration_seconds")
+    if not isinstance(completed, str) or not isinstance(duration, int | float):
+        return None
+    return completed, max(0, round(duration))
+
+
+def _latest_room_statistics_value(
+    first: tuple[str, int] | None,
+    second: tuple[str, int] | None,
+) -> tuple[str, int] | None:
+    """Return the newer of two bounded room-statistics observations."""
+    values = [value for value in (first, second) if value is not None]
+    if not values:
+        return None
+
+    def timestamp(value: tuple[str, int]) -> float:
+        parsed = dt_util.parse_datetime(value[0])
+        return parsed.timestamp() if parsed is not None else float("-inf")
+
+    return max(values, key=timestamp)
 
 
 def _managed_room_session_value(

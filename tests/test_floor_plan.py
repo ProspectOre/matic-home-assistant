@@ -10,7 +10,7 @@ from uuid import UUID
 
 import pytest
 from google.protobuf.message import DecodeError
-from PIL import Image, ImageDraw
+from PIL import Image, ImageChops, ImageDraw
 
 from custom_components.matic_robot.client.floor_plan import (
     _box_inside_mask,
@@ -94,6 +94,30 @@ def test_decode_pose_and_render_local_png() -> None:
 
     current_payload = _field(5, _field(1, struct.pack("<3f", 3, 2, 1)))
     assert decode_pose(current_payload) == RobotPose(3, 2, 1)
+
+    repeated_components = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<f", -4.5))
+            + _field(1, struct.pack("<f", 2.25))
+            + _field(1, struct.pack("<f", 0.0)),
+        ),
+    )
+    assert decode_pose(repeated_components) == RobotPose(-4.5, 2.25, 0.0)
+
+
+def test_decode_pose_rejects_incomplete_repeated_translation() -> None:
+    payload = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<f", 1.0)) + _field(1, struct.pack("<f", 2.0)),
+        ),
+    )
+
+    with pytest.raises(DecodeError):
+        decode_pose(payload)
 
 
 def test_pose_vector_path_inspection_is_bounded_and_ignores_invalid_data() -> None:
@@ -194,6 +218,31 @@ def test_render_blends_semi_transparent_room_fill() -> None:
             color for _count, color in image.convert("RGB").getcolors(maxcolors=1 << 24)
         }
     assert expected in colors
+
+
+def test_render_centers_a_narrow_floor_plan_in_a_wide_viewport() -> None:
+    from custom_components.matic_robot.client.floor_plan import _BACKGROUND
+
+    payload = _plan_payload(
+        _region_wire(
+            REGION_ID,
+            "Hallway",
+            ((0.0, 0.0), (1.0, 0.0), (1.0, 6.0), (0.0, 6.0)),
+        )
+    )
+    image_bytes = render_floor_plan(
+        decode_floor_plan(payload),
+        None,
+        width=640,
+        height=320,
+    )
+
+    with Image.open(BytesIO(image_bytes)).convert("RGB") as image:
+        background = Image.new("RGB", image.size, _BACKGROUND[:3])
+        bounds = ImageChops.difference(image, background).getbbox()
+
+    assert bounds is not None
+    assert abs(bounds[0] - (640 - bounds[2])) <= 2
 
 
 def test_render_placeholder_when_map_is_unavailable() -> None:

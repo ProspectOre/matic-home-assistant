@@ -27,6 +27,7 @@ class HermesEndpoint:
     name: str
     kind: HermesEndpointKind
     sensitivity: HermesEndpointSensitivity = HermesEndpointSensitivity.HOME_CONTEXT
+    tracked: bool = False
 
 
 def _property(
@@ -39,8 +40,10 @@ def _property(
 def _collection(
     name: str,
     sensitivity: HermesEndpointSensitivity = HermesEndpointSensitivity.HOME_CONTEXT,
+    *,
+    tracked: bool = False,
 ) -> HermesEndpoint:
-    return HermesEndpoint(name, HermesEndpointKind.COLLECTION, sensitivity)
+    return HermesEndpoint(name, HermesEndpointKind.COLLECTION, sensitivity, tracked)
 
 
 # This is the single source of truth for public Hermes inspection. Endpoint kind
@@ -53,8 +56,8 @@ HERMES_ENDPOINTS = (
     _collection("coverage_corridor"),
     _collection("coverage_marker"),
     _property("coverage_plan"),
-    _collection("coverage_session_history"),
-    _collection("coverage_session_thumbnails"),
+    _collection("coverage_session_history", tracked=True),
+    _collection("coverage_session_thumbnails", tracked=True),
     _property("coverage_time", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("current_version", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("deep_mop_override_setting_state", HermesEndpointSensitivity.DIAGNOSTIC),
@@ -65,17 +68,17 @@ HERMES_ENDPOINTS = (
     _collection("labeled_missions"),
     _property("latest_pose"),
     _collection("map_combined_coverage"),
-    _collection("map_compressed_rgb"),
-    _collection("map_compressed_rgb_higher"),
-    _collection("map_integrated"),
-    _collection("map_semantics"),
-    _collection("map_semantics_override"),
+    _collection("map_compressed_rgb", tracked=True),
+    _collection("map_compressed_rgb_higher", tracked=True),
+    _collection("map_integrated", tracked=True),
+    _collection("map_semantics", tracked=True),
+    _collection("map_semantics_override", tracked=True),
     _property("matter_pairing_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("planned_path"),
     _property("petwaste_enabled_state", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("schedule_event_previews"),
     _collection("schedule_events"),
-    _collection("semantics_override"),
+    _collection("semantics_override", tracked=True),
     _collection("sink_summon_locations"),
     _collection("sink_summons"),
     _property("time_zone"),

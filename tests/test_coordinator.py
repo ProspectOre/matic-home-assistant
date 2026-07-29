@@ -64,13 +64,31 @@ def _coordinator(hass, client) -> MaticCoordinator:
 
 def test_discard_current_room_delegates_to_session_tracker(hass) -> None:
     coordinator = _coordinator(hass, _client())
+    now = datetime(2026, 7, 21, 2, tzinfo=UTC)
 
-    with patch(
-        "custom_components.matic_robot.coordinator.CleaningSessionTracker.discard_current_room"
-    ) as discard:
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.CleaningSessionTracker.discard_current_room"
+        ) as discard,
+        patch(
+            "custom_components.matic_robot.coordinator.dt_util.utcnow",
+            return_value=now,
+        ),
+    ):
         coordinator.async_discard_current_room()
 
-    discard.assert_called_once_with()
+    discard.assert_called_once_with(now=now)
+
+
+def test_confirm_completed_room_delegates_to_session_tracker(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+
+    with patch(
+        "custom_components.matic_robot.coordinator.CleaningSessionTracker.confirm_room_completed"
+    ) as confirm:
+        coordinator.async_confirm_room_completed("Living Room")
+
+    confirm.assert_called_once_with("Living Room")
 
 
 async def test_update_combines_required_and_optional_local_state(hass) -> None:
@@ -199,6 +217,7 @@ async def test_coordinator_records_observed_firmware(hass) -> None:
     tracker.async_observe_version.assert_awaited_once_with(
         "entry", "v168.11", 25, device_id=None
     )
+    tracker.needs_snapshot.assert_called_once_with("entry", "v168.11", 25)
 
 
 async def test_coordinator_snapshots_each_new_firmware_once_in_background(hass) -> None:
@@ -292,6 +311,7 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
             rooms=("Study",),
             room_durations=(("Study", 1800),),
             completed=True,
+            completed_rooms=("Study",),
         )
 
     client = _client()
@@ -316,6 +336,7 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
 
     assert len(events) == 1
     assert events[0].data["duration_seconds"] == 1800
+    assert events[0].data["completed_rooms"] == ["Study"]
     assert events[0].data["room_durations"] == {"Study": 1800}
     assert events[0].data["firmware_version"] == "v168.11"
     assert events[0].data["entry_id"] == "entry"
@@ -393,7 +414,10 @@ async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:
 
     assert state.telemetry.latest_session is not None
     assert state.telemetry.latest_session.started_at == start.isoformat()
-    assert state.telemetry.latest_session.room_durations == (("Living Room", 300),)
+    assert state.telemetry.latest_session.duration_seconds == 300
+    assert state.telemetry.latest_session.room_durations == ()
+    assert state.telemetry.latest_session.rooms == ()
+    assert state.telemetry.latest_session.completed is False
     get_history.assert_called_once()
     recorder.async_add_executor_job.assert_awaited_once()
 
@@ -404,13 +428,38 @@ async def test_recorder_recovery_failure_does_not_break_updates(hass) -> None:
     registry.async_get_or_create("binary_sensor", "matic_robot", "synthetic_cleaning")
     registry.async_get_or_create("sensor", "matic_robot", "synthetic_current_area")
 
+    coordinator = _coordinator(hass, client)
     with patch(
         "homeassistant.helpers.recorder.get_instance",
-        side_effect=RuntimeError("recorder unavailable"),
-    ):
-        state = await _coordinator(hass, client)._async_update_data()
+        side_effect=[
+            RuntimeError("recorder unavailable"),
+            SimpleNamespace(async_add_executor_job=AsyncMock(return_value={})),
+        ],
+    ) as get_recorder:
+        state = await coordinator._async_update_data()
+        assert coordinator._session_history_recovered is False
+        await coordinator._async_update_data()
 
     assert state.info.serial_number == "synthetic"
+    assert coordinator._session_history_recovered is True
+    assert get_recorder.call_count == 2
+
+
+async def test_recorder_recovery_retries_until_entities_are_registered(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    await coordinator._async_update_data()
+    assert coordinator._session_history_recovered is False
+
+    registry = er.async_get(hass)
+    registry.async_get_or_create("binary_sensor", "matic_robot", "synthetic_cleaning")
+    registry.async_get_or_create("sensor", "matic_robot", "synthetic_current_area")
+    recorder = SimpleNamespace(async_add_executor_job=AsyncMock(return_value={}))
+    with patch("homeassistant.helpers.recorder.get_instance", return_value=recorder):
+        await coordinator._async_update_data()
+
+    assert coordinator._session_history_recovered is True
 
 
 async def test_identity_mismatch_raises_repair_until_recovery(hass) -> None:

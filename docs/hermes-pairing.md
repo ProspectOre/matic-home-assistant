@@ -19,10 +19,11 @@ supported by Matic Robots Inc.
    Bluetooth pairing starts, Matic displays a six-digit code and Home Assistant
    asks for it.
 4. Enter the code when prompted. Bluetooth gives roughly 20 seconds to enter
-   it before the exchange times out, so type it right away; an expired code
-   just means turning Pairing mode off and on and submitting again. Setup
-   creates the entry only after the new local credential and an authenticated
-   robot connection are both verified.
+   it before the exchange times out, so type it right away. If the code expires
+   or is rejected, turn Pairing mode off and back on before retrying. Matic
+   firmware does not reliably issue a replacement code inside the same pairing
+   window. Setup creates the entry only after the new local credential and an
+   authenticated robot connection are both verified.
 
 Any displayed code applies only to the current attempt. The integration does
 not log, store, or include it in diagnostics. Routine operation uses the
@@ -32,8 +33,9 @@ authorization.
 ## Bluetooth requirements
 
 Home Assistant OS manages supported local Bluetooth adapters. Home Assistant
-Container requires the Bluetooth permissions and host D-Bus access documented
-by Home Assistant, followed by a container restart.
+Container requires host BlueZ, a read-only `/run/dbus` mount, and the
+`NET_ADMIN` and `NET_RAW` capabilities documented by Home Assistant. Restart
+the container after changing those settings.
 
 A new Bluetooth pairing deliberately proves physical access: someone at the
 robot must read its displayed code. Home Assistant must use a Bluetooth adapter
@@ -79,8 +81,9 @@ only Bluetooth path presented to setup.
 ## Failure behavior
 
 - Invalid, expired, and rejected codes are never reused.
-- After an expired or rejected code, turn Pairing mode off and back on, select
-  **Submit** in Home Assistant again, and enter the new code when prompted.
+- After an expired or rejected code, the flow returns to Pairing-mode
+  confirmation. Turn Pairing mode off and back on before retrying so Matic
+  issues a fresh code.
 - Cancelling setup releases the temporary Bluetooth pairing agent.
 - Certificate, identity, credential, and authenticated-connection failures stop
   setup before an entry is created.

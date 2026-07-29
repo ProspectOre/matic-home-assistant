@@ -22,18 +22,33 @@ The entity state machine contains activity, battery, firmware metadata,
 current/previous Area context, preference state, summary counts, and diagnostic
 state. High-context diagnostic entities are disabled by default. Attributes
 that carry home context — the connected Wi-Fi SSID, schedule definitions, room
-names and IDs, the latest session's rooms and durations, and full plan/history
-records — stay live on the state machine for templates but are declared
-unrecorded, so Home Assistant's recorder never writes them to the history
-database. The neighbor Wi-Fi scan list is not exposed at all. Two exceptions
-are deliberate and opt-in or explicit: the per-room statistics sensors are
-disabled by default and, when a user enables them, record that room's name and
-cleaning durations as long-term statistics; and the
-`matic_robot_cleaning_finished` event includes the finished session's rooms
-and per-room durations in its payload. Home Assistant's recorder retains
-enabled entity states according to the user's recorder settings. The local map
-camera renders room geometry and robot pose on demand; it contains no optical
-camera frames.
+names and IDs, the latest session's visited/completed rooms and durations, and
+full plan/history records — stay live on the state machine for templates but
+are declared unrecorded, so Home Assistant's recorder never writes them to the
+history database. The neighbor Wi-Fi scan list is not exposed at all. Two
+exceptions are deliberate and opt-in or explicit: the per-room statistics
+sensors are disabled by default and, when a user enables them, record that
+room's name and cleaning durations as long-term statistics; and the
+`matic_robot_cleaning_finished` event includes the finished session's visited
+rooms, verified completed rooms, and per-room durations in its payload. Home
+Assistant's recorder retains enabled entity states according to the user's
+recorder settings.
+
+The visible-by-default room-map camera renders geometry and pose and contains
+no photographic pixels. The separate photographic SLAM camera accumulates the
+robot's local color and structural map pages. That map can reveal floor layout,
+furniture, belongings, and activity patterns even though it is not a live video
+stream. The photographic camera is disabled by default; the Matic Map panel and
+its scene/pose endpoints require a Home Assistant administrator. If an
+administrator enables the camera entity, Home Assistant's ordinary camera and
+user permissions govern who can view it.
+
+The standalone local client can validate retained session-map WebP images,
+monthly recaps, semantic grids, and a mission-scoped native flythrough. Those
+decoders are protocol foundations, not Home Assistant data surfaces: the
+integration does not currently place their content in entity state, Recorder,
+diagnostics, map storage, media endpoints, or browser responses. Session images
+and favorite-room labels remain private even though their wire formats are known.
 
 The integration does not start camera or microphone recordings, request clip
 bytes or thumbnails, cache media, expose recording metadata, or send vendor
@@ -45,11 +60,35 @@ reliable local-control contract. See
 [Recording-related protocol notes](recording-protocol.md) for the observed but
 unavailable protocol semantics.
 
-Managed rotation history is stored in Home Assistant's local `.storage`
+Managed rotation history is stored in Home Assistant's private local storage
 directory. It contains selected room IDs/names, individual room preferences,
 completion timestamps, and failure summaries. The integration does not
 transmit this history. Home Assistant backups may include it according to the
-user's backup configuration.
+user’s backup configuration.
+
+Named custom cleaning areas are stored in that same local integration storage.
+Their map coordinates are omitted from entity state, events, action calls,
+Logbook-facing service data, and downloaded diagnostics; automations refer to a
+saved area by name. A saved area also carries coverage mission, partition, and
+room-geometry bindings so a legacy area, remap, floor change, or geometry drift
+fails closed instead of applying old coordinates to a new map. The resulting
+Repair exposes only an affected-area count, never names, coordinates, or map
+identifiers.
+
+The current photographic/structural map and its timeline use private integration
+storage, not Recorder. Timeline retention is limited to 12 time-spaced scenes
+and 48 MiB compressed; current-map storage has separate tile and byte limits.
+Deleting the config entry removes both stores. Home Assistant backups can still
+contain them, so encrypt and restrict backup access and never attach a backup to
+a public issue. Diagnostics omit map content and history. Content-free health
+and count fields may be exposed locally; no guaranteed last-scanned timestamp is
+available.
+
+The admin-only catalog, scene, delta, timeline, historical-scene, and pose
+responses use `private, no-store` browser-cache policy. Any encoded scene retained in memory
+for rendering is purged when the integration unloads or is removed. This does
+not erase the private persisted SLAM store on an ordinary reload; deletion of
+the config entry does.
 
 ## Data never sent to this project
 

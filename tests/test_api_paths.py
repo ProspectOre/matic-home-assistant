@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import call as mock_call
@@ -32,9 +33,17 @@ from custom_components.matic_robot.client.exceptions import (
     EndpointUnsupportedError,
     PairingModeRequiredError,
 )
-from custom_components.matic_robot.client.models import FloorPlan, RobotActivity
+from custom_components.matic_robot.client.models import (
+    FloorPlan,
+    HermesCollectionEntry,
+    RobotActivity,
+    RobotTrajectory,
+)
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
-from custom_components.matic_robot.client.proto.hermes_pb2 import KabukiOutputWire
+from custom_components.matic_robot.client.proto.hermes_pb2 import (
+    KabukiOutputWire,
+    SequenceId,
+)
 from tests.wire_builders import _bfield, _fixed64, _vfield
 
 
@@ -77,6 +86,37 @@ class _SequenceStream(_Stream):
         return next(self.responses)
 
 
+class _BidirectionalSequenceStream(_SequenceStream):
+    def __init__(self, responses) -> None:
+        super().__init__(responses)
+        self.requests = []
+
+    async def send_message(self, request, *, end):
+        assert end is False
+        self.requests.append(request)
+
+
+class _BlockingBidirectionalStream(_Stream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.receiving = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def __aexit__(self, *args):
+        await self.cancelled.wait()
+
+    async def send_message(self, request, *, end):
+        assert end is False
+        self.request = request
+
+    async def recv_message(self):
+        self.receiving.set()
+        await asyncio.Event().wait()
+
+    async def cancel(self):
+        self.cancelled.set()
+
+
 class _TimeoutStream(_Stream):
     async def recv_message(self):
         raise TimeoutError
@@ -98,6 +138,7 @@ def _collection_response(
     deprecated: bytes = b"",
     fast: bytes | None = None,
     key: bytes = b"key",
+    sequence_id: SequenceId | None = None,
 ):
     value = SimpleNamespace(
         value_bytes=direct,
@@ -106,7 +147,12 @@ def _collection_response(
         HasField=lambda field: field == "fast_bytes" and fast is not None,
     )
     return SimpleNamespace(
-        HasField=lambda field: field == "value", value=value, key_bytes=key
+        HasField=lambda field: (
+            field == "value" or (field == "sequence_id" and sequence_id is not None)
+        ),
+        value=value,
+        key_bytes=key,
+        sequence_id=sequence_id,
     )
 
 
@@ -162,6 +208,36 @@ async def test_connect_is_idempotent_and_reports_no_reachable_address(
     )
     with pytest.raises(CannotConnectError, match="offline"):
         await client.async_connect()
+
+
+async def test_connect_maps_transport_timeout_and_closes_candidate(monkeypatch) -> None:
+    """A TLS connection deadline is a client error, never a raw timeout."""
+    client = MaticHermesClient("192.0.2.1", 16320)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.async_robot_client_context",
+        AsyncMock(return_value=object()),
+    )
+    channels = []
+
+    class TimedOutChannel:
+        def __init__(self, host, port, **kwargs) -> None:
+            self.closed = False
+            channels.append(self)
+
+        async def __connect__(self):
+            raise TimeoutError
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._PinnedChannel", TimedOutChannel
+    )
+
+    with pytest.raises(CannotConnectError, match="connection timed out"):
+        await client.async_connect()
+
+    assert channels and all(channel.closed for channel in channels)
 
 
 class _FakeProtocol:
@@ -554,8 +630,285 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
         (b"two", b"second"),
     ]
     assert stream.cancelled is True
+
+
+async def test_subscribe_collection_entries_yields_snapshot_and_updates(
+    monkeypatch,
+) -> None:
+    first_sequence = SequenceId(start_ts_nanos=10, sequence_no=1)
+    second_sequence = SequenceId(start_ts_nanos=10, sequence_no=2)
+    checkpoint_sequence = SequenceId(start_ts_nanos=10, sequence_no=3)
+    stream = _BidirectionalSequenceStream(
+        [
+            SimpleNamespace(
+                HasField=lambda field: field == "sequence_id",
+                sequence_id=checkpoint_sequence,
+            ),
+            _collection_response(
+                direct=b"first", key=b"one", sequence_id=first_sequence
+            ),
+            _collection_response(
+                fast=b"second", key=b"two", sequence_id=second_sequence
+            ),
+            None,
+        ]
+    )
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    entries = [
+        entry async for entry in client.async_subscribe_collection_entries("live_map")
+    ]
+
+    assert [(entry.key, entry.value) for entry in entries] == [
+        (b"one", b"first"),
+        (b"two", b"second"),
+    ]
+    assert stream.requests[0].initial_request.collection_name == "live_map"
+    assert stream.requests[1].sequence_id == checkpoint_sequence
+    assert stream.requests[2].sequence_id == first_sequence
+    assert stream.requests[3].sequence_id == second_sequence
+
+
+async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
+    monkeypatch,
+) -> None:
+    stream = _BlockingBidirectionalStream()
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    receive = asyncio.create_task(
+        anext(client.async_subscribe_collection_entries("live_map"))
+    )
+    await stream.receiving.wait()
+    receive.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(receive, 0.5)
+    assert stream.cancelled.is_set()
+
+
+async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_connect = AsyncMock()
+
+    with pytest.raises(CannotConnectError, match="channel did not open"):
+        await anext(client.async_subscribe_collection_entries("live_map"))
     with pytest.raises(ValueError, match="between"):
         await client.async_get_collection_entries("history", limit=0)
+
+
+async def test_get_tracked_collection_entries_acknowledges_complete_snapshot(
+    monkeypatch,
+) -> None:
+    first_sequence = SequenceId(start_ts_nanos=10, sequence_no=1)
+    second_sequence = SequenceId(start_ts_nanos=10, sequence_no=2)
+    stream = _BidirectionalSequenceStream(
+        [
+            _collection_response(
+                direct=b"first", key=b"one", sequence_id=first_sequence
+            ),
+            _collection_response(
+                direct=b"second", key=b"two", sequence_id=second_sequence
+            ),
+            None,
+        ]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    entries = await client.async_get_tracked_collection_entries("history", limit=8)
+
+    assert [(entry.key, entry.value) for entry in entries] == [
+        (b"one", b"first"),
+        (b"two", b"second"),
+    ]
+    assert stream.requests[1].sequence_id == first_sequence
+    assert stream.requests[2].sequence_id == second_sequence
+    assert stream.cancelled is True
+
+
+async def test_get_tracked_collection_entries_enforces_bounds(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries(name):
+        assert name == "history"
+        yield HermesCollectionEntry(b"key", b"oversized")
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._TRACKED_COLLECTION_MAX_BYTES", 1
+    )
+
+    with pytest.raises(CannotConnectError, match="byte limit"):
+        await client.async_get_tracked_collection_entries("history")
+    with pytest.raises(ValueError, match="between"):
+        await client.async_get_tracked_collection_entries("history", limit=0)
+
+
+async def test_get_tracked_collection_entries_honors_overall_deadline(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+
+    async def entries(name):
+        assert name == "history"
+        yield HermesCollectionEntry(b"key", b"value")
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.monotonic",
+        MagicMock(side_effect=(0.0, 31.0)),
+    )
+
+    assert await client.async_get_tracked_collection_entries("history") == ()
+
+
+async def test_subscribe_approximate_trajectory_decodes_active_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor_plan = FloorPlan(7, "partition", b"partition", ())
+
+    async def entries(name):
+        assert name == "approximate_trajectory"
+        yield HermesCollectionEntry(b"", b"first")
+        yield HermesCollectionEntry(b"", b"clear")
+
+    decoded = iter(
+        (
+            RobotTrajectory(7, ((1.0, 2.0),)),
+            RobotTrajectory(7, ()),
+        )
+    )
+    mission_ids: list[int] = []
+
+    def decode(payload, *, expected_mission_id):
+        assert payload in (b"first", b"clear")
+        mission_ids.append(expected_mission_id)
+        return next(decoded)
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_approximate_trajectory",
+        decode,
+    )
+
+    result = [
+        item async for item in client.async_subscribe_approximate_trajectory(floor_plan)
+    ]
+
+    assert result == [
+        RobotTrajectory(7, ((1.0, 2.0),)),
+        RobotTrajectory(7, ()),
+    ]
+    assert mission_ids == [7, 7]
+
+
+async def test_subscribe_approximate_trajectory_rejects_malformed_update(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor_plan = FloorPlan(7, "partition", b"partition", ())
+
+    async def entries(name):
+        assert name == "approximate_trajectory"
+        yield HermesCollectionEntry(b"", b"malformed")
+
+    monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_approximate_trajectory",
+        lambda payload, *, expected_mission_id: (_ for _ in ()).throw(DecodeError()),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed approximate trajectory"):
+        await anext(client.async_subscribe_approximate_trajectory(floor_plan))
+
+
+async def test_get_private_history_media_skips_malformed_records(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    entries = (
+        HermesCollectionEntry(b"valid", b"valid"),
+        HermesCollectionEntry(b"invalid", b"invalid"),
+    )
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
+    image = object()
+    recap = object()
+
+    def decode_image(entry):
+        if entry.value == b"invalid":
+            raise DecodeError()
+        return image
+
+    def decode_recap(entry):
+        if entry.value == b"invalid":
+            raise DecodeError()
+        return recap
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_cleaning_session_image",
+        decode_image,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_monthly_cleaning_recap",
+        decode_recap,
+    )
+
+    assert await client.async_get_cleaning_session_images() == (image,)
+    client.async_get_tracked_collection_entries.assert_awaited_with(
+        "coverage_session_thumbnails", limit=64
+    )
+    assert await client.async_get_monthly_cleaning_recaps() == (recap,)
+    client.async_get_tracked_collection_entries.assert_awaited_with(
+        "recap_history", limit=120
+    )
+
+
+async def test_get_flythrough_correlates_active_map_mission(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"flythrough")
+    decoded = object()
+
+    def decode(payload, *, expected_mission_token):
+        assert payload == b"flythrough"
+        assert expected_mission_token == "mission-token"
+        return decoded
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_flythrough", decode
+    )
+
+    assert (
+        await client.async_get_flythrough(expected_mission_token="mission-token")
+        is decoded
+    )
+    client.async_get_property.assert_awaited_once_with("flythrough")
+
+
+async def test_get_flythrough_rejects_malformed_payload(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"malformed")
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_flythrough",
+        lambda payload, *, expected_mission_token: (_ for _ in ()).throw(DecodeError()),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed map flythrough"):
+        await client.async_get_flythrough(expected_mission_token="mission-token")
 
 
 async def test_get_collection_entries_stop_at_stream_end_without_cancel(
@@ -581,16 +934,28 @@ async def test_endpoint_inspection_routes_properties_collections_and_health() ->
     client.async_get_collection_entries = AsyncMock(
         return_value=(SimpleNamespace(key=b"key", value=b"zone"),)
     )
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(SimpleNamespace(key=b"history", value=b"session"),)
+    )
 
     current = await client.async_inspect_endpoint("current_version")
     zones = await client.async_inspect_endpoint("zones", limit=2)
+    history = await client.async_inspect_endpoint("coverage_session_history", limit=3)
 
     assert current[0].key == b""
     assert current[0].value == b"version"
     assert zones[0].value == b"zone"
+    assert history[0].value == b"session"
     client.async_get_property.assert_awaited_once_with("current_version")
     client.async_get_collection_entries.assert_awaited_once_with("zones", limit=2)
-    assert client.endpoint_health == {"current_version": "ok", "zones": "ok"}
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+        "coverage_session_history", limit=3
+    )
+    assert client.endpoint_health == {
+        "current_version": "ok",
+        "zones": "ok",
+        "coverage_session_history": "ok",
+    }
 
     client.async_get_property.side_effect = CannotConnectError("offline")
     with pytest.raises(CannotConnectError):
@@ -793,11 +1158,48 @@ async def test_command_wrappers_encode_and_route(monkeypatch) -> None:
         cleaning_mode=CleaningMode.BOTH,
         coverage_setting=CoverageSetting.STANDARD,
     )
-    assert client._async_send_channel_payload.await_count == 2
+    await client.async_start_custom_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        [(0.0, 0.0, 0.35)],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+    )
+    assert client._async_send_channel_payload.await_count == 3
     assert all(
         call.args[0] == "user_command"
         for call in client._async_send_channel_payload.await_args_list
     )
+
+
+async def test_get_slam_tile_entry_reads_one_rgb_map_entry() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"key", b"synthetic-image"),)
+    )
+
+    assert await client.async_get_slam_tile_entry() == HermesCollectionEntry(
+        b"key", b"synthetic-image"
+    )
+    client.async_get_collection_entries.assert_awaited_once_with(
+        "map_compressed_rgb", limit=1
+    )
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [(), (HermesCollectionEntry(b"key", b""),)],
+)
+async def test_get_slam_tile_entry_rejects_empty_maps(entries) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_collection_entries = AsyncMock(return_value=entries)
+
+    with pytest.raises(CannotConnectError):
+        await client.async_get_slam_tile_entry()
 
 
 async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> None:

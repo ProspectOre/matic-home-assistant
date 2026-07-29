@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass
 
 from homeassistant.config_entries import ConfigEntry
@@ -11,9 +12,14 @@ from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
 
+from .area_binding import (
+    async_delete_custom_area_issue,
+    async_sync_custom_area_issue,
+)
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
+from .client.exceptions import MaticError
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -28,12 +34,19 @@ from .const import (
 )
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
-from .frontend import async_register_room_plan_editor
+from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import async_register_services
+from .slam_history import (
+    SlamHistoryStore,
+    async_collect_slam_history,
+)
+from .slam_map_store import SlamMapStore
 
 __all__ = ["async_migrate_entry"]
+
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -44,6 +57,8 @@ class MaticRuntimeData:
     coordinator: MaticCoordinator
     cleaning_plans: CleaningPlanManager
     firmware_tracker: FirmwareTracker
+    slam_map: SlamMapStore
+    slam_history: SlamHistoryStore
 
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
@@ -72,6 +87,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         timezone_identifier=hass.config.time_zone,
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )
+    slam_map: SlamMapStore | None = None
+    slam_history: SlamHistoryStore | None = None
     try:
         firmware_tracker = hass.data[DOMAIN][DATA_FIRMWARE_TRACKER]
         coordinator = MaticCoordinator(
@@ -88,11 +105,64 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
+        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        try:
+            native_history = await client.async_get_cleaning_session_records()
+        except MaticError as err:
+            _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
+        else:
+            await plans.async_import_native_history(
+                serial_number,
+                coordinator.data.floor_plan,
+                native_history,
+            )
+        slam_map = SlamMapStore(hass, entry.entry_id)
+        await slam_map.async_load()
+        slam_history = SlamHistoryStore(hass, entry.entry_id)
+        await slam_history.async_load()
         entry.runtime_data = MaticRuntimeData(
-            client, coordinator, plans, firmware_tracker
+            client,
+            coordinator,
+            plans,
+            firmware_tracker,
+            slam_map,
+            slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        entry.async_create_background_task(
+            hass,
+            slam_map.async_collect(client),
+            f"{DOMAIN} photographic map collector",
+        )
+        entry.async_create_background_task(
+            hass,
+            async_collect_slam_history(
+                hass,
+                slam_map,
+                slam_history,
+                lambda: coordinator.data.floor_plan,
+            ),
+            f"{DOMAIN} map history collector",
+        )
+
+        def _async_sync_area_issue() -> None:
+            async_sync_custom_area_issue(
+                hass,
+                entry.entry_id,
+                plans.areas(serial_number),
+                coordinator.data.floor_plan,
+            )
+
+        entry.async_on_unload(coordinator.async_add_listener(_async_sync_area_issue))
+        entry.async_on_unload(
+            plans.async_add_listener(serial_number, _async_sync_area_issue)
+        )
+        _async_sync_area_issue()
     except BaseException:
+        if slam_history is not None:
+            await slam_history.async_shutdown()
+        if slam_map is not None:
+            await slam_map.async_shutdown()
         client.close()
         raise
     return True
@@ -100,15 +170,27 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
+    await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
+        str(entry.data[CONF_SERIAL_NUMBER])
+    )
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+        await entry.runtime_data.slam_history.async_shutdown()
+        await entry.runtime_data.slam_map.async_shutdown()
+        clear_slam_scene_cache(hass, entry.entry_id)
         entry.runtime_data.client.close()
     return unload_ok
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
     """Erase the removed robot's persisted firmware history and repairs."""
+    clear_slam_scene_cache(hass, entry.entry_id)
+    async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
         DATA_FIRMWARE_TRACKER
     )
     if tracker is not None:
         await tracker.async_remove_robot(entry.entry_id)
+    slam_map = SlamMapStore(hass, entry.entry_id)
+    await slam_map.async_remove()
+    slam_history = SlamHistoryStore(hass, entry.entry_id)
+    await slam_history.async_remove()

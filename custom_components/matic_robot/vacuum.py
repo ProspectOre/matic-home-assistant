@@ -18,6 +18,7 @@ from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
+from .plans import PLAN_MOTION_TOKEN, resolve_room_reference
 
 PARALLEL_UPDATES = 1
 
@@ -58,23 +59,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     """Authenticated local Matic vacuum controls."""
 
     _attr_supported_features = SUPPORTED_FEATURES
-    _unrecorded_attributes = frozenset({"rooms"})
+    _unrecorded_attributes = frozenset(
+        {"matic_entry_id", "rooms", "current_area", "previous_area"}
+    )
 
     def __init__(self, entry: MaticConfigEntry) -> None:
         super().__init__(entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_vacuum"
         self._reported_segment_change: SegmentSignature | None = None
         self._plans = entry.runtime_data.cleaning_plans
-
-    @callback
-    def _async_cancel_managed_plan(self) -> None:
-        """End any managed plan run so a user stop or dock is final.
-
-        The plan runner reads a docked robot as room completion and would
-        otherwise dispatch the next room, sending the robot straight back
-        out after the user told it to stop.
-        """
-        self._plans.cancel(self.coordinator.data.info.serial_number)
 
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
@@ -100,8 +93,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         state = self.coordinator.data.operational
         floor_plan = self.coordinator.data.floor_plan
         return {
+            "matic_entry_id": self._config_entry.entry_id,
             "low_charge": state.low_charge,
             "problem": bool(state.error_codes),
+            "current_area": state.current_area,
+            "previous_area": state.previous_area,
             "rooms": (
                 {room.id: room.name for room in floor_plan.rooms}
                 if floor_plan is not None
@@ -109,10 +105,19 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             ),
         }
 
-    async def _async_command(self, command: UserCommand) -> None:
-        """Send a command and immediately refresh state."""
-        await self.coordinator.client.async_send_user_command(command)
-        await self.coordinator.async_request_refresh()
+    async def _async_command(
+        self, command: UserCommand, *, replace_plan: bool = False
+    ) -> None:
+        """Serialize a user command and immediately refresh state."""
+        serial_number = self.coordinator.data.info.serial_number
+        context = (
+            self._plans.external_motion(serial_number)
+            if replace_plan
+            else self._plans.command_lock(serial_number)
+        )
+        async with context:
+            await self.coordinator.client.async_send_user_command(command)
+            await self.coordinator.async_request_refresh()
 
     def _floor_plan(self) -> FloorPlan:
         floor_plan = self.coordinator.data.floor_plan
@@ -129,16 +134,24 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         cleaning_mode: CleaningMode | None = None,
         coverage_setting: CoverageSetting | None = None,
         ordered: bool = False,
+        motion_token: int | None = None,
     ) -> None:
         floor_plan = self._floor_plan()
-        await self.coordinator.client.async_start_coverage(
-            floor_plan,
-            [room.protocol_id for room in rooms],
-            cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
-            coverage_setting=coverage_setting or self.coordinator.coverage_setting,
-            ordered=ordered,
+        serial_number = self.coordinator.data.info.serial_number
+        context = (
+            self._plans.managed_command(serial_number, motion_token)
+            if motion_token is not None
+            else self._plans.external_motion(serial_number)
         )
-        await self.coordinator.async_request_refresh()
+        async with context:
+            await self.coordinator.client.async_start_coverage(
+                floor_plan,
+                [room.protocol_id for room in rooms],
+                cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
+                coverage_setting=coverage_setting or self.coordinator.coverage_setting,
+                ordered=ordered,
+            )
+            await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
         """Resume a paused task or start a full-floor clean."""
@@ -157,18 +170,33 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if decision.behavior == "after_room":
             return
         self.coordinator.async_discard_current_room()
-        await self._async_command(UserCommand.STOP)
+        await self._async_command(UserCommand.STOP, replace_plan=True)
 
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
-        self._async_cancel_managed_plan()
-        if self.activity in {VacuumActivity.CLEANING, VacuumActivity.PAUSED}:
-            # The robot treats docking mid-task as recharge-and-resume and
-            # heads back out afterwards; stop the task first so a
-            # user-requested dock is final.
-            self.coordinator.async_discard_current_room()
-            await self._async_command(UserCommand.STOP)
-        await self._async_command(UserCommand.DOCK)
+        serial_number = self.coordinator.data.info.serial_number
+        operational = self.coordinator.data.operational
+        stop_before_dock = self._plans.has_managed_task(
+            serial_number
+        ) or self.activity in {
+            VacuumActivity.CLEANING,
+            VacuumActivity.ERROR,
+            VacuumActivity.PAUSED,
+            VacuumActivity.RETURNING,
+        }
+        stop_before_dock = stop_before_dock or (
+            operational.low_charge and operational.is_charging
+        )
+        async with self._plans.external_motion(serial_number):
+            if stop_before_dock:
+                # The robot treats docking mid-task as recharge-and-resume and
+                # heads back out afterwards; stop the task first so a
+                # user-requested dock is final.
+                self.coordinator.async_discard_current_room()
+                await self.coordinator.client.async_send_user_command(UserCommand.STOP)
+                await self.coordinator.async_request_refresh()
+            await self.coordinator.client.async_send_user_command(UserCommand.DOCK)
+            await self.coordinator.async_request_refresh()
 
     async def async_get_segments(self) -> list[Segment]:
         """Return native Home Assistant cleaning areas for every named room."""
@@ -252,6 +280,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
         if normalized in {"clean_all", "start"}:
             options = self._clean_options(params)
+            options["motion_token"] = self._motion_token(params)
             await self._async_clean_rooms(list(self._floor_plan().rooms), **options)
             return
         if normalized in {"clean_rooms", "clean_segments"}:
@@ -269,6 +298,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     translation_key="rooms_must_be_list",
                 )
             options = self._clean_options(params)
+            options["motion_token"] = self._motion_token(params)
             await self._async_clean_rooms(self._resolve_rooms(identifiers), **options)
             return
         raise _validation_error(
@@ -281,25 +311,25 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if not identifiers:
             raise _validation_error("Select at least one Matic room", "no_rooms")
         rooms = self._floor_plan().rooms
-        lookup = {
-            key: room
-            for room in rooms
-            for key in (room.id.casefold(), room.name.casefold())
-        }
+        room_map = {room.id: room.name for room in rooms}
+        rooms_by_id = {room.id: room for room in rooms}
         resolved: list[Room] = []
-        missing: list[str] = []
+        invalid: list[str] = []
         for identifier in identifiers:
-            room = lookup.get(identifier.casefold())
-            if room is None:
-                missing.append(identifier)
-            elif room not in resolved:
+            try:
+                room_id, _room_name = resolve_room_reference(identifier, room_map)
+            except ValueError as err:
+                invalid.append(str(err))
+                continue
+            room = rooms_by_id[room_id]
+            if room not in resolved:
                 resolved.append(room)
-        if missing:
-            missing_names = ", ".join(missing)
+        if invalid:
+            invalid_names = ", ".join(invalid)
             raise _validation_error(
-                f"Unknown Matic room(s): {missing_names}",
+                f"Unknown Matic room(s): {invalid_names}",
                 "unknown_rooms",
-                {"rooms": missing_names},
+                {"rooms": invalid_names},
             )
         return resolved
 
@@ -331,6 +361,18 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             "coverage_setting": coverage,
             "ordered": ordered,
         }
+
+    @staticmethod
+    def _motion_token(params: dict[str, Any] | list[Any] | None) -> int | None:
+        """Read the integration-private generation marker from a plan command."""
+        if not isinstance(params, dict) or PLAN_MOTION_TOKEN not in params:
+            return None
+        token = params[PLAN_MOTION_TOKEN]
+        if not isinstance(token, int) or isinstance(token, bool):
+            raise _validation_error(
+                "The managed plan command token is invalid", "invalid_plan_command"
+            )
+        return token
 
 
 def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](

@@ -261,7 +261,9 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
     pairing_agent_addresses = []
     pairing_events = []
     pairing_session = SimpleNamespace(
-        async_pair=AsyncMock(side_effect=lambda _path: pairing_events.append("pair"))
+        async_pair=AsyncMock(
+            side_effect=lambda _path, **_kwargs: pairing_events.append("pair")
+        )
     )
     monkeypatch.setattr(bluetooth_pairing.sys, "platform", "linux")
 
@@ -325,7 +327,8 @@ async def test_requests_and_validates_bluetooth_credential(monkeypatch) -> None:
     ] == [False]
     client.unpair.assert_not_awaited()
     pairing_session.async_pair.assert_awaited_once_with(
-        "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+        "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF",
+        replace_existing=False,
     )
     assert pairing_events == ["connect", "pair"]
     client.write_gatt_char.assert_awaited_once_with(

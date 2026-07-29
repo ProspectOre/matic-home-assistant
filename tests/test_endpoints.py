@@ -15,6 +15,8 @@ def test_endpoint_registry_is_unique_typed_and_excludes_credentials() -> None:
     assert HERMES_ENDPOINT_NAMES == tuple(HERMES_ENDPOINT_MAP)
     assert HERMES_ENDPOINT_MAP["current_version"].kind is HermesEndpointKind.PROPERTY
     assert HERMES_ENDPOINT_MAP["zones"].kind is HermesEndpointKind.COLLECTION
+    assert HERMES_ENDPOINT_MAP["coverage_session_history"].tracked is True
+    assert HERMES_ENDPOINT_MAP["zones"].tracked is False
     assert (
         HERMES_ENDPOINT_MAP["current_version"].sensitivity
         is HermesEndpointSensitivity.DIAGNOSTIC
