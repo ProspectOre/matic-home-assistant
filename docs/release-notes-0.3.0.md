@@ -1,6 +1,6 @@
 # Release notes — 0.3.0
 
-Status: local release candidate — not published
+Released: 2026-07-29
 
 ## Summary
 
@@ -144,4 +144,12 @@ Status: local release candidate — not published
 
 ## Verification posture
 
-The unpublished candidate passes 866 Python tests / 8,015 statements at 100% coverage, 38 browser tests, strict typing, lint/format, privacy, exact-tree HACS and Hassfest, artifact parity, and clean-wheel import. Live Safari covered the map lifecycle. Real-robot runs covered both coverage levels, all three cleaning modes, a two-room no-dock handoff, both intelligent-stop branches, and persisted custom-area cleaning with fail-closed credit. HAOS reauthentication was exercised by forcing an authentication failure, removing the stale Bluetooth bond, recovering from expired and rejected passkeys, issuing and verifying a fresh credential, and restarting Core cleanly. Reconfigure exposes address updates and explicit Home Assistant re-pairing as distinct operations. Re-pairing replaces Home Assistant's saved credential; it does not claim robot-side revocation, because the tested Matic app exposes no individual credential removal control. Post-passkey progress follows the terminal pairing task directly, and BlueZ agent cleanup is bounded so successful setup cannot remain behind an indefinite progress dialog. Live Container Bluetooth proof and publishing remain open.
+The release passes 866 Python tests / 8,015 statements at 100% coverage, 38 browser tests, strict typing, lint/format, privacy, exact-tree HACS and Hassfest, artifact parity, and clean-wheel import. Live Safari covered the map lifecycle. Real-robot runs covered both coverage levels, all three cleaning modes, a two-room no-dock handoff, both intelligent-stop branches, and persisted custom-area cleaning with fail-closed credit. HAOS reauthentication was exercised by forcing an authentication failure, removing the stale Bluetooth bond, recovering from expired and rejected passkeys, issuing and verifying a fresh credential, and restarting Core cleanly. Reconfigure exposes address updates and explicit Home Assistant re-pairing as distinct operations. Re-pairing replaces Home Assistant's saved credential; it does not claim robot-side revocation, because the tested Matic app exposes no individual credential removal control. Post-passkey progress follows the terminal pairing task directly, and BlueZ agent cleanup is bounded so successful setup cannot remain behind an indefinite progress dialog. Home Assistant Container pairing has synthetic coverage and documented host D-Bus/Bluetooth requirements, but was not separately exercised with a physical adapter for this release.
+
+## Upgrading from 0.2.3
+
+Install 0.3.0 through HACS and restart Home Assistant. Existing config entries,
+plans, custom areas, and room history are preserved; re-pairing is not required.
+The administrator-only **Matic Map** panel appears after restart. The private
+photographic camera remains disabled by default and can be enabled from the
+robot's device page when needed.
