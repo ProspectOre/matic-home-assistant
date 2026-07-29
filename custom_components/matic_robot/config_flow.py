@@ -621,7 +621,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
     async def _async_reauth(self) -> None:
         """Reissue and verify the local credential during Matic pairing."""
-        entry = self._get_reauth_entry()
+        entry = (
+            self._get_reconfigure_entry()
+            if self.context.get("source") == config_entries.SOURCE_RECONFIGURE
+            else self._get_reauth_entry()
+        )
         try:
             credential = await self._async_reauth_credential()
             await self._async_verify_existing_robot(
@@ -671,6 +675,15 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
     async def async_step_reconfigure(
         self, user_input: dict[str, Any] | None = None
     ) -> config_entries.ConfigFlowResult:
+        """Choose a connection-management operation."""
+        return self.async_show_menu(
+            step_id="reconfigure",
+            menu_options=["update_address", "replace_local_access"],
+        )
+
+    async def async_step_update_address(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
         """Update a robot address while preserving its pinned identity."""
         entry = self._get_reconfigure_entry()
         errors: dict[str, str] = {}
@@ -706,7 +719,7 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 )
 
         return self.async_show_form(
-            step_id="reconfigure",
+            step_id="update_address",
             data_schema=vol.Schema(
                 {
                     vol.Required(
@@ -721,6 +734,12 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             ),
             errors=errors,
         )
+
+    async def async_step_replace_local_access(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Replace the saved credential through an explicit Bluetooth pairing."""
+        return await self.async_step_reauth_confirm(user_input)
 
     async def _async_verify_existing_robot(
         self,

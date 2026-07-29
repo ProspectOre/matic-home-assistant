@@ -251,13 +251,21 @@
         "title": "Enter the code shown on Matic"
       },
       "reauth_confirm": {
-        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. The robot will display a six-digit code and Home Assistant will ask for it before replacing its local access.",
+        "description": "Put Home Assistant's local Bluetooth adapter within a few feet of Matic. In the Matic app, go to Settings → Connectivity → Add another user and turn on Pairing mode. Confirm below only after the pairing window is open. Home Assistant will replace its saved credential after you enter the six-digit code shown on the robot. Matic does not expose individual credential revocation in the app.",
         "data": {
           "pairing_mode_enabled": "Pairing mode is on"
         },
         "title": "Restore local access"
       },
       "reconfigure": {
+        "description": "Choose what to update without removing the integration.",
+        "title": "Manage Matic connection",
+        "menu_options": {
+          "update_address": "Update robot address",
+          "replace_local_access": "Pair Home Assistant again"
+        }
+      },
+      "update_address": {
         "data": {
           "host": "Host",
           "port": "Port"
