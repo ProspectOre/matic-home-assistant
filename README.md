@@ -50,7 +50,8 @@ and the integration is covered by automated tests.
 The integration adds Home Assistant-native planning and automation:
 
 - **Saved cleaning plans.** Named, reusable plans with a per-room cleaning
-  mode and coverage level, include toggles, and drag-orderable room lists,
+  mode and Quick, Optimal, or Heavy Duty coverage, include toggles, and
+  drag-orderable room lists,
   managed alongside custom areas in the Matic Map **Cleaning** workspace. Each plan can stop
   immediately or finish a sufficiently progressed current room without
   starting the next one. During an uninterrupted plan, the next room starts

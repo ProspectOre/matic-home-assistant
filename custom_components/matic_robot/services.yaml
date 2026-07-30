@@ -18,7 +18,7 @@ clean:
       selector:
         select:
           translation_key: coverage_setting
-          options: [quick, standard]
+          options: [quick, standard, heavy_duty]
     ordered:
       default: false
       selector:
@@ -41,7 +41,7 @@ clean_area:
       selector:
         select:
           translation_key: coverage_setting
-          options: [quick, standard]
+          options: [quick, standard, heavy_duty]
 
 intelligent_clean:
   target: *vacuum_target

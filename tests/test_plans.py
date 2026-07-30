@@ -85,7 +85,7 @@ def test_rooms_resolve_live_names_ids_and_individual_settings() -> None:
             {
                 "room": "Kitchen",
                 "cleaning_mode": "vacuum_and_mop",
-                "coverage_setting": "standard",
+                "coverage_setting": "heavy_duty",
             },
             {
                 "room_id": "room-study",
@@ -101,7 +101,7 @@ def test_rooms_resolve_live_names_ids_and_individual_settings() -> None:
     )
 
     assert rooms == [
-        CleaningRoom("room-kitchen", "Kitchen", "vacuum_and_mop", "standard"),
+        CleaningRoom("room-kitchen", "Kitchen", "vacuum_and_mop", "heavy_duty"),
         CleaningRoom("room-study", "Study", "vacuum", "quick"),
     ]
 

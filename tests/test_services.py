@@ -157,7 +157,7 @@ async def test_clean_action_routes_every_verified_preference() -> None:
             "entity_id": ["vacuum.test"],
             "rooms": ["Study", "Kitchen"],
             "cleaning_mode": "mop",
-            "coverage_setting": "quick",
+            "coverage_setting": "heavy_duty",
             "ordered": True,
         },
     )
@@ -176,7 +176,7 @@ async def test_clean_action_routes_every_verified_preference() -> None:
             "params": {
                 "rooms": ["Study", "Kitchen"],
                 "cleaning_mode": "mop",
-                "coverage": "quick",
+                "coverage": "heavy_duty",
                 "ordered": True,
             },
         },
@@ -234,7 +234,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
             {
                 "entity_id": ["vacuum.test"],
                 "area": "Litter box",
-                "coverage_setting": "quick",
+                "coverage_setting": "heavy_duty",
             }
         ),
     )
@@ -252,7 +252,7 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         floor_plan,
         [(1.0, 2.0, 0.35)],
         cleaning_mode=CleaningMode.VACUUM,
-        coverage_setting=CoverageSetting.QUICK,
+        coverage_setting=CoverageSetting.HEAVY_DUTY,
     )
     coordinator.async_request_refresh.assert_awaited_once()
 

@@ -30,7 +30,16 @@ class CoverageSetting(StrEnum):
     """Supported coverage passes displayed by the Matic app."""
 
     QUICK = "quick"
-    STANDARD = "standard"
+    OPTIMAL = "standard"
+    HEAVY_DUTY = "heavy_duty"
+    STANDARD = OPTIMAL  # Backward-compatible Python alias.
+
+
+_COVERAGE_SETTING_VALUES = {
+    CoverageSetting.HEAVY_DUTY: 0,
+    CoverageSetting.OPTIMAL: 1,
+    CoverageSetting.QUICK: 2,
+}
 
 
 class HermesConnectionKind(StrEnum):
@@ -88,7 +97,7 @@ def encode_coverage_command(
     partition_id: str,
     region_ids: Sequence[str],
     cleaning_mode: CleaningMode = CleaningMode.BOTH,
-    coverage_setting: CoverageSetting = CoverageSetting.STANDARD,
+    coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
     ordered: bool = False,
     command_id_factory: Callable[[], UUID] = uuid4,
 ) -> bytes:
@@ -104,10 +113,7 @@ def encode_coverage_command(
 
     partition_id = str(UUID(partition_id))
     normalized_regions = tuple(str(UUID(value)) for value in region_ids)
-    setting_value = {
-        CoverageSetting.STANDARD: 1,
-        CoverageSetting.QUICK: 2,
-    }[coverage_setting]
+    setting_value = _COVERAGE_SETTING_VALUES[coverage_setting]
     specs = _coverage_specs(cleaning_mode, setting_value)
     goal_field = 1 if ordered else 2
     goals = b"".join(
@@ -138,7 +144,7 @@ def encode_custom_coverage_command(
     mission_id: int,
     circles: Sequence[tuple[float, float, float]],
     cleaning_mode: CleaningMode = CleaningMode.BOTH,
-    coverage_setting: CoverageSetting = CoverageSetting.STANDARD,
+    coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
     command_id_factory: Callable[[], UUID] = uuid4,
 ) -> bytes:
     """Encode an official-app-compatible drawn-circle coverage command.
@@ -165,10 +171,7 @@ def encode_custom_coverage_command(
             raise ValueError("circle radius must be between 0.05 and 2.5 meters")
         normalized.append((x, y, radius))
 
-    setting_value = {
-        CoverageSetting.STANDARD: 1,
-        CoverageSetting.QUICK: 2,
-    }[coverage_setting]
+    setting_value = _COVERAGE_SETTING_VALUES[coverage_setting]
     custom_partition_id = str(command_id_factory())
     circles_message = b"".join(
         _field(

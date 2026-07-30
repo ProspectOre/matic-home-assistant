@@ -289,7 +289,7 @@ def test_plan_editor_is_a_single_room_matrix() -> None:
         assert "rooms" not in steps["add_plan"]["data"]
         assert "all settings save together" in steps["add_plan"]["description"]
         assert "Every room starts off" in steps["add_plan"]["description"]
-        assert "default to Vacuum and Standard" in steps["add_plan"]["description"]
+        assert "default to Vacuum and Optimal" in steps["add_plan"]["description"]
         assert "run_behavior" in steps["add_plan"]["data"]
         assert "room_editor" in steps["add_plan"]["data"]
         behavior = steps["add_plan"]["data_description"]["run_behavior"]
@@ -361,6 +361,16 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         assert selects["coverage_setting"]["name"] == "Default coverage"
         assert selects["saved_cleaning_plan"]["name"] == "Default cleaning plan"
         assert selects["custom_cleaning_area"]["name"] == "Custom cleaning area"
+        assert translations["selector"]["coverage_setting"]["options"] == {
+            "heavy_duty": "Heavy Duty",
+            "quick": "Quick",
+            "standard": "Optimal",
+        }
+        assert selects["coverage_setting"]["state"] == {
+            "heavy_duty": "Heavy Duty",
+            "quick": "Quick",
+            "standard": "Optimal",
+        }
         assert (
             translations["entity"]["button"]["clean_selected_area"]["name"]
             == "Clean selected area"

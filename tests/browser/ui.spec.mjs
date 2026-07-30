@@ -499,6 +499,7 @@ test.describe("map studio", () => {
       editor.value = editor.value.map((room, index) => ({
         ...room,
         included: index === 0,
+        coverage_setting: index === 0 ? "heavy_duty" : room.coverage_setting,
       }));
       editor.dispatchEvent(new CustomEvent("value-changed", {
         detail: { value: editor.value },
@@ -521,7 +522,7 @@ test.describe("map studio", () => {
         rooms: [{
           room: "synthetic-kitchen",
           cleaning_mode: "vacuum",
-          coverage_setting: "standard",
+          coverage_setting: "heavy_duty",
         }],
       }),
       { entity_id: "vacuum.synthetic" },
@@ -543,7 +544,7 @@ test.describe("map studio", () => {
     await expect(studio.locator(".area-settings")).toBeVisible();
     await expect(studio.locator(".area-settings label")).toHaveText([
       "Cleaning modeVacuumMopVacuum + mop",
-      "CoverageQuickStandard",
+      "CoverageQuickOptimalHeavy Duty",
     ]);
     expect(await studio.locator(".area-detail").evaluate((detail) => {
       const map = detail.querySelector("ha-selector-matic-area")
@@ -553,6 +554,7 @@ test.describe("map studio", () => {
     })).toBeGreaterThan(0.95);
     await studio.locator(".area-new").click();
     await studio.locator(".area-name").fill("New area");
+    await studio.locator(".area-coverage").selectOption("heavy_duty");
     await studio.locator("ha-selector-matic-area").evaluate((editor) => {
       editor.value = [{ x: 0.5, y: 0.5, radius: 0.35 }];
       editor.dispatchEvent(new CustomEvent("value-changed", {
@@ -572,7 +574,7 @@ test.describe("map studio", () => {
       name: "New area",
       circles: [{ x: 0.5, y: 0.5, radius: 0.35 }],
       cleaning_mode: "vacuum",
-      coverage_setting: "standard",
+      coverage_setting: "heavy_duty",
     });
 
     await studio.locator(".area-run").click();

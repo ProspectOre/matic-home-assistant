@@ -1120,13 +1120,13 @@ async def test_selects_update_next_clean_preferences(hass) -> None:
     )
 
     await mode.async_select_option(CleaningMode.VACUUM.value)
-    await coverage.async_select_option(CoverageSetting.QUICK.value)
+    await coverage.async_select_option(CoverageSetting.HEAVY_DUTY.value)
 
     assert mode.current_option == CleaningMode.VACUUM.value
-    assert coverage.current_option == CoverageSetting.QUICK.value
+    assert coverage.current_option == CoverageSetting.HEAVY_DUTY.value
     assert entry.options == {
         "cleaning_mode": CleaningMode.VACUUM.value,
-        "coverage_setting": CoverageSetting.QUICK.value,
+        "coverage_setting": CoverageSetting.HEAVY_DUTY.value,
     }
     mode.async_write_ha_state.assert_called_once()
     coverage.async_write_ha_state.assert_called_once()

@@ -1167,7 +1167,7 @@ async def test_command_wrappers_encode_and_route(monkeypatch) -> None:
         ),
         [(0.0, 0.0, 0.35)],
         cleaning_mode=CleaningMode.VACUUM,
-        coverage_setting=CoverageSetting.QUICK,
+        coverage_setting=CoverageSetting.HEAVY_DUTY,
     )
     assert client._async_send_channel_payload.await_count == 3
     assert all(

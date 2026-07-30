@@ -23,7 +23,7 @@ def test_room_plan_selector_preserves_order_and_preferences() -> None:
             "room_id": "study",
             "included": True,
             "cleaning_mode": "mop",
-            "coverage_setting": "quick",
+            "coverage_setting": "heavy_duty",
         },
         {
             "room_id": "kitchen",

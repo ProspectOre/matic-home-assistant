@@ -99,7 +99,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 entry.options.get(CONF_CLEANING_MODE, CleaningMode.BOTH)
             ),
             coverage_setting=CoverageSetting(
-                entry.options.get(CONF_COVERAGE_SETTING, CoverageSetting.STANDARD)
+                entry.options.get(CONF_COVERAGE_SETTING, CoverageSetting.OPTIMAL)
             ),
             firmware_tracker=firmware_tracker,
         )
