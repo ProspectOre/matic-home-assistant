@@ -295,7 +295,8 @@ class MaticRoomPlanEditor extends HTMLElement {
             row.coverage_setting,
             [
               { value: "quick", label: this._localize("quick", "Quick") },
-              { value: "standard", label: this._localize("standard", "Standard") },
+              { value: "standard", label: this._localize("standard", "Optimal") },
+              { value: "heavy_duty", label: this._localize("heavy_duty", "Heavy Duty") },
             ],
             (coverage_setting) => this._update(row.room_id, { coverage_setting }),
           ),

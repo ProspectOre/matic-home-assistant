@@ -99,10 +99,11 @@
     "plan_workspace_selected": "Default plan updated",
     "plan_workspace_started": "Plan started",
     "plan_workspace_unavailable": "Plans are unavailable",
+    "heavy_duty": "Heavy Duty",
     "quick": "Quick",
     "redo": "Redo",
     "room_editor_intro": "Turn on rooms to include them. Drag or use the arrows to set the cleaning order.",
-    "standard": "Standard",
+    "standard": "Optimal",
     "undo": "Undo",
     "vacuum": "Vacuum",
     "vacuum_and_mop": "Vacuum + mop",
@@ -394,7 +395,7 @@
       },
       "add_plan": {
         "title": "Create a cleaning plan",
-        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Standard.",
+        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Optimal.",
         "data": {
           "name": "Plan name",
           "run_behavior": "Cleaning order",
@@ -465,8 +466,9 @@
     },
     "coverage_setting": {
       "options": {
+        "heavy_duty": "Heavy Duty",
         "quick": "Quick",
-        "standard": "Standard"
+        "standard": "Optimal"
       }
     },
     "run_behavior": {
@@ -581,8 +583,9 @@
       "coverage_setting": {
         "name": "Default coverage",
         "state": {
+          "heavy_duty": "Heavy Duty",
           "quick": "Quick",
-          "standard": "Standard"
+          "standard": "Optimal"
         }
       },
       "saved_cleaning_plan": {

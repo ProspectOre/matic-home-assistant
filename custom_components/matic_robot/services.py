@@ -142,9 +142,9 @@ SAVED_ROOM_SCHEMA = vol.Schema(
         vol.Optional("cleaning_mode", default=CleaningMode.BOTH.value): vol.In(
             [value.value for value in CleaningMode]
         ),
-        vol.Optional(
-            "coverage_setting", default=CoverageSetting.STANDARD.value
-        ): vol.In([value.value for value in CoverageSetting]),
+        vol.Optional("coverage_setting", default=CoverageSetting.OPTIMAL.value): vol.In(
+            [value.value for value in CoverageSetting]
+        ),
     }
 )
 

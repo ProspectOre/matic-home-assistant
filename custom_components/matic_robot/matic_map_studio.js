@@ -3896,7 +3896,7 @@ class MaticMapStudio extends HTMLElement {
                 <label class="area-name-label">${text("area_name", "Area name")}<input class="area-name" maxlength="128" autocomplete="off"></label>
                 <div class="area-settings">
                   <label>${text("cleaning_mode", "Cleaning mode")}<select class="area-mode"><option value="vacuum">${text("vacuum", "Vacuum")}</option><option value="mop">${text("mop", "Mop")}</option><option value="vacuum_and_mop">${text("vacuum_and_mop", "Vacuum + mop")}</option></select></label>
-                  <label>${text("coverage", "Coverage")}<select class="area-coverage"><option value="quick">${text("quick", "Quick")}</option><option value="standard">${text("standard", "Standard")}</option></select></label>
+                  <label>${text("coverage", "Coverage")}<select class="area-coverage"><option value="quick">${text("quick", "Quick")}</option><option value="standard">${text("standard", "Optimal")}</option><option value="heavy_duty">${text("heavy_duty", "Heavy Duty")}</option></select></label>
                 </div>
                 <div class="area-actions"><span class="area-feedback" role="status" aria-live="polite" aria-atomic="true"></span><button class="area-delete" hidden>${text("area_delete", "Delete")}</button><button class="area-run" hidden>${text("area_run", "Clean now")}</button><button class="area-save">${text("area_save", "Save area")}</button></div>
               </div>

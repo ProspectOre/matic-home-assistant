@@ -1109,7 +1109,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 vol.Required(
                     "coverage_setting",
                     default=defaults.get(
-                        "coverage_setting", CoverageSetting.STANDARD.value
+                        "coverage_setting", CoverageSetting.OPTIMAL.value
                     ),
                 ): self._select(
                     [value.value for value in CoverageSetting],
@@ -1143,7 +1143,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             ),
             "cleaning_mode": values.get("cleaning_mode", CleaningMode.VACUUM.value),
             "coverage_setting": values.get(
-                "coverage_setting", CoverageSetting.STANDARD.value
+                "coverage_setting", CoverageSetting.OPTIMAL.value
             ),
         }
 

@@ -624,7 +624,7 @@ class MaticAreasView(HomeAssistantView):
                         "cleaning_mode", CleaningMode.VACUUM.value
                     ),
                     "coverage_setting": area.get(
-                        "coverage_setting", CoverageSetting.STANDARD.value
+                        "coverage_setting", CoverageSetting.OPTIMAL.value
                     ),
                     "status": status.value,
                 }
@@ -764,7 +764,7 @@ class MaticPlansView(HomeAssistantView):
                         room.get("cleaning_mode", CleaningMode.VACUUM.value)
                     ),
                     "coverage_setting": str(
-                        room.get("coverage_setting", CoverageSetting.STANDARD.value)
+                        room.get("coverage_setting", CoverageSetting.OPTIMAL.value)
                     ),
                 }
                 for room in raw_rooms

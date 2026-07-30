@@ -17,6 +17,8 @@ the integration so instructions and behavior stay aligned with each release.
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
 - [Firmware compatibility](firmware-compatibility.md) — Track observed robot
   versions, validation status, regressions, and newly discovered capabilities.
+- [Release notes — 0.3.1](release-notes-0.3.1.md) — Quick, Optimal, and Heavy
+  Duty coverage for plans, custom areas, entities, and actions
 - [Release notes — 0.3.0](release-notes-0.3.0.md) — Private 3D/2D map workspace
   Map Studio with an integrated photo-backed cleaning-area workspace
 - [Release notes — 0.2.3](release-notes-0.2.3.md) — Room-to-room plans and

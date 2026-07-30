@@ -55,8 +55,10 @@ would invert the meaning and display a fully charged robot as `Low`.
 ## Complete cleaning action
 
 `matic_robot.clean` supports any room subset or sequence,
-`vacuum`/`mop`/`vacuum_and_mop`, quick/standard coverage, and
-ordered/unordered execution. Omitted rooms clean the whole floor; room names
+`vacuum`/`mop`/`vacuum_and_mop`, Quick/Optimal/Heavy Duty coverage, and
+ordered/unordered execution. The YAML values are `quick`, `standard`, and
+`heavy_duty`; `standard` remains stable for compatibility while the UI uses
+Matic's current Optimal label. Omitted rooms clean the whole floor; room names
 and stable room IDs are both accepted.
 
 ```yaml
@@ -79,7 +81,7 @@ rooms are selected until the user chooses them:
 1. Name the plan and choose its default cleaning order.
 2. Review the vertical list of mapped rooms directly underneath.
 3. Leave unwanted rooms off; turn on rooms to reveal mode and coverage
-   dropdowns, defaulting to Vacuum and Standard.
+   dropdowns, defaulting to Vacuum and Optimal.
 4. Drag rooms or use arrow buttons to save the exact top-to-bottom order.
 5. Optionally enable **Finish the current room when stopping** and choose its
    estimated progress threshold.

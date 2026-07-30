@@ -67,7 +67,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         config_entry: ConfigEntry,
         *,
         cleaning_mode: CleaningMode = CleaningMode.BOTH,
-        coverage_setting: CoverageSetting = CoverageSetting.STANDARD,
+        coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
         firmware_tracker: FirmwareTracker | None = None,
     ) -> None:
         super().__init__(
