@@ -331,6 +331,10 @@ class MaticAreaEditor extends HTMLElement {
     this._activePointerId = undefined;
     this._pointers = new Map();
     this._pinch = undefined;
+    this._doubleTapZoom = undefined;
+    this._lastTap = undefined;
+    this._navigationFrame = undefined;
+    this._pinchReleaseVelocity = undefined;
     this._expanded = true;
     this._undoStack = [];
     this._redoStack = [];
@@ -422,6 +426,7 @@ class MaticAreaEditor extends HTMLElement {
       window.cancelAnimationFrame(this._labelFrame);
       this._labelFrame = undefined;
     }
+    this._cancelNavigationMotion();
     this._releasePhotoObjectUrl();
     this._restorePageScroll();
   }
@@ -874,24 +879,56 @@ class MaticAreaEditor extends HTMLElement {
     });
   }
 
-  _setViewBox(svg, viewBox) {
+  _constrainedViewBox(viewBox, { elastic = false } = {}) {
     const base = this._baseViewBox;
-    const width = Math.max(base.width * 0.1, Math.min(base.width, viewBox.width));
-    const height = Math.max(base.height * 0.1, Math.min(base.height, viewBox.height));
+    const resist = (value, minimum, maximum, maximumOvershoot) => {
+      if (!elastic) return Math.max(minimum, Math.min(maximum, value));
+      if (value < minimum) {
+        return minimum - Math.min(maximumOvershoot, (minimum - value) * 0.24);
+      }
+      if (value > maximum) {
+        return maximum + Math.min(maximumOvershoot, (value - maximum) * 0.24);
+      }
+      return value;
+    };
+    const width = resist(
+      viewBox.width,
+      base.width * 0.1,
+      base.width,
+      base.width * 0.08,
+    );
+    const height = resist(
+      viewBox.height,
+      base.height * 0.1,
+      base.height,
+      base.height * 0.08,
+    );
     const overflowX = base.width * 0.15;
     const overflowY = base.height * 0.15;
-    this._viewBox = {
-      x: Math.max(
-        base.x - overflowX,
-        Math.min(base.x + base.width + overflowX - width, viewBox.x),
+    const minimumX = base.x - overflowX;
+    const maximumX = base.x + base.width + overflowX - width;
+    const minimumY = base.y - overflowY;
+    const maximumY = base.y + base.height + overflowY - height;
+    return {
+      x: resist(
+        viewBox.x,
+        Math.min(minimumX, maximumX),
+        Math.max(minimumX, maximumX),
+        base.width * 0.1,
       ),
-      y: Math.max(
-        base.y - overflowY,
-        Math.min(base.y + base.height + overflowY - height, viewBox.y),
+      y: resist(
+        viewBox.y,
+        Math.min(minimumY, maximumY),
+        Math.max(minimumY, maximumY),
+        base.height * 0.1,
       ),
       width,
       height,
     };
+  }
+
+  _setViewBox(svg, viewBox, options = {}) {
+    this._viewBox = this._constrainedViewBox(viewBox, options);
     svg.setAttribute(
       "viewBox",
       `${this._viewBox.x} ${this._viewBox.y} ${this._viewBox.width} ${this._viewBox.height}`,
@@ -900,7 +937,86 @@ class MaticAreaEditor extends HTMLElement {
     this._scheduleRoomLabelLayout();
   }
 
+  _cancelNavigationMotion() {
+    if (this._navigationFrame !== undefined) {
+      window.cancelAnimationFrame(this._navigationFrame);
+      this._navigationFrame = undefined;
+    }
+  }
+
+  _animateViewBox(svg, target, duration = 240) {
+    this._cancelNavigationMotion();
+    const start = { ...this._viewBox };
+    const constrained = this._constrainedViewBox(target);
+    if (window.matchMedia?.("(prefers-reduced-motion: reduce)").matches) {
+      this._setViewBox(svg, constrained);
+      return;
+    }
+    const started = performance.now();
+    const step = (now) => {
+      const progress = Math.min(1, (now - started) / duration);
+      const eased = 1 - (1 - progress) ** 3;
+      this._setViewBox(svg, Object.fromEntries(
+        ["x", "y", "width", "height"].map((key) => [
+          key,
+          start[key] + (constrained[key] - start[key]) * eased,
+        ]),
+      ));
+      if (progress < 1) this._navigationFrame = window.requestAnimationFrame(step);
+      else this._navigationFrame = undefined;
+    };
+    this._navigationFrame = window.requestAnimationFrame(step);
+  }
+
+  _settleViewBox(svg) {
+    const constrained = this._constrainedViewBox(this._viewBox);
+    const displacement = Math.max(
+      ...["x", "y", "width", "height"].map(
+        (key) => Math.abs(constrained[key] - this._viewBox[key]),
+      ),
+    );
+    if (displacement > this._baseViewBox.width * 0.0001) {
+      this._animateViewBox(svg, constrained, 220);
+    }
+  }
+
+  _startPanInertia(svg, velocityX, velocityY) {
+    this._cancelNavigationMotion();
+    velocityX = Math.max(-1.4, Math.min(1.4, velocityX));
+    velocityY = Math.max(-1.4, Math.min(1.4, velocityY));
+    if (
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches
+      || Math.hypot(velocityX, velocityY) < 0.025
+    ) {
+      this._settleViewBox(svg);
+      return;
+    }
+    let previous = performance.now();
+    const step = (now) => {
+      const elapsed = Math.min(32, now - previous);
+      previous = now;
+      this._panByPixels(
+        svg,
+        velocityX * elapsed,
+        velocityY * elapsed,
+        this._viewBox,
+        { elastic: true },
+      );
+      const decay = 0.91 ** (elapsed / 16);
+      velocityX *= decay;
+      velocityY *= decay;
+      if (Math.hypot(velocityX, velocityY) >= 0.012) {
+        this._navigationFrame = window.requestAnimationFrame(step);
+      } else {
+        this._navigationFrame = undefined;
+        this._settleViewBox(svg);
+      }
+    };
+    this._navigationFrame = window.requestAnimationFrame(step);
+  }
+
   _zoom(svg, factor, center) {
+    this._cancelNavigationMotion();
     const current = this._viewBox;
     const focus = center || {
       x: current.x + current.width / 2,
@@ -923,16 +1039,23 @@ class MaticAreaEditor extends HTMLElement {
       || (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) >= 50);
   }
 
-  _panByPixels(svg, deltaX, deltaY, viewBox = this._viewBox) {
+  _panByPixels(
+    svg,
+    deltaX,
+    deltaY,
+    viewBox = this._viewBox,
+    options = {},
+  ) {
     const bounds = svg.getBoundingClientRect();
     this._setViewBox(svg, {
       ...viewBox,
       x: viewBox.x - deltaX * viewBox.width / Math.max(1, bounds.width),
       y: viewBox.y - deltaY * viewBox.height / Math.max(1, bounds.height),
-    });
+    }, options);
   }
 
   _fitMap(svg) {
+    this._cancelNavigationMotion();
     this._setViewBox(svg, { ...this._baseViewBox });
   }
 
@@ -1005,6 +1128,10 @@ class MaticAreaEditor extends HTMLElement {
 
   _setTool(tool) {
     if (!["draw", "erase", "pan"].includes(tool)) return;
+    this._cancelNavigationMotion();
+    this._lastTap = undefined;
+    this._doubleTapZoom = undefined;
+    this._pinchReleaseVelocity = undefined;
     this._tool = tool;
     this._panStart = undefined;
     const svg = this.shadowRoot.querySelector(".map");
@@ -1152,7 +1279,7 @@ class MaticAreaEditor extends HTMLElement {
 
   _commitDraft() {
     const base = this._draftBaseValue;
-    if (!base) return;
+    if (!base) return false;
     const next = this._tool === "erase"
       ? this._draftEraseValue
       : [...base, ...(this._draftStroke || [])];
@@ -1165,10 +1292,11 @@ class MaticAreaEditor extends HTMLElement {
     if (!changed) {
       this._syncMarks();
       this._announce(this._localize("area_outside_map", "Paint inside a mapped room."));
-      return;
+      return false;
     }
     this._setValue(next);
     this._announce(this._localize("area_added", "Cleaning area updated."));
+    return true;
   }
 
   _syncMarks(circles = this._value) {
@@ -1282,7 +1410,7 @@ class MaticAreaEditor extends HTMLElement {
         .intro { color: var(--secondary-text-color); font-size: 12px; }
         .map-stage { position: absolute; inset: 0; min-height: 0; overflow: hidden; }
         .map-shell { position: relative; height: 100%; min-height: 0; }
-        .map { display: block; width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; background: radial-gradient(circle at 50% 40%, #182538, #0c131d 72%); touch-action: none; user-select: none; outline: none; }
+        .map { display: block; width: 100%; height: 100%; min-height: 0; border: 0; border-radius: 0; background: radial-gradient(circle at 50% 40%, #182538, #0c131d 72%); touch-action: none; user-select: none; -webkit-tap-highlight-color: transparent; outline: none; }
         .map:focus-visible { border-color: var(--primary-color); box-shadow: inset 0 0 0 2px var(--primary-color); }
         .map[data-tool="draw"], .map[data-tool="erase"] { cursor: none; }
         .map[data-tool="pan"] { cursor: grab; }
@@ -1330,17 +1458,23 @@ class MaticAreaEditor extends HTMLElement {
         .announcement { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
         .visually-hidden { position: absolute !important; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
         @media (max-width: 820px) {
-          .topbar { top: 8px; right: 8px; left: 8px; gap: 6px; }
+          .topbar { top: max(8px, env(safe-area-inset-top)); right: max(8px, env(safe-area-inset-right)); left: max(8px, env(safe-area-inset-left)); gap: 6px; }
           .title-group { width: 100%; }
           .photo-status { display: none; }
           .room-focus { flex: 1 1 140px; max-width: none; }
-          button { min-height: 42px; padding: 0 10px; }
+          button { min-height: 44px; min-width: 44px; padding: 0 10px; }
           .map { min-height: 260px; }
           .map-help { display: none; }
-          .footer { right: 8px; bottom: 8px; left: 8px; max-width: none; overflow-x: auto; }
+          .map-controls { justify-content: center; }
+          .navigation-controls, .tool-picker { flex: 0 0 auto; padding: 3px; border-radius: 13px; }
+          .navigation-controls button, .tool-picker button, .map-options > summary { min-width: 44px; min-height: 44px; padding: 0; }
+          .zoom-control { display: none; }
+          .map-options-panel { right: 0; left: auto; width: min(250px, calc(100vw - 32px)); }
+          .footer { right: auto; bottom: max(8px, env(safe-area-inset-bottom)); left: max(8px, env(safe-area-inset-left)); max-width: calc(100% - 16px); overflow-x: auto; padding: 3px; scrollbar-width: none; }
+          .workspace.embedded .footer { bottom: calc(72px + env(safe-area-inset-bottom)); }
+          .footer::-webkit-scrollbar { display: none; }
+          .footer button { min-height: 44px; }
           .radius input[type=range] { width: 110px; }
-          .area-zoom-slider { width: 76px; }
-          .area-zoom-value { display: none; }
           .tool-picker .tool-label { display: none; }
           .count { display: none; }
         }
@@ -1451,17 +1585,62 @@ class MaticAreaEditor extends HTMLElement {
       event.preventDefault();
       event.stopImmediatePropagation();
       svg.focus({ preventScroll: true });
+      this._cancelNavigationMotion();
       try {
         svg.setPointerCapture(event.pointerId);
       } catch (_error) {
         return;
       }
+      const now = performance.now();
+      const lastTap = this._lastTap;
+      const isDoubleTap = event.pointerType === "touch"
+        && this._pointers.size === 0
+        && lastTap
+        && now - lastTap.time <= 320
+        && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 28;
       this._pointers.set(event.pointerId, {
         x: event.clientX,
         y: event.clientY,
+        startX: event.clientX,
+        startY: event.clientY,
+        lastX: event.clientX,
+        lastY: event.clientY,
+        lastTime: now,
+        velocityX: 0,
+        velocityY: 0,
+        moved: 0,
+        started: now,
+        pointerType: event.pointerType,
+        navigationOnly: false,
       });
+      if (isDoubleTap) {
+        this._undoStack = this._undoStack.slice(0, lastTap.undoDepth);
+        this._redoStack = lastTap.redoStack;
+        this._setValue(lastTap.base, { record: false });
+        const point = svg.createSVGPoint();
+        point.x = event.clientX;
+        point.y = event.clientY;
+        this._doubleTapZoom = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          focus: point.matrixTransform(svg.getScreenCTM().inverse()),
+          viewBox: { ...this._viewBox },
+          moved: false,
+        };
+        this._lastTap = undefined;
+        this._activePointerId = event.pointerId;
+        this._panStart = undefined;
+        this._pointers.get(event.pointerId).navigationOnly = true;
+        svg.classList.add("moving");
+        return;
+      }
+      if (lastTap && now - lastTap.time > 320) this._lastTap = undefined;
       if (this._pointers.size === 2) {
         cancelDraft();
+        this._lastTap = undefined;
+        this._doubleTapZoom = undefined;
+        this._pinchReleaseVelocity = undefined;
         this._activePointerId = undefined;
         this._panStart = undefined;
         const [first, second] = [...this._pointers.values()];
@@ -1476,7 +1655,14 @@ class MaticAreaEditor extends HTMLElement {
           centerY,
           focus: point.matrixTransform(svg.getScreenCTM().inverse()),
           viewBox: { ...this._viewBox },
+          lastCenterX: centerX,
+          lastCenterY: centerY,
+          lastTime: now,
+          velocityX: 0,
+          velocityY: 0,
         };
+        first.navigationOnly = true;
+        second.navigationOnly = true;
         svg.classList.add("moving");
         return;
       }
@@ -1492,7 +1678,12 @@ class MaticAreaEditor extends HTMLElement {
       } else {
         if (this._tool === "draw" && this._value.length >= 512) {
           this._activePointerId = undefined;
-          svg.releasePointerCapture(event.pointerId);
+          this._pointers.delete(event.pointerId);
+          try {
+            svg.releasePointerCapture(event.pointerId);
+          } catch (_error) {
+            // Safari may release capture while the pointerdown handler is running.
+          }
           return;
         }
         this._draftBaseValue = this._cloneValue();
@@ -1504,7 +1695,25 @@ class MaticAreaEditor extends HTMLElement {
     });
     svg.addEventListener("pointermove", (event) => {
       if (this._pointers.has(event.pointerId)) {
-        this._pointers.set(event.pointerId, { x: event.clientX, y: event.clientY });
+        const pointerState = this._pointers.get(event.pointerId);
+        const now = performance.now();
+        const elapsed = Math.max(1, now - pointerState.lastTime);
+        const instantaneousX = (event.clientX - pointerState.lastX) / elapsed;
+        const instantaneousY = (event.clientY - pointerState.lastY) / elapsed;
+        pointerState.velocityX = pointerState.velocityX * 0.55 + instantaneousX * 0.45;
+        pointerState.velocityY = pointerState.velocityY * 0.55 + instantaneousY * 0.45;
+        pointerState.x = event.clientX;
+        pointerState.y = event.clientY;
+        pointerState.lastX = event.clientX;
+        pointerState.lastY = event.clientY;
+        pointerState.lastTime = now;
+        pointerState.moved = Math.max(
+          pointerState.moved,
+          Math.hypot(
+            event.clientX - pointerState.startX,
+            event.clientY - pointerState.startY,
+          ),
+        );
       }
       const brushCursor = this.shadowRoot.querySelector(".brush-cursor");
       if (
@@ -1517,6 +1726,30 @@ class MaticAreaEditor extends HTMLElement {
         brushCursor.setAttribute("cy", -point.y);
         brushCursor.setAttribute("r", this._radius);
         brushCursor.setAttribute("visibility", "visible");
+      }
+      if (
+        this._doubleTapZoom?.pointerId === event.pointerId
+        && this._pointers.has(event.pointerId)
+      ) {
+        event.preventDefault();
+        const gesture = this._doubleTapZoom;
+        const deltaY = event.clientY - gesture.startY;
+        gesture.moved ||= Math.hypot(
+          event.clientX - gesture.startX,
+          deltaY,
+        ) > 5;
+        const factor = Math.exp(Math.max(-2.2, Math.min(2.2, deltaY * 0.009)));
+        const width = gesture.viewBox.width * factor;
+        const height = gesture.viewBox.height * factor;
+        const ratioX = (gesture.focus.x - gesture.viewBox.x) / gesture.viewBox.width;
+        const ratioY = (gesture.focus.y - gesture.viewBox.y) / gesture.viewBox.height;
+        this._setViewBox(svg, {
+          x: gesture.focus.x - width * ratioX,
+          y: gesture.focus.y - height * ratioY,
+          width,
+          height,
+        }, { elastic: true });
+        return;
       }
       if (this._pinch && this._pointers.size >= 2) {
         event.preventDefault();
@@ -1531,6 +1764,15 @@ class MaticAreaEditor extends HTMLElement {
         const ratioX = (start.focus.x - start.viewBox.x) / start.viewBox.width;
         const ratioY = (start.focus.y - start.viewBox.y) / start.viewBox.height;
         const bounds = svg.getBoundingClientRect();
+        const now = performance.now();
+        const elapsed = Math.max(1, now - start.lastTime);
+        const instantaneousX = (centerX - start.lastCenterX) / elapsed;
+        const instantaneousY = (centerY - start.lastCenterY) / elapsed;
+        start.velocityX = start.velocityX * 0.55 + instantaneousX * 0.45;
+        start.velocityY = start.velocityY * 0.55 + instantaneousY * 0.45;
+        start.lastCenterX = centerX;
+        start.lastCenterY = centerY;
+        start.lastTime = now;
         this._setViewBox(svg, {
           x: start.focus.x - width * ratioX
             - (centerX - start.centerX) * width / Math.max(1, bounds.width),
@@ -1538,7 +1780,7 @@ class MaticAreaEditor extends HTMLElement {
             - (centerY - start.centerY) * height / Math.max(1, bounds.height),
           width,
           height,
-        });
+        }, { elastic: true });
         return;
       }
       if (event.pointerId !== this._activePointerId) return;
@@ -1552,6 +1794,7 @@ class MaticAreaEditor extends HTMLElement {
           event.clientX - this._panStart.x,
           event.clientY - this._panStart.y,
           this._panStart.viewBox,
+          { elastic: true },
         );
       }
     });
@@ -1562,29 +1805,133 @@ class MaticAreaEditor extends HTMLElement {
       }
     });
     const finishPointer = (event) => {
-      if (event.pointerId === this._activePointerId) this._commitDraft();
+      if (!this._pointers.has(event.pointerId)) return;
+      const pointerState = this._pointers.get(event.pointerId);
+      const wasPinching = Boolean(this._pinch);
+      const pinchVelocity = wasPinching
+        ? { x: this._pinch.velocityX, y: this._pinch.velocityY }
+        : undefined;
+      const wasDoubleTapZoom = this._doubleTapZoom?.pointerId === event.pointerId;
+      let changed = false;
+      let tapBase;
+      let tapUndoDepth;
+      let tapRedoStack;
+      if (wasDoubleTapZoom) {
+        const gesture = this._doubleTapZoom;
+        this._doubleTapZoom = undefined;
+        if (gesture.moved) {
+          this._settleViewBox(svg);
+        } else {
+          const width = gesture.viewBox.width * 0.5;
+          const height = gesture.viewBox.height * 0.5;
+          const ratioX = (gesture.focus.x - gesture.viewBox.x)
+            / gesture.viewBox.width;
+          const ratioY = (gesture.focus.y - gesture.viewBox.y)
+            / gesture.viewBox.height;
+          this._animateViewBox(svg, {
+            x: gesture.focus.x - width * ratioX,
+            y: gesture.focus.y - height * ratioY,
+            width,
+            height,
+          });
+        }
+      } else if (event.pointerId === this._activePointerId && this._draftBaseValue) {
+        tapBase = this._cloneValue(this._draftBaseValue);
+        tapUndoDepth = this._undoStack.length;
+        tapRedoStack = this._redoStack.map((value) => this._cloneValue(value));
+        changed = this._commitDraft();
+      }
       this._pointers.delete(event.pointerId);
-      if (this._pointers.size < 2) this._pinch = undefined;
+      if (wasPinching && this._pointers.size === 1) {
+        const [remainingId, remaining] = [...this._pointers.entries()][0];
+        this._pinch = undefined;
+        this._pinchReleaseVelocity = pinchVelocity;
+        this._activePointerId = remainingId;
+        remaining.navigationOnly = true;
+        remaining.startX = remaining.x;
+        remaining.startY = remaining.y;
+        remaining.lastX = remaining.x;
+        remaining.lastY = remaining.y;
+        remaining.lastTime = performance.now();
+        remaining.velocityX = pinchVelocity.x;
+        remaining.velocityY = pinchVelocity.y;
+        remaining.moved = 0;
+        this._panStart = {
+          x: remaining.x,
+          y: remaining.y,
+          viewBox: { ...this._viewBox },
+        };
+      } else if (this._pointers.size < 2) {
+        this._pinch = undefined;
+      }
       if (this._pointers.size === 0) {
+        const isTap = pointerState.pointerType === "touch"
+          && pointerState.moved <= 8
+          && performance.now() - pointerState.started <= 350;
+        if (!wasDoubleTapZoom && !wasPinching && isTap) {
+          this._lastTap = {
+            time: performance.now(),
+            x: event.clientX,
+            y: event.clientY,
+            base: tapBase || this._cloneValue(),
+            undoDepth: tapUndoDepth ?? this._undoStack.length,
+            redoStack: tapRedoStack || this._redoStack.map(
+              (value) => this._cloneValue(value),
+            ),
+            changed,
+          };
+        } else if (!wasDoubleTapZoom) {
+          this._lastTap = undefined;
+        }
+        const velocity = pointerState.navigationOnly || this._panStart
+          ? {
+            x: pointerState.velocityX || this._pinchReleaseVelocity?.x || 0,
+            y: pointerState.velocityY || this._pinchReleaseVelocity?.y || 0,
+          }
+          : undefined;
         this._panStart = undefined;
         this._activePointerId = undefined;
+        this._pinchReleaseVelocity = undefined;
         svg.classList.remove("moving");
+        if (velocity && !wasDoubleTapZoom) {
+          this._startPanInertia(svg, velocity.x, velocity.y);
+        } else if (!wasDoubleTapZoom) {
+          this._settleViewBox(svg);
+        }
       }
-      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+      if (svg.hasPointerCapture(event.pointerId)) {
+        try {
+          svg.releasePointerCapture(event.pointerId);
+        } catch (_error) {
+          // Safari can release capture before dispatching the terminal event.
+        }
+      }
     };
     const cancelPointer = (event) => {
+      if (!this._pointers.has(event.pointerId)) return;
       cancelDraft();
+      this._lastTap = undefined;
+      this._doubleTapZoom = undefined;
+      this._pinchReleaseVelocity = undefined;
       this._pointers.delete(event.pointerId);
       if (this._pointers.size < 2) this._pinch = undefined;
       if (this._pointers.size === 0) {
         this._panStart = undefined;
         this._activePointerId = undefined;
         svg.classList.remove("moving");
+        this._settleViewBox(svg);
       }
-      if (svg.hasPointerCapture(event.pointerId)) svg.releasePointerCapture(event.pointerId);
+      if (svg.hasPointerCapture(event.pointerId)) {
+        try {
+          svg.releasePointerCapture(event.pointerId);
+        } catch (_error) {
+          // Safari can release capture before dispatching pointercancel.
+        }
+      }
     };
     svg.addEventListener("pointerup", finishPointer);
     svg.addEventListener("pointercancel", cancelPointer);
+    svg.addEventListener("lostpointercapture", cancelPointer);
     svg.addEventListener("wheel", (event) => {
       event.preventDefault();
       event.stopPropagation();

@@ -7,7 +7,9 @@ from hashlib import sha256
 from pathlib import Path
 
 from homeassistant.components import frontend
-from homeassistant.components.http import StaticPathConfig
+from homeassistant.components.http import (  # type: ignore[attr-defined,unused-ignore]
+    StaticPathConfig,
+)
 from homeassistant.core import HomeAssistant
 
 from .slam_scene import (

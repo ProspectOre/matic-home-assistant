@@ -24,7 +24,7 @@
     "numpy==2.3.2",
     "protobuf>=6"
   ],
-  "version": "0.3.1",
+  "version": "0.3.2",
   "zeroconf": [
     "_matic_hermes._tcp.local."
   ]

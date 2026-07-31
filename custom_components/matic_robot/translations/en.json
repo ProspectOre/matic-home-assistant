@@ -15,6 +15,8 @@
     "area_map_layer": "Map appearance",
     "area_marks": "brush points",
     "area_name": "Area name",
+    "area_details": "Area details",
+    "area_details_hint": "Name and cleaning settings",
     "area_new": "New area",
     "area_not_selected": "Paint an area to continue",
     "area_outside_map": "Paint inside a mapped room.",

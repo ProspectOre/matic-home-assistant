@@ -16,6 +16,11 @@ export default defineConfig({
       name: "chromium",
       use: { ...devices["Desktop Chrome"] },
     },
+    {
+      name: "mobile-webkit",
+      grep: /mobile maps touch-first|does not paint when a touch|matches native mobile/,
+      use: { ...devices["iPhone 15"] },
+    },
   ],
   webServer: {
     command: "node tests/browser/server.mjs",
