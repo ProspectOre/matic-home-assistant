@@ -267,6 +267,9 @@ class MaticMapStudio extends HTMLElement {
     this._drag = undefined;
     this._pinch = undefined;
     this._gesture = undefined;
+    this._lastTouchTap = undefined;
+    this._doubleTapZoom = undefined;
+    this._handledTouchDoubleTapAt = undefined;
     this._labelsVisible = true;
     this._preferencesIdentity = undefined;
     this._preferencesSaveTimer = undefined;
@@ -2246,7 +2249,7 @@ class MaticMapStudio extends HTMLElement {
     this._applyCamera(this._preset(view), animate);
   }
 
-  _applyCamera(target, animate = true) {
+  _applyCamera(target, animate = true, duration = 520) {
     this._cancelMotion();
     if (!animate || this._reducedMotion) {
       this._camera = { ...target };
@@ -2257,7 +2260,7 @@ class MaticMapStudio extends HTMLElement {
     const started = performance.now();
     this._camera.orthographic = target.orthographic;
     const step = (now) => {
-      const progress = maticClamp((now - started) / 520, 0, 1);
+      const progress = maticClamp((now - started) / duration, 0, 1);
       const eased = 1 - (1 - progress) ** 3;
       const yawDelta = maticAngleDelta(target.yaw - start.yaw);
       this._camera = {
@@ -2324,6 +2327,28 @@ class MaticMapStudio extends HTMLElement {
     };
   }
 
+  _elasticClamp(value, minimum, maximum, maximumOvershoot) {
+    if (value < minimum) {
+      return minimum - Math.min(maximumOvershoot, (minimum - value) * 0.24);
+    }
+    if (value > maximum) {
+      return maximum + Math.min(maximumOvershoot, (value - maximum) * 0.24);
+    }
+    return value;
+  }
+
+  _constrainCameraDistance(value, { elastic = false } = {}) {
+    const bounds = this._cameraDistanceBounds();
+    return elastic
+      ? this._elasticClamp(
+        value,
+        bounds.minimum,
+        bounds.maximum,
+        (bounds.maximum - bounds.minimum) * 0.08,
+      )
+      : maticClamp(value, bounds.minimum, bounds.maximum);
+  }
+
   _zoomPercentageBounds(home) {
     const distance = this._cameraDistanceBounds();
     return {
@@ -2353,11 +2378,28 @@ class MaticMapStudio extends HTMLElement {
     };
   }
 
-  _constrainCameraTarget(camera) {
+  _constrainCameraTarget(camera, { elastic = false } = {}) {
     const bounds = this._cameraTargetBounds();
-    camera.targetX = maticClamp(camera.targetX, -bounds.x, bounds.x);
-    camera.targetZ = maticClamp(camera.targetZ, -bounds.z, bounds.z);
+    camera.targetX = elastic
+      ? this._elasticClamp(camera.targetX, -bounds.x, bounds.x, bounds.x * 0.1)
+      : maticClamp(camera.targetX, -bounds.x, bounds.x);
+    camera.targetZ = elastic
+      ? this._elasticClamp(camera.targetZ, -bounds.z, bounds.z, bounds.z * 0.1)
+      : maticClamp(camera.targetZ, -bounds.z, bounds.z);
     return camera;
+  }
+
+  _settleCamera() {
+    const target = this._constrainCameraTarget({
+      ...this._camera,
+      distance: this._constrainCameraDistance(this._camera.distance),
+    });
+    const displacement = Math.max(
+      Math.abs(target.distance - this._camera.distance),
+      Math.abs(target.targetX - this._camera.targetX),
+      Math.abs(target.targetZ - this._camera.targetZ),
+    );
+    if (displacement > 0.0001) this._applyCamera(target, true, 220);
   }
 
   _isMouseWheel(event, deltaX, deltaY) {
@@ -2369,7 +2411,7 @@ class MaticMapStudio extends HTMLElement {
     return this._view === "three" ? 1.38 : Math.PI / 2 - 0.018;
   }
 
-  _panValues(camera, deltaX, deltaY) {
+  _panValues(camera, deltaX, deltaY, options = {}) {
     const viewport = this.shadowRoot.querySelector(".viewport");
     const worldPerPixel = camera.distance / Math.max(200, viewport.clientHeight) * 1.75;
     const rightX = Math.cos(camera.yaw);
@@ -2383,11 +2425,11 @@ class MaticMapStudio extends HTMLElement {
       targetZ: camera.targetZ
         - deltaX * worldPerPixel * rightZ
         + deltaY * worldPerPixel * forwardZ,
-    });
+    }, options);
   }
 
-  _panBy(deltaX, deltaY) {
-    const target = this._panValues(this._camera, deltaX, deltaY);
+  _panBy(deltaX, deltaY, options = {}) {
+    const target = this._panValues(this._camera, deltaX, deltaY, options);
     this._camera.targetX = target.targetX;
     this._camera.targetZ = target.targetZ;
     this._requestRender();
@@ -2413,7 +2455,7 @@ class MaticMapStudio extends HTMLElement {
           this._maximumPitch(),
         );
       } else {
-        this._panBy(velocityX * elapsed, velocityY * elapsed);
+        this._panBy(velocityX * elapsed, velocityY * elapsed, { elastic: true });
       }
       const decay = 0.9 ** (elapsed / 16);
       velocityX *= decay;
@@ -2423,6 +2465,7 @@ class MaticMapStudio extends HTMLElement {
         this._inertiaFrame = window.requestAnimationFrame(step);
       } else {
         this._inertiaFrame = undefined;
+        this._settleCamera();
       }
     };
     this._inertiaFrame = window.requestAnimationFrame(step);
@@ -2741,11 +2784,43 @@ class MaticMapStudio extends HTMLElement {
       } catch (_error) {
         return;
       }
+      const now = performance.now();
+      const lastTap = this._lastTouchTap;
+      const isDoubleTap = event.pointerType === "touch"
+        && this._pointers.size === 0
+        && lastTap
+        && now - lastTap.time <= 320
+        && Math.hypot(event.clientX - lastTap.x, event.clientY - lastTap.y) <= 28;
       this._pointers.set(event.pointerId, {
         x: event.clientX,
         y: event.clientY,
         pointerType: event.pointerType,
       });
+      if (isDoubleTap) {
+        const bounds = viewport.getBoundingClientRect();
+        const focused = this._panValues(
+          this._camera,
+          (bounds.left + bounds.width / 2 - event.clientX) * 0.55,
+          (bounds.top + bounds.height / 2 - event.clientY) * 0.55,
+        );
+        this._doubleTapZoom = {
+          pointerId: event.pointerId,
+          startX: event.clientX,
+          startY: event.clientY,
+          moved: false,
+          camera: {
+            ...this._camera,
+            targetX: focused.targetX,
+            targetZ: focused.targetZ,
+          },
+        };
+        this._handledTouchDoubleTapAt = now;
+        this._lastTouchTap = undefined;
+        this._drag = undefined;
+        viewport.classList.add("moving");
+        return;
+      }
+      if (lastTap && now - lastTap.time > 320) this._lastTouchTap = undefined;
       if (this._pointers.size === 1) {
         this._drag = {
           pointerId: event.pointerId,
@@ -2756,6 +2831,8 @@ class MaticMapStudio extends HTMLElement {
           lastTime: performance.now(),
           velocityX: 0,
           velocityY: 0,
+          startTime: now,
+          moved: 0,
           pointerType: event.pointerType,
           camera: { ...this._camera },
           mode: this._view === "top" || event.shiftKey || [1, 2].includes(event.button)
@@ -2764,6 +2841,8 @@ class MaticMapStudio extends HTMLElement {
         };
       } else if (this._pointers.size === 2) {
         const [first, second] = [...this._pointers.values()];
+        this._lastTouchTap = undefined;
+        this._doubleTapZoom = undefined;
         this._drag = undefined;
         this._pinch = {
           distance: Math.hypot(second.x - first.x, second.y - first.y),
@@ -2783,11 +2862,31 @@ class MaticMapStudio extends HTMLElement {
       this._pointers.set(
         event.pointerId,
         {
+          ...this._pointers.get(event.pointerId),
           x: sample.clientX,
           y: sample.clientY,
           pointerType: event.pointerType,
         },
       );
+      if (this._doubleTapZoom?.pointerId === event.pointerId) {
+        const gesture = this._doubleTapZoom;
+        const deltaY = sample.clientY - gesture.startY;
+        gesture.moved ||= Math.hypot(
+          sample.clientX - gesture.startX,
+          deltaY,
+        ) > 5;
+        this._camera = {
+          ...gesture.camera,
+          distance: this._constrainCameraDistance(
+            gesture.camera.distance * Math.exp(
+              maticClamp(deltaY * 0.009, -2.2, 2.2),
+            ),
+            { elastic: true },
+          ),
+        };
+        this._requestRender();
+        return;
+      }
       if (this._pinch && this._pointers.size >= 2) {
         const [first, second] = [...this._pointers.values()];
         const distance = Math.max(1, Math.hypot(second.x - first.x, second.y - first.y));
@@ -2795,10 +2894,9 @@ class MaticMapStudio extends HTMLElement {
         const centerX = (first.x + second.x) / 2;
         const centerY = (first.y + second.y) / 2;
         const start = this._pinch.camera;
-        this._camera.distance = maticClamp(
+        this._camera.distance = this._constrainCameraDistance(
           start.distance * this._pinch.distance / distance,
-          Math.max(0.3, this._radius * 0.08),
-          this._radius * 8,
+          { elastic: true },
         );
         this._camera.yaw = maticAngleDelta(
           start.yaw + maticAngleDelta(angle - this._pinch.angle),
@@ -2814,6 +2912,7 @@ class MaticMapStudio extends HTMLElement {
           start,
           centerX - this._pinch.centerX,
           0,
+          { elastic: true },
         );
         this._camera.targetX = panned.targetX;
         this._camera.targetZ = panned.targetZ;
@@ -2830,6 +2929,7 @@ class MaticMapStudio extends HTMLElement {
         drag.lastX = sample.clientX;
         drag.lastY = sample.clientY;
         drag.lastTime = now;
+        drag.moved = Math.max(drag.moved, Math.hypot(deltaX, deltaY));
         if (drag.mode === "orbit") {
           this._camera.yaw = maticAngleDelta(
             drag.camera.yaw + deltaX * 0.0045,
@@ -2840,7 +2940,12 @@ class MaticMapStudio extends HTMLElement {
             this._maximumPitch(),
           );
         } else {
-          const target = this._panValues(drag.camera, deltaX, deltaY);
+          const target = this._panValues(
+            drag.camera,
+            deltaX,
+            deltaY,
+            { elastic: true },
+          );
           this._camera.targetX = target.targetX;
           this._camera.targetZ = target.targetZ;
         }
@@ -2851,6 +2956,24 @@ class MaticMapStudio extends HTMLElement {
       if (!this._pointers.has(event.pointerId)) return;
       const drag = this._drag;
       const wasPinching = Boolean(this._pinch);
+      const wasDoubleTapZoom = this._doubleTapZoom?.pointerId === event.pointerId;
+      if (wasDoubleTapZoom) {
+        const gesture = this._doubleTapZoom;
+        this._doubleTapZoom = undefined;
+        if (!cancelled && !gesture.moved) {
+          const distance = this._cameraDistanceBounds();
+          this._applyCamera({
+            ...gesture.camera,
+            distance: maticClamp(
+              gesture.camera.distance / 1.6,
+              distance.minimum,
+              distance.maximum,
+            ),
+          });
+        } else if (!cancelled) {
+          this._settleCamera();
+        }
+      }
       this._pointers.delete(event.pointerId);
       this._pinch = undefined;
       const remaining = [...this._pointers.entries()][0];
@@ -2863,19 +2986,41 @@ class MaticMapStudio extends HTMLElement {
         lastTime: performance.now(),
         velocityX: 0,
         velocityY: 0,
+        startTime: performance.now(),
+        moved: 0,
+        fromPinch: wasPinching,
         pointerType: remaining[1].pointerType,
         camera: { ...this._camera },
         mode: this._view === "top" ? "pan" : "orbit",
       } : undefined;
       if (!remaining) {
         viewport.classList.remove("moving");
+        const isTap = !cancelled
+          && !wasPinching
+          && !wasDoubleTapZoom
+          && drag?.pointerType === "touch"
+          && !drag.fromPinch
+          && drag.moved <= 8
+          && performance.now() - drag.startTime <= 350;
+        this._lastTouchTap = isTap
+          ? {
+            time: performance.now(),
+            x: event.clientX,
+            y: event.clientY,
+          }
+          : undefined;
         if (
           !cancelled
           && !wasPinching
+          && !wasDoubleTapZoom
           && drag
           && drag.pointerType !== "mouse"
         ) {
           this._startInertia(drag.velocityX, drag.velocityY, drag.mode);
+        } else if (!cancelled && !wasDoubleTapZoom) {
+          this._settleCamera();
+        } else if (cancelled) {
+          this._settleCamera();
         }
       }
       if (viewport.hasPointerCapture(event.pointerId)) {
@@ -2926,6 +3071,10 @@ class MaticMapStudio extends HTMLElement {
     viewport.addEventListener("dblclick", (event) => {
       if (this._view === "rooms") return;
       event.preventDefault();
+      if (
+        this._handledTouchDoubleTapAt !== undefined
+        && performance.now() - this._handledTouchDoubleTapAt < 500
+      ) return;
       this._zoom(event.shiftKey ? 1 / 1.6 : 1.6);
     });
   }
@@ -2999,6 +3148,32 @@ class MaticMapStudio extends HTMLElement {
     if (!status) return;
     status.textContent = message;
     status.dataset.tone = tone;
+    const sheet = this.shadowRoot.querySelector(".area-fields");
+    if (sheet) sheet.dataset.tone = message ? tone : "normal";
+    this._syncAreaSheet();
+  }
+
+  _syncAreaSheet() {
+    const title = this.shadowRoot.querySelector(".area-sheet-title");
+    const summary = this.shadowRoot.querySelector(".area-sheet-summary");
+    if (!title || !summary) return;
+    const name = this.shadowRoot.querySelector(".area-name")?.value.trim();
+    const mode = this.shadowRoot.querySelector(".area-mode")?.selectedOptions?.[0]?.text;
+    const coverage = this.shadowRoot.querySelector(".area-coverage")
+      ?.selectedOptions?.[0]?.text;
+    const feedback = this.shadowRoot.querySelector(".area-feedback")?.textContent.trim();
+    title.textContent = name || this._localize("area_details", "Area details");
+    summary.textContent = feedback || [mode, coverage].filter(Boolean).join(" · ")
+      || this._localize("area_details_hint", "Name and cleaning settings");
+  }
+
+  _toggleAreaSheet(force = undefined) {
+    const sheet = this.shadowRoot.querySelector(".area-fields");
+    const toggle = this.shadowRoot.querySelector(".area-sheet-toggle");
+    if (!sheet || !toggle) return;
+    const expanded = force ?? sheet.dataset.expanded !== "true";
+    sheet.dataset.expanded = String(expanded);
+    toggle.setAttribute("aria-expanded", String(expanded));
   }
 
   _resetAreaSavePresentation() {
@@ -3456,6 +3631,7 @@ class MaticMapStudio extends HTMLElement {
     host.append(editor);
     this._areaBaseline = JSON.stringify(this._areaDraft());
     this._syncAreaActions();
+    this._syncAreaSheet();
   }
 
   async _saveArea() {
@@ -3603,7 +3779,7 @@ class MaticMapStudio extends HTMLElement {
         .zoom-value { min-width: 42px; text-align: center; }
         .angle-value { min-width: 72px; text-align: center; font-size: 11px; }
         .resolution-value { padding: 7px 10px; border-radius: 999px; background: color-mix(in srgb, var(--card-background-color) 82%, transparent); text-align: center; font-size: 11px; }
-        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .32s ease; }
+        .viewport { position: relative; min-height: 0; overflow: hidden; touch-action: none; overscroll-behavior: contain; cursor: grab; outline: none; contain: strict; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; -webkit-tap-highlight-color: transparent; background: radial-gradient(circle at 50% 30%, #223149, #080d13 68%); transition: background .32s ease; }
         .viewport.top-down { background-color: color-mix(in srgb, var(--primary-background-color, #080d13) 91%, var(--primary-color) 9%); background-image: radial-gradient(color-mix(in srgb, var(--primary-text-color) 14%, transparent) .7px, transparent .8px); background-size: 14px 14px; }
         .viewport:focus-visible { box-shadow: inset 0 0 0 2px var(--primary-color); }
         .viewport.moving { cursor: grabbing; }
@@ -3737,7 +3913,9 @@ class MaticMapStudio extends HTMLElement {
         .plan-run { border-color: #35c759; color: #fff; background: #16883a; }
         .plan-delete { color: var(--error-color); }
         .area-detail { position: relative; min-width: 0; min-height: 0; overflow: hidden; }
-        .area-fields { position: absolute; right: 16px; bottom: 16px; width: min(410px, calc(100% - 32px)); display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 12px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 14%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--card-background-color) 90%, transparent); box-shadow: 0 18px 48px rgba(0,0,0,.34); backdrop-filter: blur(22px) saturate(1.18); z-index: 7; }
+        .area-fields { position: absolute; right: 16px; bottom: 16px; width: min(410px, calc(100% - 32px)); padding: 12px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 14%, transparent); border-radius: 16px; background: color-mix(in srgb, var(--card-background-color) 90%, transparent); box-shadow: 0 18px 48px rgba(0,0,0,.34); backdrop-filter: blur(22px) saturate(1.18); -webkit-backdrop-filter: blur(22px) saturate(1.18); z-index: 7; }
+        .area-sheet-toggle { display: none; }
+        .area-sheet-content { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; }
         .area-fields label { min-width: 0; display: grid; gap: 4px; color: var(--secondary-text-color); font-size: 11px; }
         .area-fields input, .area-fields select { min-height: 44px; padding: 0 11px; border: 1px solid var(--divider-color); border-radius: 11px; color: var(--primary-text-color); background: var(--card-background-color); font: inherit; }
         .area-name-label { grid-column: 1 / -1; }
@@ -3756,7 +3934,66 @@ class MaticMapStudio extends HTMLElement {
         }
         @media (max-width: 1050px) { .privacy, .status, .resolution-value { display: none; } .heading { min-width: 0; } header { gap: 8px; padding-inline: 10px; } }
         @media (max-width: 760px) { .areas-shell { grid-template-rows: auto minmax(0, 1fr); } .areas-header { flex-wrap: wrap; gap: 7px; padding: 7px 9px; } .areas-heading { flex: 1 1 auto; } .areas-heading .areas-status { display: none; } .cleaning-tabs { order: 3; width: 100%; } .cleaning-tabs button { flex: 1 1 50%; } .plans-toolbar, .areas-toolbar { margin-left: auto; } .plans-list, .areas-list { width: min(210px, 42vw); } .plan-form { width: min(100% - 24px, 960px); padding: 22px 0 70px; } .plan-primary-fields, .plan-options { grid-template-columns: 1fr; } .plan-actions { flex-wrap: wrap; } .plan-feedback { flex: 1 1 100%; padding: 0 4px 2px; } }
-        @media (max-width: 650px) { .shell { grid-template-rows: 56px minmax(0, 1fr); } h1 { font-size: 16px; } .privacy { display: none; } .heading { flex: 1 1 auto; min-width: 0; } .segmented button { min-height: 36px; padding: 0 10px; } .scene-summary { flex: 0 0 auto; } .status, .resolution-value { display: none; } .health-value { max-width: 72px; overflow: hidden; text-overflow: ellipsis; } .camera-options { display: none; } .spatial-controls { top: 10px; left: 10px; } .map-command-bar { top: 58px; right: 10px; gap: 7px; } .zoom-control .zoom-slider { width: 76px; } .zoom-control .zoom-value { display: none; } .map-actions .layers { width: 38px; padding-inline: 0; } .room-overlay-label { display: none; } .cleaning-actions button { padding-inline: 9px; } .timeline { bottom: 10px; } .timeline-panel { width: min(430px, calc(100vw - 36px)); grid-template-columns: auto minmax(100px, 1fr) auto; gap: 5px; } .timeline-live { grid-column: 1 / -1; min-height: 34px !important; } .gesture-help { right: 10px; bottom: 70px; max-width: none; font-size: 11px; } .areas-heading h2 { font-size: 15px; } .plans-list, .areas-list { flex: 1 1 auto; width: auto; min-width: 0; } .plan-new, .area-new { padding-inline: 10px; } .area-fields { right: 8px; bottom: 8px; width: calc(100% - 16px); padding: 10px; } }
+        @media (max-width: 650px) {
+          .shell { grid-template-rows: 56px minmax(0, 1fr); }
+          header { padding-right: max(10px, env(safe-area-inset-right)); padding-left: max(10px, env(safe-area-inset-left)); }
+          h1 { font-size: 16px; }
+          .privacy { display: none; }
+          .heading { flex: 1 1 auto; min-width: 0; }
+          .segmented button { min-height: 36px; padding: 0 10px; }
+          .scene-summary { flex: 0 0 auto; }
+          .status, .resolution-value { display: none; }
+          .health-value { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
+          .camera-options, .spatial-controls .zoom-control { display: none; }
+          .spatial-controls { top: max(10px, env(safe-area-inset-top)); left: max(10px, env(safe-area-inset-left)); padding: 3px; border-radius: 13px; }
+          .spatial-controls > button { width: 44px; min-width: 44px; min-height: 44px; }
+          .map-command-bar { position: static; display: contents; }
+          .map-command-bar .floating-controls { position: absolute; }
+          .map-actions { top: max(10px, env(safe-area-inset-top)); right: max(10px, env(safe-area-inset-right)); padding: 3px; border-radius: 13px; }
+          .map-actions > button, .map-more > summary { width: 44px; min-width: 44px; min-height: 44px; }
+          .map-actions .layers { width: 44px; padding-inline: 0; }
+          .room-overlay-label { display: none; }
+          .cleaning-actions { left: 50%; bottom: calc(64px + max(10px, env(safe-area-inset-bottom))); gap: 2px; padding: 3px; border-radius: 15px; transform: translateX(-50%); }
+          .cleaning-actions button { min-height: 46px; gap: 6px; padding-inline: 12px; white-space: nowrap; }
+          .cleaning-actions ha-icon { width: 19px; height: 19px; --mdc-icon-size: 19px; }
+          .timeline { bottom: max(10px, env(safe-area-inset-bottom)); }
+          .timeline > summary { min-width: 142px; min-height: 44px; }
+          .timeline-panel { width: min(430px, calc(100vw - 24px)); grid-template-columns: auto minmax(100px, 1fr) auto; gap: 5px; }
+          .timeline-live { grid-column: 1 / -1; min-height: 38px !important; }
+          .gesture-help { right: 10px; bottom: calc(126px + env(safe-area-inset-bottom)); max-width: none; font-size: 11px; }
+          .areas-shell { grid-template-rows: auto minmax(0, 1fr); }
+          .areas-header { display: grid; grid-template-columns: 44px minmax(0, 1fr) auto; gap: 6px; padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right)) 6px max(8px, env(safe-area-inset-left)); }
+          .areas-back { width: 44px; min-width: 44px; min-height: 44px; padding: 0; }
+          .areas-heading { display: none; }
+          .areas-header > .spacer { display: none; }
+          .cleaning-tabs { grid-column: 1 / -1; grid-row: 2; order: initial; width: auto; padding: 2px; }
+          .cleaning-tabs button { min-height: 38px; flex: 1 1 50%; padding-inline: 8px; }
+          .plans-toolbar, .areas-toolbar { grid-column: 2 / 4; grid-row: 1; min-width: 0; margin: 0; }
+          .plans-list, .areas-list { flex: 1 1 auto; width: auto; min-width: 0; min-height: 44px; }
+          .plan-new, .area-new { width: 44px; min-width: 44px; min-height: 44px; overflow: hidden; padding: 0; font-size: 0; }
+          .plan-new::before, .area-new::before { content: "+"; font-size: 24px; font-weight: 350; line-height: 1; }
+          .plan-form { width: min(100% - 20px, 960px); padding: 18px 0 calc(72px + env(safe-area-inset-bottom)); }
+          .area-fields { right: max(8px, env(safe-area-inset-right)); bottom: max(8px, env(safe-area-inset-bottom)); left: max(8px, env(safe-area-inset-left)); width: auto; max-height: min(62dvh, 520px); box-sizing: border-box; overflow: hidden auto; padding: 5px 10px calc(10px + env(safe-area-inset-bottom)); border-radius: 20px; overscroll-behavior: contain; transition: max-height .2s ease, background .2s ease; }
+          .area-sheet-toggle { position: relative; width: 100%; min-height: 54px; display: grid; grid-template-columns: minmax(0, 1fr) 28px; align-items: center; gap: 8px; padding: 6px 0 0; border: 0; background: transparent; text-align: left; transform: none !important; }
+          .area-sheet-grabber { position: absolute; top: 1px; left: 50%; width: 30px; height: 4px; border-radius: 999px; background: color-mix(in srgb, var(--primary-text-color) 30%, transparent); transform: translateX(-50%); }
+          .area-sheet-copy { min-width: 0; display: grid; gap: 1px; }
+          .area-sheet-title { overflow: hidden; color: var(--primary-text-color); font-size: 14px; font-weight: 620; text-overflow: ellipsis; white-space: nowrap; }
+          .area-sheet-summary { overflow: hidden; color: var(--secondary-text-color); font-size: 11px; text-overflow: ellipsis; white-space: nowrap; }
+          .area-sheet-toggle ha-icon { width: 22px; height: 22px; color: var(--secondary-text-color); transition: transform .2s ease; }
+          .area-fields[data-expanded="true"] .area-sheet-toggle ha-icon { transform: rotate(180deg); }
+          .area-sheet-content { display: none; grid-template-columns: minmax(0, 1fr); gap: 10px; padding: 5px 2px 2px; }
+          .area-fields[data-expanded="true"] .area-sheet-content { display: grid; }
+          .area-name-label, .area-settings, .area-actions { grid-column: 1; }
+          .area-settings { grid-template-columns: 1fr 1fr; }
+          .area-actions { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 8px; }
+          .area-feedback { grid-column: 1 / -1; min-height: 0; margin: 0; text-align: center; }
+          .area-feedback:empty { display: none; }
+          .area-fields[data-tone="success"] .area-sheet-summary { color: #35c759; }
+          .area-fields[data-tone="error"] .area-sheet-summary { color: var(--error-color); }
+          .area-delete { grid-column: 1 / -1; grid-row: 3; border: 0; background: transparent; }
+          .area-run, .area-save { width: 100%; min-height: 48px; }
+          .area-run[hidden] + .area-save { grid-column: 1 / -1; }
+        }
       </style>
       <div class="shell">
         <header>
@@ -3892,13 +4129,20 @@ class MaticMapStudio extends HTMLElement {
             </section>
             <section class="area-detail" hidden>
               <div class="area-editor-host"></div>
-              <div class="area-fields">
-                <label class="area-name-label">${text("area_name", "Area name")}<input class="area-name" maxlength="128" autocomplete="off"></label>
-                <div class="area-settings">
-                  <label>${text("cleaning_mode", "Cleaning mode")}<select class="area-mode"><option value="vacuum">${text("vacuum", "Vacuum")}</option><option value="mop">${text("mop", "Mop")}</option><option value="vacuum_and_mop">${text("vacuum_and_mop", "Vacuum + mop")}</option></select></label>
-                  <label>${text("coverage", "Coverage")}<select class="area-coverage"><option value="quick">${text("quick", "Quick")}</option><option value="standard">${text("standard", "Optimal")}</option><option value="heavy_duty">${text("heavy_duty", "Heavy Duty")}</option></select></label>
+              <div class="area-fields" data-expanded="false">
+                <button class="area-sheet-toggle" type="button" aria-expanded="false" aria-controls="area-sheet-content">
+                  <span class="area-sheet-grabber" aria-hidden="true"></span>
+                  <span class="area-sheet-copy"><strong class="area-sheet-title">${text("area_details", "Area details")}</strong><span class="area-sheet-summary">${text("area_details_hint", "Name and cleaning settings")}</span></span>
+                  <ha-icon icon="mdi:chevron-up" aria-hidden="true"></ha-icon>
+                </button>
+                <div class="area-sheet-content" id="area-sheet-content">
+                  <label class="area-name-label">${text("area_name", "Area name")}<input class="area-name" maxlength="128" autocomplete="off"></label>
+                  <div class="area-settings">
+                    <label>${text("cleaning_mode", "Cleaning mode")}<select class="area-mode"><option value="vacuum">${text("vacuum", "Vacuum")}</option><option value="mop">${text("mop", "Mop")}</option><option value="vacuum_and_mop">${text("vacuum_and_mop", "Vacuum + mop")}</option></select></label>
+                    <label>${text("coverage", "Coverage")}<select class="area-coverage"><option value="quick">${text("quick", "Quick")}</option><option value="standard">${text("standard", "Optimal")}</option><option value="heavy_duty">${text("heavy_duty", "Heavy Duty")}</option></select></label>
+                  </div>
+                  <div class="area-actions"><span class="area-feedback" role="status" aria-live="polite" aria-atomic="true"></span><button class="area-delete" hidden>${text("area_delete", "Delete")}</button><button class="area-run" hidden>${text("area_run", "Clean now")}</button><button class="area-save">${text("area_save", "Save area")}</button></div>
                 </div>
-                <div class="area-actions"><span class="area-feedback" role="status" aria-live="polite" aria-atomic="true"></span><button class="area-delete" hidden>${text("area_delete", "Delete")}</button><button class="area-run" hidden>${text("area_run", "Clean now")}</button><button class="area-save">${text("area_save", "Save area")}</button></div>
               </div>
             </section>
           </div>
@@ -4012,6 +4256,8 @@ class MaticMapStudio extends HTMLElement {
     }
     this._guardButton(this.shadowRoot.querySelector(".area-new"), () =>
       this._selectArea(undefined));
+    this._guardButton(this.shadowRoot.querySelector(".area-sheet-toggle"), () =>
+      this._toggleAreaSheet());
     this.shadowRoot.querySelector(".areas-list").addEventListener(
       "change",
       (event) => this._selectArea(event.target.value || undefined),
@@ -4031,6 +4277,7 @@ class MaticMapStudio extends HTMLElement {
           this._setAreaActionStatus("");
           this._resetAreaSavePresentation();
           this._syncAreaActions();
+          this._syncAreaSheet();
         },
       );
     }

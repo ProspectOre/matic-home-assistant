@@ -386,6 +386,172 @@ test.describe("custom-area editor", () => {
     expect(afterWheel[2]).not.toBeCloseTo(afterTrackpad[2], 5);
   });
 
+  test("does not paint when a touch becomes a two-finger map gesture", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const editor = await loadAreaEditor(page);
+    await page.evaluate(() => {
+      const map = window.__areaEditor.shadowRoot.querySelector(".map");
+      const bounds = map.getBoundingClientRect();
+      const syntheticPointer = (type, pointerId, x, y) => ({
+        type,
+        init: {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          button: 0,
+          clientX: bounds.left + bounds.width * x,
+          clientY: bounds.top + bounds.height * y,
+        },
+      });
+      const events = [
+        syntheticPointer("pointerdown", 41, 0.40, 0.48),
+        syntheticPointer("pointermove", 41, 0.45, 0.48),
+        syntheticPointer("pointerdown", 42, 0.62, 0.48),
+        syntheticPointer("pointermove", 41, 0.34, 0.44),
+        syntheticPointer("pointermove", 42, 0.68, 0.52),
+        syntheticPointer("pointerup", 41, 0.34, 0.44),
+        syntheticPointer("pointerup", 42, 0.68, 0.52),
+      ];
+      for (const event of events) {
+        map.dispatchEvent(new PointerEvent(event.type, event.init));
+      }
+    });
+    expect(await page.evaluate(() => window.__areaEditor.value)).toEqual([]);
+    await editor.locator(".fit").click();
+
+    await page.evaluate(() => {
+      const map = window.__areaEditor.shadowRoot.querySelector(".map");
+      const bounds = map.getBoundingClientRect();
+      const syntheticPointer = (type, x) => new PointerEvent(type, {
+        bubbles: true,
+        cancelable: true,
+        pointerId: 43,
+        pointerType: "touch",
+        button: 0,
+        clientX: bounds.left + bounds.width * x,
+        clientY: bounds.top + bounds.height * 0.52,
+      });
+      const events = [
+        syntheticPointer("pointerdown", 0.42),
+        syntheticPointer("pointermove", 0.50),
+        syntheticPointer("pointerup", 0.50),
+      ];
+      for (const event of events) {
+        map.dispatchEvent(event);
+      }
+    });
+    const committed = await page.evaluate(() => window.__areaEditor.value.length);
+    expect(committed).toBeGreaterThan(0);
+
+    await page.evaluate((events) => {
+      const map = window.__areaEditor.shadowRoot.querySelector(".map");
+      for (const event of events) {
+        map.dispatchEvent(new PointerEvent(event.type, event.init));
+      }
+    }, [
+      pointer("pointerdown", 44, 220, 330),
+      pointer("pointermove", 44, 260, 330),
+      pointer("pointercancel", 44, 260, 330),
+    ]);
+    expect(await page.evaluate(() => window.__areaEditor.value.length)).toBe(committed);
+  });
+
+  test("matches native mobile double-tap zoom, drag zoom, and pan momentum", async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const editor = await loadAreaEditor(page);
+    const map = editor.locator(".map");
+    const initialWidth = Number((await map.getAttribute("viewBox")).split(" ")[2]);
+
+    const firstTapCount = await page.evaluate(() => {
+      const mapElement = window.__areaEditor.shadowRoot.querySelector(".map");
+      const bounds = mapElement.getBoundingClientRect();
+      const x = bounds.left + bounds.width * 0.42;
+      const y = bounds.top + bounds.height * 0.52;
+      const dispatch = (type, pointerId, clientY = y) => mapElement.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY,
+        }),
+      );
+      dispatch("pointerdown", 51);
+      dispatch("pointerup", 51);
+      const count = window.__areaEditor.value.length;
+      dispatch("pointerdown", 52);
+      dispatch("pointerup", 52);
+      return count;
+    });
+    expect(firstTapCount).toBeGreaterThan(0);
+    await expect.poll(() => page.evaluate(() => window.__areaEditor.value.length)).toBe(0);
+    await expect.poll(async () => Number(
+      (await map.getAttribute("viewBox")).split(" ")[2],
+    )).toBeLessThan(initialWidth * 0.7);
+
+    await editor.locator(".fit").click();
+    await page.evaluate(() => {
+      const mapElement = window.__areaEditor.shadowRoot.querySelector(".map");
+      const bounds = mapElement.getBoundingClientRect();
+      const x = bounds.left + bounds.width * 0.42;
+      const y = bounds.top + bounds.height * 0.52;
+      const dispatch = (type, pointerId, clientY = y) => mapElement.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY,
+        }),
+      );
+      dispatch("pointerdown", 53);
+      dispatch("pointerup", 53);
+      dispatch("pointerdown", 54);
+      dispatch("pointermove", 54, y - 100);
+      dispatch("pointerup", 54, y - 100);
+    });
+    expect(await page.evaluate(() => window.__areaEditor.value)).toEqual([]);
+    const dragZoomWidth = Number((await map.getAttribute("viewBox")).split(" ")[2]);
+    expect(dragZoomWidth).toBeLessThan(initialWidth * 0.6);
+
+    await editor.locator("[data-tool=pan]").click();
+    const releaseX = await page.evaluate(async () => {
+      const mapElement = window.__areaEditor.shadowRoot.querySelector(".map");
+      const bounds = mapElement.getBoundingClientRect();
+      const y = bounds.top + bounds.height * 0.52;
+      const dispatch = (type, clientX) => mapElement.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId: 55,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX,
+          clientY: y,
+        }),
+      );
+      const startX = bounds.left + bounds.width * 0.42;
+      dispatch("pointerdown", startX);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      dispatch("pointermove", startX + 55);
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      dispatch("pointermove", startX + 90);
+      dispatch("pointerup", startX + 90);
+      return Number(mapElement.getAttribute("viewBox").split(" ")[0]);
+    });
+    await expect.poll(async () => Number(
+      (await map.getAttribute("viewBox")).split(" ")[0],
+    )).not.toBeCloseTo(releaseX, 2);
+  });
+
   test("declutters overlapping room labels", async ({ page }) => {
     const editor = await loadAreaEditor(page);
     await page.evaluate(() => {
@@ -1288,6 +1454,205 @@ test.describe("map studio", () => {
       cameraStepsVisible: [...element.shadowRoot.querySelectorAll(".camera-step")]
         .some((button) => button.offsetParent !== null),
     }))).toEqual({ header: 56, menuOpen: false, cameraStepsVisible: false });
+  });
+
+  test("keeps mobile maps touch-first and moves area settings into a bottom sheet", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/mobile";
+    const areasUrl = "/api/matic_robot/areas/mobile";
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.route("/api/matic_robot/slam_entries", async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "mobile",
+        scene_url: sceneUrl,
+        areas_url: areasUrl,
+        plans_url: "/api/matic_robot/plans/mobile",
+        area_editor_url: "/matic_robot/test/room-plan-editor.js",
+        map_revision: 1,
+        map_complete: true,
+        map_health: "ready",
+      }] }),
+    }));
+    await page.route(sceneUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/vnd.matic.slam-scene",
+      body: syntheticScene("Mobile room", 12),
+    }));
+    await page.route(areasUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ scene_url: sceneUrl, rooms: ROOMS, areas: [] }),
+    }));
+    await installBrowserDoubles(page, { webgl: true });
+    const studio = await loadStudio(page, {
+      "vacuum.mobile": { attributes: { matic_entry_id: "mobile" } },
+    });
+
+    const mapLayout = await studio.evaluate((element) => {
+      const root = element.shadowRoot;
+      const viewport = root.querySelector(".viewport").getBoundingClientRect();
+      const fit = root.querySelector(".spatial-controls").getBoundingClientRect();
+      const actions = root.querySelector(".map-actions").getBoundingClientRect();
+      const cleaning = root.querySelector(".cleaning-actions").getBoundingClientRect();
+      const overlap = (first, second) => !(
+        first.right <= second.left
+        || first.left >= second.right
+        || first.bottom <= second.top
+        || first.top >= second.bottom
+      );
+      return {
+        sliderVisible: root.querySelector(".spatial-controls .zoom-control")
+          .offsetParent !== null,
+        fitSize: [fit.width, fit.height],
+        actionsSize: [actions.width, actions.height],
+        cleaningInside: cleaning.left >= viewport.left
+          && cleaning.right <= viewport.right
+          && cleaning.bottom <= viewport.bottom,
+        cleaningInLowerHalf: cleaning.top > viewport.top + viewport.height / 2,
+        topControlsOverlap: overlap(fit, actions),
+        horizontalOverflow: document.documentElement.scrollWidth > innerWidth,
+      };
+    });
+    expect(mapLayout.sliderVisible).toBe(false);
+    expect(mapLayout.fitSize[1]).toBeGreaterThanOrEqual(50);
+    expect(mapLayout.actionsSize[1]).toBeGreaterThanOrEqual(50);
+    expect(mapLayout.cleaningInside).toBe(true);
+    expect(mapLayout.cleaningInLowerHalf).toBe(true);
+    expect(mapLayout.topControlsOverlap).toBe(false);
+    expect(mapLayout.horizontalOverflow).toBe(false);
+
+    const tapStartDistance = await page.evaluate(() => {
+      const viewport = window.__studio.shadowRoot.querySelector(".viewport");
+      const bounds = viewport.getBoundingClientRect();
+      const x = bounds.left + bounds.width * 0.58;
+      const y = bounds.top + bounds.height * 0.48;
+      const dispatch = (type, pointerId, clientY = y) => viewport.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY,
+        }),
+      );
+      const distance = window.__studio._camera.distance;
+      dispatch("pointerdown", 61);
+      dispatch("pointerup", 61);
+      dispatch("pointerdown", 62);
+      dispatch("pointerup", 62);
+      return distance;
+    });
+    await expect.poll(() => page.evaluate(() => window.__studio._camera.distance))
+      .toBeLessThan(tapStartDistance * 0.8);
+
+    const dragStartDistance = await page.evaluate(() => {
+      window.__studio._applyPreset("three", false);
+      const viewport = window.__studio.shadowRoot.querySelector(".viewport");
+      const bounds = viewport.getBoundingClientRect();
+      const x = bounds.left + bounds.width * 0.58;
+      const y = bounds.top + bounds.height * 0.48;
+      const dispatch = (type, pointerId, clientY = y) => viewport.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY,
+        }),
+      );
+      const distance = window.__studio._camera.distance;
+      dispatch("pointerdown", 63);
+      dispatch("pointerup", 63);
+      dispatch("pointerdown", 64);
+      dispatch("pointermove", 64, y - 90);
+      dispatch("pointerup", 64, y - 90);
+      return distance;
+    });
+    expect(await page.evaluate(() => window.__studio._camera.distance))
+      .toBeLessThan(dragStartDistance * 0.55);
+
+    const elasticZoom = await page.evaluate(() => {
+      window.__studio._applyPreset("three", false);
+      const viewport = window.__studio.shadowRoot.querySelector(".viewport");
+      const bounds = viewport.getBoundingClientRect();
+      const x = bounds.left + bounds.width * 0.58;
+      const y = bounds.top + bounds.height * 0.48;
+      const dispatch = (type, pointerId, clientY = y) => viewport.dispatchEvent(
+        new PointerEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          pointerId,
+          pointerType: "touch",
+          isPrimary: true,
+          button: 0,
+          clientX: x,
+          clientY,
+        }),
+      );
+      dispatch("pointerdown", 65);
+      dispatch("pointerup", 65);
+      dispatch("pointerdown", 66);
+      dispatch("pointermove", 66, y + 300);
+      const during = window.__studio._camera.distance;
+      const maximum = window.__studio._cameraDistanceBounds().maximum;
+      dispatch("pointerup", 66, y + 300);
+      return { during, maximum };
+    });
+    expect(elasticZoom.during).toBeGreaterThan(elasticZoom.maximum);
+    await expect.poll(() => page.evaluate(() => window.__studio._camera.distance))
+      .toBeLessThanOrEqual(elasticZoom.maximum);
+
+    await studio.locator(".cleaning-areas").click();
+    await expect(studio.locator(".area-detail")).toBeVisible();
+    const collapsed = await studio.evaluate((element) => {
+      const root = element.shadowRoot;
+      const workspace = root.querySelector(".areas-workspace").getBoundingClientRect();
+      const header = root.querySelector(".areas-header").getBoundingClientRect();
+      const sheet = root.querySelector(".area-fields").getBoundingClientRect();
+      const editor = root.querySelector("ha-selector-matic-area").shadowRoot;
+      const nav = editor.querySelector(".navigation-controls").getBoundingClientRect();
+      const tools = editor.querySelector(".tool-picker").getBoundingClientRect();
+      return {
+        headerHeight: header.height,
+        sheetHeight: sheet.height,
+        sheetInside: sheet.left >= workspace.left
+          && sheet.right <= workspace.right
+          && sheet.bottom <= workspace.bottom,
+        zoomVisible: editor.querySelector(".zoom-control").offsetParent !== null,
+        toolTargets: [...editor.querySelectorAll(".tool-picker button")]
+          .map((button) => button.getBoundingClientRect().height),
+        toolbarsShareRow: Math.abs(nav.top - tools.top) < 2,
+      };
+    });
+    expect(collapsed.headerHeight).toBeLessThanOrEqual(110);
+    expect(collapsed.sheetHeight).toBeLessThanOrEqual(76);
+    expect(collapsed.sheetInside).toBe(true);
+    expect(collapsed.zoomVisible).toBe(false);
+    expect(collapsed.toolTargets.every((height) => height >= 44)).toBe(true);
+    expect(collapsed.toolbarsShareRow).toBe(true);
+
+    await studio.locator(".area-sheet-toggle").click();
+    await expect(studio.locator(".area-sheet-toggle")).toHaveAttribute(
+      "aria-expanded",
+      "true",
+    );
+    await expect(studio.locator(".area-name")).toBeVisible();
+    const expandedHeight = await studio.locator(".area-fields").evaluate(
+      (sheet) => sheet.getBoundingClientRect().height,
+    );
+    expect(expandedHeight).toBeGreaterThan(collapsed.sheetHeight + 100);
+    await studio.locator(".area-name").fill("Touch area");
+    await expect(studio.locator(".area-sheet-title")).toHaveText("Touch area");
+    await expect(studio.locator(".area-sheet-summary")).toHaveText(
+      "Vacuum · Optimal",
+    );
   });
 
   test("localizes accessible controls and persists per-user view preferences", async ({ page }) => {

@@ -23,7 +23,9 @@ const server = createServer((request, response) => {
       "Content-Type": path === "/" ? "text/html; charset=utf-8" : "text/plain",
       "Cache-Control": "no-store",
     });
-    response.end(path === "/" ? "<!doctype html><title>Matic UI test</title>" : "ok");
+    response.end(path === "/"
+      ? "<!doctype html><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>Matic UI test</title>"
+      : "ok");
     return;
   }
   const file = scripts.get(path);
