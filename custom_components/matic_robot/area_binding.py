@@ -316,24 +316,26 @@ def _area_geometry_components(
         [list(point) for point in room.boundary] for room in floor_plan.rooms
     )
 
-    segments: set[_LocalSegment] = set()
+    segments: list[_LocalSegment] = []
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
-            for neighborhood in neighborhoods:
-                if _clip_segment(start, end, neighborhood) is None:
-                    continue
-                first = (
-                    _quantize_coordinate(start[0]),
-                    _quantize_coordinate(start[1]),
-                )
-                second = (
-                    _quantize_coordinate(end[0]),
-                    _quantize_coordinate(end[1]),
-                )
-                if second < first:
-                    first, second = second, first
-                segments.add((*first, *second))
+            if not any(
+                _clip_segment(start, end, neighborhood) is not None
+                for neighborhood in neighborhoods
+            ):
+                continue
+            first = (
+                _quantize_coordinate(start[0]),
+                _quantize_coordinate(start[1]),
+            )
+            second = (
+                _quantize_coordinate(end[0]),
+                _quantize_coordinate(end[1]),
+            )
+            if second < first:
+                first, second = second, first
+            segments.append((*first, *second))
 
     occupancy_values = []
     for x, y, radius in ordered_float:

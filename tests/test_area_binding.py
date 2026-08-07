@@ -593,6 +593,48 @@ def test_scoped_binding_tolerates_diagonal_clipping_amplification() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_preserves_tolerant_shared_wall_multiplicity() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "left",
+                "Left",
+                ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+            ),
+            _room(
+                "right",
+                "Right",
+                ((1.0, 0.0), (2.0, 0.0), (2.0, 1.0), (1.0, 1.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 1.0, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=(
+                    (1.002, 0.0),
+                    *floor_plan.rooms[1].boundary[1:-1],
+                    (1.002, 1.0),
+                ),
+            ),
+        ),
+    )
+
+    assert area["map_binding"]["local_segments_mm"] == [
+        [1000, 0, 1000, 1000],
+        [1000, 0, 1000, 1000],
+    ]
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
