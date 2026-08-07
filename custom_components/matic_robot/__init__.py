@@ -113,6 +113,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
         area_binding_upgrade_pending = area_binding_upgrade.pending
         area_binding_upgrade_in_progress = False
+        area_binding_upgrade_last_floor_plan = coordinator.data.floor_plan
         try:
             native_history = await client.async_get_cleaning_session_records()
         except MaticError as err:
@@ -154,7 +155,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
 
         def _schedule_area_binding_upgrade(floor_plan: FloorPlan) -> None:
             nonlocal area_binding_upgrade_in_progress
+            nonlocal area_binding_upgrade_last_floor_plan
             area_binding_upgrade_in_progress = True
+            area_binding_upgrade_last_floor_plan = floor_plan
             entry.async_create_background_task(
                 hass,
                 _async_upgrade_area_bindings(floor_plan),
@@ -186,6 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 allow_upgrade
                 and area_binding_upgrade_pending
                 and not area_binding_upgrade_in_progress
+                and floor_plan != area_binding_upgrade_last_floor_plan
                 and _floor_plan_supports_area_binding(floor_plan)
             ):
                 assert floor_plan is not None

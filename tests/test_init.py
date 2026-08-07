@@ -161,6 +161,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         side_effect=(
             AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(1, False),
         )
     )
@@ -305,6 +306,21 @@ async def test_setup_refreshes_before_forwarding_platforms(
                 ),
             ),
         )
+        updated_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                *complete_floor_plan.rooms,
+                Room(
+                    "final-room",
+                    "Final Room",
+                    "final-room",
+                    b"final-room",
+                    ((4.0, 0.0), (5.0, 0.0), (4.0, 1.0)),
+                ),
+            ),
+        )
         coordinator.data.floor_plan = partial_floor_plan
         sync_callback()
         coordinator.data.floor_plan = complete_floor_plan
@@ -313,14 +329,20 @@ async def test_setup_refreshes_before_forwarding_platforms(
         await scheduled[0]
         assert len(scheduled) == 2
         await scheduled[1]
+        sync_callback()
+        assert len(scheduled) == 2
+        coordinator.data.floor_plan = updated_floor_plan
+        sync_callback()
+        assert len(scheduled) == 3
+        await scheduled[2]
         plans.async_add_listener.call_args.args[1]()
 
-    assert listener_sync.call_count == 3
-    assert entry.async_create_background_task.call_count == 4
-    assert plans.async_upgrade_area_bindings.await_count == 3
+    assert listener_sync.call_count == 5
+    assert entry.async_create_background_task.call_count == 5
+    assert plans.async_upgrade_area_bindings.await_count == 4
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
-        complete_floor_plan,
+        updated_floor_plan,
     )
     assert (
         entry.async_create_background_task.call_args.args[2]
