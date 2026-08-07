@@ -292,6 +292,16 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
             "map_binding": binding_for_floor_plan(floor_plan),
         },
         "unbound": {"schema_version": 0, "circles": circles},
+        "list_version": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": {"version": []},
+        },
+        "object_version": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": {"version": {}},
+        },
         "corrupt": "not-an-area",
     }
 
@@ -302,6 +312,8 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
     assert robot["areas"]["hash_only_scoped"]["map_binding"]["version"] == (
         SCOPED_MAP_BINDING_VERSION
     )
+    assert robot["areas"]["list_version"]["map_binding"]["version"] == []
+    assert robot["areas"]["object_version"]["map_binding"]["version"] == {}
     manager._store.async_save.assert_awaited_once()
     listener.assert_called_once()
 

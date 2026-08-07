@@ -376,13 +376,14 @@ class CleaningPlanManager:
         upgraded = 0
         for area in self._robot(serial_number)["areas"].values():
             binding = area.get("map_binding")
+            if not isinstance(binding, Mapping):
+                continue
+            version = binding.get("version")
+            if isinstance(version, bool) or not isinstance(version, int):
+                continue
             if (
-                not isinstance(binding, Mapping)
-                or binding.get("version")
-                not in {
-                    MAP_BINDING_VERSION,
-                    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                }
+                version
+                not in {MAP_BINDING_VERSION, HASH_ONLY_SCOPED_MAP_BINDING_VERSION}
                 or area_binding_status(area, floor_plan)
                 is not AreaBindingStatus.CURRENT
             ):
