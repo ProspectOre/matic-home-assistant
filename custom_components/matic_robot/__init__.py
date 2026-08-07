@@ -182,12 +182,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                     assert latest_floor_plan is not None
                     _schedule_area_binding_upgrade(latest_floor_plan)
 
-        def _async_sync_area_issue(*, allow_upgrade: bool = True) -> None:
+        def _async_sync_area_issue() -> None:
             nonlocal area_binding_upgrade_in_progress
             floor_plan = coordinator.data.floor_plan
             if (
-                allow_upgrade
-                and area_binding_upgrade_pending
+                area_binding_upgrade_pending
                 and not area_binding_upgrade_in_progress
                 and floor_plan != area_binding_upgrade_last_floor_plan
                 and _floor_plan_supports_area_binding(floor_plan)
@@ -205,7 +204,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         entry.async_on_unload(
             plans.async_add_listener(serial_number, _async_sync_area_issue)
         )
-        _async_sync_area_issue(allow_upgrade=False)
+        _async_sync_area_issue()
     except BaseException:
         if slam_history is not None:
             await slam_history.async_shutdown()

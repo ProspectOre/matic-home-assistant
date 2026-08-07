@@ -162,6 +162,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
             AreaBindingUpgradeResult(1, False),
         )
     )
@@ -198,6 +199,36 @@ async def test_setup_refreshes_before_forwarding_platforms(
             else None
         ),
     )
+    initial_floor_plan = coordinator.data.floor_plan
+    setup_floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room(
+                "setup-room",
+                "Setup Room",
+                "setup-room",
+                b"setup-room",
+                ((-2.0, 0.0), (-1.0, 0.0), (-2.0, 1.0)),
+            ),
+        ),
+    )
+
+    def deliver_setup_floor_plan(_serial_number, _listener):
+        coordinator.data.floor_plan = setup_floor_plan
+        return plan_unsubscribe
+
+    plans.async_add_listener.side_effect = deliver_setup_floor_plan
+    setup_scheduled = []
+
+    def capture_setup_tasks(_hass, target, name):
+        if name == "matic_robot custom area binding upgrade":
+            setup_scheduled.append(target)
+        else:
+            target.close()
+
+    entry.async_create_background_task.side_effect = capture_setup_tasks
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         async_collect=MagicMock(),
@@ -233,12 +264,19 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
+    assert len(setup_scheduled) == 1
+    await setup_scheduled[0]
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
-    initial_floor_plan = coordinator.data.floor_plan
-    plans.async_upgrade_area_bindings.assert_awaited_once_with(
-        "synthetic-serial", initial_floor_plan
+    assert plans.async_upgrade_area_bindings.await_count == 2
+    assert plans.async_upgrade_area_bindings.await_args_list[0].args == (
+        "synthetic-serial",
+        initial_floor_plan,
+    )
+    assert plans.async_upgrade_area_bindings.await_args_list[1].args == (
+        "synthetic-serial",
+        setup_floor_plan,
     )
     if native_history_error:
         plans.async_import_native_history.assert_not_awaited()
@@ -256,7 +294,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 2
+    assert entry.async_create_background_task.call_count == 3
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -268,7 +306,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),
     ]
-    sync_area_issue.assert_called_once_with(hass, "entry", {}, initial_floor_plan)
+    sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
         "custom_components.matic_robot.async_sync_custom_area_issue"
@@ -338,8 +376,8 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 5
-    assert plans.async_upgrade_area_bindings.await_count == 4
+    assert entry.async_create_background_task.call_count == 6
+    assert plans.async_upgrade_area_bindings.await_count == 5
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
         updated_floor_plan,

@@ -51,6 +51,7 @@ _CanonicalPolygon = tuple[_QuantizedPoint, ...]
 _LocalSegment = tuple[int, int, int, int]
 _AreaShape = tuple[tuple[int, int, int], ...]
 _LocalGeometry = tuple[_AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
+_SegmentMatch = tuple[int, int]
 _SegmentContext = tuple[
     frozenset[int],
     frozenset[int],
@@ -453,7 +454,8 @@ def area_binding_status(
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])
-    if _local_segments_match(saved_segments, segments, shape) and (
+    segment_matches = _local_segment_correspondence(saved_segments, segments, shape)
+    if segment_matches is not None and (
         saved_occupancy == occupancy
         or _occupancy_changes_are_explained(
             saved_occupancy,
@@ -462,6 +464,7 @@ def area_binding_status(
             segments,
             shape,
             area["circles"],
+            segment_matches,
         )
     ):
         return AreaBindingStatus.CURRENT
@@ -597,6 +600,15 @@ def _local_segments_match(
     current: Sequence[_LocalSegment],
     shape: _AreaShape,
 ) -> bool:
+    """Return whether all semantically local walls have a correspondence."""
+    return _local_segment_correspondence(saved, current, shape) is not None
+
+
+def _local_segment_correspondence(
+    saved: Sequence[_LocalSegment],
+    current: Sequence[_LocalSegment],
+    shape: _AreaShape,
+) -> tuple[_SegmentMatch, ...] | None:
     """Find a tolerant one-to-one match for all semantically local segments.
 
     Segments in the 10 mm selection guard band may appear or disappear without
@@ -613,13 +625,8 @@ def _local_segments_match(
         for cell in context[3]:
             current_by_cell.setdefault(cell, []).append(current_index)
 
-    node_count = len(saved) + len(current) + 2
-    source = node_count - 2
-    sink = node_count - 1
-    graph: list[list[list[int]]] = [[] for _ in range(node_count)]
-
-    for index, is_local in enumerate(saved_local):
-        _add_flow_edge(graph, source, index, -int(is_local))
+    compatible: list[tuple[int, int, int]] = []
+    maximum_pair_cost = 0
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
@@ -638,12 +645,49 @@ def _local_segments_match(
                 current_contexts[current_index],
                 shape,
             ):
-                _add_flow_edge(graph, saved_index, len(saved) + current_index, 0)
-    for index, is_local in enumerate(current_local):
-        _add_flow_edge(graph, len(saved) + index, sink, -int(is_local))
+                pair_cost = _segment_pair_cost(saved_segment, current[current_index])
+                compatible.append((saved_index, current_index, pair_cost))
+                maximum_pair_cost = max(maximum_pair_cost, pair_cost)
 
+    node_count = len(saved) + len(current) + 2
+    source = node_count - 2
+    sink = node_count - 1
+    graph: list[list[list[int]]] = [[] for _ in range(node_count)]
+    local_reward = maximum_pair_cost * (min(len(saved), len(current)) + 1) + 1
+
+    for index, is_local in enumerate(saved_local):
+        _add_flow_edge(graph, source, index, -local_reward * int(is_local))
+    for saved_index, current_index, pair_cost in compatible:
+        _add_flow_edge(graph, saved_index, len(saved) + current_index, pair_cost)
+    for index, is_local in enumerate(current_local):
+        _add_flow_edge(
+            graph,
+            len(saved) + index,
+            sink,
+            -local_reward * int(is_local),
+        )
+
+    _minimum_cost_maximum_flow(graph, source, sink, stop_at_nonnegative=True)
+    matches = tuple(
+        (saved_index, edge[0] - len(saved))
+        for saved_index in range(len(saved))
+        for edge in graph[saved_index]
+        if len(saved) <= edge[0] < len(saved) + len(current) and edge[2] == 0
+    )
     required_score = sum(saved_local) + sum(current_local)
-    return -_minimum_cost_maximum_flow(graph, source, sink) == required_score
+    matched_score = sum(
+        int(saved_local[saved_index]) + int(current_local[current_index])
+        for saved_index, current_index in matches
+    )
+    return matches if matched_score == required_score else None
+
+
+def _segment_pair_cost(saved: _LocalSegment, current: _LocalSegment) -> int:
+    """Return the endpoint distance for the closer wall orientation."""
+    direct = sum(abs(saved[index] - current[index]) for index in range(4))
+    reversed_current = (current[2], current[3], current[0], current[1])
+    reverse = sum(abs(saved[index] - reversed_current[index]) for index in range(4))
+    return min(direct, reverse)
 
 
 def _occupancy_changes_are_explained(
@@ -653,6 +697,7 @@ def _occupancy_changes_are_explained(
     current_segments: Sequence[_LocalSegment],
     shape: _AreaShape,
     circles: Sequence[Mapping[str, Any]],
+    segment_matches: Sequence[_SegmentMatch] | None = None,
 ) -> bool:
     """Return whether every changed probe is explained by a moving wall pair."""
     ordered_circles = sorted(
@@ -676,8 +721,12 @@ def _occupancy_changes_are_explained(
     current_contexts = tuple(
         _segment_context(segment, shape) for segment in current_segments
     )
-    saved_by_cell = _segment_indices_by_spatial_cell(saved_contexts)
-    current_by_cell = _segment_indices_by_spatial_cell(current_contexts)
+    if segment_matches is None:
+        segment_matches = _local_segment_correspondence(
+            saved_segments, current_segments, shape
+        )
+        if segment_matches is None:
+            return False
 
     for (
         (x, y, radius),
@@ -694,22 +743,6 @@ def _occupancy_changes_are_explained(
         for probe_index, probe in enumerate(probes):
             if not changed & (1 << probe_index):
                 continue
-            probe_cell = (
-                math.floor(probe[0] / _SPATIAL_INDEX_CELL_MILLIMETERS),
-                math.floor(probe[1] / _SPATIAL_INDEX_CELL_MILLIMETERS),
-            )
-            saved_candidates = {
-                index
-                for cell_x in range(probe_cell[0] - 1, probe_cell[0] + 2)
-                for cell_y in range(probe_cell[1] - 1, probe_cell[1] + 2)
-                for index in saved_by_cell.get((cell_x, cell_y), ())
-            }
-            current_candidates = {
-                index
-                for cell_x in range(probe_cell[0] - 1, probe_cell[0] + 2)
-                for cell_y in range(probe_cell[1] - 1, probe_cell[1] + 2)
-                for index in current_by_cell.get((cell_x, cell_y), ())
-            }
             if not any(
                 _wall_pair_explains_probe(
                     saved_segments[saved_index],
@@ -719,22 +752,10 @@ def _occupancy_changes_are_explained(
                     probe,
                     shape,
                 )
-                for saved_index in saved_candidates
-                for current_index in current_candidates
+                for saved_index, current_index in segment_matches
             ):
                 return False
     return True
-
-
-def _segment_indices_by_spatial_cell(
-    contexts: Sequence[_SegmentContext],
-) -> dict[tuple[int, int], list[int]]:
-    """Index precomputed segment contexts by their local spatial cells."""
-    by_cell: dict[tuple[int, int], list[int]] = {}
-    for index, context in enumerate(contexts):
-        for cell in context[3]:
-            by_cell.setdefault(cell, []).append(index)
-    return by_cell
 
 
 def _wall_pair_explains_probe(
@@ -1033,7 +1054,11 @@ def _add_flow_edge(
 
 
 def _minimum_cost_maximum_flow(
-    graph: list[list[list[int]]], source: int, sink: int
+    graph: list[list[list[int]]],
+    source: int,
+    sink: int,
+    *,
+    stop_at_nonnegative: bool = False,
 ) -> int:
     """Return the cost of a unit-capacity minimum-cost maximum flow."""
     total_cost = 0
@@ -1064,6 +1089,10 @@ def _minimum_cost_maximum_flow(
                         queue.append(target)
                         queued[target] = True
         if previous_nodes[sink] == -1:
+            return total_cost
+        sink_distance = distances[sink]
+        assert sink_distance is not None
+        if stop_at_nonnegative and sink_distance >= 0:
             return total_cost
 
         node = sink

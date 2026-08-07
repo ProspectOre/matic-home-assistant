@@ -15,6 +15,7 @@ from custom_components.matic_robot.area_binding import (
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     _hash_only_area_geometry_fingerprint,
+    _local_segment_correspondence,
     _local_segment_geometries_match,
     _local_segments_match,
     _occupancy_changes_are_explained,
@@ -751,6 +752,22 @@ def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
         )
 
     assert explains.call_count < len(saved) * len(current) // 8
+
+
+def test_occupancy_explanation_uses_one_to_one_wall_correspondence() -> None:
+    shape = ((0, 0, 100),)
+    circles = ({"x": 0.0, "y": 0.0, "radius": 0.1},)
+    segments = ((345, -100, 345, 100), (355, -100, 355, 100))
+
+    assert _local_segment_correspondence(segments, segments, shape) == ((0, 0),)
+    assert not _occupancy_changes_are_explained(
+        (0,),
+        (4,),
+        segments,
+        segments,
+        shape,
+        circles,
+    )
 
 
 @pytest.mark.parametrize(
