@@ -680,6 +680,45 @@ def test_scoped_binding_preserves_fractional_probe_tolerance() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_uses_expanded_guard_during_wall_comparison() -> None:
+    saved_wall = 0.8509
+    current_wall = 0.8608
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "fractional-guard",
+                "Fractional Guard",
+                ((0.0, -1.0), (saved_wall, -1.0), (saved_wall, 1.0), (0.0, 1.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 0.50049, "y": 0.0, "radius": 0.10049}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (0.0, -1.0),
+                    (current_wall, -1.0),
+                    (current_wall, 1.0),
+                    (0.0, 1.0),
+                ),
+            ),
+        ),
+    )
+
+    current_binding = binding_for_area(jittered, circles)
+    assert [851, -1000, 851, 1000] in area["map_binding"]["local_segments_mm"]
+    assert [861, -1000, 861, 1000] in current_binding["local_segments_mm"]
+    assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_ignores_jitter_at_guard_band_cutoff() -> None:
     floor_plan = _floor_plan()
     kitchen, study = floor_plan.rooms

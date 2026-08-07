@@ -39,6 +39,15 @@ _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS = math.sqrt(
 _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS = (
     3 * _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS
 )
+_SEMANTIC_MARGIN_MILLIMETERS = math.ceil(
+    _LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER
+    + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
+)
+_GUARD_MARGIN_MILLIMETERS = math.ceil(
+    (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
+    * _MILLIMETERS_PER_METER
+    + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
+)
 _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
 _MIN_SIGNED_64 = -(1 << 63)
@@ -812,15 +821,6 @@ def _signed_distance_to_supporting_line(
 
 def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
     """Precompute the local neighborhoods and endpoints for one source wall."""
-    semantic_margin = math.ceil(
-        _LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER
-        + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
-    )
-    guard_margin = math.ceil(
-        (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
-        * _MILLIMETERS_PER_METER
-        + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
-    )
     start = (segment[0], segment[1])
     end = (segment[2], segment[3])
     semantic: set[int] = set()
@@ -829,10 +829,10 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
     local_endpoints: set[tuple[int, int]] = set()
     for index, (center_x, center_y, radius) in enumerate(shape):
         semantic_bounds = (
-            center_x - radius - semantic_margin,
-            center_y - radius - semantic_margin,
-            center_x + radius + semantic_margin,
-            center_y + radius + semantic_margin,
+            center_x - radius - _SEMANTIC_MARGIN_MILLIMETERS,
+            center_y - radius - _SEMANTIC_MARGIN_MILLIMETERS,
+            center_x + radius + _SEMANTIC_MARGIN_MILLIMETERS,
+            center_y + radius + _SEMANTIC_MARGIN_MILLIMETERS,
         )
         if _clip_segment(start, end, semantic_bounds) is not None:
             semantic.add(index)
@@ -843,10 +843,10 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
             ):
                 local_endpoints.add(point)
         guard_bounds = (
-            center_x - radius - guard_margin,
-            center_y - radius - guard_margin,
-            center_x + radius + guard_margin,
-            center_y + radius + guard_margin,
+            center_x - radius - _GUARD_MARGIN_MILLIMETERS,
+            center_y - radius - _GUARD_MARGIN_MILLIMETERS,
+            center_x + radius + _GUARD_MARGIN_MILLIMETERS,
+            center_y + radius + _GUARD_MARGIN_MILLIMETERS,
         )
         guard_piece = _clip_segment(start, end, guard_bounds)
         if guard_piece is not None:
@@ -942,10 +942,6 @@ def _local_segment_contexts_match(
     shape: _AreaShape,
 ) -> bool:
     """Compare two walls using their precomputed relevant neighborhoods."""
-    guard_margin = round(
-        (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
-        * _MILLIMETERS_PER_METER
-    )
     saved_semantic, saved_guard, saved_local_endpoints, _saved_cells = saved_context
     current_semantic, current_guard, current_local_endpoints, _current_cells = (
         current_context
@@ -961,10 +957,10 @@ def _local_segment_contexts_match(
     for neighborhood in relevant:
         center_x, center_y, radius = shape[neighborhood]
         guard_bounds = (
-            center_x - radius - guard_margin,
-            center_y - radius - guard_margin,
-            center_x + radius + guard_margin,
-            center_y + radius + guard_margin,
+            center_x - radius - _GUARD_MARGIN_MILLIMETERS,
+            center_y - radius - _GUARD_MARGIN_MILLIMETERS,
+            center_x + radius + _GUARD_MARGIN_MILLIMETERS,
+            center_y + radius + _GUARD_MARGIN_MILLIMETERS,
         )
         saved_piece = _clip_segment(saved_start, saved_end, guard_bounds)
         current_piece = _clip_segment(current_start, current_end, guard_bounds)
