@@ -635,6 +635,46 @@ def test_scoped_binding_preserves_tolerant_shared_wall_multiplicity() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_ignores_overlapping_circle_guard_cutoff() -> None:
+    floor_plan = _floor_plan()
+    kitchen, study = floor_plan.rooms
+    floor_plan = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=(
+                    (0.139, 0.0),
+                    *kitchen.boundary[1:-1],
+                    (0.139, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+    circles = [
+        {"x": 0.45, "y": 0.5, "radius": 0.1},
+        {"x": 0.5, "y": 0.5, "radius": 0.1},
+    ]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (0.141, 0.0),
+                    *floor_plan.rooms[0].boundary[1:-1],
+                    (0.141, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]

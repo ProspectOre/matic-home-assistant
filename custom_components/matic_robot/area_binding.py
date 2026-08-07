@@ -633,7 +633,8 @@ def _local_segment_geometries_match(
     saved: _LocalSegment, current: _LocalSegment, shape: _AreaShape
 ) -> bool:
     """Compare source walls inside local guard boxes without clip artifacts."""
-    margin = round(
+    semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
+    guard_margin = round(
         (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
         * _MILLIMETERS_PER_METER
     )
@@ -643,16 +644,25 @@ def _local_segment_geometries_match(
     current_end = (current[2], current[3])
     compared = False
     for center_x, center_y, radius in shape:
-        bounds = (
-            center_x - radius - margin,
-            center_y - radius - margin,
-            center_x + radius + margin,
-            center_y + radius + margin,
+        semantic_bounds = (
+            center_x - radius - semantic_margin,
+            center_y - radius - semantic_margin,
+            center_x + radius + semantic_margin,
+            center_y + radius + semantic_margin,
         )
-        saved_piece = _clip_segment(saved_start, saved_end, bounds)
-        current_piece = _clip_segment(current_start, current_end, bounds)
-        if saved_piece is None and current_piece is None:
+        if (
+            _clip_segment(saved_start, saved_end, semantic_bounds) is None
+            and _clip_segment(current_start, current_end, semantic_bounds) is None
+        ):
             continue
+        guard_bounds = (
+            center_x - radius - guard_margin,
+            center_y - radius - guard_margin,
+            center_x + radius + guard_margin,
+            center_y + radius + guard_margin,
+        )
+        saved_piece = _clip_segment(saved_start, saved_end, guard_bounds)
+        current_piece = _clip_segment(current_start, current_end, guard_bounds)
         if saved_piece is None or current_piece is None:
             return False
         compared = True
