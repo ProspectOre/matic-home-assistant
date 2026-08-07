@@ -445,6 +445,53 @@ def test_scoped_binding_tolerates_probe_occupancy_flip_at_jittered_wall() -> Non
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
+    floor_plan = _floor_plan()
+    kitchen, study = floor_plan.rooms
+    floor_plan = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=(
+                    (0.0001, 0.0),
+                    *kitchen.boundary[1:-1],
+                    (0.0001, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+    # The lower-left diagonal probe lands at x=0.00025, between both wall
+    # positions, while the wall remains inside the local segment neighborhood.
+    circles = [{"x": 0.2477373734152916, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (0.0004, 0.0),
+                    *floor_plan.rooms[0].boundary[1:-1],
+                    (0.0004, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+
+    current_binding = binding_for_area(jittered, circles)
+    assert floor_plan_geometry_fingerprint(jittered) == (
+        floor_plan_geometry_fingerprint(floor_plan)
+    )
+    assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
+    assert (
+        area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
+    )
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]

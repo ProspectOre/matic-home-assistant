@@ -427,10 +427,10 @@ def area_binding_status(
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         return AreaBindingStatus.CURRENT
+    saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
+    if _local_segments_match(saved_segments, segments):
+        return AreaBindingStatus.CURRENT
     if saved_geometry != current["geometry_sha256"]:
-        saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
-        if _local_segments_match(saved_segments, segments):
-            return AreaBindingStatus.CURRENT
         return AreaBindingStatus.GEOMETRY_CHANGED
     return AreaBindingStatus.INVALID
 
