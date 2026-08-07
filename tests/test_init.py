@@ -11,12 +11,14 @@ from homeassistant.components import frontend
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    _floor_plan_supports_area_binding,
     async_remove_entry,
     async_setup,
     async_setup_entry,
     async_unload_entry,
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -27,6 +29,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.matic_robot.plans import AreaBindingUpgradeResult
 
 
 def _entry() -> SimpleNamespace:
@@ -47,6 +50,29 @@ def _entry() -> SimpleNamespace:
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=close_background_coroutine),
         async_on_unload=MagicMock(),
+    )
+
+
+def test_floor_plan_area_binding_support_requires_usable_geometry() -> None:
+    assert not _floor_plan_supports_area_binding(None)
+    assert not _floor_plan_supports_area_binding(
+        FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
+    )
+    assert _floor_plan_supports_area_binding(
+        FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                Room(
+                    "room",
+                    "Room",
+                    "room",
+                    b"room",
+                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+                ),
+            ),
+        )
     )
 
 
@@ -131,7 +157,15 @@ async def test_setup_refreshes_before_forwarding_platforms(
     plans = MagicMock()
     plans.areas.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
-    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
+    plans.async_upgrade_area_bindings = AsyncMock(
+        side_effect=(
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(1, False),
+        )
+    )
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
@@ -154,8 +188,47 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
-        data=SimpleNamespace(floor_plan=None),
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(
+                42,
+                "synthetic-partition",
+                b"synthetic-partition",
+                (),
+            )
+            if native_history_error
+            else None
+        ),
     )
+    initial_floor_plan = coordinator.data.floor_plan
+    setup_floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room(
+                "setup-room",
+                "Setup Room",
+                "setup-room",
+                b"setup-room",
+                ((-2.0, 0.0), (-1.0, 0.0), (-2.0, 1.0)),
+            ),
+        ),
+    )
+
+    def deliver_setup_floor_plan(_serial_number, _listener):
+        coordinator.data.floor_plan = setup_floor_plan
+        return plan_unsubscribe
+
+    plans.async_add_listener.side_effect = deliver_setup_floor_plan
+    setup_scheduled = []
+
+    def capture_setup_tasks(_hass, target, name):
+        if name == "matic_robot custom area binding upgrade":
+            setup_scheduled.append(target)
+        else:
+            target.close()
+
+    entry.async_create_background_task.side_effect = capture_setup_tasks
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         async_collect=MagicMock(),
@@ -191,10 +264,20 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
+    assert len(setup_scheduled) == 1
+    await setup_scheduled[0]
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
-    plans.async_upgrade_area_bindings.assert_awaited_once_with("synthetic-serial", None)
+    assert plans.async_upgrade_area_bindings.await_count == 2
+    assert plans.async_upgrade_area_bindings.await_args_list[0].args == (
+        "synthetic-serial",
+        initial_floor_plan,
+    )
+    assert plans.async_upgrade_area_bindings.await_args_list[1].args == (
+        "synthetic-serial",
+        setup_floor_plan,
+    )
     if native_history_error:
         plans.async_import_native_history.assert_not_awaited()
     else:
@@ -211,7 +294,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 2
+    assert entry.async_create_background_task.call_count == 3
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -223,15 +306,86 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),
     ]
-    sync_area_issue.assert_called_once_with(hass, "entry", {}, None)
+    sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
         "custom_components.matic_robot.async_sync_custom_area_issue"
     ) as listener_sync:
+        scheduled = []
+        entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+            scheduled.append(target)
+        )
+        partial_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                Room(
+                    "room",
+                    "Room",
+                    "room",
+                    b"room",
+                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+                ),
+            ),
+        )
+        complete_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                *partial_floor_plan.rooms,
+                Room(
+                    "later-room",
+                    "Later Room",
+                    "later-room",
+                    b"later-room",
+                    ((2.0, 0.0), (3.0, 0.0), (2.0, 1.0)),
+                ),
+            ),
+        )
+        updated_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                *complete_floor_plan.rooms,
+                Room(
+                    "final-room",
+                    "Final Room",
+                    "final-room",
+                    b"final-room",
+                    ((4.0, 0.0), (5.0, 0.0), (4.0, 1.0)),
+                ),
+            ),
+        )
+        coordinator.data.floor_plan = partial_floor_plan
         sync_callback()
+        coordinator.data.floor_plan = complete_floor_plan
+        sync_callback()
+        assert len(scheduled) == 1
+        await scheduled[0]
+        assert len(scheduled) == 2
+        await scheduled[1]
+        sync_callback()
+        assert len(scheduled) == 2
+        coordinator.data.floor_plan = updated_floor_plan
+        sync_callback()
+        assert len(scheduled) == 3
+        await scheduled[2]
         plans.async_add_listener.call_args.args[1]()
 
-    assert listener_sync.call_count == 2
+    assert listener_sync.call_count == 5
+    assert entry.async_create_background_task.call_count == 6
+    assert plans.async_upgrade_area_bindings.await_count == 5
+    assert plans.async_upgrade_area_bindings.call_args.args == (
+        "synthetic-serial",
+        updated_floor_plan,
+    )
+    assert (
+        entry.async_create_background_task.call_args.args[2]
+        == "matic_robot custom area binding upgrade"
+    )
 
 
 async def test_setup_closes_client_when_first_refresh_fails() -> None:
@@ -305,7 +459,9 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans = MagicMock()
-    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
+    plans.async_upgrade_area_bindings = AsyncMock(
+        return_value=AreaBindingUpgradeResult(0, False)
+    )
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),

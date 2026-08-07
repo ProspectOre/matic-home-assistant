@@ -15,11 +15,13 @@ from homeassistant.util import dt as dt_util
 from .area_binding import (
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
+    binding_for_floor_plan,
 )
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
+from .client.models import FloorPlan
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -106,9 +108,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
-        await plans.async_upgrade_area_bindings(
+        area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )
+        area_binding_upgrade_pending = area_binding_upgrade.pending
+        area_binding_upgrade_in_progress = False
+        area_binding_upgrade_last_floor_plan = coordinator.data.floor_plan
         try:
             native_history = await client.async_get_cleaning_session_records()
         except MaticError as err:
@@ -148,12 +153,51 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             f"{DOMAIN} map history collector",
         )
 
+        def _schedule_area_binding_upgrade(floor_plan: FloorPlan) -> None:
+            nonlocal area_binding_upgrade_in_progress
+            nonlocal area_binding_upgrade_last_floor_plan
+            area_binding_upgrade_in_progress = True
+            area_binding_upgrade_last_floor_plan = floor_plan
+            entry.async_create_background_task(
+                hass,
+                _async_upgrade_area_bindings(floor_plan),
+                f"{DOMAIN} custom area binding upgrade",
+            )
+
+        async def _async_upgrade_area_bindings(floor_plan: FloorPlan) -> None:
+            nonlocal area_binding_upgrade_in_progress, area_binding_upgrade_pending
+            try:
+                result = await plans.async_upgrade_area_bindings(
+                    serial_number, floor_plan
+                )
+                area_binding_upgrade_pending = result.pending
+            finally:
+                area_binding_upgrade_in_progress = False
+                latest_floor_plan = coordinator.data.floor_plan
+                if (
+                    area_binding_upgrade_pending
+                    and latest_floor_plan != floor_plan
+                    and _floor_plan_supports_area_binding(latest_floor_plan)
+                ):
+                    assert latest_floor_plan is not None
+                    _schedule_area_binding_upgrade(latest_floor_plan)
+
         def _async_sync_area_issue() -> None:
+            nonlocal area_binding_upgrade_in_progress
+            floor_plan = coordinator.data.floor_plan
+            if (
+                area_binding_upgrade_pending
+                and not area_binding_upgrade_in_progress
+                and floor_plan != area_binding_upgrade_last_floor_plan
+                and _floor_plan_supports_area_binding(floor_plan)
+            ):
+                assert floor_plan is not None
+                _schedule_area_binding_upgrade(floor_plan)
             async_sync_custom_area_issue(
                 hass,
                 entry.entry_id,
                 plans.areas(serial_number),
-                coordinator.data.floor_plan,
+                floor_plan,
             )
 
         entry.async_on_unload(coordinator.async_add_listener(_async_sync_area_issue))
@@ -168,6 +212,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_map.async_shutdown()
         client.close()
         raise
+    return True
+
+
+def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
+    """Return whether a floor plan can safely produce an area binding."""
+    if floor_plan is None:
+        return False
+    try:
+        binding_for_floor_plan(floor_plan)
+    except OverflowError, TypeError, ValueError:
+        return False
     return True
 
 

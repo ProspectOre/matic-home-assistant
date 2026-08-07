@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, MutableMapping
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -18,6 +18,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .area_binding import (
+    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     AreaBindingStatus,
     area_binding_status,
@@ -52,6 +53,14 @@ class PlanStopDecision:
     behavior: Literal["not_running", "immediate", "after_room"]
     estimated_progress: int | None = None
     threshold: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class AreaBindingUpgradeResult:
+    """Outcome of one legacy-area migration attempt."""
+
+    upgraded: int
+    pending: bool
 
 
 class ManagedMotionReplacedError(HomeAssistantError):
@@ -368,28 +377,45 @@ class CleaningPlanManager:
 
     async def async_upgrade_area_bindings(
         self, serial_number: str, floor_plan: FloorPlan | None
-    ) -> int:
+    ) -> AreaBindingUpgradeResult:
         """Upgrade exactly current whole-map area bindings to scoped bindings."""
-        if floor_plan is None:
-            return 0
         upgraded = 0
+        pending = False
         for area in self._robot(serial_number)["areas"].values():
+            if not isinstance(area, MutableMapping):
+                continue
             binding = area.get("map_binding")
-            if (
-                not isinstance(binding, Mapping)
-                or binding.get("version") != MAP_BINDING_VERSION
-                or area_binding_status(area, floor_plan)
-                is not AreaBindingStatus.CURRENT
-            ):
+            if not isinstance(binding, Mapping):
+                continue
+            version = binding.get("version")
+            if isinstance(version, bool) or not isinstance(version, int):
+                continue
+            if version not in {
+                MAP_BINDING_VERSION,
+                HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            }:
+                continue
+            circles = area.get("circles")
+            if not isinstance(circles, list):
+                continue
+            if floor_plan is None:
+                pending = True
+                continue
+            status = area_binding_status(area, floor_plan)
+            if status is not AreaBindingStatus.CURRENT:
+                pending = pending or status in {
+                    AreaBindingStatus.GEOMETRY_CHANGED,
+                    AreaBindingStatus.INVALID,
+                }
                 continue
             try:
-                area["map_binding"] = binding_for_area(floor_plan, area["circles"])
+                area["map_binding"] = binding_for_area(floor_plan, circles)
             except KeyError, TypeError, ValueError:
                 continue
             upgraded += 1
         if upgraded:
             await self._async_save_and_notify(serial_number)
-        return upgraded
+        return AreaBindingUpgradeResult(upgraded, pending)
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
         """Return one locally saved area by stable ID or exact name."""
