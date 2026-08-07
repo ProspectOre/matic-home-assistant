@@ -462,7 +462,6 @@ def area_binding_status(
             segments,
             shape,
             area["circles"],
-            saved_geometry == current["geometry_sha256"],
         )
     ):
         return AreaBindingStatus.CURRENT
@@ -654,7 +653,6 @@ def _occupancy_changes_are_explained(
     current_segments: Sequence[_LocalSegment],
     shape: _AreaShape,
     circles: Sequence[Mapping[str, Any]],
-    allow_quantized_identity: bool,
 ) -> bool:
     """Return whether every changed probe is explained by a moving wall pair."""
     ordered_circles = sorted(
@@ -720,7 +718,6 @@ def _occupancy_changes_are_explained(
                     current_contexts[current_index],
                     probe,
                     shape,
-                    allow_quantized_identity,
                 )
                 for saved_index in saved_candidates
                 for current_index in current_candidates
@@ -747,11 +744,8 @@ def _wall_pair_explains_probe(
     current_context: _SegmentContext,
     probe: tuple[float, float],
     shape: _AreaShape,
-    allow_quantized_identity: bool,
 ) -> bool:
     """Return whether one compatible wall pair can cross an occupancy probe."""
-    if saved == current and not allow_quantized_identity:
-        return False
     if not _point_near_segment(probe, saved) or not _point_near_segment(probe, current):
         return False
     if not _local_segment_contexts_match(
@@ -762,6 +756,16 @@ def _wall_pair_explains_probe(
     current_distance = _signed_distance_to_supporting_line(probe, current)
     if saved_distance is None or current_distance is None:
         return False
+    if saved == current:
+        return abs(saved_distance) <= _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
+    saved_direction = (saved[2] - saved[0], saved[3] - saved[1])
+    current_direction = (current[2] - current[0], current[3] - current[1])
+    if (
+        saved_direction[0] * current_direction[0]
+        + saved_direction[1] * current_direction[1]
+        < 0
+    ):
+        current_distance = -current_distance
     return (
         saved_distance * current_distance <= 0
         or abs(saved_distance) <= _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
@@ -772,7 +776,7 @@ def _wall_pair_explains_probe(
 def _signed_distance_to_supporting_line(
     point: tuple[float, float], segment: _LocalSegment
 ) -> float | None:
-    """Return a consistently oriented point-to-source-wall distance."""
+    """Return an oriented point-to-source-wall distance."""
     start_x, start_y, end_x, end_y = segment
     delta_x = end_x - start_x
     delta_y = end_y - start_y

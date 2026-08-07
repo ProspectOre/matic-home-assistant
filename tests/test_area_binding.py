@@ -498,7 +498,6 @@ def test_occupancy_explanation_rejects_malformed_evidence() -> None:
         (),
         ((0, 0, 100),),
         ({"x": 0.0, "y": 0.0, "radius": 0.1},),
-        False,
     )
 
 
@@ -516,7 +515,6 @@ def test_occupancy_explanation_skips_unchanged_neighborhoods() -> None:
             {"x": 0.0, "y": 0.0, "radius": 0.1},
             {"x": 1.0, "y": 0.0, "radius": 0.1},
         ),
-        True,
     )
 
 
@@ -537,7 +535,6 @@ def test_wall_pair_probe_explanation_rejects_incompatible_and_degenerate() -> No
         _segment_context(vertical, shape),
         (0.0, 0.0),
         shape,
-        False,
     )
     assert not _wall_pair_explains_probe(
         degenerate,
@@ -546,11 +543,25 @@ def test_wall_pair_probe_explanation_rejects_incompatible_and_degenerate() -> No
         _segment_context((1, 1, 1, 1), shape),
         (0.0, 0.0),
         shape,
-        False,
     )
 
 
-def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
+def test_wall_pair_probe_explanation_aligns_reversed_wall_directions() -> None:
+    shape = ((0, 0, 100),)
+    saved = (339, -1000, 341, 1000)
+    current = (339, 1000, 341, -1000)
+
+    assert not _wall_pair_explains_probe(
+        saved,
+        _segment_context(saved, shape),
+        current,
+        _segment_context(current, shape),
+        (350.0, 0.0),
+        shape,
+    )
+
+
+def test_scoped_binding_tolerates_quantized_probe_flip_with_distant_change() -> None:
     floor_plan = _floor_plan()
     kitchen, study = floor_plan.rooms
     floor_plan = replace(
@@ -582,12 +593,15 @@ def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
                     (0.0004, 1.5),
                 ),
             ),
-            study,
+            replace(
+                study,
+                boundary=((2.0, 0.0), (3.1, 0.0), (3.1, 1.0), (2.0, 1.0)),
+            ),
         ),
     )
 
     current_binding = binding_for_area(jittered, circles)
-    assert floor_plan_geometry_fingerprint(jittered) == (
+    assert floor_plan_geometry_fingerprint(jittered) != (
         floor_plan_geometry_fingerprint(floor_plan)
     )
     assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
@@ -734,7 +748,6 @@ def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
             current,
             shape,
             circles,
-            False,
         )
 
     assert explains.call_count < len(saved) * len(current) // 8
