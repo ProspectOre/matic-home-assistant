@@ -45,6 +45,7 @@ _CanonicalPolygon = tuple[_QuantizedPoint, ...]
 _LocalSegment = tuple[int, int, int, int]
 _AreaShape = tuple[tuple[int, int, int], ...]
 _LocalGeometry = tuple[_AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
+_SegmentContext = tuple[frozenset[int], frozenset[int], tuple[tuple[int, int], ...]]
 
 
 class AreaBindingStatus(StrEnum):
@@ -586,10 +587,18 @@ def _local_segments_match(
     neighborhood must be covered. Minimum-cost maximum matching avoids a
     first-fit choice consuming the wrong nearby segment.
     """
-    saved_local = tuple(_segment_intersects_area(segment, shape) for segment in saved)
-    current_local = tuple(
-        _segment_intersects_area(segment, shape) for segment in current
-    )
+    saved_contexts = tuple(_segment_context(segment, shape) for segment in saved)
+    current_contexts = tuple(_segment_context(segment, shape) for segment in current)
+    saved_local = tuple(bool(context[0]) for context in saved_contexts)
+    current_local = tuple(bool(context[0]) for context in current_contexts)
+    current_by_semantic: list[list[int]] = [[] for _ in shape]
+    current_by_guard: list[list[int]] = [[] for _ in shape]
+    for current_index, (semantic, guard, _endpoints) in enumerate(current_contexts):
+        for neighborhood in semantic:
+            current_by_semantic[neighborhood].append(current_index)
+        for neighborhood in guard:
+            current_by_guard[neighborhood].append(current_index)
+
     node_count = len(saved) + len(current) + 2
     source = node_count - 2
     sink = node_count - 1
@@ -597,9 +606,28 @@ def _local_segments_match(
 
     for index, is_local in enumerate(saved_local):
         _add_flow_edge(graph, source, index, -int(is_local))
-    for saved_index, saved_segment in enumerate(saved):
-        for current_index, current_segment in enumerate(current):
-            if _local_segment_geometries_match(saved_segment, current_segment, shape):
+    for saved_index, (saved_segment, saved_context) in enumerate(
+        zip(saved, saved_contexts, strict=True)
+    ):
+        saved_semantic, saved_guard, _endpoints = saved_context
+        candidates = {
+            current_index
+            for neighborhood in saved_semantic
+            for current_index in current_by_guard[neighborhood]
+        }
+        candidates.update(
+            current_index
+            for neighborhood in saved_guard
+            for current_index in current_by_semantic[neighborhood]
+        )
+        for current_index in candidates:
+            if _local_segment_contexts_match(
+                saved_segment,
+                saved_context,
+                current[current_index],
+                current_contexts[current_index],
+                shape,
+            ):
                 _add_flow_edge(graph, saved_index, len(saved) + current_index, 0)
     for index, is_local in enumerate(current_local):
         _add_flow_edge(graph, len(saved) + index, sink, -int(is_local))
@@ -608,53 +636,81 @@ def _local_segments_match(
     return -_minimum_cost_maximum_flow(graph, source, sink) == required_score
 
 
-def _segment_intersects_area(segment: _LocalSegment, shape: _AreaShape) -> bool:
-    """Return whether a segment touches the original semantic neighborhood."""
-    margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
-    start = (segment[0], segment[1])
-    end = (segment[2], segment[3])
-    return any(
-        _clip_segment(
-            start,
-            end,
-            (
-                center_x - radius - margin,
-                center_y - radius - margin,
-                center_x + radius + margin,
-                center_y + radius + margin,
-            ),
-        )
-        is not None
-        for center_x, center_y, radius in shape
-    )
-
-
-def _local_segment_geometries_match(
-    saved: _LocalSegment, current: _LocalSegment, shape: _AreaShape
-) -> bool:
-    """Compare source walls inside local guard boxes without clip artifacts."""
+def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
+    """Precompute the local neighborhoods and endpoints for one source wall."""
     semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
     guard_margin = round(
         (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
         * _MILLIMETERS_PER_METER
     )
-    saved_start = (saved[0], saved[1])
-    saved_end = (saved[2], saved[3])
-    current_start = (current[0], current[1])
-    current_end = (current[2], current[3])
-    compared = False
-    for center_x, center_y, radius in shape:
+    start = (segment[0], segment[1])
+    end = (segment[2], segment[3])
+    semantic: set[int] = set()
+    guard: set[int] = set()
+    local_endpoints: set[tuple[int, int]] = set()
+    for index, (center_x, center_y, radius) in enumerate(shape):
         semantic_bounds = (
             center_x - radius - semantic_margin,
             center_y - radius - semantic_margin,
             center_x + radius + semantic_margin,
             center_y + radius + semantic_margin,
         )
-        if (
-            _clip_segment(saved_start, saved_end, semantic_bounds) is None
-            and _clip_segment(current_start, current_end, semantic_bounds) is None
-        ):
-            continue
+        if _clip_segment(start, end, semantic_bounds) is not None:
+            semantic.add(index)
+        for point in (start, end):
+            if (
+                semantic_bounds[0] <= point[0] <= semantic_bounds[2]
+                and semantic_bounds[1] <= point[1] <= semantic_bounds[3]
+            ):
+                local_endpoints.add(point)
+        guard_bounds = (
+            center_x - radius - guard_margin,
+            center_y - radius - guard_margin,
+            center_x + radius + guard_margin,
+            center_y + radius + guard_margin,
+        )
+        if _clip_segment(start, end, guard_bounds) is not None:
+            guard.add(index)
+    return frozenset(semantic), frozenset(guard), tuple(sorted(local_endpoints))
+
+
+def _local_segment_geometries_match(
+    saved: _LocalSegment, current: _LocalSegment, shape: _AreaShape
+) -> bool:
+    """Compare source walls inside local guard boxes without clip artifacts."""
+    return _local_segment_contexts_match(
+        saved,
+        _segment_context(saved, shape),
+        current,
+        _segment_context(current, shape),
+        shape,
+    )
+
+
+def _local_segment_contexts_match(
+    saved: _LocalSegment,
+    saved_context: _SegmentContext,
+    current: _LocalSegment,
+    current_context: _SegmentContext,
+    shape: _AreaShape,
+) -> bool:
+    """Compare two walls using their precomputed relevant neighborhoods."""
+    guard_margin = round(
+        (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
+        * _MILLIMETERS_PER_METER
+    )
+    saved_semantic, saved_guard, saved_local_endpoints = saved_context
+    current_semantic, current_guard, current_local_endpoints = current_context
+    relevant = saved_semantic | current_semantic
+    if not relevant or not relevant <= saved_guard & current_guard:
+        return False
+
+    saved_start = (saved[0], saved[1])
+    saved_end = (saved[2], saved[3])
+    current_start = (current[0], current[1])
+    current_end = (current[2], current[3])
+    for neighborhood in relevant:
+        center_x, center_y, radius = shape[neighborhood]
         guard_bounds = (
             center_x - radius - guard_margin,
             center_y - radius - guard_margin,
@@ -663,9 +719,7 @@ def _local_segment_geometries_match(
         )
         saved_piece = _clip_segment(saved_start, saved_end, guard_bounds)
         current_piece = _clip_segment(current_start, current_end, guard_bounds)
-        if saved_piece is None or current_piece is None:
-            return False
-        compared = True
+        assert saved_piece is not None and current_piece is not None
         if not all(
             _point_near_supporting_line(point, current_start, current_end)
             for point in saved_piece
@@ -675,18 +729,6 @@ def _local_segment_geometries_match(
         ):
             return False
 
-    if not compared:
-        return False
-    saved_local_endpoints = tuple(
-        point
-        for point in (saved_start, saved_end)
-        if _point_intersects_area(point, shape)
-    )
-    current_local_endpoints = tuple(
-        point
-        for point in (current_start, current_end)
-        if _point_intersects_area(point, shape)
-    )
     return _endpoints_covered(saved_local_endpoints, (current_start, current_end)) and (
         _endpoints_covered(current_local_endpoints, (saved_start, saved_end))
     )
@@ -706,16 +748,6 @@ def _point_near_supporting_line(
     cross = delta_x * (point[1] - line_start[1]) - delta_y * (point[0] - line_start[0])
     tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
     return cross * cross <= tolerance * tolerance * length_squared
-
-
-def _point_intersects_area(point: tuple[int, int], shape: _AreaShape) -> bool:
-    """Return whether an original source endpoint is semantically local."""
-    margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
-    return any(
-        center_x - radius - margin <= point[0] <= center_x + radius + margin
-        and center_y - radius - margin <= point[1] <= center_y + radius + margin
-        for center_x, center_y, radius in shape
-    )
 
 
 def _endpoints_covered(

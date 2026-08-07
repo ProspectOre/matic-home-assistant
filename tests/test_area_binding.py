@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+import custom_components.matic_robot.area_binding as area_binding_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
@@ -539,6 +540,22 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
     current = ((0, 1, 100, 1), (1, -10, 101, -10))
 
     assert _local_segments_match(saved, current, ((50, 0, 0),))
+
+
+def test_local_segment_matching_restricts_spatial_candidates() -> None:
+    shape = tuple((index * 1000, 0, 0) for index in range(512))
+    segments = tuple(
+        (center_x - 100, 0, center_x + 100, 0) for center_x, _center_y, _radius in shape
+    )
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_contexts_match",
+        wraps=area_binding_module._local_segment_contexts_match,
+    ) as matches:
+        assert _local_segments_match(segments, segments, shape)
+
+    assert matches.call_count == len(segments)
 
 
 @pytest.mark.parametrize(
