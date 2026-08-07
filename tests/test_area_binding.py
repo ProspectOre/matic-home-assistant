@@ -14,6 +14,7 @@ from custom_components.matic_robot.area_binding import (
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     _hash_only_area_geometry_fingerprint,
+    _local_segments_match,
     area_binding_allows_review,
     area_binding_status,
     area_geometry_fingerprint,
@@ -492,7 +493,7 @@ def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
-def test_scoped_binding_guard_band_tolerates_segment_entering_margin() -> None:
+def test_scoped_binding_ignores_jitter_at_guard_band_cutoff() -> None:
     floor_plan = _floor_plan()
     kitchen, study = floor_plan.rooms
     floor_plan = replace(
@@ -501,9 +502,9 @@ def test_scoped_binding_guard_band_tolerates_segment_entering_margin() -> None:
             replace(
                 kitchen,
                 boundary=(
-                    (0.149, 0.0),
+                    (0.139, 0.0),
                     *kitchen.boundary[1:-1],
-                    (0.149, 1.5),
+                    (0.139, 1.5),
                 ),
             ),
             study,
@@ -517,9 +518,9 @@ def test_scoped_binding_guard_band_tolerates_segment_entering_margin() -> None:
             replace(
                 floor_plan.rooms[0],
                 boundary=(
-                    (0.151, 0.0),
+                    (0.141, 0.0),
                     *floor_plan.rooms[0].boundary[1:-1],
-                    (0.151, 1.5),
+                    (0.141, 1.5),
                 ),
             ),
             study,
@@ -527,13 +528,16 @@ def test_scoped_binding_guard_band_tolerates_segment_entering_margin() -> None:
     )
 
     current_binding = binding_for_area(jittered, circles)
-    assert len(area["map_binding"]["local_segments_mm"]) == len(
-        current_binding["local_segments_mm"]
-    )
-    assert (
-        area["map_binding"]["local_segments_mm"] != current_binding["local_segments_mm"]
-    )
+    assert area["map_binding"]["local_segments_mm"] == []
+    assert current_binding["local_segments_mm"]
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
+def test_local_segment_matching_finds_non_greedy_pairing() -> None:
+    saved = ((0, 0, 100, 0), (0, 10, 100, 10))
+    current = ((0, 1, 100, 1), (1, -10, 101, -10))
+
+    assert _local_segments_match(saved, current, ((50, 0, 0),))
 
 
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
+from collections import deque
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any
@@ -443,7 +444,7 @@ def area_binding_status(
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
-    if _local_segments_match(saved_segments, segments):
+    if _local_segments_match(saved_segments, segments, shape):
         return AreaBindingStatus.CURRENT
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
@@ -573,14 +574,30 @@ def _stored_local_geometry_is_intact(binding: Mapping[str, Any]) -> bool:
 
 
 def _local_segments_match(
-    saved: Sequence[_LocalSegment], current: Sequence[_LocalSegment]
+    saved: Sequence[_LocalSegment],
+    current: Sequence[_LocalSegment],
+    shape: _AreaShape,
 ) -> bool:
-    """Match unordered local segments with an explicit coordinate tolerance."""
-    if len(saved) != len(current):
-        return False
-    unmatched = list(current)
-    for saved_segment in saved:
-        for index, current_segment in enumerate(unmatched):
+    """Find a tolerant one-to-one match for all semantically local segments.
+
+    Segments in the 10 mm selection guard band may appear or disappear without
+    invalidating an area, but a segment touching the original 25 cm
+    neighborhood must be covered. Minimum-cost maximum matching avoids a
+    first-fit choice consuming the wrong nearby segment.
+    """
+    saved_local = tuple(_segment_intersects_area(segment, shape) for segment in saved)
+    current_local = tuple(
+        _segment_intersects_area(segment, shape) for segment in current
+    )
+    node_count = len(saved) + len(current) + 2
+    source = node_count - 2
+    sink = node_count - 1
+    graph: list[list[list[int]]] = [[] for _ in range(node_count)]
+
+    for index, is_local in enumerate(saved_local):
+        _add_flow_edge(graph, source, index, -int(is_local))
+    for saved_index, saved_segment in enumerate(saved):
+        for current_index, current_segment in enumerate(current):
             reversed_current = (
                 current_segment[2],
                 current_segment[3],
@@ -590,11 +607,85 @@ def _local_segments_match(
             if _segment_within_tolerance(
                 saved_segment, current_segment
             ) or _segment_within_tolerance(saved_segment, reversed_current):
-                unmatched.pop(index)
-                break
-        else:
-            return False
-    return True
+                _add_flow_edge(graph, saved_index, len(saved) + current_index, 0)
+    for index, is_local in enumerate(current_local):
+        _add_flow_edge(graph, len(saved) + index, sink, -int(is_local))
+
+    required_score = sum(saved_local) + sum(current_local)
+    return -_minimum_cost_maximum_flow(graph, source, sink) == required_score
+
+
+def _segment_intersects_area(segment: _LocalSegment, shape: _AreaShape) -> bool:
+    """Return whether a segment touches the original semantic neighborhood."""
+    margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
+    start = (segment[0], segment[1])
+    end = (segment[2], segment[3])
+    return any(
+        _clip_segment(
+            start,
+            end,
+            (
+                center_x - radius - margin,
+                center_y - radius - margin,
+                center_x + radius + margin,
+                center_y + radius + margin,
+            ),
+        )
+        is not None
+        for center_x, center_y, radius in shape
+    )
+
+
+def _add_flow_edge(
+    graph: list[list[list[int]]], source: int, target: int, cost: int
+) -> None:
+    """Add one unit-capacity edge and its residual reverse edge."""
+    graph[source].append([target, len(graph[target]), 1, cost])
+    graph[target].append([source, len(graph[source]) - 1, 0, -cost])
+
+
+def _minimum_cost_maximum_flow(
+    graph: list[list[list[int]]], source: int, sink: int
+) -> int:
+    """Return the cost of a unit-capacity minimum-cost maximum flow."""
+    total_cost = 0
+    while True:
+        distances: list[int | None] = [None] * len(graph)
+        previous_nodes = [-1] * len(graph)
+        previous_edges = [-1] * len(graph)
+        distances[source] = 0
+        queue = deque([source])
+        queued = [False] * len(graph)
+        queued[source] = True
+        while queue:
+            node = queue.popleft()
+            queued[node] = False
+            distance = distances[node]
+            assert distance is not None
+            for edge_index, edge in enumerate(graph[node]):
+                target, _reverse, capacity, cost = edge
+                candidate = distance + cost
+                target_distance = distances[target]
+                if capacity and (
+                    target_distance is None or candidate < target_distance
+                ):
+                    distances[target] = candidate
+                    previous_nodes[target] = node
+                    previous_edges[target] = edge_index
+                    if not queued[target]:
+                        queue.append(target)
+                        queued[target] = True
+        if previous_nodes[sink] == -1:
+            return total_cost
+
+        node = sink
+        while node != source:
+            previous = previous_nodes[node]
+            edge = graph[previous][previous_edges[node]]
+            edge[2] = 0
+            graph[node][edge[1]][2] = 1
+            total_cost += edge[3]
+            node = previous
 
 
 def _segment_within_tolerance(first: _LocalSegment, second: _LocalSegment) -> bool:
