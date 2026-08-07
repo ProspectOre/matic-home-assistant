@@ -803,6 +803,89 @@ test.describe("map studio", () => {
     await expect(studio.locator(".areas-status")).toHaveText("0 saved areas");
   });
 
+  test("confirms a reviewable stale area without repainting it", async ({ page }) => {
+    const sceneUrl = "/api/matic_robot/slam_scene/review";
+    const areasUrl = "/api/matic_robot/areas/review";
+    const circles = [{ x: 0.5, y: 0.5, radius: 0.35 }];
+    let confirmed;
+    await page.route("/api/matic_robot/slam_entries", async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "review",
+        scene_url: sceneUrl,
+        areas_url: areasUrl,
+        plans_url: "/api/matic_robot/plans/review",
+        area_editor_url: "/matic_robot/test/room-plan-editor.js",
+        map_revision: 1,
+        map_complete: true,
+        map_health: "ready",
+      }] }),
+    }));
+    await page.route(sceneUrl, async (route) => route.fulfill({
+      status: 200,
+      contentType: "application/vnd.matic.slam-scene",
+      body: syntheticScene("Review room", 10),
+    }));
+    await page.route(areasUrl, async (route) => {
+      if (route.request().method() === "POST") {
+        confirmed = JSON.parse(route.request().postData());
+        await route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          body: JSON.stringify({ id: "litter_box" }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          scene_url: sceneUrl,
+          rooms: ROOMS,
+          areas: [{
+            id: "litter_box",
+            name: "Litter box",
+            circles,
+            cleaning_mode: "vacuum",
+            coverage_setting: "standard",
+            status: confirmed ? "current" : "geometry_changed",
+            can_rebind: !confirmed,
+          }],
+        }),
+      });
+    });
+    const studio = await loadStudio(page, {
+      "vacuum.review": { attributes: { matic_entry_id: "review" } },
+    });
+
+    await studio.locator(".cleaning-areas").click();
+    await expect(studio.locator(".areas-list option").nth(1))
+      .toHaveText("⚠ Litter box");
+    await expect(studio.locator(".area-feedback")).toHaveText(
+      "Review the saved outline, then confirm it on the current map.",
+    );
+    await expect(studio.locator(".area-save")).toHaveText(
+      "Confirm on current map",
+    );
+    await expect(studio.locator(".area-save")).toBeEnabled();
+    await expect(studio.locator(".area-run")).toBeHidden();
+    expect(await studio.locator("ha-selector-matic-area").evaluate(
+      (editor) => editor.value,
+    )).toEqual(circles);
+
+    await studio.locator(".area-save").click();
+
+    await expect(studio.locator(".area-feedback")).toHaveText("Area saved");
+    await expect(studio.locator(".area-save")).toHaveText("Save area");
+    await expect(studio.locator(".area-run")).toBeVisible();
+    expect(confirmed).toMatchObject({
+      area_id: "litter_box",
+      name: "Litter box",
+      circles,
+    });
+  });
+
   test("streams bounded scene deltas without refetching the full map", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const initial = syntheticScene("Initial room", 10);

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from http import HTTPStatus
 from types import SimpleNamespace
@@ -18,6 +19,7 @@ from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    binding_for_area,
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
@@ -648,6 +650,29 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
             "map_binding": current_binding,
             "schema_version": AREA_SCHEMA_VERSION,
         },
+        "review": {
+            "name": "Review",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(
+                replace(
+                    runtime.coordinator.data.floor_plan,
+                    rooms=(
+                        replace(
+                            runtime.coordinator.data.floor_plan.rooms[0],
+                            boundary=(
+                                (0.01, 0.0),
+                                (0.3, 0.0),
+                                (0.3, 0.3),
+                                (0.0, 0.3),
+                            ),
+                        ),
+                    ),
+                )
+            ),
+            "schema_version": AREA_SCHEMA_VERSION,
+        },
         "legacy": {"name": "Legacy"},
     }
     hass = _hass(_entry(runtime))
@@ -672,6 +697,16 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
                 "cleaning_mode": "vacuum",
                 "coverage_setting": "quick",
                 "status": "current",
+                "can_rebind": False,
+            },
+            {
+                "id": "review",
+                "name": "Review",
+                "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
+                "cleaning_mode": "vacuum_and_mop",
+                "coverage_setting": "standard",
+                "status": "geometry_changed",
+                "can_rebind": True,
             },
             {
                 "id": "legacy",
@@ -680,6 +715,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
                 "cleaning_mode": "vacuum",
                 "coverage_setting": "standard",
                 "status": "legacy",
+                "can_rebind": False,
             },
         ],
     }
@@ -782,7 +818,9 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
             "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
             "cleaning_mode": "vacuum_and_mop",
             "coverage_setting": "standard",
-            "map_binding": binding_for_floor_plan(runtime.coordinator.data.floor_plan),
+            "map_binding": binding_for_area(
+                runtime.coordinator.data.floor_plan, values["circles"]
+            ),
         },
     )
 

@@ -12,6 +12,8 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    SCOPED_MAP_BINDING_VERSION,
+    binding_for_area,
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.client.commands import UserCommand
@@ -234,6 +236,65 @@ async def test_custom_areas_round_trip_by_id_and_name_without_snapshot(hass) -> 
 
     await manager.async_delete_area("serial", "litter_box")
     assert manager.areas("serial") == {}
+
+
+async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    listener = MagicMock()
+    manager.async_add_listener("serial", listener)
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "protocol", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
+    robot = manager._robot("serial")
+    robot["areas"] = {
+        "current": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
+        "already_scoped": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": binding_for_area(floor_plan, circles),
+        },
+        "different_mission": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": binding_for_floor_plan(
+                FloorPlan(
+                    43,
+                    floor_plan.partition_protocol_id,
+                    floor_plan.partition_id_wire,
+                    floor_plan.rooms,
+                )
+            ),
+        },
+        "missing_circles": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
+        "unbound": {"schema_version": 0, "circles": circles},
+        "corrupt": "not-an-area",
+    }
+
+    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 1
+    assert robot["areas"]["current"]["map_binding"]["version"] == (
+        SCOPED_MAP_BINDING_VERSION
+    )
+    manager._store.async_save.assert_awaited_once()
+    listener.assert_called_once()
+
+    manager._store.async_save.reset_mock()
+    listener.reset_mock()
+    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 0
+    assert await manager.async_upgrade_area_bindings("serial", None) == 0
+    manager._store.async_save.assert_not_awaited()
+    listener.assert_not_called()
 
 
 async def test_native_history_import_recovers_only_explicit_room_completions(

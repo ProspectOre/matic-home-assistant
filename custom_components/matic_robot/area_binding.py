@@ -5,20 +5,26 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from enum import StrEnum
 from typing import Any
 
+import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
+from .area_selector import MaticAreaSelector
 from .client.models import FloorPlan
 from .const import DOMAIN
 
 AREA_SCHEMA_VERSION = 1
 MAP_BINDING_VERSION = 1
+SCOPED_MAP_BINDING_VERSION = 2
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
+_SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 _MILLIMETERS_PER_METER = 1_000
+_LOCAL_UNITS_PER_METER = 100
+_LOCAL_GEOMETRY_MARGIN_METERS = 0.25
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -119,7 +125,26 @@ def floor_plan_geometry_fingerprint(floor_plan: FloorPlan) -> str:
 
 
 def binding_for_floor_plan(floor_plan: FloorPlan) -> MapBinding:
-    """Return the versioned identity and geometry binding for a floor plan."""
+    """Return the legacy whole-floor identity and geometry binding."""
+    return {
+        "version": MAP_BINDING_VERSION,
+        **_floor_plan_binding(floor_plan),
+    }
+
+
+def binding_for_area(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> MapBinding:
+    """Bind an area to its map identity and nearby room geometry."""
+    return {
+        "version": SCOPED_MAP_BINDING_VERSION,
+        **_floor_plan_binding(floor_plan),
+        "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
+    }
+
+
+def _floor_plan_binding(floor_plan: FloorPlan) -> MapBinding:
+    """Return validated floor identity fields shared by binding versions."""
     mission_id = floor_plan.mission_id
     if (
         isinstance(mission_id, bool)
@@ -131,11 +156,96 @@ def binding_for_floor_plan(floor_plan: FloorPlan) -> MapBinding:
     if not isinstance(partition_id, str) or not partition_id:
         raise ValueError("floor plan partition id is invalid")
     return {
-        "version": MAP_BINDING_VERSION,
         "mission_id": mission_id,
         "partition_id": partition_id,
         "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
     }
+
+
+def area_geometry_fingerprint(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> str:
+    """Fingerprint map geometry only near one painted cleaning area.
+
+    The fingerprint includes the immutable saved circles, mapped-floor
+    occupancy probes, and room-boundary segments within a small safety margin.
+    Geometry elsewhere on the floor cannot invalidate the area. Local boundary
+    coordinates are quantized to centimeters so sub-centimeter decoder jitter
+    does not create a Repair.
+    """
+    normalized = _validate_area_circles(floor_plan, circles)
+    ordered = sorted(
+        (
+            float(circle["x"]),
+            float(circle["y"]),
+            float(circle["radius"]),
+        )
+        for circle in normalized
+    )
+    neighborhood = (
+        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+    )
+    room_boundaries = tuple(
+        [list(point) for point in room.boundary] for room in floor_plan.rooms
+    )
+
+    segments: set[tuple[int, int, int, int]] = set()
+    for room in floor_plan.rooms:
+        boundary = room.boundary
+        for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            clipped = _clip_segment(start, end, neighborhood)
+            if clipped is None:
+                continue
+            first = (
+                _quantize_local(clipped[0][0]),
+                _quantize_local(clipped[0][1]),
+            )
+            second = (
+                _quantize_local(clipped[1][0]),
+                _quantize_local(clipped[1][1]),
+            )
+            if second < first:
+                first, second = second, first
+            segments.add((*first, *second))
+
+    digest = hashlib.sha256()
+    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">H", SCOPED_MAP_BINDING_VERSION))
+    digest.update(struct.pack(">I", len(ordered)))
+    for x, y, radius in ordered:
+        digest.update(
+            struct.pack(
+                ">qqq",
+                _quantize_coordinate(x),
+                _quantize_coordinate(y),
+                _quantize_coordinate(radius),
+            )
+        )
+        probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
+        diagonal = probe_radius / math.sqrt(2)
+        probes = (
+            (x, y),
+            (x - probe_radius, y),
+            (x + probe_radius, y),
+            (x, y - probe_radius),
+            (x, y + probe_radius),
+            (x - diagonal, y - diagonal),
+            (x - diagonal, y + diagonal),
+            (x + diagonal, y - diagonal),
+            (x + diagonal, y + diagonal),
+        )
+        occupancy = sum(
+            int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
+            for index, (probe_x, probe_y) in enumerate(probes)
+        )
+        digest.update(struct.pack(">H", occupancy))
+    digest.update(struct.pack(">I", len(segments)))
+    for segment in sorted(segments):
+        digest.update(struct.pack(">qqqq", *segment))
+    return digest.hexdigest()
 
 
 def area_binding_status(
@@ -156,7 +266,7 @@ def area_binding_status(
     if not isinstance(saved, Mapping) or not _valid_saved_binding(saved):
         return AreaBindingStatus.INVALID
     try:
-        current = binding_for_floor_plan(floor_plan)
+        current = _floor_plan_binding(floor_plan)
     except OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
 
@@ -165,28 +275,56 @@ def area_binding_status(
     if saved["partition_id"] != current["partition_id"]:
         return AreaBindingStatus.PARTITION_CHANGED
     saved_geometry = str(saved["geometry_sha256"]).casefold()
+    if saved["version"] == MAP_BINDING_VERSION:
+        if saved_geometry != current["geometry_sha256"]:
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        return AreaBindingStatus.CURRENT
+
+    try:
+        local_geometry = area_geometry_fingerprint(floor_plan, area["circles"])
+    except KeyError, OverflowError, TypeError, ValueError:
+        return AreaBindingStatus.INVALID
+    if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
+        return AreaBindingStatus.CURRENT
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
-    return AreaBindingStatus.CURRENT
+    return AreaBindingStatus.INVALID
+
+
+def area_binding_allows_review(area: Mapping[str, Any], floor_plan: FloorPlan) -> bool:
+    """Return whether stale coordinates can be shown for local confirmation."""
+    if area_binding_status(area, floor_plan) is not AreaBindingStatus.GEOMETRY_CHANGED:
+        return False
+    try:
+        _validate_area_circles(floor_plan, area["circles"])
+    except KeyError, TypeError, ValueError:
+        return False
+    return True
 
 
 def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
     """Return whether a persisted binding has the exact supported shape."""
-    if set(binding) != {
+    base_fields = {
         "version",
         "mission_id",
         "partition_id",
         "geometry_sha256",
-    }:
+    }
+    version = binding.get("version")
+    if isinstance(version, bool) or not isinstance(version, int):
         return False
-    version = binding["version"]
+    expected_fields = (
+        base_fields
+        if version == MAP_BINDING_VERSION
+        else {*base_fields, "local_geometry_sha256"}
+    )
+    if set(binding) != expected_fields:
+        return False
     mission_id = binding["mission_id"]
     partition_id = binding["partition_id"]
     geometry = binding["geometry_sha256"]
     return (
-        not isinstance(version, bool)
-        and isinstance(version, int)
-        and version == MAP_BINDING_VERSION
+        version in {MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION}
         and not isinstance(mission_id, bool)
         and isinstance(mission_id, int)
         and 0 <= mission_id <= 0xFFFFFFFF
@@ -195,6 +333,84 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         and isinstance(geometry, str)
         and len(geometry) == 64
         and all(character in "0123456789abcdefABCDEF" for character in geometry)
+        and (
+            version == MAP_BINDING_VERSION
+            or _valid_digest(binding["local_geometry_sha256"])
+        )
+    )
+
+
+def _valid_digest(value: Any) -> bool:
+    """Return whether a stored SHA-256 digest is canonicalizable."""
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
+
+
+def _validate_area_circles(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> list[dict[str, float]]:
+    """Validate saved circles against the mapped floor without exposing them."""
+    rooms = [
+        {
+            "room_id": room.id,
+            "name": room.name,
+            "boundary": [list(point) for point in room.boundary],
+        }
+        for room in floor_plan.rooms
+    ]
+    try:
+        return MaticAreaSelector({"rooms": rooms})(circles)
+    except vol.Invalid as err:
+        raise ValueError("area circles are invalid for the mapped floor") from err
+
+
+def _point_in_floor(
+    x: float, y: float, room_boundaries: Sequence[list[list[float]]]
+) -> bool:
+    """Return whether one probe lies in any mapped room."""
+    return any(
+        MaticAreaSelector._point_in_polygon(x, y, boundary)
+        for boundary in room_boundaries
+    )
+
+
+def _clip_segment(
+    start: tuple[float, float],
+    end: tuple[float, float],
+    bounds: tuple[float, float, float, float],
+) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Clip a line segment to an axis-aligned local area neighborhood."""
+    start_x, start_y = start
+    delta_x = end[0] - start_x
+    delta_y = end[1] - start_y
+    minimum_x, minimum_y, maximum_x, maximum_y = bounds
+    lower = 0.0
+    upper = 1.0
+    for direction, offset in (
+        (-delta_x, start_x - minimum_x),
+        (delta_x, maximum_x - start_x),
+        (-delta_y, start_y - minimum_y),
+        (delta_y, maximum_y - start_y),
+    ):
+        if direction == 0:
+            if offset < 0:
+                return None
+            continue
+        ratio = offset / direction
+        if direction < 0:
+            if ratio > upper:
+                return None
+            lower = max(lower, ratio)
+        else:
+            if ratio < lower:
+                return None
+            upper = min(upper, ratio)
+    return (
+        (start_x + lower * delta_x, start_y + lower * delta_y),
+        (start_x + upper * delta_x, start_y + upper * delta_y),
     )
 
 
@@ -222,10 +438,20 @@ def _smallest_rotation(points: _CanonicalPolygon) -> _CanonicalPolygon:
 
 def _quantize_coordinate(value: float) -> int:
     """Convert finite meters to signed millimeters, normalizing negative zero."""
+    return _quantize(value, _MILLIMETERS_PER_METER)
+
+
+def _quantize_local(value: float) -> int:
+    """Convert a local boundary coordinate to signed centimeters."""
+    return _quantize(value, _LOCAL_UNITS_PER_METER)
+
+
+def _quantize(value: float, units_per_meter: int) -> int:
+    """Convert finite meters to a bounded signed integer unit."""
     numeric = float(value)
     if not math.isfinite(numeric):
         raise ValueError("room boundary coordinates must be finite")
-    scaled = numeric * _MILLIMETERS_PER_METER
+    scaled = numeric * units_per_meter
     if not math.isfinite(scaled):
         raise ValueError("room boundary coordinate is out of range")
     quantized = math.floor(scaled + 0.5) if scaled >= 0 else math.ceil(scaled - 0.5)

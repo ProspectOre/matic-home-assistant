@@ -19,6 +19,7 @@ from zeroconf import ServiceStateChange
 from custom_components.matic_robot import config_flow as flow_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    binding_for_area,
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
@@ -1126,8 +1127,8 @@ async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:
     saved = manager.area("synthetic-serial", "Litter box")
     assert saved["circles"] == [{"x": 0.5, "y": 0.5, "radius": 0.35}]
     assert saved["schema_version"] == AREA_SCHEMA_VERSION
-    assert saved["map_binding"] == binding_for_floor_plan(
-        entry.runtime_data.coordinator.data.floor_plan
+    assert saved["map_binding"] == binding_for_area(
+        entry.runtime_data.coordinator.data.floor_plan, saved["circles"]
     )
 
     result = await _select_menu_step(hass, result, "edit_area")
@@ -1184,7 +1185,10 @@ async def test_custom_area_editor_blocks_map_changes_and_rebinds_after_redraw(
     )
     assert result["step_id"] == "area_menu"
     assert manager.area("synthetic-serial", "table")["map_binding"] == (
-        binding_for_floor_plan(entry.runtime_data.coordinator.data.floor_plan)
+        binding_for_area(
+            entry.runtime_data.coordinator.data.floor_plan,
+            manager.area("synthetic-serial", "table")["circles"],
+        )
     )
 
 
@@ -1274,9 +1278,53 @@ async def test_legacy_area_is_labeled_and_must_be_redrawn_on_current_map(hass) -
     saved = manager.area("synthetic-serial", "litter_box")
     assert saved["circles"] == [{"x": 0.6, "y": 0.5, "radius": 0.4}]
     assert saved["schema_version"] == AREA_SCHEMA_VERSION
-    assert saved["map_binding"] == binding_for_floor_plan(
-        entry.runtime_data.coordinator.data.floor_plan
+    assert saved["map_binding"] == binding_for_area(
+        entry.runtime_data.coordinator.data.floor_plan, saved["circles"]
     )
+
+
+async def test_geometry_changed_area_can_be_confirmed_without_redrawing(hass) -> None:
+    entry, manager = await _options_entry(hass)
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    saved_floor_plan = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.01, 0.0), *floor_plan.rooms[0].boundary[1:]),
+            ),
+        ),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.35}]
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Litter box",
+            "circles": circles,
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+            "map_binding": binding_for_floor_plan(saved_floor_plan),
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+    flow._area_id = "litter_box"
+
+    form = await flow.async_step_edit_area()
+
+    assert _form_defaults(form)["area_editor"] == circles
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Litter box",
+            "area_editor": circles,
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "quick",
+        }
+    )
+    assert result["step_id"] == "area_menu"
+    saved = manager.area("synthetic-serial", "litter_box")
+    assert saved["map_binding"] == binding_for_area(floor_plan, circles)
 
 
 @pytest.mark.parametrize(

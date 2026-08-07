@@ -27,7 +27,9 @@ from .area_binding import (
     AREA_SCHEMA_VERSION,
     AreaBindingStatus,
     MapBinding,
+    area_binding_allows_review,
     area_binding_status,
+    binding_for_area,
     binding_for_floor_plan,
 )
 from .area_selector import MaticAreaSelector
@@ -1461,7 +1463,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             if not area_id or area_id in self._manager.areas(self._serial_number):
                 errors["name"] = "duplicate_area"
             else:
-                _floor_plan, binding = context
+                floor_plan, _binding = context
                 self._area_id = area_id
                 await self._manager.async_save_area(
                     self._serial_number,
@@ -1472,7 +1474,9 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         "circles": user_input["area_editor"],
                         "cleaning_mode": user_input["cleaning_mode"],
                         "coverage_setting": user_input["coverage_setting"],
-                        "map_binding": binding,
+                        "map_binding": binding_for_area(
+                            floor_plan, user_input["area_editor"]
+                        ),
                     },
                 )
                 return await self.async_step_area_menu()
@@ -1500,7 +1504,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     clear_circles=True,
                     status=AREA_STATUS_REDRAW_REQUIRED,
                 )
-            _floor_plan, binding = context
+            floor_plan, _binding = context
             await self._manager.async_save_area(
                 self._serial_number,
                 self._area_id,
@@ -1510,19 +1514,23 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     "circles": user_input["area_editor"],
                     "cleaning_mode": user_input["cleaning_mode"],
                     "coverage_setting": user_input["coverage_setting"],
-                    "map_binding": binding,
+                    "map_binding": binding_for_area(
+                        floor_plan, user_input["area_editor"]
+                    ),
                 },
             )
             return await self.async_step_area_menu()
         context = self._live_area_context()
-        is_current = (
-            context is not None
-            and area_binding_status(area, context[0]) is AreaBindingStatus.CURRENT
+        is_current = context is not None and (
+            area_binding_status(area, context[0]) is AreaBindingStatus.CURRENT
+        )
+        can_review = context is not None and area_binding_allows_review(
+            area, context[0]
         )
         return self._show_area_form(
             "edit_area",
             area,
-            clear_circles=not is_current,
+            clear_circles=not is_current and not can_review,
             status=(AREA_STATUS_CURRENT if is_current else AREA_STATUS_REDRAW_REQUIRED),
         )
 
