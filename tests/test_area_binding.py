@@ -662,6 +662,22 @@ def test_local_segment_matching_restricts_spatial_candidates() -> None:
     assert matches.call_count == len(segments)
 
 
+def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
+    shape = ((0, 0, 2500),) * 512
+    segments = tuple(
+        (center_x, -100, center_x, 100) for center_x in range(-2550, 2551, 20)
+    )
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_contexts_match",
+        wraps=area_binding_module._local_segment_contexts_match,
+    ) as matches:
+        assert _local_segments_match(segments, segments, shape)
+
+    assert matches.call_count < len(segments) ** 2 // 8
+
+
 @pytest.mark.parametrize(
     ("saved", "current", "shape", "expected"),
     [
@@ -674,6 +690,13 @@ def test_local_segment_matching_restricts_spatial_candidates() -> None:
         ((0, 0, 100, 0), (1000, 0, 1100, 0), ((50, 0, 0),), False),
         ((0, 0, 100, 0), (0, 1, 100, 1), ((1000, 1000, 0),), False),
         ((0, 0, 0, 0), (1, 1, 1, 1), ((0, 0, 0),), True),
+        (
+            (-997, -88, 996, 87),
+            (-998, -78, 995, 97),
+            ((0, 0, 2000),),
+            True,
+        ),
+        ((-1, 0, 100, 0), (10, 0, 111, 0), ((50, 0, 0),), True),
     ],
 )
 def test_local_segment_geometry_matching_edge_cases(

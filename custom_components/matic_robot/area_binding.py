@@ -32,7 +32,12 @@ _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
 _LOCAL_GEOMETRY_TOLERANCE_METERS = (
     _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS / _MILLIMETERS_PER_METER
 )
-_SEGMENT_QUANTIZATION_ERROR_MILLIMETERS = math.sqrt(0.5)
+_COORDINATE_QUANTIZATION_ERROR_MILLIMETERS = 0.5
+_SEGMENT_QUANTIZATION_ERROR_MILLIMETERS = math.sqrt(
+    2 * _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS**2
+)
+_SPATIAL_INDEX_CELL_MILLIMETERS = 100
+_SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -46,7 +51,12 @@ _CanonicalPolygon = tuple[_QuantizedPoint, ...]
 _LocalSegment = tuple[int, int, int, int]
 _AreaShape = tuple[tuple[int, int, int], ...]
 _LocalGeometry = tuple[_AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
-_SegmentContext = tuple[frozenset[int], frozenset[int], tuple[tuple[int, int], ...]]
+_SegmentContext = tuple[
+    frozenset[int],
+    frozenset[int],
+    tuple[tuple[int, int], ...],
+    frozenset[tuple[int, int]],
+]
 
 
 class AreaBindingStatus(StrEnum):
@@ -598,13 +608,10 @@ def _local_segments_match(
     current_contexts = tuple(_segment_context(segment, shape) for segment in current)
     saved_local = tuple(bool(context[0]) for context in saved_contexts)
     current_local = tuple(bool(context[0]) for context in current_contexts)
-    current_by_semantic: list[list[int]] = [[] for _ in shape]
-    current_by_guard: list[list[int]] = [[] for _ in shape]
-    for current_index, (semantic, guard, _endpoints) in enumerate(current_contexts):
-        for neighborhood in semantic:
-            current_by_semantic[neighborhood].append(current_index)
-        for neighborhood in guard:
-            current_by_guard[neighborhood].append(current_index)
+    current_by_cell: dict[tuple[int, int], list[int]] = {}
+    for current_index, context in enumerate(current_contexts):
+        for cell in context[3]:
+            current_by_cell.setdefault(cell, []).append(current_index)
 
     node_count = len(saved) + len(current) + 2
     source = node_count - 2
@@ -616,17 +623,13 @@ def _local_segments_match(
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
-        saved_semantic, saved_guard, _endpoints = saved_context
         candidates = {
             current_index
-            for neighborhood in saved_semantic
-            for current_index in current_by_guard[neighborhood]
+            for cell_x, cell_y in saved_context[3]
+            for neighbor_x in range(cell_x - 1, cell_x + 2)
+            for neighbor_y in range(cell_y - 1, cell_y + 2)
+            for current_index in current_by_cell.get((neighbor_x, neighbor_y), ())
         }
-        candidates.update(
-            current_index
-            for neighborhood in saved_guard
-            for current_index in current_by_semantic[neighborhood]
-        )
         for current_index in candidates:
             if _local_segment_contexts_match(
                 saved_segment,
@@ -715,6 +718,7 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
     end = (segment[2], segment[3])
     semantic: set[int] = set()
     guard: set[int] = set()
+    guard_pieces: list[tuple[tuple[float, float], tuple[float, float]]] = []
     local_endpoints: set[tuple[int, int]] = set()
     for index, (center_x, center_y, radius) in enumerate(shape):
         semantic_bounds = (
@@ -737,9 +741,77 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
             center_x + radius + guard_margin,
             center_y + radius + guard_margin,
         )
-        if _clip_segment(start, end, guard_bounds) is not None:
+        guard_piece = _clip_segment(start, end, guard_bounds)
+        if guard_piece is not None:
             guard.add(index)
-    return frozenset(semantic), frozenset(guard), tuple(sorted(local_endpoints))
+            guard_pieces.append(guard_piece)
+    return (
+        frozenset(semantic),
+        frozenset(guard),
+        tuple(sorted(local_endpoints)),
+        _segment_spatial_cells(start, end, guard_pieces),
+    )
+
+
+def _segment_spatial_cells(
+    start: tuple[int, int],
+    end: tuple[int, int],
+    pieces: Sequence[tuple[tuple[float, float], tuple[float, float]]],
+) -> frozenset[tuple[int, int]]:
+    """Index the union of guard-clipped wall intervals into fixed cells."""
+    delta_x = end[0] - start[0]
+    delta_y = end[1] - start[1]
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if not length_squared:
+        return frozenset(
+            {
+                (
+                    math.floor(start[0] / _SPATIAL_INDEX_CELL_MILLIMETERS),
+                    math.floor(start[1] / _SPATIAL_INDEX_CELL_MILLIMETERS),
+                )
+            }
+            if pieces
+            else set()
+        )
+
+    intervals = sorted(
+        (
+            ((piece[0][0] - start[0]) * delta_x + (piece[0][1] - start[1]) * delta_y)
+            / length_squared,
+            ((piece[1][0] - start[0]) * delta_x + (piece[1][1] - start[1]) * delta_y)
+            / length_squared,
+        )
+        for piece in pieces
+    )
+    merged: list[list[float]] = []
+    for lower, upper in intervals:
+        if merged and lower <= merged[-1][1]:
+            merged[-1][1] = max(merged[-1][1], upper)
+        else:
+            merged.append([lower, upper])
+
+    cells: set[tuple[int, int]] = set()
+    maximum_delta = max(abs(delta_x), abs(delta_y))
+    for lower, upper in merged:
+        steps = max(
+            1,
+            math.ceil(
+                maximum_delta * (upper - lower) / _SPATIAL_INDEX_SAMPLE_MILLIMETERS
+            ),
+        )
+        for step in range(steps + 1):
+            ratio = lower + (upper - lower) * step / steps
+            cells.add(
+                (
+                    math.floor(
+                        (start[0] + ratio * delta_x) / _SPATIAL_INDEX_CELL_MILLIMETERS
+                    ),
+                    math.floor(
+                        (start[1] + ratio * delta_y) / _SPATIAL_INDEX_CELL_MILLIMETERS
+                    ),
+                )
+            )
+    return frozenset(cells)
 
 
 def _local_segment_geometries_match(
@@ -767,8 +839,10 @@ def _local_segment_contexts_match(
         (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
         * _MILLIMETERS_PER_METER
     )
-    saved_semantic, saved_guard, saved_local_endpoints = saved_context
-    current_semantic, current_guard, current_local_endpoints = current_context
+    saved_semantic, saved_guard, saved_local_endpoints, _saved_cells = saved_context
+    current_semantic, current_guard, current_local_endpoints, _current_cells = (
+        current_context
+    )
     relevant = saved_semantic | current_semantic
     if not relevant or not relevant <= saved_guard & current_guard:
         return False
@@ -814,7 +888,10 @@ def _point_near_supporting_line(
     if not length_squared:
         return _points_within_tolerance(point, line_start)
     cross = delta_x * (point[1] - line_start[1]) - delta_y * (point[0] - line_start[0])
-    tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+    tolerance = (
+        _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        + 2 * _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
+    )
     return cross * cross <= tolerance * tolerance * length_squared
 
 
@@ -857,9 +934,13 @@ def _endpoints_covered(
 def _points_within_tolerance(
     first: tuple[float, float], second: tuple[int, int]
 ) -> bool:
-    """Return whether both point coordinates differ by at most 10 mm."""
+    """Compare endpoint coordinates with the two-wall rounding allowance."""
+    tolerance = (
+        _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        + 2 * _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS
+    )
     return all(
-        abs(saved - current) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        abs(saved - current) <= tolerance
         for saved, current in zip(first, second, strict=True)
     )
 
