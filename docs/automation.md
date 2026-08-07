@@ -102,12 +102,12 @@ Home Assistant stores the geometry locally and the action accepts only its
 name. The saved record also binds it to the exact coverage mission, standard
 partition, and canonical room geometry it was drawn on. A legacy unbound area,
 remap, floor change, or geometry mismatch is blocked before any robot command.
-Newly confirmed areas also retain a private signature of mapped geometry only
-within a 25 cm margin of their painted marks. An explicit 10 mm comparison
-tolerance lets changes elsewhere on the floor and sub-centimeter boundary
-jitter revalidate automatically while mission,
+Newly confirmed areas also retain a private signature of mapped geometry in
+the union of a 25 cm margin around each painted mark. An explicit 10 mm
+comparison tolerance lets changes elsewhere on the floor and sub-centimeter
+boundary jitter revalidate automatically while mission,
 partition, and nearby-geometry changes still fail closed. An exactly current
-legacy binding upgrades to this scoped signature safely at
+legacy v1 or hash-only v2 binding upgrades to the v3 scoped signature safely at
 integration startup, so an area does not need to be repainted just to migrate.
 Home Assistant raises
 one privacy-safe Repair with only the number of affected areas and directs an

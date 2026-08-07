@@ -9,9 +9,11 @@ import pytest
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
+    _hash_only_area_geometry_fingerprint,
     area_binding_allows_review,
     area_binding_status,
     area_geometry_fingerprint,
@@ -71,6 +73,25 @@ def _scoped_area(
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": saved_circles,
         "map_binding": binding_for_area(plan, saved_circles),
+    }
+
+
+def _hash_only_scoped_area(
+    floor_plan: FloorPlan | None = None,
+    circles: list[dict[str, float]] | None = None,
+) -> dict[str, object]:
+    plan = floor_plan or _floor_plan()
+    saved_circles = circles or [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    return {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": saved_circles,
+        "map_binding": {
+            **binding_for_floor_plan(plan),
+            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                plan, saved_circles
+            ),
+        },
     }
 
 
@@ -282,6 +303,89 @@ def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> No
         floor_plan_geometry_fingerprint(floor_plan)
     )
     assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_uses_union_of_separated_mark_neighborhoods() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "outer",
+                "Outer",
+                ((0.0, 0.0), (10.0, 0.0), (10.0, 2.0), (0.0, 2.0)),
+            ),
+            _room(
+                "middle",
+                "Middle",
+                ((4.5, 0.5), (5.5, 0.5), (5.5, 1.5), (4.5, 1.5)),
+            ),
+        ),
+    )
+    circles = [
+        {"x": 1.0, "y": 1.0, "radius": 0.1},
+        {"x": 9.0, "y": 1.0, "radius": 0.1},
+    ]
+    area = _scoped_area(floor_plan, circles)
+    changed_between_marks = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=((4.4, 0.5), (5.6, 0.5), (5.6, 1.5), (4.4, 1.5)),
+            ),
+        ),
+    )
+
+    assert floor_plan_geometry_fingerprint(changed_between_marks) != (
+        floor_plan_geometry_fingerprint(floor_plan)
+    )
+    assert area_binding_status(area, changed_between_marks) is AreaBindingStatus.CURRENT
+
+
+def test_hash_only_v2_binding_remains_valid_for_safe_migration() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
+    area = _hash_only_scoped_area(floor_plan, circles)
+    kitchen, study = floor_plan.rooms
+    changed_elsewhere = replace(
+        floor_plan,
+        rooms=(
+            kitchen,
+            replace(
+                study,
+                boundary=((2.1, 0.0), (3.1, 0.0), (3.1, 1.0), (2.1, 1.0)),
+            ),
+        ),
+    )
+
+    assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
+    assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
+    invalid = {
+        **area,
+        "map_binding": {
+            **area["map_binding"],
+            "local_geometry_sha256": "0" * 64,
+        },
+    }
+    assert area_binding_status(invalid, floor_plan) is AreaBindingStatus.INVALID
+    missing_circles = {key: value for key, value in area.items() if key != "circles"}
+    assert area_binding_status(missing_circles, floor_plan) is AreaBindingStatus.INVALID
+    changed_nearby = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=((0.05, 0.0), *kitchen.boundary[1:]),
+            ),
+            study,
+        ),
+    )
+    assert (
+        area_binding_status(area, changed_nearby) is AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:

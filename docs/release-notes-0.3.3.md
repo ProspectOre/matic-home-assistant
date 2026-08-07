@@ -5,9 +5,9 @@ Released: 2026-08-07
 ## Summary
 
 0.3.3 makes saved custom cleaning areas resilient to unrelated map redraws.
-Each newly confirmed area records a private signature of only the mapped
-geometry near its painted marks, allowing harmless changes elsewhere on the
-floor to revalidate automatically.
+Each newly confirmed area records a private signature of only the union of
+mapped geometry near its painted marks, allowing harmless changes elsewhere on
+the floor—even between separated marks—to revalidate automatically.
 
 ## Safer map revalidation
 
@@ -19,8 +19,9 @@ floor to revalidate automatically.
   with **Confirm on current map** without repainting it.
 - Areas whose coordinates are invalid or outside the current floor still
   require a redraw; the integration never guesses a coordinate transform.
-- An exactly current legacy area binding upgrades automatically at integration
-  startup, preserving areas that were already cleared before this update.
+- An exactly current legacy v1 or hash-only v2 area binding upgrades during
+  integration startup or as soon as a temporarily unavailable map returns,
+  preserving areas that were already cleared before this update.
 - The Repair now directs administrators to the Custom areas workspace and
   reports only the affected count, never saved geometry.
 
@@ -29,7 +30,7 @@ Home Assistant.
 
 ## Verification
 
-The release candidate passes 878 Python tests / 8,200 statements at 100%
+The release candidate passes 880 Python tests / 8,249 statements at 100%
 coverage, 42 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, and the public-tree privacy gate.
 

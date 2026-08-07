@@ -19,11 +19,13 @@ from .const import DOMAIN
 
 AREA_SCHEMA_VERSION = 1
 MAP_BINDING_VERSION = 1
-SCOPED_MAP_BINDING_VERSION = 2
+HASH_ONLY_SCOPED_MAP_BINDING_VERSION = 2
+SCOPED_MAP_BINDING_VERSION = 3
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
 _SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 _AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
 _MILLIMETERS_PER_METER = 1_000
+_LEGACY_LOCAL_UNITS_PER_METER = 100
 _LOCAL_GEOMETRY_MARGIN_METERS = 0.25
 _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
 _MIN_SIGNED_64 = -(1 << 63)
@@ -186,6 +188,84 @@ def area_geometry_fingerprint(
     return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
 
 
+def _hash_only_area_geometry_fingerprint(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> str:
+    """Reproduce the short-lived hash-only v2 signature for safe migration."""
+    normalized = _validate_area_circles(floor_plan, circles)
+    ordered = sorted(
+        (
+            float(circle["x"]),
+            float(circle["y"]),
+            float(circle["radius"]),
+        )
+        for circle in normalized
+    )
+    neighborhood = (
+        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+    )
+    room_boundaries = tuple(
+        [list(point) for point in room.boundary] for room in floor_plan.rooms
+    )
+    segments: set[_LocalSegment] = set()
+    for room in floor_plan.rooms:
+        boundary = room.boundary
+        for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            clipped = _clip_segment(start, end, neighborhood)
+            if clipped is None:
+                continue
+            first = (
+                _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+            )
+            second = (
+                _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+            )
+            if second < first:
+                first, second = second, first
+            segments.add((*first, *second))
+
+    digest = hashlib.sha256()
+    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">H", HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
+    digest.update(struct.pack(">I", len(ordered)))
+    for x, y, radius in ordered:
+        digest.update(
+            struct.pack(
+                ">qqq",
+                _quantize_coordinate(x),
+                _quantize_coordinate(y),
+                _quantize_coordinate(radius),
+            )
+        )
+        probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
+        diagonal = probe_radius / math.sqrt(2)
+        probes = (
+            (x, y),
+            (x - probe_radius, y),
+            (x + probe_radius, y),
+            (x, y - probe_radius),
+            (x, y + probe_radius),
+            (x - diagonal, y - diagonal),
+            (x - diagonal, y + diagonal),
+            (x + diagonal, y - diagonal),
+            (x + diagonal, y + diagonal),
+        )
+        occupancy = sum(
+            int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
+            for index, (probe_x, probe_y) in enumerate(probes)
+        )
+        digest.update(struct.pack(">H", occupancy))
+    digest.update(struct.pack(">I", len(segments)))
+    for segment in sorted(segments):
+        digest.update(struct.pack(">qqqq", *segment))
+    return digest.hexdigest()
+
+
 def _area_geometry_components(
     floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
 ) -> _LocalGeometry:
@@ -207,15 +287,14 @@ def _area_geometry_components(
         )
         for x, y, radius in ordered_float
     )
-    neighborhood = (
-        min(x - radius for x, _y, radius in ordered_float)
-        - _LOCAL_GEOMETRY_MARGIN_METERS,
-        min(y - radius for _x, y, radius in ordered_float)
-        - _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(x + radius for x, _y, radius in ordered_float)
-        + _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(y + radius for _x, y, radius in ordered_float)
-        + _LOCAL_GEOMETRY_MARGIN_METERS,
+    neighborhoods = tuple(
+        (
+            x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+            y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+            x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+            y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+        )
+        for x, y, radius in ordered_float
     )
     room_boundaries = tuple(
         [list(point) for point in room.boundary] for room in floor_plan.rooms
@@ -225,20 +304,21 @@ def _area_geometry_components(
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
-            clipped = _clip_segment(start, end, neighborhood)
-            if clipped is None:
-                continue
-            first = (
-                _quantize_coordinate(clipped[0][0]),
-                _quantize_coordinate(clipped[0][1]),
-            )
-            second = (
-                _quantize_coordinate(clipped[1][0]),
-                _quantize_coordinate(clipped[1][1]),
-            )
-            if second < first:
-                first, second = second, first
-            segments.add((*first, *second))
+            for neighborhood in neighborhoods:
+                clipped = _clip_segment(start, end, neighborhood)
+                if clipped is None:
+                    continue
+                first = (
+                    _quantize_coordinate(clipped[0][0]),
+                    _quantize_coordinate(clipped[0][1]),
+                )
+                second = (
+                    _quantize_coordinate(clipped[1][0]),
+                    _quantize_coordinate(clipped[1][1]),
+                )
+                if second < first:
+                    first, second = second, first
+                segments.add((*first, *second))
 
     occupancy_values = []
     for x, y, radius in ordered_float:
@@ -323,6 +403,18 @@ def area_binding_status(
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
+    if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+        try:
+            local_geometry = _hash_only_area_geometry_fingerprint(
+                floor_plan, area["circles"]
+            )
+        except KeyError, OverflowError, TypeError, ValueError:
+            return AreaBindingStatus.INVALID
+        if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
+            return AreaBindingStatus.CURRENT
+        if saved_geometry != current["geometry_sha256"]:
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        return AreaBindingStatus.INVALID
 
     try:
         shape, occupancy, segments = _area_geometry_components(
@@ -368,24 +460,30 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
     version = binding.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         return False
-    expected_fields = (
-        base_fields
-        if version == MAP_BINDING_VERSION
-        else {
+    if version == MAP_BINDING_VERSION:
+        expected_fields = base_fields
+    elif version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+        expected_fields = {*base_fields, "local_geometry_sha256"}
+    else:
+        expected_fields = {
             *base_fields,
             "area_shape_sha256",
             "local_geometry_sha256",
             "local_occupancy",
             "local_segments_mm",
         }
-    )
     if set(binding) != expected_fields:
         return False
     mission_id = binding["mission_id"]
     partition_id = binding["partition_id"]
     geometry = binding["geometry_sha256"]
     return (
-        version in {MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION}
+        version
+        in {
+            MAP_BINDING_VERSION,
+            HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            SCOPED_MAP_BINDING_VERSION,
+        }
         and not isinstance(mission_id, bool)
         and isinstance(mission_id, int)
         and 0 <= mission_id <= 0xFFFFFFFF
@@ -397,7 +495,12 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         and (
             version == MAP_BINDING_VERSION
             or (
-                _valid_digest(binding["area_shape_sha256"])
+                version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                and _valid_digest(binding["local_geometry_sha256"])
+            )
+            or (
+                version == SCOPED_MAP_BINDING_VERSION
+                and _valid_digest(binding["area_shape_sha256"])
                 and _valid_digest(binding["local_geometry_sha256"])
                 and _valid_local_occupancy(binding["local_occupancy"])
                 and _valid_local_segments(binding["local_segments_mm"])

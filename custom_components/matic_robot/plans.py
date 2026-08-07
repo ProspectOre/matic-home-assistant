@@ -18,6 +18,7 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .area_binding import (
+    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     AreaBindingStatus,
     area_binding_status,
@@ -377,7 +378,11 @@ class CleaningPlanManager:
             binding = area.get("map_binding")
             if (
                 not isinstance(binding, Mapping)
-                or binding.get("version") != MAP_BINDING_VERSION
+                or binding.get("version")
+                not in {
+                    MAP_BINDING_VERSION,
+                    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                }
                 or area_binding_status(area, floor_plan)
                 is not AreaBindingStatus.CURRENT
             ):

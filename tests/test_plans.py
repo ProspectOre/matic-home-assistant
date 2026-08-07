@@ -12,7 +12,9 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
+    _hash_only_area_geometry_fingerprint,
     binding_for_area,
     binding_for_floor_plan,
 )
@@ -262,6 +264,17 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
             "circles": circles,
             "map_binding": binding_for_area(floor_plan, circles),
         },
+        "hash_only_scoped": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": {
+                **binding_for_floor_plan(floor_plan),
+                "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                    floor_plan, circles
+                ),
+            },
+        },
         "different_mission": {
             "schema_version": AREA_SCHEMA_VERSION,
             "circles": circles,
@@ -282,8 +295,11 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         "corrupt": "not-an-area",
     }
 
-    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 1
+    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 2
     assert robot["areas"]["current"]["map_binding"]["version"] == (
+        SCOPED_MAP_BINDING_VERSION
+    )
+    assert robot["areas"]["hash_only_scoped"]["map_binding"]["version"] == (
         SCOPED_MAP_BINDING_VERSION
     )
     manager._store.async_save.assert_awaited_once()
