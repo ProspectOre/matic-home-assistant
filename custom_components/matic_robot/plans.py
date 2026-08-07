@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping
+from collections.abc import AsyncIterator, Callable, Iterable, Mapping, MutableMapping
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -382,6 +382,8 @@ class CleaningPlanManager:
         upgraded = 0
         pending = False
         for area in self._robot(serial_number)["areas"].values():
+            if not isinstance(area, MutableMapping):
+                continue
             binding = area.get("map_binding")
             if not isinstance(binding, Mapping):
                 continue

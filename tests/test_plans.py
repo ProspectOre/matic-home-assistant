@@ -382,6 +382,17 @@ async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
     manager._store.async_save.assert_awaited_once()
 
 
+async def test_area_binding_upgrade_ignores_malformed_area_record(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot = MagicMock(return_value={"areas": {"corrupt": "not-an-area"}})
+
+    assert await manager.async_upgrade_area_bindings(
+        "serial", None
+    ) == AreaBindingUpgradeResult(0, False)
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_native_history_import_recovers_only_explicit_room_completions(
     hass,
 ) -> None:

@@ -746,6 +746,12 @@ def _occupancy_changes_are_explained(
         )
         if segment_matches is None:
             return False
+    matches_by_cell: dict[tuple[int, int], set[_SegmentMatch]] = {}
+    for match in segment_matches:
+        saved_index, current_index = match
+        cells = saved_contexts[saved_index][3] | current_contexts[current_index][3]
+        for cell in cells:
+            matches_by_cell.setdefault(cell, set()).add(match)
 
     for (
         (x, y, radius),
@@ -762,6 +768,14 @@ def _occupancy_changes_are_explained(
         for probe_index, probe in enumerate(probes):
             if not changed & (1 << probe_index):
                 continue
+            probe_cell_x = math.floor(probe[0] / _SPATIAL_INDEX_CELL_MILLIMETERS)
+            probe_cell_y = math.floor(probe[1] / _SPATIAL_INDEX_CELL_MILLIMETERS)
+            candidates = {
+                match
+                for cell_x in range(probe_cell_x - 1, probe_cell_x + 2)
+                for cell_y in range(probe_cell_y - 1, probe_cell_y + 2)
+                for match in matches_by_cell.get((cell_x, cell_y), ())
+            }
             if not any(
                 _wall_pair_explains_probe(
                     saved_segments[saved_index],
@@ -771,7 +785,7 @@ def _occupancy_changes_are_explained(
                     probe,
                     shape,
                 )
-                for saved_index, current_index in segment_matches
+                for saved_index, current_index in candidates
             ):
                 return False
     return True

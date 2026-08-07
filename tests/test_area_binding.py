@@ -532,6 +532,14 @@ def test_wall_pair_probe_explanation_rejects_incompatible_and_degenerate() -> No
     assert not _wall_pair_explains_probe(
         horizontal,
         _segment_context(horizontal, shape),
+        horizontal,
+        _segment_context(horizontal, shape),
+        (1000.0, 1000.0),
+        shape,
+    )
+    assert not _wall_pair_explains_probe(
+        horizontal,
+        _segment_context(horizontal, shape),
         vertical,
         _segment_context(vertical, shape),
         (0.0, 0.0),
@@ -857,6 +865,39 @@ def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
         )
 
     assert explains.call_count < len(saved) * len(current) // 8
+
+
+def test_occupancy_explanation_indexes_correspondence_by_probe() -> None:
+    shape = tuple((index * 1000, 0, 100) for index in range(512))
+    circles = tuple(
+        {"x": center_x / 1000, "y": 0.0, "radius": 0.1}
+        for center_x, _center_y, _radius in shape
+    )
+    saved = tuple(
+        (center_x, -350, center_x, 350) for center_x, _center_y, _radius in shape
+    )
+    current = tuple(
+        (center_x + 1, -350, center_x + 1, 350)
+        for center_x, _center_y, _radius in shape
+    )
+    matches = tuple((index, index) for index in range(len(shape)))
+
+    with patch.object(
+        area_binding_module,
+        "_wall_pair_explains_probe",
+        wraps=area_binding_module._wall_pair_explains_probe,
+    ) as explains:
+        assert _occupancy_changes_are_explained(
+            (0,) * len(shape),
+            (1,) * len(shape),
+            saved,
+            current,
+            shape,
+            circles,
+            matches,
+        )
+
+    assert explains.call_count <= len(shape) * 3
 
 
 def test_occupancy_explanation_uses_one_to_one_wall_correspondence() -> None:
