@@ -36,6 +36,9 @@ _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS = 0.5
 _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS = math.sqrt(
     2 * _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS**2
 )
+_NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS = (
+    3 * _COORDINATE_QUANTIZATION_ERROR_MILLIMETERS
+)
 _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
 _MIN_SIGNED_64 = -(1 << 63)
@@ -809,10 +812,14 @@ def _signed_distance_to_supporting_line(
 
 def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
     """Precompute the local neighborhoods and endpoints for one source wall."""
-    semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
-    guard_margin = round(
+    semantic_margin = math.ceil(
+        _LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER
+        + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
+    )
+    guard_margin = math.ceil(
         (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
         * _MILLIMETERS_PER_METER
+        + _NEIGHBORHOOD_QUANTIZATION_ERROR_MILLIMETERS
     )
     start = (segment[0], segment[1])
     end = (segment[2], segment[3])

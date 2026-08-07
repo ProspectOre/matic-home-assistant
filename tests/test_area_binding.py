@@ -612,6 +612,34 @@ def test_scoped_binding_tolerates_quantized_probe_flip_with_distant_change() -> 
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_preserves_raw_semantic_bounds_after_quantization() -> None:
+    nearby = _room(
+        "nearby",
+        "Nearby",
+        ((0.0, -1.0), (0.15049, -1.0), (0.15049, 1.0), (0.0, 1.0)),
+    )
+    enclosing = _room(
+        "enclosing",
+        "Enclosing",
+        ((-2.0, -2.0), (2.0, -2.0), (2.0, 2.0), (-2.0, 2.0)),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (nearby, enclosing),
+    )
+    circles = [{"x": 0.50051, "y": 0.0, "radius": 0.10049}]
+    area = _scoped_area(floor_plan, circles)
+    changed = replace(floor_plan, rooms=(enclosing,))
+
+    current_binding = binding_for_area(changed, circles)
+    assert area["map_binding"]["local_segments_mm"]
+    assert current_binding["local_segments_mm"] == []
+    assert area["map_binding"]["local_occupancy"] == current_binding["local_occupancy"]
+    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_scoped_binding_preserves_fractional_probe_tolerance() -> None:
     circle = {"x": 0.963543, "y": 0.0, "radius": 1.533657}
     saved_wall = 2.737451
