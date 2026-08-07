@@ -242,13 +242,19 @@ def test_scoped_binding_contains_private_local_geometry_signature() -> None:
         {"x": 0.7, "y": 0.5, "radius": 0.15},
     ]
 
-    assert binding_for_area(floor_plan, circles) == {
+    binding = binding_for_area(floor_plan, circles)
+    assert binding == {
         "version": SCOPED_MAP_BINDING_VERSION,
         "mission_id": 42,
         "partition_id": "synthetic-partition",
         "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
+        "area_shape_sha256": binding["area_shape_sha256"],
         "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
+        "local_occupancy": [511, 511],
+        "local_segments_mm": [],
     }
+    assert len(binding["area_shape_sha256"]) == 64
+    assert binding_for_area(floor_plan, list(reversed(circles))) == binding
     assert area_geometry_fingerprint(floor_plan, circles) == (
         area_geometry_fingerprint(floor_plan, list(reversed(circles)))
     )
@@ -279,7 +285,17 @@ def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> No
 
 
 def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
-    floor_plan = _floor_plan()
+    original = _floor_plan()
+    floor_plan = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.004, 0.0), *original.rooms[0].boundary[1:]),
+            ),
+            original.rooms[1],
+        ),
+    )
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
     area = _scoped_area(floor_plan, circles)
     kitchen, study = floor_plan.rooms
@@ -288,7 +304,7 @@ def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
         rooms=(
             replace(
                 kitchen,
-                boundary=((0.004, 0.0), *kitchen.boundary[1:]),
+                boundary=((0.006, 0.0), *kitchen.boundary[1:]),
             ),
             study,
         ),
@@ -298,6 +314,72 @@ def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
         floor_plan_geometry_fingerprint(floor_plan)
     )
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
+    area = _scoped_area(floor_plan, circles)
+    binding = dict(area["map_binding"])
+    segments = [list(segment) for segment in binding["local_segments_mm"]]
+    assert segments
+    segments[0][0] += 1
+    binding["local_segments_mm"] = segments
+
+    assert (
+        area_binding_status({**area, "map_binding": binding}, floor_plan)
+        is AreaBindingStatus.INVALID
+    )
+
+
+def test_scoped_binding_rejects_self_consistent_wrong_local_evidence() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
+    changed_floor = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.05, 0.0), *floor_plan.rooms[0].boundary[1:]),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+    wrong_binding = binding_for_area(changed_floor, circles)
+    wrong_binding["geometry_sha256"] = floor_plan_geometry_fingerprint(floor_plan)
+
+    assert (
+        area_binding_status(
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "circles": circles,
+                "map_binding": wrong_binding,
+            },
+            floor_plan,
+        )
+        is AreaBindingStatus.INVALID
+    )
+
+
+def test_scoped_binding_blocks_a_new_local_boundary() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    added_boundary = replace(
+        floor_plan,
+        rooms=(
+            *floor_plan.rooms,
+            _room(
+                "overlap",
+                "Overlap",
+                ((0.4, 0.4), (0.6, 0.4), (0.6, 0.6), (0.4, 0.6)),
+            ),
+        ),
+    )
+
+    assert (
+        area_binding_status(area, added_boundary) is AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_blocks_nearby_geometry_and_circle_changes() -> None:

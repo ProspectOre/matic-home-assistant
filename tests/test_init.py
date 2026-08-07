@@ -228,10 +228,27 @@ async def test_setup_refreshes_before_forwarding_platforms(
     with patch(
         "custom_components.matic_robot.async_sync_custom_area_issue"
     ) as listener_sync:
+        scheduled = []
+        entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+            scheduled.append(target)
+        )
+        live_floor_plan = object()
+        coordinator.data.floor_plan = live_floor_plan
         sync_callback()
+        await scheduled[0]
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 2
+    assert entry.async_create_background_task.call_count == 3
+    assert plans.async_upgrade_area_bindings.await_count == 2
+    assert plans.async_upgrade_area_bindings.call_args.args == (
+        "synthetic-serial",
+        live_floor_plan,
+    )
+    assert (
+        entry.async_create_background_task.call_args.args[2]
+        == "matic_robot custom area binding upgrade"
+    )
 
 
 async def test_setup_closes_client_when_first_refresh_fails() -> None:

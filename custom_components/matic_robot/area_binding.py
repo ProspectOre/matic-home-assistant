@@ -22,9 +22,10 @@ MAP_BINDING_VERSION = 1
 SCOPED_MAP_BINDING_VERSION = 2
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
 _SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
+_AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
 _MILLIMETERS_PER_METER = 1_000
-_LOCAL_UNITS_PER_METER = 100
 _LOCAL_GEOMETRY_MARGIN_METERS = 0.25
+_LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -32,9 +33,12 @@ _AREA_REPAIR_LEARN_MORE_URL = (
     "blob/main/docs/automation.md#drawn-custom-areas"
 )
 
-MapBinding = dict[str, int | str]
+MapBinding = dict[str, Any]
 _QuantizedPoint = tuple[int, int]
 _CanonicalPolygon = tuple[_QuantizedPoint, ...]
+_LocalSegment = tuple[int, int, int, int]
+_AreaShape = tuple[tuple[int, int, int], ...]
+_LocalGeometry = tuple[_AreaShape, tuple[int, ...], tuple[_LocalSegment, ...]]
 
 
 class AreaBindingStatus(StrEnum):
@@ -136,10 +140,16 @@ def binding_for_area(
     floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
+    shape, occupancy, segments = _area_geometry_components(floor_plan, circles)
     return {
         "version": SCOPED_MAP_BINDING_VERSION,
         **_floor_plan_binding(floor_plan),
-        "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
+        "area_shape_sha256": _area_shape_fingerprint(shape),
+        "local_geometry_sha256": _local_geometry_fingerprint(
+            shape, occupancy, segments
+        ),
+        "local_occupancy": list(occupancy),
+        "local_segments_mm": [list(segment) for segment in segments],
     }
 
 
@@ -169,12 +179,19 @@ def area_geometry_fingerprint(
 
     The fingerprint includes the immutable saved circles, mapped-floor
     occupancy probes, and room-boundary segments within a small safety margin.
-    Geometry elsewhere on the floor cannot invalidate the area. Local boundary
-    coordinates are quantized to centimeters so sub-centimeter decoder jitter
-    does not create a Repair.
+    Geometry elsewhere on the floor cannot invalidate the area. Binding status
+    compares the private millimeter components with an explicit tolerance when
+    the exact digest changes.
     """
+    return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
+
+
+def _area_geometry_components(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> _LocalGeometry:
+    """Return canonical private area shape, occupancy, and nearby segments."""
     normalized = _validate_area_circles(floor_plan, circles)
-    ordered = sorted(
+    ordered_float = sorted(
         (
             float(circle["x"]),
             float(circle["y"]),
@@ -182,17 +199,29 @@ def area_geometry_fingerprint(
         )
         for circle in normalized
     )
+    shape = tuple(
+        (
+            _quantize_coordinate(x),
+            _quantize_coordinate(y),
+            _quantize_coordinate(radius),
+        )
+        for x, y, radius in ordered_float
+    )
     neighborhood = (
-        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+        min(x - radius for x, _y, radius in ordered_float)
+        - _LOCAL_GEOMETRY_MARGIN_METERS,
+        min(y - radius for _x, y, radius in ordered_float)
+        - _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(x + radius for x, _y, radius in ordered_float)
+        + _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(y + radius for _x, y, radius in ordered_float)
+        + _LOCAL_GEOMETRY_MARGIN_METERS,
     )
     room_boundaries = tuple(
         [list(point) for point in room.boundary] for room in floor_plan.rooms
     )
 
-    segments: set[tuple[int, int, int, int]] = set()
+    segments: set[_LocalSegment] = set()
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
@@ -200,30 +229,19 @@ def area_geometry_fingerprint(
             if clipped is None:
                 continue
             first = (
-                _quantize_local(clipped[0][0]),
-                _quantize_local(clipped[0][1]),
+                _quantize_coordinate(clipped[0][0]),
+                _quantize_coordinate(clipped[0][1]),
             )
             second = (
-                _quantize_local(clipped[1][0]),
-                _quantize_local(clipped[1][1]),
+                _quantize_coordinate(clipped[1][0]),
+                _quantize_coordinate(clipped[1][1]),
             )
             if second < first:
                 first, second = second, first
             segments.add((*first, *second))
 
-    digest = hashlib.sha256()
-    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
-    digest.update(struct.pack(">H", SCOPED_MAP_BINDING_VERSION))
-    digest.update(struct.pack(">I", len(ordered)))
-    for x, y, radius in ordered:
-        digest.update(
-            struct.pack(
-                ">qqq",
-                _quantize_coordinate(x),
-                _quantize_coordinate(y),
-                _quantize_coordinate(radius),
-            )
-        )
+    occupancy_values = []
+    for x, y, radius in ordered_float:
         probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
         diagonal = probe_radius / math.sqrt(2)
         probes = (
@@ -241,9 +259,35 @@ def area_geometry_fingerprint(
             int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
         )
-        digest.update(struct.pack(">H", occupancy))
+        occupancy_values.append(occupancy)
+    return shape, tuple(occupancy_values), tuple(sorted(segments))
+
+
+def _area_shape_fingerprint(shape: _AreaShape) -> str:
+    """Fingerprint the immutable saved circles independently of the map."""
+    digest = hashlib.sha256()
+    digest.update(_AREA_SHAPE_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">I", len(shape)))
+    for circle in shape:
+        digest.update(struct.pack(">qqq", *circle))
+    return digest.hexdigest()
+
+
+def _local_geometry_fingerprint(
+    shape: _AreaShape,
+    occupancy: Sequence[int],
+    segments: Sequence[_LocalSegment],
+) -> str:
+    """Fingerprint exact private components while retaining tolerant evidence."""
+    digest = hashlib.sha256()
+    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">H", SCOPED_MAP_BINDING_VERSION))
+    digest.update(bytes.fromhex(_area_shape_fingerprint(shape)))
+    digest.update(struct.pack(">I", len(occupancy)))
+    for value in occupancy:
+        digest.update(struct.pack(">H", value))
     digest.update(struct.pack(">I", len(segments)))
-    for segment in sorted(segments):
+    for segment in segments:
         digest.update(struct.pack(">qqqq", *segment))
     return digest.hexdigest()
 
@@ -281,12 +325,23 @@ def area_binding_status(
         return AreaBindingStatus.CURRENT
 
     try:
-        local_geometry = area_geometry_fingerprint(floor_plan, area["circles"])
+        shape, occupancy, segments = _area_geometry_components(
+            floor_plan, area["circles"]
+        )
     except KeyError, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
+    if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
+        return AreaBindingStatus.INVALID
+    local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         return AreaBindingStatus.CURRENT
     if saved_geometry != current["geometry_sha256"]:
+        saved_occupancy = tuple(saved["local_occupancy"])
+        saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
+        if saved_occupancy == occupancy and _local_segments_match(
+            saved_segments, segments
+        ):
+            return AreaBindingStatus.CURRENT
         return AreaBindingStatus.GEOMETRY_CHANGED
     return AreaBindingStatus.INVALID
 
@@ -316,7 +371,13 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
     expected_fields = (
         base_fields
         if version == MAP_BINDING_VERSION
-        else {*base_fields, "local_geometry_sha256"}
+        else {
+            *base_fields,
+            "area_shape_sha256",
+            "local_geometry_sha256",
+            "local_occupancy",
+            "local_segments_mm",
+        }
     )
     if set(binding) != expected_fields:
         return False
@@ -335,7 +396,13 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         and all(character in "0123456789abcdefABCDEF" for character in geometry)
         and (
             version == MAP_BINDING_VERSION
-            or _valid_digest(binding["local_geometry_sha256"])
+            or (
+                _valid_digest(binding["area_shape_sha256"])
+                and _valid_digest(binding["local_geometry_sha256"])
+                and _valid_local_occupancy(binding["local_occupancy"])
+                and _valid_local_segments(binding["local_segments_mm"])
+                and _stored_local_geometry_is_intact(binding)
+            )
         )
     )
 
@@ -346,6 +413,80 @@ def _valid_digest(value: Any) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
+
+
+def _valid_local_occupancy(value: Any) -> bool:
+    """Return whether saved occupancy probes have their bounded list shape."""
+    return isinstance(value, list) and all(
+        not isinstance(item, bool) and isinstance(item, int) and 0 <= item < 1 << 9
+        for item in value
+    )
+
+
+def _valid_local_segments(value: Any) -> bool:
+    """Return whether saved millimeter segments have a bounded numeric shape."""
+    return isinstance(value, list) and all(
+        isinstance(segment, list)
+        and len(segment) == 4
+        and all(
+            not isinstance(coordinate, bool)
+            and isinstance(coordinate, int)
+            and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
+            for coordinate in segment
+        )
+        for segment in value
+    )
+
+
+def _stored_local_geometry_is_intact(binding: Mapping[str, Any]) -> bool:
+    """Verify that the private tolerant evidence still matches its digest."""
+    shape_digest = str(binding["area_shape_sha256"]).casefold()
+    digest = hashlib.sha256()
+    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">H", SCOPED_MAP_BINDING_VERSION))
+    digest.update(bytes.fromhex(shape_digest))
+    occupancy = binding["local_occupancy"]
+    digest.update(struct.pack(">I", len(occupancy)))
+    for value in occupancy:
+        digest.update(struct.pack(">H", value))
+    segments = binding["local_segments_mm"]
+    digest.update(struct.pack(">I", len(segments)))
+    for segment in segments:
+        digest.update(struct.pack(">qqqq", *segment))
+    return digest.hexdigest() == str(binding["local_geometry_sha256"]).casefold()
+
+
+def _local_segments_match(
+    saved: Sequence[_LocalSegment], current: Sequence[_LocalSegment]
+) -> bool:
+    """Match unordered local segments with an explicit coordinate tolerance."""
+    if len(saved) != len(current):
+        return False
+    unmatched = list(current)
+    for saved_segment in saved:
+        for index, current_segment in enumerate(unmatched):
+            reversed_current = (
+                current_segment[2],
+                current_segment[3],
+                current_segment[0],
+                current_segment[1],
+            )
+            if _segment_within_tolerance(
+                saved_segment, current_segment
+            ) or _segment_within_tolerance(saved_segment, reversed_current):
+                unmatched.pop(index)
+                break
+        else:
+            return False
+    return True
+
+
+def _segment_within_tolerance(first: _LocalSegment, second: _LocalSegment) -> bool:
+    """Return whether every endpoint coordinate differs by at most 10 mm."""
+    return all(
+        abs(saved - current) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        for saved, current in zip(first, second, strict=True)
     )
 
 
@@ -439,11 +580,6 @@ def _smallest_rotation(points: _CanonicalPolygon) -> _CanonicalPolygon:
 def _quantize_coordinate(value: float) -> int:
     """Convert finite meters to signed millimeters, normalizing negative zero."""
     return _quantize(value, _MILLIMETERS_PER_METER)
-
-
-def _quantize_local(value: float) -> int:
-    """Convert a local boundary coordinate to signed centimeters."""
-    return _quantize(value, _LOCAL_UNITS_PER_METER)
 
 
 def _quantize(value: float, units_per_meter: int) -> int:
