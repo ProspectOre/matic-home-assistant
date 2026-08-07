@@ -32,6 +32,7 @@ _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
 _LOCAL_GEOMETRY_TOLERANCE_METERS = (
     _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS / _MILLIMETERS_PER_METER
 )
+_SEGMENT_QUANTIZATION_ERROR_MILLIMETERS = math.sqrt(0.5)
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -247,19 +248,7 @@ def _hash_only_area_geometry_fingerprint(
                 _quantize_coordinate(radius),
             )
         )
-        probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
-        diagonal = probe_radius / math.sqrt(2)
-        probes = (
-            (x, y),
-            (x - probe_radius, y),
-            (x + probe_radius, y),
-            (x, y - probe_radius),
-            (x, y + probe_radius),
-            (x - diagonal, y - diagonal),
-            (x - diagonal, y + diagonal),
-            (x + diagonal, y - diagonal),
-            (x + diagonal, y + diagonal),
-        )
+        probes = _occupancy_probes(x, y, radius)
         occupancy = sum(
             int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
@@ -340,25 +329,32 @@ def _area_geometry_components(
 
     occupancy_values = []
     for x, y, radius in ordered_float:
-        probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
-        diagonal = probe_radius / math.sqrt(2)
-        probes = (
-            (x, y),
-            (x - probe_radius, y),
-            (x + probe_radius, y),
-            (x, y - probe_radius),
-            (x, y + probe_radius),
-            (x - diagonal, y - diagonal),
-            (x - diagonal, y + diagonal),
-            (x + diagonal, y - diagonal),
-            (x + diagonal, y + diagonal),
-        )
+        probes = _occupancy_probes(x, y, radius)
         occupancy = sum(
             int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         occupancy_values.append(occupancy)
     return shape, tuple(occupancy_values), tuple(sorted(segments))
+
+
+def _occupancy_probes(
+    x: float, y: float, radius: float
+) -> tuple[tuple[float, float], ...]:
+    """Return the exact floating-point probes used by occupancy evidence."""
+    probe_radius = radius + _LOCAL_GEOMETRY_MARGIN_METERS
+    diagonal = probe_radius / math.sqrt(2)
+    return (
+        (x, y),
+        (x - probe_radius, y),
+        (x + probe_radius, y),
+        (x, y - probe_radius),
+        (x, y + probe_radius),
+        (x - diagonal, y - diagonal),
+        (x - diagonal, y + diagonal),
+        (x + diagonal, y - diagonal),
+        (x + diagonal, y + diagonal),
+    )
 
 
 def _area_shape_fingerprint(shape: _AreaShape) -> str:
@@ -450,7 +446,12 @@ def area_binding_status(
     if _local_segments_match(saved_segments, segments, shape) and (
         saved_occupancy == occupancy
         or _occupancy_changes_are_explained(
-            saved_occupancy, occupancy, saved_segments, segments, shape
+            saved_occupancy,
+            occupancy,
+            saved_segments,
+            segments,
+            shape,
+            area["circles"],
         )
     ):
         return AreaBindingStatus.CURRENT
@@ -648,9 +649,22 @@ def _occupancy_changes_are_explained(
     saved_segments: Sequence[_LocalSegment],
     current_segments: Sequence[_LocalSegment],
     shape: _AreaShape,
+    circles: Sequence[Mapping[str, Any]],
 ) -> bool:
     """Return whether every changed probe is near old and new local walls."""
-    if len(saved_occupancy) != len(shape) or len(current_occupancy) != len(shape):
+    ordered_circles = sorted(
+        (
+            float(circle["x"]),
+            float(circle["y"]),
+            float(circle["radius"]),
+        )
+        for circle in circles
+    )
+    if (
+        len(saved_occupancy) != len(shape)
+        or len(current_occupancy) != len(shape)
+        or len(ordered_circles) != len(shape)
+    ):
         return False
 
     saved_by_neighborhood: list[list[_LocalSegment]] = [[] for _ in shape]
@@ -662,27 +676,19 @@ def _occupancy_changes_are_explained(
         for neighborhood in _segment_context(segment, shape)[1]:
             current_by_neighborhood[neighborhood].append(segment)
 
-    semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
     for neighborhood, (
-        (center_x, center_y, radius),
+        (x, y, radius),
         saved_value,
         current_value,
-    ) in enumerate(zip(shape, saved_occupancy, current_occupancy, strict=True)):
+    ) in enumerate(
+        zip(ordered_circles, saved_occupancy, current_occupancy, strict=True)
+    ):
         changed = saved_value ^ current_value
         if not changed:
             continue
-        probe_radius = radius + semantic_margin
-        diagonal = probe_radius / math.sqrt(2)
-        probes = (
-            (center_x, center_y),
-            (center_x - probe_radius, center_y),
-            (center_x + probe_radius, center_y),
-            (center_x, center_y - probe_radius),
-            (center_x, center_y + probe_radius),
-            (center_x - diagonal, center_y - diagonal),
-            (center_x - diagonal, center_y + diagonal),
-            (center_x + diagonal, center_y - diagonal),
-            (center_x + diagonal, center_y + diagonal),
+        probes = tuple(
+            (probe_x * _MILLIMETERS_PER_METER, probe_y * _MILLIMETERS_PER_METER)
+            for probe_x, probe_y in _occupancy_probes(x, y, radius)
         )
         for probe_index, probe in enumerate(probes):
             if not changed & (1 << probe_index):
@@ -813,7 +819,7 @@ def _point_near_supporting_line(
 
 
 def _point_near_segment(point: tuple[float, float], segment: _LocalSegment) -> bool:
-    """Return whether a point is within tolerance of a finite source wall."""
+    """Return whether a probe is near a millimeter-quantized source wall."""
     start_x, start_y, end_x, end_y = segment
     delta_x = end_x - start_x
     delta_y = end_y - start_y
@@ -832,7 +838,9 @@ def _point_near_segment(point: tuple[float, float], segment: _LocalSegment) -> b
         nearest_y = start_y + projection * delta_y
     distance_x = point[0] - nearest_x
     distance_y = point[1] - nearest_y
-    tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+    tolerance = (
+        _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS + _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
+    )
     return distance_x * distance_x + distance_y * distance_y <= tolerance * tolerance
 
 

@@ -481,7 +481,14 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change() -> None:
 
 
 def test_occupancy_explanation_rejects_malformed_evidence() -> None:
-    assert not _occupancy_changes_are_explained((), (0,), (), (), ((0, 0, 100),))
+    assert not _occupancy_changes_are_explained(
+        (),
+        (0,),
+        (),
+        (),
+        ((0, 0, 100),),
+        ({"x": 0.0, "y": 0.0, "radius": 0.1},),
+    )
 
 
 def test_occupancy_explanation_skips_unchanged_neighborhoods() -> None:
@@ -489,7 +496,15 @@ def test_occupancy_explanation_skips_unchanged_neighborhoods() -> None:
     segment = (650, -500, 650, 500)
 
     assert _occupancy_changes_are_explained(
-        (0, 0), (0, 2), (segment,), (segment,), shape
+        (0, 0),
+        (0, 2),
+        (segment,),
+        (segment,),
+        shape,
+        (
+            {"x": 0.0, "y": 0.0, "radius": 0.1},
+            {"x": 1.0, "y": 0.0, "radius": 0.1},
+        ),
     )
 
 
@@ -541,6 +556,46 @@ def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
     assert (
         area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
     )
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_preserves_fractional_probe_tolerance() -> None:
+    circle = {"x": 0.963543, "y": 0.0, "radius": 1.533657}
+    saved_wall = 2.737451
+    current_wall = 2.747381
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "fractional",
+                "Fractional",
+                ((-2.0, -3.0), (saved_wall, -3.0), (saved_wall, 3.0), (-2.0, 3.0)),
+            ),
+        ),
+    )
+    circles = [circle]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (-2.0, -3.0),
+                    (current_wall, -3.0),
+                    (current_wall, 3.0),
+                    (-2.0, 3.0),
+                ),
+            ),
+        ),
+    )
+
+    current_binding = binding_for_area(jittered, circles)
+    assert area["map_binding"]["local_segments_mm"] == [[2737, -3000, 2737, 3000]]
+    assert current_binding["local_segments_mm"] == [[2747, -3000, 2747, 3000]]
+    assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
