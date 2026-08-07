@@ -446,7 +446,13 @@ def area_binding_status(
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
-    if _local_segments_match(saved_segments, segments, shape):
+    saved_occupancy = tuple(saved["local_occupancy"])
+    if _local_segments_match(saved_segments, segments, shape) and (
+        saved_occupancy == occupancy
+        or _occupancy_changes_are_explained(
+            saved_occupancy, occupancy, saved_segments, segments, shape
+        )
+    ):
         return AreaBindingStatus.CURRENT
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
@@ -636,6 +642,62 @@ def _local_segments_match(
     return -_minimum_cost_maximum_flow(graph, source, sink) == required_score
 
 
+def _occupancy_changes_are_explained(
+    saved_occupancy: Sequence[int],
+    current_occupancy: Sequence[int],
+    saved_segments: Sequence[_LocalSegment],
+    current_segments: Sequence[_LocalSegment],
+    shape: _AreaShape,
+) -> bool:
+    """Return whether every changed probe is near old and new local walls."""
+    if len(saved_occupancy) != len(shape) or len(current_occupancy) != len(shape):
+        return False
+
+    saved_by_neighborhood: list[list[_LocalSegment]] = [[] for _ in shape]
+    current_by_neighborhood: list[list[_LocalSegment]] = [[] for _ in shape]
+    for segment in saved_segments:
+        for neighborhood in _segment_context(segment, shape)[1]:
+            saved_by_neighborhood[neighborhood].append(segment)
+    for segment in current_segments:
+        for neighborhood in _segment_context(segment, shape)[1]:
+            current_by_neighborhood[neighborhood].append(segment)
+
+    semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
+    for neighborhood, (
+        (center_x, center_y, radius),
+        saved_value,
+        current_value,
+    ) in enumerate(zip(shape, saved_occupancy, current_occupancy, strict=True)):
+        changed = saved_value ^ current_value
+        if not changed:
+            continue
+        probe_radius = radius + semantic_margin
+        diagonal = probe_radius / math.sqrt(2)
+        probes = (
+            (center_x, center_y),
+            (center_x - probe_radius, center_y),
+            (center_x + probe_radius, center_y),
+            (center_x, center_y - probe_radius),
+            (center_x, center_y + probe_radius),
+            (center_x - diagonal, center_y - diagonal),
+            (center_x - diagonal, center_y + diagonal),
+            (center_x + diagonal, center_y - diagonal),
+            (center_x + diagonal, center_y + diagonal),
+        )
+        for probe_index, probe in enumerate(probes):
+            if not changed & (1 << probe_index):
+                continue
+            if not any(
+                _point_near_segment(probe, segment)
+                for segment in saved_by_neighborhood[neighborhood]
+            ) or not any(
+                _point_near_segment(probe, segment)
+                for segment in current_by_neighborhood[neighborhood]
+            ):
+                return False
+    return True
+
+
 def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
     """Precompute the local neighborhoods and endpoints for one source wall."""
     semantic_margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
@@ -748,6 +810,30 @@ def _point_near_supporting_line(
     cross = delta_x * (point[1] - line_start[1]) - delta_y * (point[0] - line_start[0])
     tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
     return cross * cross <= tolerance * tolerance * length_squared
+
+
+def _point_near_segment(point: tuple[float, float], segment: _LocalSegment) -> bool:
+    """Return whether a point is within tolerance of a finite source wall."""
+    start_x, start_y, end_x, end_y = segment
+    delta_x = end_x - start_x
+    delta_y = end_y - start_y
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    nearest_x: float
+    nearest_y: float
+    if not length_squared:
+        nearest_x = start_x
+        nearest_y = start_y
+    else:
+        projection = (
+            (point[0] - start_x) * delta_x + (point[1] - start_y) * delta_y
+        ) / length_squared
+        projection = min(1.0, max(0.0, projection))
+        nearest_x = start_x + projection * delta_x
+        nearest_y = start_y + projection * delta_y
+    distance_x = point[0] - nearest_x
+    distance_y = point[1] - nearest_y
+    tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+    return distance_x * distance_x + distance_y * distance_y <= tolerance * tolerance
 
 
 def _endpoints_covered(

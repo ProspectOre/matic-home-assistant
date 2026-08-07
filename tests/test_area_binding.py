@@ -17,6 +17,8 @@ from custom_components.matic_robot.area_binding import (
     _hash_only_area_geometry_fingerprint,
     _local_segment_geometries_match,
     _local_segments_match,
+    _occupancy_changes_are_explained,
+    _point_near_segment,
     area_binding_allows_review,
     area_binding_status,
     area_geometry_fingerprint,
@@ -446,6 +448,53 @@ def test_scoped_binding_tolerates_probe_occupancy_flip_at_jittered_wall() -> Non
     current_binding = binding_for_area(jittered, circles)
     assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_rejects_unexplained_probe_occupancy_change() -> None:
+    narrow = _room(
+        "narrow",
+        "Narrow",
+        ((-0.05, -0.05), (0.05, -0.05), (0.05, 0.05), (-0.05, 0.05)),
+    )
+    enclosing = _room(
+        "enclosing",
+        "Enclosing",
+        ((-1.0, -1.0), (1.0, -1.0), (1.0, 1.0), (-1.0, 1.0)),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (narrow, enclosing),
+    )
+    circles = [{"x": 0.0, "y": 0.0, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    changed = replace(floor_plan, rooms=(narrow,))
+
+    current_binding = binding_for_area(changed, circles)
+    assert (
+        area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
+    )
+    assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
+    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    assert area_binding_allows_review(area, changed)
+
+
+def test_occupancy_explanation_rejects_malformed_evidence() -> None:
+    assert not _occupancy_changes_are_explained((), (0,), (), (), ((0, 0, 100),))
+
+
+def test_occupancy_explanation_skips_unchanged_neighborhoods() -> None:
+    shape = ((0, 0, 100), (1000, 0, 100))
+    segment = (650, -500, 650, 500)
+
+    assert _occupancy_changes_are_explained(
+        (0, 0), (0, 2), (segment,), (segment,), shape
+    )
+
+
+def test_point_near_degenerate_segment() -> None:
+    assert _point_near_segment((1.0, 1.0), (0, 0, 0, 0))
 
 
 def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
