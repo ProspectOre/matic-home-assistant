@@ -719,6 +719,44 @@ def test_scoped_binding_uses_expanded_guard_during_wall_comparison() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_tolerates_saved_center_near_moved_boundary() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "boundary-center",
+                "Boundary Center",
+                ((0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 1.0, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (0.998, 0.0), (0.998, 1.0), (0.0, 1.0)),
+            ),
+        ),
+    )
+    moved = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (0.98, 0.0), (0.98, 1.0), (0.0, 1.0)),
+            ),
+        ),
+    )
+
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+    assert area_binding_status(area, moved) is AreaBindingStatus.INVALID
+
+
 def test_scoped_binding_ignores_jitter_at_guard_band_cutoff() -> None:
     floor_plan = _floor_plan()
     kitchen, study = floor_plan.rooms

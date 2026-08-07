@@ -284,10 +284,15 @@ def _hash_only_area_geometry_fingerprint(
 
 
 def _area_geometry_components(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    center_tolerance: float = 0.0,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
-    normalized = _validate_area_circles(floor_plan, circles)
+    normalized = _validate_area_circles(
+        floor_plan, circles, center_tolerance=center_tolerance
+    )
     ordered_float = sorted(
         (
             float(circle["x"]),
@@ -455,7 +460,9 @@ def area_binding_status(
 
     try:
         shape, occupancy, segments = _area_geometry_components(
-            floor_plan, area["circles"]
+            floor_plan,
+            area["circles"],
+            center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
         )
     except KeyError, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
@@ -1109,7 +1116,10 @@ def _minimum_cost_maximum_flow(
 
 
 def _validate_area_circles(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    center_tolerance: float = 0.0,
 ) -> list[dict[str, float]]:
     """Validate saved circles against the mapped floor without exposing them."""
     rooms = [
@@ -1121,7 +1131,9 @@ def _validate_area_circles(
         for room in floor_plan.rooms
     ]
     try:
-        return MaticAreaSelector({"rooms": rooms})(circles)
+        return MaticAreaSelector({"rooms": rooms}).validate(
+            circles, center_tolerance=center_tolerance
+        )
     except vol.Invalid as err:
         raise ValueError("area circles are invalid for the mapped floor") from err
 

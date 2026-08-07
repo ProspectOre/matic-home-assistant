@@ -82,8 +82,64 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
             previous = current
         return inside
 
+    @staticmethod
+    def _point_near_segment(
+        x: float,
+        y: float,
+        start: list[float],
+        end: list[float],
+        tolerance: float,
+    ) -> bool:
+        """Return whether a point is within a distance of a polygon edge."""
+        start_x, start_y = (float(value) for value in start)
+        end_x, end_y = (float(value) for value in end)
+        delta_x = end_x - start_x
+        delta_y = end_y - start_y
+        length_squared = delta_x * delta_x + delta_y * delta_y
+        projection = (
+            0.0
+            if not length_squared
+            else min(
+                1.0,
+                max(
+                    0.0,
+                    ((x - start_x) * delta_x + (y - start_y) * delta_y)
+                    / length_squared,
+                ),
+            )
+        )
+        nearest_x = start_x + projection * delta_x
+        nearest_y = start_y + projection * delta_y
+        return math.hypot(x - nearest_x, y - nearest_y) <= tolerance
+
+    @classmethod
+    def _point_in_or_near_polygon(
+        cls,
+        x: float,
+        y: float,
+        boundary: list[list[float]],
+        tolerance: float,
+    ) -> bool:
+        """Return whether a point is inside or tolerably near a polygon."""
+        if cls._point_in_polygon(x, y, boundary):
+            return True
+        if not tolerance:
+            return False
+        return any(
+            cls._point_near_segment(x, y, previous, current, tolerance)
+            for previous, current in zip(
+                (boundary[-1], *boundary[:-1]), boundary, strict=True
+            )
+        )
+
     def __call__(self, data: Any) -> list[dict[str, float]]:
         """Validate and canonicalize drawn circles without exposing them."""
+        return self.validate(data)
+
+    def validate(
+        self, data: Any, *, center_tolerance: float = 0.0
+    ) -> list[dict[str, float]]:
+        """Validate circles with an optional saved-center boundary tolerance."""
         if not isinstance(data, list):
             raise vol.Invalid("Expected a list of drawn circles")
         if not 1 <= len(data) <= 512:
@@ -105,7 +161,12 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
             if not all(math.isfinite(value) for value in circle.values()):
                 raise vol.Invalid("Area circle values must be finite")
             if not any(
-                self._point_in_polygon(circle["x"], circle["y"], room["boundary"])
+                self._point_in_or_near_polygon(
+                    circle["x"],
+                    circle["y"],
+                    room["boundary"],
+                    center_tolerance,
+                )
                 for room in rooms
             ):
                 raise vol.Invalid("Area circle centers must be inside a mapped room")
