@@ -32,7 +32,7 @@ Home Assistant.
 
 ## Verification
 
-The release candidate passes 884 Python tests / 8,309 statements at 100%
+The release candidate passes 889 Python tests / 8,344 statements at 100%
 coverage, 42 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, and the public-tree privacy gate.
 

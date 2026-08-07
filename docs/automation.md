@@ -104,8 +104,9 @@ partition, and canonical room geometry it was drawn on. A legacy unbound area,
 remap, floor change, or geometry mismatch is blocked before any robot command.
 Newly confirmed areas also retain a private signature of mapped geometry in
 the union of a 25 cm margin around each painted mark, with a 10 mm guard band
-for boundary selection. The same explicit 10 mm comparison tolerance lets
-changes elsewhere on the floor and sub-centimeter boundary jitter revalidate
+for source-boundary selection. Supporting wall geometry is compared inside
+those local neighborhoods with the same explicit 10 mm tolerance, so changes
+elsewhere on the floor and sub-centimeter boundary jitter revalidate
 automatically while mission,
 partition, and nearby-geometry changes still fail closed. An exactly current
 legacy v1 or hash-only v2 binding upgrades to the v3 scoped signature safely at

@@ -321,16 +321,15 @@ def _area_geometry_components(
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
             for neighborhood in neighborhoods:
-                clipped = _clip_segment(start, end, neighborhood)
-                if clipped is None:
+                if _clip_segment(start, end, neighborhood) is None:
                     continue
                 first = (
-                    _quantize_coordinate(clipped[0][0]),
-                    _quantize_coordinate(clipped[0][1]),
+                    _quantize_coordinate(start[0]),
+                    _quantize_coordinate(start[1]),
                 )
                 second = (
-                    _quantize_coordinate(clipped[1][0]),
-                    _quantize_coordinate(clipped[1][1]),
+                    _quantize_coordinate(end[0]),
+                    _quantize_coordinate(end[1]),
                 )
                 if second < first:
                     first, second = second, first
@@ -598,15 +597,7 @@ def _local_segments_match(
         _add_flow_edge(graph, source, index, -int(is_local))
     for saved_index, saved_segment in enumerate(saved):
         for current_index, current_segment in enumerate(current):
-            reversed_current = (
-                current_segment[2],
-                current_segment[3],
-                current_segment[0],
-                current_segment[1],
-            )
-            if _segment_within_tolerance(
-                saved_segment, current_segment
-            ) or _segment_within_tolerance(saved_segment, reversed_current):
+            if _local_segment_geometries_match(saved_segment, current_segment, shape):
                 _add_flow_edge(graph, saved_index, len(saved) + current_index, 0)
     for index, is_local in enumerate(current_local):
         _add_flow_edge(graph, len(saved) + index, sink, -int(is_local))
@@ -633,6 +624,105 @@ def _segment_intersects_area(segment: _LocalSegment, shape: _AreaShape) -> bool:
         )
         is not None
         for center_x, center_y, radius in shape
+    )
+
+
+def _local_segment_geometries_match(
+    saved: _LocalSegment, current: _LocalSegment, shape: _AreaShape
+) -> bool:
+    """Compare source walls inside local guard boxes without clip artifacts."""
+    margin = round(
+        (_LOCAL_GEOMETRY_MARGIN_METERS + _LOCAL_GEOMETRY_TOLERANCE_METERS)
+        * _MILLIMETERS_PER_METER
+    )
+    saved_start = (saved[0], saved[1])
+    saved_end = (saved[2], saved[3])
+    current_start = (current[0], current[1])
+    current_end = (current[2], current[3])
+    compared = False
+    for center_x, center_y, radius in shape:
+        bounds = (
+            center_x - radius - margin,
+            center_y - radius - margin,
+            center_x + radius + margin,
+            center_y + radius + margin,
+        )
+        saved_piece = _clip_segment(saved_start, saved_end, bounds)
+        current_piece = _clip_segment(current_start, current_end, bounds)
+        if saved_piece is None and current_piece is None:
+            continue
+        if saved_piece is None or current_piece is None:
+            return False
+        compared = True
+        if not all(
+            _point_near_supporting_line(point, current_start, current_end)
+            for point in saved_piece
+        ) or not all(
+            _point_near_supporting_line(point, saved_start, saved_end)
+            for point in current_piece
+        ):
+            return False
+
+    if not compared:
+        return False
+    saved_local_endpoints = tuple(
+        point
+        for point in (saved_start, saved_end)
+        if _point_intersects_area(point, shape)
+    )
+    current_local_endpoints = tuple(
+        point
+        for point in (current_start, current_end)
+        if _point_intersects_area(point, shape)
+    )
+    return _endpoints_covered(saved_local_endpoints, (current_start, current_end)) and (
+        _endpoints_covered(current_local_endpoints, (saved_start, saved_end))
+    )
+
+
+def _point_near_supporting_line(
+    point: tuple[float, float],
+    line_start: tuple[int, int],
+    line_end: tuple[int, int],
+) -> bool:
+    """Return whether a point is within tolerance of an infinite source line."""
+    delta_x = line_end[0] - line_start[0]
+    delta_y = line_end[1] - line_start[1]
+    length_squared = delta_x * delta_x + delta_y * delta_y
+    if not length_squared:
+        return _points_within_tolerance(point, line_start)
+    cross = delta_x * (point[1] - line_start[1]) - delta_y * (point[0] - line_start[0])
+    tolerance = _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+    return cross * cross <= tolerance * tolerance * length_squared
+
+
+def _point_intersects_area(point: tuple[int, int], shape: _AreaShape) -> bool:
+    """Return whether an original source endpoint is semantically local."""
+    margin = round(_LOCAL_GEOMETRY_MARGIN_METERS * _MILLIMETERS_PER_METER)
+    return any(
+        center_x - radius - margin <= point[0] <= center_x + radius + margin
+        and center_y - radius - margin <= point[1] <= center_y + radius + margin
+        for center_x, center_y, radius in shape
+    )
+
+
+def _endpoints_covered(
+    required: Sequence[tuple[int, int]], candidates: Sequence[tuple[int, int]]
+) -> bool:
+    """Return whether every local source endpoint has a tolerant counterpart."""
+    return all(
+        any(_points_within_tolerance(point, candidate) for candidate in candidates)
+        for point in required
+    )
+
+
+def _points_within_tolerance(
+    first: tuple[float, float], second: tuple[int, int]
+) -> bool:
+    """Return whether both point coordinates differ by at most 10 mm."""
+    return all(
+        abs(saved - current) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        for saved, current in zip(first, second, strict=True)
     )
 
 
@@ -686,14 +776,6 @@ def _minimum_cost_maximum_flow(
             graph[node][edge[1]][2] = 1
             total_cost += edge[3]
             node = previous
-
-
-def _segment_within_tolerance(first: _LocalSegment, second: _LocalSegment) -> bool:
-    """Return whether every endpoint coordinate differs by at most 10 mm."""
-    return all(
-        abs(saved - current) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
-        for saved, current in zip(first, second, strict=True)
-    )
 
 
 def _validate_area_circles(

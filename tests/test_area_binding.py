@@ -14,6 +14,7 @@ from custom_components.matic_robot.area_binding import (
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     _hash_only_area_geometry_fingerprint,
+    _local_segment_geometries_match,
     _local_segments_match,
     area_binding_allows_review,
     area_binding_status,
@@ -538,6 +539,58 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
     current = ((0, 1, 100, 1), (1, -10, 101, -10))
 
     assert _local_segments_match(saved, current, ((50, 0, 0),))
+
+
+@pytest.mark.parametrize(
+    ("saved", "current", "shape", "expected"),
+    [
+        (
+            (0, 0, 100, 0),
+            (0, 1, 100, 1),
+            ((1000, 1000, 0), (50, 0, 0)),
+            True,
+        ),
+        ((0, 0, 100, 0), (1000, 0, 1100, 0), ((50, 0, 0),), False),
+        ((0, 0, 100, 0), (0, 1, 100, 1), ((1000, 1000, 0),), False),
+        ((0, 0, 0, 0), (1, 1, 1, 1), ((0, 0, 0),), True),
+    ],
+)
+def test_local_segment_geometry_matching_edge_cases(
+    saved: tuple[int, int, int, int],
+    current: tuple[int, int, int, int],
+    shape: tuple[tuple[int, int, int], ...],
+    expected: bool,
+) -> None:
+    assert _local_segment_geometries_match(saved, current, shape) is expected
+
+
+def test_scoped_binding_tolerates_diagonal_clipping_amplification() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "sloped",
+                "Sloped",
+                ((0.0, 0.136), (1.0, 0.156), (1.0, 1.5), (0.0, 1.5)),
+            ),
+        ),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.138), (1.0, 0.158), (1.0, 1.5), (0.0, 1.5)),
+            ),
+        ),
+    )
+
+    assert area["map_binding"]["local_segments_mm"] == [[0, 136, 1000, 156]]
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
