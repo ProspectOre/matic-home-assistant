@@ -17,6 +17,7 @@ from custom_components.matic_robot import (
     async_unload_entry,
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -154,7 +155,16 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
-        data=SimpleNamespace(floor_plan=None),
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(
+                42,
+                "synthetic-partition",
+                b"synthetic-partition",
+                (),
+            )
+            if native_history_error
+            else None
+        ),
     )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
@@ -194,7 +204,10 @@ async def test_setup_refreshes_before_forwarding_platforms(
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
-    plans.async_upgrade_area_bindings.assert_awaited_once_with("synthetic-serial", None)
+    initial_floor_plan = coordinator.data.floor_plan
+    plans.async_upgrade_area_bindings.assert_awaited_once_with(
+        "synthetic-serial", initial_floor_plan
+    )
     if native_history_error:
         plans.async_import_native_history.assert_not_awaited()
     else:
@@ -223,7 +236,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),
     ]
-    sync_area_issue.assert_called_once_with(hass, "entry", {}, None)
+    sync_area_issue.assert_called_once_with(hass, "entry", {}, initial_floor_plan)
 
     with patch(
         "custom_components.matic_robot.async_sync_custom_area_issue"
@@ -232,7 +245,20 @@ async def test_setup_refreshes_before_forwarding_platforms(
         entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
             scheduled.append(target)
         )
-        live_floor_plan = object()
+        live_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                Room(
+                    "room",
+                    "Room",
+                    "room",
+                    b"room",
+                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+                ),
+            ),
+        )
         coordinator.data.floor_plan = live_floor_plan
         sync_callback()
         await scheduled[0]

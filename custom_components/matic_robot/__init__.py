@@ -15,11 +15,13 @@ from homeassistant.util import dt as dt_util
 from .area_binding import (
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
+    binding_for_floor_plan,
 )
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
+from .client.models import FloorPlan
 from .const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_CLEANING_MODE,
@@ -109,7 +111,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )
-        area_binding_upgrade_pending = coordinator.data.floor_plan is None
+        area_binding_upgrade_pending = not _floor_plan_supports_area_binding(
+            coordinator.data.floor_plan
+        )
         try:
             native_history = await client.async_get_cleaning_session_records()
         except MaticError as err:
@@ -152,7 +156,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         def _async_sync_area_issue() -> None:
             nonlocal area_binding_upgrade_pending
             floor_plan = coordinator.data.floor_plan
-            if area_binding_upgrade_pending and floor_plan is not None:
+            if area_binding_upgrade_pending and _floor_plan_supports_area_binding(
+                floor_plan
+            ):
                 area_binding_upgrade_pending = False
                 entry.async_create_background_task(
                     hass,
@@ -178,6 +184,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             await slam_map.async_shutdown()
         client.close()
         raise
+    return True
+
+
+def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
+    """Return whether a floor plan can safely produce an area binding."""
+    if floor_plan is None:
+        return False
+    try:
+        binding_for_floor_plan(floor_plan)
+    except OverflowError, TypeError, ValueError:
+        return False
     return True
 
 

@@ -420,6 +420,31 @@ def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_tolerates_probe_occupancy_flip_at_jittered_wall() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.35, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    kitchen, study = floor_plan.rooms
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=(
+                    (0.002, 0.0),
+                    *kitchen.boundary[1:-1],
+                    (0.002, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+
+    current_binding = binding_for_area(jittered, circles)
+    assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
