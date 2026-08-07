@@ -3179,7 +3179,12 @@ class MaticMapStudio extends HTMLElement {
   _resetAreaSavePresentation() {
     const save = this.shadowRoot.querySelector(".area-save");
     if (!save) return;
-    save.textContent = this._localize("area_save", "Save area");
+    const area = this._areas.find(
+      (candidate) => candidate.id === this._selectedAreaId,
+    );
+    save.textContent = area?.can_rebind
+      ? this._localize("area_confirm_current", "Confirm on current map")
+      : this._localize("area_save", "Save area");
     save.removeAttribute("aria-busy");
   }
 
@@ -3570,7 +3575,7 @@ class MaticMapStudio extends HTMLElement {
     for (const area of this._areas) {
       const option = document.createElement("option");
       option.value = String(area.id);
-      option.textContent = String(area.name || area.id);
+      option.textContent = `${area.status === "current" ? "" : "⚠ "}${String(area.name || area.id)}`;
       picker.append(option);
     }
     picker.value = this._selectedAreaId || "";
@@ -3593,9 +3598,12 @@ class MaticMapStudio extends HTMLElement {
     const draft = this._areaDraft();
     const valid = Boolean(draft.name && draft.circles.length);
     const dirty = JSON.stringify(draft) !== this._areaBaseline;
+    const area = this._areas.find(
+      (candidate) => candidate.id === this._selectedAreaId,
+    );
     const save = this.shadowRoot.querySelector(".area-save");
     const run = this.shadowRoot.querySelector(".area-run");
-    if (save) save.disabled = !valid || !dirty;
+    if (save) save.disabled = !valid || (!dirty && !area?.can_rebind);
     if (run && !run.hidden) run.disabled = dirty;
   }
 
@@ -3627,9 +3635,28 @@ class MaticMapStudio extends HTMLElement {
       embedded: true,
     };
     editor.value = area?.circles || [];
-    editor.addEventListener("value-changed", () => this._syncAreaActions());
+    editor.addEventListener("value-changed", () => {
+      this._setAreaActionStatus("");
+      this._syncAreaActions();
+    });
     host.append(editor);
     this._areaBaseline = JSON.stringify(this._areaDraft());
+    if (area?.can_rebind) {
+      this._setAreaActionStatus(
+        this._localize(
+          "area_review_required",
+          "Review the saved outline, then confirm it on the current map.",
+        ),
+      );
+    } else if (area && area.status !== "current") {
+      this._setAreaActionStatus(
+        this._localize(
+          "area_redraw_required",
+          "Redraw this area on the current map before saving.",
+        ),
+        "error",
+      );
+    }
     this._syncAreaActions();
     this._syncAreaSheet();
   }

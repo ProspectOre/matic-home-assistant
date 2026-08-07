@@ -131,6 +131,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     plans = MagicMock()
     plans.areas.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
+    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
@@ -193,6 +194,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
+    plans.async_upgrade_area_bindings.assert_awaited_once_with("synthetic-serial", None)
     if native_history_error:
         plans.async_import_native_history.assert_not_awaited()
     else:
@@ -303,6 +305,7 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans = MagicMock()
+    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),

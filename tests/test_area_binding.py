@@ -10,10 +10,14 @@ import pytest
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     MAP_BINDING_VERSION,
+    SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
+    area_binding_allows_review,
     area_binding_status,
+    area_geometry_fingerprint,
     async_delete_custom_area_issue,
     async_sync_custom_area_issue,
+    binding_for_area,
     binding_for_floor_plan,
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
@@ -54,6 +58,19 @@ def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
     return {
         "schema_version": AREA_SCHEMA_VERSION,
         "map_binding": binding_for_floor_plan(floor_plan or _floor_plan()),
+    }
+
+
+def _scoped_area(
+    floor_plan: FloorPlan | None = None,
+    circles: list[dict[str, float]] | None = None,
+) -> dict[str, object]:
+    plan = floor_plan or _floor_plan()
+    saved_circles = circles or [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    return {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": saved_circles,
+        "map_binding": binding_for_area(plan, saved_circles),
     }
 
 
@@ -216,6 +233,127 @@ def test_binding_contains_only_versioned_current_map_identity() -> None:
         "partition_id": "synthetic-partition",
         "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
     }
+
+
+def test_scoped_binding_contains_private_local_geometry_signature() -> None:
+    floor_plan = _floor_plan()
+    circles = [
+        {"x": 0.5, "y": 0.5, "radius": 0.1},
+        {"x": 0.7, "y": 0.5, "radius": 0.15},
+    ]
+
+    assert binding_for_area(floor_plan, circles) == {
+        "version": SCOPED_MAP_BINDING_VERSION,
+        "mission_id": 42,
+        "partition_id": "synthetic-partition",
+        "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
+        "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
+    }
+    assert area_geometry_fingerprint(floor_plan, circles) == (
+        area_geometry_fingerprint(floor_plan, list(reversed(circles)))
+    )
+
+
+def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> None:
+    floor_plan = _floor_plan()
+    area = _scoped_area(floor_plan)
+    kitchen, study = floor_plan.rooms
+    changed_elsewhere = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=((0.0, 0.0), (2.2, 0.0), (2.2, 1.5), (0.0, 1.5)),
+            ),
+            replace(
+                study,
+                boundary=((2.2, 0.0), (3.2, 0.0), (3.2, 1.0), (2.2, 1.0)),
+            ),
+        ),
+    )
+
+    assert floor_plan_geometry_fingerprint(changed_elsewhere) != (
+        floor_plan_geometry_fingerprint(floor_plan)
+    )
+    assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
+    area = _scoped_area(floor_plan, circles)
+    kitchen, study = floor_plan.rooms
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=((0.004, 0.0), *kitchen.boundary[1:]),
+            ),
+            study,
+        ),
+    )
+
+    assert floor_plan_geometry_fingerprint(jittered) != (
+        floor_plan_geometry_fingerprint(floor_plan)
+    )
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
+def test_scoped_binding_blocks_nearby_geometry_and_circle_changes() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]
+    area = _scoped_area(floor_plan, circles)
+    kitchen, study = floor_plan.rooms
+    nearby_change = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=((0.05, 0.0), *kitchen.boundary[1:]),
+            ),
+            study,
+        ),
+    )
+
+    assert (
+        area_binding_status(area, nearby_change) is AreaBindingStatus.GEOMETRY_CHANGED
+    )
+    changed_circles = {**area, "circles": [{"x": 0.2, "y": 0.5, "radius": 0.05}]}
+    assert area_binding_status(changed_circles, floor_plan) is AreaBindingStatus.INVALID
+    missing_circles = {key: value for key, value in area.items() if key != "circles"}
+    assert area_binding_status(missing_circles, floor_plan) is AreaBindingStatus.INVALID
+
+
+def test_stale_same_map_area_can_be_reviewed_without_blind_rebinding() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    area = {**_area(floor_plan), "circles": circles}
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.01, 0.0), *floor_plan.rooms[0].boundary[1:]),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+
+    assert area_binding_allows_review(area, changed) is True
+    assert (
+        area_binding_allows_review(
+            area, replace(changed, mission_id=changed.mission_id + 1)
+        )
+        is False
+    )
+    assert (
+        area_binding_allows_review(
+            {**area, "circles": [{"x": 20.0, "y": 20.0, "radius": 0.1}]},
+            changed,
+        )
+        is False
+    )
 
 
 @pytest.mark.parametrize(

@@ -23,8 +23,9 @@ from homeassistant.util import slugify
 from .area_binding import (
     AREA_SCHEMA_VERSION,
     AreaBindingStatus,
+    area_binding_allows_review,
     area_binding_status,
-    binding_for_floor_plan,
+    binding_for_area,
 )
 from .area_selector import MaticAreaSelector
 from .client.commands import CleaningMode, CoverageSetting
@@ -613,12 +614,13 @@ class MaticAreasView(HomeAssistantView):
         areas = []
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             status = area_binding_status(area, floor_plan)
+            can_rebind = area_binding_allows_review(area, floor_plan)
             areas.append(
                 {
                     "id": area_id,
                     "name": str(area.get("name", area_id)),
                     "circles": area.get("circles", [])
-                    if status is AreaBindingStatus.CURRENT
+                    if status is AreaBindingStatus.CURRENT or can_rebind
                     else [],
                     "cleaning_mode": area.get(
                         "cleaning_mode", CleaningMode.VACUUM.value
@@ -627,6 +629,7 @@ class MaticAreasView(HomeAssistantView):
                         "coverage_setting", CoverageSetting.OPTIMAL.value
                     ),
                     "status": status.value,
+                    "can_rebind": can_rebind,
                 }
             )
         return self.json(
@@ -668,7 +671,7 @@ class MaticAreasView(HomeAssistantView):
             circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))
-            binding = binding_for_floor_plan(floor_plan)
+            binding = binding_for_area(floor_plan, circles)
         except KeyError, TypeError, ValueError, vol.Invalid:
             return web.Response(
                 status=HTTPStatus.BAD_REQUEST, headers=PRIVATE_NO_STORE_HEADERS

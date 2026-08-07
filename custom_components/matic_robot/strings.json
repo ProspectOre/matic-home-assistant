@@ -9,6 +9,7 @@
     "area_layer_photo": "Photo",
     "area_layer_rooms": "Rooms",
     "area_confirm_delete": "Confirm delete",
+    "area_confirm_current": "Confirm on current map",
     "area_delete": "Delete",
     "area_map": "Custom cleaning area map",
     "area_map_controls": "Map controls",
@@ -26,6 +27,8 @@
     "area_photo_ready": "Private photo map",
     "area_photo_refresh": "Refresh photo map",
     "area_photo_unavailable": "Photo map unavailable · showing rooms",
+    "area_redraw_required": "Redraw this area on the current map before saving.",
+    "area_review_required": "Review the saved outline, then confirm it on the current map.",
     "area_run": "Clean now",
     "area_save": "Save area",
     "area_settings": "Cleaning settings",
@@ -804,8 +807,8 @@
       "description": "The device at the configured Matic address presented a TLS certificate that does not match the pinned robot identity. Communication is blocked until the certificate matches again. If the robot was factory reset or replaced, re-pair it through **Settings > Devices & Services > Matic Robot > Reconfigure**."
     },
     "custom_area_map_changed": {
-      "title": "Matic custom areas need to be redrawn",
-      "description": "Saved custom areas requiring redraw: {count}. Their map identity no longer matches the robot's current room map, so Home Assistant will not start them. Open **Settings > Devices & services > Matic Robot > Configure > Custom cleaning areas**, redraw each marked area, and save it again."
+      "title": "Matic custom areas need map review",
+      "description": "Saved custom areas requiring review: {count}. Their mission, partition, or nearby map geometry no longer matches the robot's current room map, so Home Assistant will not start them. Open **Matic Map > Custom areas**, review and confirm the saved outline when offered, or redraw it on the current map."
     }
   },
   "services": {

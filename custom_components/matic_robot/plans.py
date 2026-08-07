@@ -17,6 +17,12 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
+from .area_binding import (
+    MAP_BINDING_VERSION,
+    AreaBindingStatus,
+    area_binding_status,
+    binding_for_area,
+)
 from .client.models import CleaningSessionRecord, FloorPlan
 from .const import DOMAIN
 
@@ -359,6 +365,31 @@ class CleaningPlanManager:
     def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
         """Return a private copy of locally saved drawn areas."""
         return deepcopy(self._robot(serial_number)["areas"])
+
+    async def async_upgrade_area_bindings(
+        self, serial_number: str, floor_plan: FloorPlan | None
+    ) -> int:
+        """Upgrade exactly current whole-map area bindings to scoped bindings."""
+        if floor_plan is None:
+            return 0
+        upgraded = 0
+        for area in self._robot(serial_number)["areas"].values():
+            binding = area.get("map_binding")
+            if (
+                not isinstance(binding, Mapping)
+                or binding.get("version") != MAP_BINDING_VERSION
+                or area_binding_status(area, floor_plan)
+                is not AreaBindingStatus.CURRENT
+            ):
+                continue
+            try:
+                area["map_binding"] = binding_for_area(floor_plan, area["circles"])
+            except KeyError, TypeError, ValueError:
+                continue
+            upgraded += 1
+        if upgraded:
+            await self._async_save_and_notify(serial_number)
+        return upgraded
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
         """Return one locally saved area by stable ID or exact name."""
