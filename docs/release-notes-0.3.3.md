@@ -12,7 +12,9 @@ the floor—even between separated marks—to revalidate automatically.
 ## Safer map revalidation
 
 - Unrelated room-boundary changes and sub-centimeter decoder jitter no longer
-  invalidate every custom area on the floor.
+  invalidate every custom area on the floor; a 10 mm selection guard band also
+  prevents jitter at the edge of the local geometry margin from changing the
+  evidence set prematurely.
 - Coverage mission, partition and nearby geometry changes still fail closed
   before any robot command is sent.
 - A same-mission area with valid saved coordinates can be reviewed and rebound
@@ -30,7 +32,7 @@ Home Assistant.
 
 ## Verification
 
-The release candidate passes 882 Python tests / 8,257 statements at 100%
+The release candidate passes 883 Python tests / 8,258 statements at 100%
 coverage, 42 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, and the public-tree privacy gate.
 

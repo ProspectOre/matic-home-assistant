@@ -492,6 +492,50 @@ def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_guard_band_tolerates_segment_entering_margin() -> None:
+    floor_plan = _floor_plan()
+    kitchen, study = floor_plan.rooms
+    floor_plan = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                kitchen,
+                boundary=(
+                    (0.149, 0.0),
+                    *kitchen.boundary[1:-1],
+                    (0.149, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    jittered = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (0.151, 0.0),
+                    *floor_plan.rooms[0].boundary[1:-1],
+                    (0.151, 1.5),
+                ),
+            ),
+            study,
+        ),
+    )
+
+    current_binding = binding_for_area(jittered, circles)
+    assert len(area["map_binding"]["local_segments_mm"]) == len(
+        current_binding["local_segments_mm"]
+    )
+    assert (
+        area["map_binding"]["local_segments_mm"] != current_binding["local_segments_mm"]
+    )
+    assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
+
+
 def test_scoped_binding_rejects_tampered_tolerance_evidence() -> None:
     floor_plan = _floor_plan()
     circles = [{"x": 0.1, "y": 0.5, "radius": 0.05}]

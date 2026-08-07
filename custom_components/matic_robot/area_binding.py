@@ -28,6 +28,9 @@ _MILLIMETERS_PER_METER = 1_000
 _LEGACY_LOCAL_UNITS_PER_METER = 100
 _LOCAL_GEOMETRY_MARGIN_METERS = 0.25
 _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS = 10
+_LOCAL_GEOMETRY_TOLERANCE_METERS = (
+    _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS / _MILLIMETERS_PER_METER
+)
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -180,10 +183,10 @@ def area_geometry_fingerprint(
     """Fingerprint map geometry only near one painted cleaning area.
 
     The fingerprint includes the immutable saved circles, mapped-floor
-    occupancy probes, and room-boundary segments within a small safety margin.
-    Geometry elsewhere on the floor cannot invalidate the area. Binding status
-    compares the private millimeter components with an explicit tolerance when
-    the exact digest changes.
+    occupancy probes, and room-boundary segments within a small safety margin
+    plus a tolerance guard band. Geometry elsewhere on the floor cannot
+    invalidate the area. Binding status compares the private millimeter
+    components with an explicit tolerance when the exact digest changes.
     """
     return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
 
@@ -289,10 +292,22 @@ def _area_geometry_components(
     )
     neighborhoods = tuple(
         (
-            x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
-            y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
-            x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
-            y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+            x
+            - radius
+            - _LOCAL_GEOMETRY_MARGIN_METERS
+            - _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            y
+            - radius
+            - _LOCAL_GEOMETRY_MARGIN_METERS
+            - _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            x
+            + radius
+            + _LOCAL_GEOMETRY_MARGIN_METERS
+            + _LOCAL_GEOMETRY_TOLERANCE_METERS,
+            y
+            + radius
+            + _LOCAL_GEOMETRY_MARGIN_METERS
+            + _LOCAL_GEOMETRY_TOLERANCE_METERS,
         )
         for x, y, radius in ordered_float
     )
