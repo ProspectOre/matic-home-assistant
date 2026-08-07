@@ -307,9 +307,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
         )
         coordinator.data.floor_plan = partial_floor_plan
         sync_callback()
-        await scheduled[0]
         coordinator.data.floor_plan = complete_floor_plan
         sync_callback()
+        assert len(scheduled) == 1
+        await scheduled[0]
+        assert len(scheduled) == 2
         await scheduled[1]
         plans.async_add_listener.call_args.args[1]()
 

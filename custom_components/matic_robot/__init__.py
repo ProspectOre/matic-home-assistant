@@ -152,6 +152,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             f"{DOMAIN} map history collector",
         )
 
+        def _schedule_area_binding_upgrade(floor_plan: FloorPlan) -> None:
+            nonlocal area_binding_upgrade_in_progress
+            area_binding_upgrade_in_progress = True
+            entry.async_create_background_task(
+                hass,
+                _async_upgrade_area_bindings(floor_plan),
+                f"{DOMAIN} custom area binding upgrade",
+            )
+
         async def _async_upgrade_area_bindings(floor_plan: FloorPlan) -> None:
             nonlocal area_binding_upgrade_in_progress, area_binding_upgrade_pending
             try:
@@ -161,6 +170,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 area_binding_upgrade_pending = result.pending
             finally:
                 area_binding_upgrade_in_progress = False
+                latest_floor_plan = coordinator.data.floor_plan
+                if (
+                    area_binding_upgrade_pending
+                    and latest_floor_plan != floor_plan
+                    and _floor_plan_supports_area_binding(latest_floor_plan)
+                ):
+                    assert latest_floor_plan is not None
+                    _schedule_area_binding_upgrade(latest_floor_plan)
 
         def _async_sync_area_issue(*, allow_upgrade: bool = True) -> None:
             nonlocal area_binding_upgrade_in_progress
@@ -171,13 +188,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 and not area_binding_upgrade_in_progress
                 and _floor_plan_supports_area_binding(floor_plan)
             ):
-                area_binding_upgrade_in_progress = True
                 assert floor_plan is not None
-                entry.async_create_background_task(
-                    hass,
-                    _async_upgrade_area_bindings(floor_plan),
-                    f"{DOMAIN} custom area binding upgrade",
-                )
+                _schedule_area_binding_upgrade(floor_plan)
             async_sync_custom_area_issue(
                 hass,
                 entry.entry_id,

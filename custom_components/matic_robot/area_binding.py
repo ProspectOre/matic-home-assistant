@@ -672,28 +672,20 @@ def _occupancy_changes_are_explained(
     ):
         return False
 
-    saved_by_neighborhood: list[list[tuple[_LocalSegment, _SegmentContext]]] = [
-        [] for _ in shape
-    ]
-    current_by_neighborhood: list[list[tuple[_LocalSegment, _SegmentContext]]] = [
-        [] for _ in shape
-    ]
-    for segment in saved_segments:
-        context = _segment_context(segment, shape)
-        for neighborhood in context[1]:
-            saved_by_neighborhood[neighborhood].append((segment, context))
-    for segment in current_segments:
-        context = _segment_context(segment, shape)
-        for neighborhood in context[1]:
-            current_by_neighborhood[neighborhood].append((segment, context))
+    saved_contexts = tuple(
+        _segment_context(segment, shape) for segment in saved_segments
+    )
+    current_contexts = tuple(
+        _segment_context(segment, shape) for segment in current_segments
+    )
+    saved_by_cell = _segment_indices_by_spatial_cell(saved_contexts)
+    current_by_cell = _segment_indices_by_spatial_cell(current_contexts)
 
-    for neighborhood, (
+    for (
         (x, y, radius),
         saved_value,
         current_value,
-    ) in enumerate(
-        zip(ordered_circles, saved_occupancy, current_occupancy, strict=True)
-    ):
+    ) in zip(ordered_circles, saved_occupancy, current_occupancy, strict=True):
         changed = saved_value ^ current_value
         if not changed:
             continue
@@ -704,23 +696,48 @@ def _occupancy_changes_are_explained(
         for probe_index, probe in enumerate(probes):
             if not changed & (1 << probe_index):
                 continue
+            probe_cell = (
+                math.floor(probe[0] / _SPATIAL_INDEX_CELL_MILLIMETERS),
+                math.floor(probe[1] / _SPATIAL_INDEX_CELL_MILLIMETERS),
+            )
+            saved_candidates = {
+                index
+                for cell_x in range(probe_cell[0] - 1, probe_cell[0] + 2)
+                for cell_y in range(probe_cell[1] - 1, probe_cell[1] + 2)
+                for index in saved_by_cell.get((cell_x, cell_y), ())
+            }
+            current_candidates = {
+                index
+                for cell_x in range(probe_cell[0] - 1, probe_cell[0] + 2)
+                for cell_y in range(probe_cell[1] - 1, probe_cell[1] + 2)
+                for index in current_by_cell.get((cell_x, cell_y), ())
+            }
             if not any(
                 _wall_pair_explains_probe(
-                    saved_segment,
-                    saved_context,
-                    current_segment,
-                    current_context,
+                    saved_segments[saved_index],
+                    saved_contexts[saved_index],
+                    current_segments[current_index],
+                    current_contexts[current_index],
                     probe,
                     shape,
                     allow_quantized_identity,
                 )
-                for saved_segment, saved_context in saved_by_neighborhood[neighborhood]
-                for current_segment, current_context in current_by_neighborhood[
-                    neighborhood
-                ]
+                for saved_index in saved_candidates
+                for current_index in current_candidates
             ):
                 return False
     return True
+
+
+def _segment_indices_by_spatial_cell(
+    contexts: Sequence[_SegmentContext],
+) -> dict[tuple[int, int], list[int]]:
+    """Index precomputed segment contexts by their local spatial cells."""
+    by_cell: dict[tuple[int, int], list[int]] = {}
+    for index, context in enumerate(contexts):
+        for cell in context[3]:
+            by_cell.setdefault(cell, []).append(index)
+    return by_cell
 
 
 def _wall_pair_explains_probe(

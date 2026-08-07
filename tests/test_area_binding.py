@@ -716,6 +716,30 @@ def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
     assert matches.call_count < len(segments) ** 2 // 8
 
 
+def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
+    shape = ((0, 0, 2500),) * 512
+    circles = ({"x": 0.0, "y": 0.0, "radius": 2.5},) * len(shape)
+    saved = tuple((center, -2500, center, 2500) for center in range(-2550, 2551, 20))
+    current = tuple((-2500, center, 2500, center) for center in range(-2550, 2551, 20))
+
+    with patch.object(
+        area_binding_module,
+        "_wall_pair_explains_probe",
+        wraps=area_binding_module._wall_pair_explains_probe,
+    ) as explains:
+        assert not _occupancy_changes_are_explained(
+            (0,) * len(shape),
+            (1, *(0 for _ in shape[1:])),
+            saved,
+            current,
+            shape,
+            circles,
+            False,
+        )
+
+    assert explains.call_count < len(saved) * len(current) // 8
+
+
 @pytest.mark.parametrize(
     ("saved", "current", "shape", "expected"),
     [
