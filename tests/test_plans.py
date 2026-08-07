@@ -1,6 +1,7 @@
 """Durable intelligent cleaning behavior."""
 
 import asyncio
+from dataclasses import replace
 from datetime import UTC, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -28,6 +29,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
+    AreaBindingUpgradeResult,
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
@@ -291,6 +293,11 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
             "schema_version": AREA_SCHEMA_VERSION,
             "map_binding": binding_for_floor_plan(floor_plan),
         },
+        "invalid_circles": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": [{}],
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
         "unbound": {"schema_version": 0, "circles": circles},
         "list_version": {
             "schema_version": AREA_SCHEMA_VERSION,
@@ -305,7 +312,9 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
         "corrupt": "not-an-area",
     }
 
-    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 2
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(2, False)
     assert robot["areas"]["current"]["map_binding"]["version"] == (
         SCOPED_MAP_BINDING_VERSION
     )
@@ -319,10 +328,58 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
 
     manager._store.async_save.reset_mock()
     listener.reset_mock()
-    assert await manager.async_upgrade_area_bindings("serial", floor_plan) == 0
-    assert await manager.async_upgrade_area_bindings("serial", None) == 0
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(0, False)
+    assert await manager.async_upgrade_area_bindings(
+        "serial", None
+    ) == AreaBindingUpgradeResult(0, True)
     manager._store.async_save.assert_not_awaited()
     listener.assert_not_called()
+
+
+async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    first_room = Room(
+        "first",
+        "First",
+        "first",
+        b"first",
+        ((0, 0), (1, 0), (0, 1)),
+    )
+    second_room = Room(
+        "second",
+        "Second",
+        "second",
+        b"second",
+        ((2, 0), (3, 0), (2, 1)),
+    )
+    complete = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (first_room, second_room),
+    )
+    partial = replace(complete, rooms=(first_room,))
+    circles = [{"x": 2.2, "y": 0.2, "radius": 0.1}]
+    manager._robot("serial")["areas"] = {
+        "partial": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": binding_for_floor_plan(complete),
+        }
+    }
+
+    assert await manager.async_upgrade_area_bindings(
+        "serial", partial
+    ) == AreaBindingUpgradeResult(0, True)
+    manager._store.async_save.assert_not_awaited()
+
+    assert await manager.async_upgrade_area_bindings(
+        "serial", complete
+    ) == AreaBindingUpgradeResult(1, False)
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_native_history_import_recovers_only_explicit_room_completions(

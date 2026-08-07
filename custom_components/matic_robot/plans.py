@@ -55,6 +55,14 @@ class PlanStopDecision:
     threshold: int | None = None
 
 
+@dataclass(frozen=True, slots=True)
+class AreaBindingUpgradeResult:
+    """Outcome of one legacy-area migration attempt."""
+
+    upgraded: int
+    pending: bool
+
+
 class ManagedMotionReplacedError(HomeAssistantError):
     """A newer command superseded a managed plan command."""
 
@@ -369,11 +377,10 @@ class CleaningPlanManager:
 
     async def async_upgrade_area_bindings(
         self, serial_number: str, floor_plan: FloorPlan | None
-    ) -> int:
+    ) -> AreaBindingUpgradeResult:
         """Upgrade exactly current whole-map area bindings to scoped bindings."""
-        if floor_plan is None:
-            return 0
         upgraded = 0
+        pending = False
         for area in self._robot(serial_number)["areas"].values():
             binding = area.get("map_binding")
             if not isinstance(binding, Mapping):
@@ -381,21 +388,32 @@ class CleaningPlanManager:
             version = binding.get("version")
             if isinstance(version, bool) or not isinstance(version, int):
                 continue
-            if (
-                version
-                not in {MAP_BINDING_VERSION, HASH_ONLY_SCOPED_MAP_BINDING_VERSION}
-                or area_binding_status(area, floor_plan)
-                is not AreaBindingStatus.CURRENT
-            ):
+            if version not in {
+                MAP_BINDING_VERSION,
+                HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            }:
+                continue
+            circles = area.get("circles")
+            if not isinstance(circles, list):
+                continue
+            if floor_plan is None:
+                pending = True
+                continue
+            status = area_binding_status(area, floor_plan)
+            if status is not AreaBindingStatus.CURRENT:
+                pending = pending or status in {
+                    AreaBindingStatus.GEOMETRY_CHANGED,
+                    AreaBindingStatus.INVALID,
+                }
                 continue
             try:
-                area["map_binding"] = binding_for_area(floor_plan, area["circles"])
+                area["map_binding"] = binding_for_area(floor_plan, circles)
             except KeyError, TypeError, ValueError:
                 continue
             upgraded += 1
         if upgraded:
             await self._async_save_and_notify(serial_number)
-        return upgraded
+        return AreaBindingUpgradeResult(upgraded, pending)
 
     def area(self, serial_number: str, reference: str | None = None) -> dict[str, Any]:
         """Return one locally saved area by stable ID or exact name."""

@@ -108,12 +108,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
-        await plans.async_upgrade_area_bindings(
+        area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )
-        area_binding_upgrade_pending = not _floor_plan_supports_area_binding(
-            coordinator.data.floor_plan
-        )
+        area_binding_upgrade_pending = area_binding_upgrade.pending
+        area_binding_upgrade_in_progress = False
         try:
             native_history = await client.async_get_cleaning_session_records()
         except MaticError as err:
@@ -153,16 +152,30 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             f"{DOMAIN} map history collector",
         )
 
-        def _async_sync_area_issue() -> None:
-            nonlocal area_binding_upgrade_pending
+        async def _async_upgrade_area_bindings(floor_plan: FloorPlan) -> None:
+            nonlocal area_binding_upgrade_in_progress, area_binding_upgrade_pending
+            try:
+                result = await plans.async_upgrade_area_bindings(
+                    serial_number, floor_plan
+                )
+                area_binding_upgrade_pending = result.pending
+            finally:
+                area_binding_upgrade_in_progress = False
+
+        def _async_sync_area_issue(*, allow_upgrade: bool = True) -> None:
+            nonlocal area_binding_upgrade_in_progress
             floor_plan = coordinator.data.floor_plan
-            if area_binding_upgrade_pending and _floor_plan_supports_area_binding(
-                floor_plan
+            if (
+                allow_upgrade
+                and area_binding_upgrade_pending
+                and not area_binding_upgrade_in_progress
+                and _floor_plan_supports_area_binding(floor_plan)
             ):
-                area_binding_upgrade_pending = False
+                area_binding_upgrade_in_progress = True
+                assert floor_plan is not None
                 entry.async_create_background_task(
                     hass,
-                    plans.async_upgrade_area_bindings(serial_number, floor_plan),
+                    _async_upgrade_area_bindings(floor_plan),
                     f"{DOMAIN} custom area binding upgrade",
                 )
             async_sync_custom_area_issue(
@@ -176,7 +189,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         entry.async_on_unload(
             plans.async_add_listener(serial_number, _async_sync_area_issue)
         )
-        _async_sync_area_issue()
+        _async_sync_area_issue(allow_upgrade=False)
     except BaseException:
         if slam_history is not None:
             await slam_history.async_shutdown()

@@ -11,6 +11,7 @@ from homeassistant.components import frontend
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    _floor_plan_supports_area_binding,
     async_remove_entry,
     async_setup,
     async_setup_entry,
@@ -28,6 +29,7 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
+from custom_components.matic_robot.plans import AreaBindingUpgradeResult
 
 
 def _entry() -> SimpleNamespace:
@@ -48,6 +50,29 @@ def _entry() -> SimpleNamespace:
         entry_id="entry",
         async_create_background_task=MagicMock(side_effect=close_background_coroutine),
         async_on_unload=MagicMock(),
+    )
+
+
+def test_floor_plan_area_binding_support_requires_usable_geometry() -> None:
+    assert not _floor_plan_supports_area_binding(None)
+    assert not _floor_plan_supports_area_binding(
+        FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
+    )
+    assert _floor_plan_supports_area_binding(
+        FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                Room(
+                    "room",
+                    "Room",
+                    "room",
+                    b"room",
+                    ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)),
+                ),
+            ),
+        )
     )
 
 
@@ -132,7 +157,13 @@ async def test_setup_refreshes_before_forwarding_platforms(
     plans = MagicMock()
     plans.areas.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
-    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
+    plans.async_upgrade_area_bindings = AsyncMock(
+        side_effect=(
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(0, True),
+            AreaBindingUpgradeResult(1, False),
+        )
+    )
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
@@ -245,7 +276,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
             scheduled.append(target)
         )
-        live_floor_plan = FloorPlan(
+        partial_floor_plan = FloorPlan(
             42,
             "synthetic-partition",
             b"synthetic-partition",
@@ -259,17 +290,35 @@ async def test_setup_refreshes_before_forwarding_platforms(
                 ),
             ),
         )
-        coordinator.data.floor_plan = live_floor_plan
+        complete_floor_plan = FloorPlan(
+            42,
+            "synthetic-partition",
+            b"synthetic-partition",
+            (
+                *partial_floor_plan.rooms,
+                Room(
+                    "later-room",
+                    "Later Room",
+                    "later-room",
+                    b"later-room",
+                    ((2.0, 0.0), (3.0, 0.0), (2.0, 1.0)),
+                ),
+            ),
+        )
+        coordinator.data.floor_plan = partial_floor_plan
         sync_callback()
         await scheduled[0]
+        coordinator.data.floor_plan = complete_floor_plan
+        sync_callback()
+        await scheduled[1]
         plans.async_add_listener.call_args.args[1]()
 
-    assert listener_sync.call_count == 2
-    assert entry.async_create_background_task.call_count == 3
-    assert plans.async_upgrade_area_bindings.await_count == 2
+    assert listener_sync.call_count == 3
+    assert entry.async_create_background_task.call_count == 4
+    assert plans.async_upgrade_area_bindings.await_count == 3
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
-        live_floor_plan,
+        complete_floor_plan,
     )
     assert (
         entry.async_create_background_task.call_args.args[2]
@@ -348,7 +397,9 @@ async def test_revoked_credential_enters_reauthentication_before_setup() -> None
 
 async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     plans = MagicMock()
-    plans.async_upgrade_area_bindings = AsyncMock(return_value=0)
+    plans.async_upgrade_area_bindings = AsyncMock(
+        return_value=AreaBindingUpgradeResult(0, False)
+    )
     plans.async_import_native_history = AsyncMock(return_value=False)
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="UTC"),

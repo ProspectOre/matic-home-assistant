@@ -462,6 +462,7 @@ def area_binding_status(
             segments,
             shape,
             area["circles"],
+            saved_geometry == current["geometry_sha256"],
         )
     ):
         return AreaBindingStatus.CURRENT
@@ -653,8 +654,9 @@ def _occupancy_changes_are_explained(
     current_segments: Sequence[_LocalSegment],
     shape: _AreaShape,
     circles: Sequence[Mapping[str, Any]],
+    allow_quantized_identity: bool,
 ) -> bool:
-    """Return whether every changed probe is near old and new local walls."""
+    """Return whether every changed probe is explained by a moving wall pair."""
     ordered_circles = sorted(
         (
             float(circle["x"]),
@@ -670,14 +672,20 @@ def _occupancy_changes_are_explained(
     ):
         return False
 
-    saved_by_neighborhood: list[list[_LocalSegment]] = [[] for _ in shape]
-    current_by_neighborhood: list[list[_LocalSegment]] = [[] for _ in shape]
+    saved_by_neighborhood: list[list[tuple[_LocalSegment, _SegmentContext]]] = [
+        [] for _ in shape
+    ]
+    current_by_neighborhood: list[list[tuple[_LocalSegment, _SegmentContext]]] = [
+        [] for _ in shape
+    ]
     for segment in saved_segments:
-        for neighborhood in _segment_context(segment, shape)[1]:
-            saved_by_neighborhood[neighborhood].append(segment)
+        context = _segment_context(segment, shape)
+        for neighborhood in context[1]:
+            saved_by_neighborhood[neighborhood].append((segment, context))
     for segment in current_segments:
-        for neighborhood in _segment_context(segment, shape)[1]:
-            current_by_neighborhood[neighborhood].append(segment)
+        context = _segment_context(segment, shape)
+        for neighborhood in context[1]:
+            current_by_neighborhood[neighborhood].append((segment, context))
 
     for neighborhood, (
         (x, y, radius),
@@ -697,14 +705,64 @@ def _occupancy_changes_are_explained(
             if not changed & (1 << probe_index):
                 continue
             if not any(
-                _point_near_segment(probe, segment)
-                for segment in saved_by_neighborhood[neighborhood]
-            ) or not any(
-                _point_near_segment(probe, segment)
-                for segment in current_by_neighborhood[neighborhood]
+                _wall_pair_explains_probe(
+                    saved_segment,
+                    saved_context,
+                    current_segment,
+                    current_context,
+                    probe,
+                    shape,
+                    allow_quantized_identity,
+                )
+                for saved_segment, saved_context in saved_by_neighborhood[neighborhood]
+                for current_segment, current_context in current_by_neighborhood[
+                    neighborhood
+                ]
             ):
                 return False
     return True
+
+
+def _wall_pair_explains_probe(
+    saved: _LocalSegment,
+    saved_context: _SegmentContext,
+    current: _LocalSegment,
+    current_context: _SegmentContext,
+    probe: tuple[float, float],
+    shape: _AreaShape,
+    allow_quantized_identity: bool,
+) -> bool:
+    """Return whether one compatible wall pair can cross an occupancy probe."""
+    if saved == current and not allow_quantized_identity:
+        return False
+    if not _point_near_segment(probe, saved) or not _point_near_segment(probe, current):
+        return False
+    if not _local_segment_contexts_match(
+        saved, saved_context, current, current_context, shape
+    ):
+        return False
+    saved_distance = _signed_distance_to_supporting_line(probe, saved)
+    current_distance = _signed_distance_to_supporting_line(probe, current)
+    if saved_distance is None or current_distance is None:
+        return False
+    return (
+        saved_distance * current_distance <= 0
+        or abs(saved_distance) <= _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
+        or abs(current_distance) <= _SEGMENT_QUANTIZATION_ERROR_MILLIMETERS
+    )
+
+
+def _signed_distance_to_supporting_line(
+    point: tuple[float, float], segment: _LocalSegment
+) -> float | None:
+    """Return a consistently oriented point-to-source-wall distance."""
+    start_x, start_y, end_x, end_y = segment
+    delta_x = end_x - start_x
+    delta_y = end_y - start_y
+    length = math.hypot(delta_x, delta_y)
+    if not length:
+        return None
+    return (delta_x * (point[1] - start_y) - delta_y * (point[0] - start_x)) / length
 
 
 def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:

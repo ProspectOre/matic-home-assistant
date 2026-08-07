@@ -19,6 +19,8 @@ from custom_components.matic_robot.area_binding import (
     _local_segments_match,
     _occupancy_changes_are_explained,
     _point_near_segment,
+    _segment_context,
+    _wall_pair_explains_probe,
     area_binding_allows_review,
     area_binding_status,
     area_geometry_fingerprint,
@@ -450,11 +452,19 @@ def test_scoped_binding_tolerates_probe_occupancy_flip_at_jittered_wall() -> Non
     assert area_binding_status(area, jittered) is AreaBindingStatus.CURRENT
 
 
-def test_scoped_binding_rejects_unexplained_probe_occupancy_change() -> None:
+@pytest.mark.parametrize("narrow_half_width", [0.05, 0.34])
+def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
+    narrow_half_width: float,
+) -> None:
     narrow = _room(
         "narrow",
         "Narrow",
-        ((-0.05, -0.05), (0.05, -0.05), (0.05, 0.05), (-0.05, 0.05)),
+        (
+            (-narrow_half_width, -narrow_half_width),
+            (narrow_half_width, -narrow_half_width),
+            (narrow_half_width, narrow_half_width),
+            (-narrow_half_width, narrow_half_width),
+        ),
     )
     enclosing = _room(
         "enclosing",
@@ -488,6 +498,7 @@ def test_occupancy_explanation_rejects_malformed_evidence() -> None:
         (),
         ((0, 0, 100),),
         ({"x": 0.0, "y": 0.0, "radius": 0.1},),
+        False,
     )
 
 
@@ -505,11 +516,38 @@ def test_occupancy_explanation_skips_unchanged_neighborhoods() -> None:
             {"x": 0.0, "y": 0.0, "radius": 0.1},
             {"x": 1.0, "y": 0.0, "radius": 0.1},
         ),
+        True,
     )
 
 
 def test_point_near_degenerate_segment() -> None:
     assert _point_near_segment((1.0, 1.0), (0, 0, 0, 0))
+
+
+def test_wall_pair_probe_explanation_rejects_incompatible_and_degenerate() -> None:
+    shape = ((0, 0, 100),)
+    horizontal = (0, 0, 100, 0)
+    vertical = (0, 0, 0, 100)
+    degenerate = (0, 0, 0, 0)
+
+    assert not _wall_pair_explains_probe(
+        horizontal,
+        _segment_context(horizontal, shape),
+        vertical,
+        _segment_context(vertical, shape),
+        (0.0, 0.0),
+        shape,
+        False,
+    )
+    assert not _wall_pair_explains_probe(
+        degenerate,
+        _segment_context(degenerate, shape),
+        (1, 1, 1, 1),
+        _segment_context((1, 1, 1, 1), shape),
+        (0.0, 0.0),
+        shape,
+        False,
+    )
 
 
 def test_scoped_binding_tolerates_probe_flip_with_unchanged_map_hash() -> None:
