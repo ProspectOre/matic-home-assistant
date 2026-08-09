@@ -3,10 +3,13 @@
 [Endpoint map](../firmware-endpoint-map.md) ·
 [Firmware ledger](../firmware-compatibility.md)
 
-status: observed / live validation pending  
-first_observed_pacific: YYYY-MM-DD  
-integration_version: X.Y.Z  
-home_assistant_version: YYYY.M  
+status: observed / live validation pending<br>
+first_observed_pacific: YYYY-MM-DD<br>
+integration_version: X.Y.Z<br>
+home_assistant_version: YYYY.M<br>
+home_assistant_installation: HAOS / Container / other<br>
+bluetooth_adapter: model / not applicable<br>
+firmware_version_source: authenticated telemetry / robot screen / operator report<br>
 protocol_version: N
 
 ## Endpoint snapshot
@@ -14,6 +17,8 @@ protocol_version: N
 | Surface | Status | Evidence / delta from preceding firmware |
 | --- | --- | --- |
 | Discovery and `GetBotInfo` | Pending | |
+| Initial BLE credential issuance | Pending | |
+| Reauthorization, credential replacement and stale-bond recovery | Not tested | |
 | Authentication, handshake and session data | Pending | |
 | Core reads: `kabuki_state`, `coverage_plan`, `latest_pose` | Pending | |
 | 15 telemetry properties | Pending | |
@@ -34,6 +39,10 @@ protocol_version: N
 ## Promotion checklist
 
 - [ ] Record integration, Home Assistant and protocol versions.
+- [ ] Exercise the claimed initial issuance or reauthorization path on each
+  installation/adapter path.
+- [ ] When credential recovery is claimed, exercise explicit replacement and
+  stale-bond removal.
 - [ ] Confirm coordinator refresh and decoded reads.
 - [ ] Run a hash-only exploratory availability sweep.
 - [ ] Review privacy-safe diagnostics for protocol drift.
@@ -44,4 +53,3 @@ protocol_version: N
 
 Never commit downloaded diagnostics, raw robot payloads, credentials, network or
 device identifiers, maps, room names, Wi-Fi details, or other home data.
-
