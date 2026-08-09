@@ -259,9 +259,12 @@ uses the LAN.
   exchange. Bluetooth proxies are not supported for setup. If a proxy can see
   Matic but the local adapter cannot, move the local adapter closer and remove
   obstructions. If pairing fails, temporarily disable Bluetooth proxies while
-  retrying so discovery and pairing stay on the local adapter. If that adapter
-  still misses fresh advertisements, reload its Home Assistant integration or
-  replug it before retrying. Routine use is LAN-only after authorization.
+  retrying so discovery and pairing stay on the local adapter. If Matic is not
+  retained in that adapter's Home Assistant scanner cache, compare with a
+  phone-side scan. Reload the Bluetooth integration or replug the adapter only
+  if the local scanner also cannot see nearby Bluetooth devices. Routine use is
+  LAN-only after authorization, but reauthentication and explicit credential
+  replacement need the same local Bluetooth path as initial setup.
 - For bugs, use the repository's bug-report form after reviewing and sanitizing
   diagnostics. Report vulnerabilities privately as described in
   [SECURITY.md](SECURITY.md). Never attach credentials, maps, captures, backups,

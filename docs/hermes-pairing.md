@@ -1,10 +1,15 @@
 # Local pairing
 
 [Documentation home](README.md) · [Project overview](../README.md) ·
-[Get support](README.md#support)
+[Firmware ledger](firmware-compatibility.md) · [Get support](README.md#support)
 
-Status: verified on a Matic robot with Home Assistant 2026.7 and the built-in
-Bluetooth adapter in Home Assistant Yellow.
+Status: initial pairing and reauthentication were physically verified with Home
+Assistant 2026.7 and the built-in Bluetooth adapter in Home Assistant Yellow.
+Initial pairing was also verified on Home Assistant Container with a local
+BlueZ adapter on an ARM64 Linux host and Matic firmware v171.10 while validating
+the unreleased scanner-cache correction tracked in
+[issue #31](https://github.com/ProspectOre/matic-home-assistant/issues/31). See
+the firmware ledger for version-specific observations.
 
 This independent community integration is not affiliated with, endorsed by, or
 supported by Matic Robots Inc.
@@ -52,13 +57,24 @@ permissions above are required.
 Enable debug logging (`custom_components.matic_robot: debug`) and match the
 repeated line during a failing attempt:
 
-- `Found 0 fresh local Matic advertisement(s)` — the robot is not
-  reaching the local adapter during that scan. Turn Pairing mode off and back
-  on, put the adapter within a few feet of Matic with minimal obstruction, and
-  submit again promptly. If the local adapter still misses fresh advertisements,
-  reload its Home Assistant integration or replug it. If a 10-second
-  `bluetoothctl scan on` on the host hears no devices at all, the host's
-  Bluetooth adapter is wedged — reboot the Home Assistant host.
+- `Found 0 local Matic advertisement cache entry(ies)` — Home Assistant's local
+  connectable scanner does not currently retain a name or service UUID that
+  identifies Matic. Put the adapter within a few feet of Matic with minimal
+  obstruction, enable Pairing mode, and submit again promptly. If the local
+  scanner also cannot hear nearby Bluetooth devices, reload the Bluetooth
+  integration or replug the adapter; if a 10-second `bluetoothctl scan on`
+  still hears nothing, reboot the Home Assistant host. If nearby transmitters
+  remain visible but Matic does not, compare with a phone-side scan and report
+  the installation, adapter, integration, Home Assistant, and firmware
+  versions.
+- Integration 0.3.3 logged `Found 0 fresh local Matic advertisement(s)` when
+  Home Assistant retained an otherwise valid Matic entry whose object and
+  timestamp did not change during one requested scan. Identical advertisements
+  may be deduplicated, so that was not proof that the robot was silent. Version
+  0.3.3 is affected; use issue #31 and its linked pull request to track the
+  correction until a released version is named. As a diagnostic, if BlueZ
+  shows the Matic name and service UUID while 0.3.3 continues to log zero, this
+  known false-negative path is a likely cause.
 - `visible only through a remote Bluetooth proxy` — only ESPHome proxies can
   see the robot. Temporarily disable all Bluetooth proxies while retrying, and
   move or extend the adapter built into or attached to the host closer to
@@ -77,6 +93,13 @@ out distance, obstruction, a stale pairing window, and an adapter that needs a
 reload, replug, or host reboot. Bluetooth proxies are the exception: disable
 them temporarily during a troubled pairing attempt so the local adapter is the
 only Bluetooth path presented to setup.
+
+Initial setup, explicit credential replacement, and reauthentication all need a
+Matic entry in the local scanner cache before the integration can try to connect
+or clear a stale bond. A retained local entry can outlive the live
+advertisement, so a connection-stage failure does not prove pairing started.
+Routine operation is LAN-only while the saved credential remains valid, but an
+owner who later needs credential recovery still depends on this Bluetooth path.
 
 ## Failure behavior
 
