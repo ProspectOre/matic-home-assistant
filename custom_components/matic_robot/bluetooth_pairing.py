@@ -7,7 +7,7 @@ import errno
 import logging
 import re
 import sys
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Callable, Iterable
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
@@ -47,7 +47,7 @@ class BluetoothPasskeyCancelledError(MaticError):
 
 
 class BluetoothPairingIncompleteError(MaticError):
-    """The robot was advertising, but Bluetooth pairing did not complete."""
+    """A retained local candidate did not complete credential issuance."""
 
 
 class BluetoothPairingResetError(MaticError):
@@ -73,7 +73,7 @@ _ADAPTER_ERRNOS = {errno.EACCES, errno.ENODEV, errno.EPERM}
 
 @dataclass(frozen=True, slots=True)
 class _MaticDiscovery:
-    """One fresh Matic advertisement from a specific local adapter."""
+    """One Matic candidate retained by a specific local adapter."""
 
     device: Any
     name: str
@@ -179,19 +179,24 @@ def _is_matic_advertisement(info: Any) -> bool:
     when BlueZ has cached it, but it is commonly absent from live pairing
     advertisements.
     """
-    name = str(getattr(info, "name", "") or "").casefold()
-    service_uuids = {
-        str(uuid).casefold() for uuid in (getattr(info, "service_uuids", ()) or ())
-    }
+    return _is_matic_identity(
+        getattr(info, "name", ""), getattr(info, "service_uuids", ())
+    )
+
+
+def _is_matic_identity(name: object, service_uuids: Iterable[object] | None) -> bool:
+    """Return whether a name or service-UUID collection identifies Matic."""
+    normalized_name = str(name or "").casefold()
+    normalized_uuids = {str(uuid).casefold() for uuid in (service_uuids or ())}
     # Match "matic" only at a word boundary so genuine names ("Matic",
     # "Matic Robot", "matic-<serial>") pass while embedded matches
     # ("Automatic Blinds", "Prismatic") are rejected.
-    named_matic = re.search(rf"\b{MATIC_LOCAL_NAME}", name) is not None
-    return named_matic or MATIC_BLE_SERVICE_UUID in service_uuids
+    named_matic = re.search(rf"\b{MATIC_LOCAL_NAME}", normalized_name) is not None
+    return named_matic or MATIC_BLE_SERVICE_UUID in normalized_uuids
 
 
 async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
-    """Return fresh Matic advertisements seen by a local Bluetooth adapter."""
+    """Return Matic advertisements retained by a local Bluetooth adapter."""
     from homeassistant.components import bluetooth
 
     try:
@@ -207,17 +212,14 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
                 "Home Assistant has no directly attached connectable Bluetooth adapter"
             )
         before_scan = {
-            (scanner.source, address): (
-                advertisement,
-                scanner.discovered_device_timestamps.get(address),
-            )
-            for scanner in scanners
-            for address, (_device, advertisement) in (
-                scanner.discovered_devices_and_advertisement_data.items()
-            )
+            info.address: info.time
+            for info in bluetooth.async_discovered_service_info(hass, connectable=False)
         }
         await bluetooth.async_request_active_scan(
             hass, duration=BLUETOOTH_ACTIVE_SCAN_SECONDS
+        )
+        service_infos = tuple(
+            bluetooth.async_discovered_service_info(hass, connectable=False)
         )
     except RuntimeError as err:
         # Raised when Home Assistant's Bluetooth integration is not set up.
@@ -226,33 +228,37 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
         ) from err
 
     local_by_address: dict[str, _MaticDiscovery] = {}
-    fresh_remote_matic = False
-    scanners = list(bluetooth.async_current_scanners(hass))
-    for scanner in scanners:
-        timestamps = scanner.discovered_device_timestamps
-        for address, (
-            device,
-            advertisement,
-        ) in scanner.discovered_devices_and_advertisement_data.items():
-            previous = before_scan.get((scanner.source, address))
-            if previous is not None and (
-                advertisement is previous[0] and timestamps.get(address) == previous[1]
-            ):
-                continue
-            discovery = _MaticDiscovery(
-                device=device,
-                name=advertisement.local_name or device.name or address,
-                service_uuids=tuple(advertisement.service_uuids),
-                rssi=advertisement.rssi,
-                source=scanner.source,
-            )
-            if not _is_matic_advertisement(discovery):
+    remote_matic = False
+    for service_info in service_infos:
+        if not _is_matic_advertisement(service_info):
+            continue
+        previous_time = before_scan.get(service_info.address)
+        refreshed_source = previous_time is None or service_info.time > previous_time
+        scanner_devices = bluetooth.async_scanner_devices_by_address(
+            hass, service_info.address, connectable=False
+        )
+        for scanner_device in scanner_devices:
+            scanner = scanner_device.scanner
+            device = scanner_device.ble_device
+            advertisement = scanner_device.advertisement
+            address = device.address
+            name = advertisement.local_name or device.name or address
+            service_uuids = advertisement.service_uuids
+            if not _is_matic_identity(name, service_uuids):
                 continue
             if isinstance(scanner, bluetooth.BaseHaRemoteScanner):
-                fresh_remote_matic = True
+                if scanner.source == service_info.source and refreshed_source:
+                    remote_matic = True
                 continue
             if not scanner.connectable:
                 continue
+            discovery = _MaticDiscovery(
+                device=device,
+                name=name,
+                service_uuids=tuple(service_uuids),
+                rssi=advertisement.rssi,
+                source=scanner.source,
+            )
             current = local_by_address.get(address)
             if current is None or (discovery.rssi or -127) > (current.rssi or -127):
                 local_by_address[address] = discovery
@@ -267,13 +273,14 @@ async def _async_matic_discoveries(hass: HomeAssistant) -> list[Any]:
         reverse=True,
     )
     _LOGGER.debug(
-        "Found %s fresh local Matic advertisement(s); signal strength(s): %s dBm",
+        "Found %s local Matic advertisement cache entry(ies); "
+        "signal strength(s): %s dBm",
         len(local_discoveries),
         [discovery.rssi for discovery in local_discoveries],
     )
     if local_discoveries:
         return local_discoveries
-    if fresh_remote_matic:
+    if remote_matic:
         raise BluetoothProxyOnlyError(
             "Matic is visible only through a remote Bluetooth proxy"
         )
@@ -466,9 +473,9 @@ async def async_request_bluetooth_credential(
             "Home Assistant's Bluetooth adapter cannot open a connection "
             f"({_safe_bluetooth_error_summary(adapter_access_error)})"
         ) from adapter_access_error
-    # A fresh advertisement was found above, so Pairing mode was on; the
-    # failure happened after discovery and must not be reported as the
-    # pairing window being closed.
+    # A retained local candidate was found above. It may have gone silent before
+    # this attempt, so report the actual failing stage without claiming that a
+    # live pairing exchange started.
     raise BluetoothPairingIncompleteError(
         f"Matic Bluetooth credential request failed: {last_failure}"
     )
