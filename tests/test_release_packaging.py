@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.3.3"
+    assert manifest["version"] == "0.3.4"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -45,7 +45,7 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     assert "hacs/action@1ebf01c408f29afcb6406bd431bc98fd8cbb15aa # main" in workflow
     assert (
         "home-assistant/actions/hassfest@"
-        "f4ca6f671bd429efb108c0f2fa0ae8af0215986c # master" in workflow
+        "ab22029681aa532bfe7de5774a9972d67bfbd2c0 # master" in workflow
     )
 
 

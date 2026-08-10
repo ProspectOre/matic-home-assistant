@@ -17,6 +17,8 @@ the integration so instructions and behavior stay aligned with each release.
   discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
 - [Firmware compatibility](firmware-compatibility.md) — Track observed robot
   versions, validation status, regressions, and newly discovered capabilities.
+- [Release notes — 0.3.4](release-notes-0.3.4.md) — Reliable retained-device
+  discovery for local Bluetooth pairing
 - [Release notes — 0.3.3](release-notes-0.3.3.md) — Automatic custom-area map
   revalidation with safe review when nearby geometry changes
 - [Release notes — 0.3.2](release-notes-0.3.2.md) — Native mobile gestures and

@@ -71,10 +71,9 @@ repeated line during a failing attempt:
   Home Assistant retained an otherwise valid Matic entry whose object and
   timestamp did not change during one requested scan. Identical advertisements
   may be deduplicated, so that was not proof that the robot was silent. Version
-  0.3.3 is affected; use issue #31 and its linked pull request to track the
-  correction until a released version is named. As a diagnostic, if BlueZ
-  shows the Matic name and service UUID while 0.3.3 continues to log zero, this
-  known false-negative path is a likely cause.
+  0.3.3 is affected; update to 0.3.4 or newer. As a diagnostic, if BlueZ shows
+  the Matic name and service UUID while 0.3.3 continues to log zero, this known
+  false-negative path is a likely cause.
 - `visible only through a remote Bluetooth proxy` — only ESPHome proxies can
   see the robot. Temporarily disable all Bluetooth proxies while retrying, and
   move or extend the adapter built into or attached to the host closer to
