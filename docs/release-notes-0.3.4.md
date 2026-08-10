@@ -9,6 +9,12 @@ setup, reauthentication, or explicit credential replacement even when Home
 Assistant's directly attached adapter had already found Matic. Routine robot
 operation remains local-LAN only after authorization.
 
+Thanks to [Pieter Ouwerkerk (`@pouwerkerk`)](https://github.com/pouwerkerk) for
+diagnosing the retained-scanner failure, implementing the fix in
+[PR #30](https://github.com/ProspectOre/matic-home-assistant/pull/30), and
+live-validating initial pairing on the Home Assistant Container/local BlueZ
+path.
+
 ## Reliable local pairing discovery
 
 - Home Assistant may retain a valid Matic scanner entry without replacing its
