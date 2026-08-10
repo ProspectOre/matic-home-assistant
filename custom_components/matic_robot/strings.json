@@ -210,10 +210,10 @@
       "invalid_passkey": "Enter all six digits shown on the robot's screen.",
       "pairing_code_expired": "That code expired. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
       "pairing_code_rejected": "Matic did not accept that code. Turn Pairing mode off and back on in the Matic app, confirm below, then enter the new code immediately.",
-      "pairing_incomplete": "Pairing started but did not finish. Keep the robot near Home Assistant's Bluetooth adapter, turn Pairing mode off and on, then try again.",
+      "pairing_incomplete": "Home Assistant found a retained local Matic entry but could not complete the Bluetooth connection or credential request. Keep Matic near the local adapter, confirm Pairing mode is enabled, then retry. Check Settings → System → Logs for the failing stage.",
       "pairing_mode_confirmation_required": "Turn on Pairing mode first, then check the box to continue.",
-      "pairing_mode_off": "Home Assistant's local Bluetooth adapter did not receive a fresh pairing advertisement. Turn Pairing mode off and on, put the adapter within a few feet of Matic with minimal obstruction, temporarily disable Bluetooth proxies, then try again.",
-      "pairing_timeout": "Pairing did not finish within five minutes. Turn Pairing mode off and on, put Home Assistant's local Bluetooth adapter within a few feet of Matic, temporarily disable Bluetooth proxies, and try again. If it still misses the robot, reload or replug the adapter. Details are in Settings → System → Logs."
+      "pairing_mode_off": "Home Assistant's local Bluetooth scanner could not find a Matic candidate. Keep Matic within a few feet of the adapter and retry. Pairing mode must remain enabled for the later authorization step. Reload Bluetooth or replug the adapter only if the local scanner also cannot see nearby Bluetooth devices; otherwise compare with a phone scan.",
+      "pairing_timeout": "Pairing did not finish within five minutes. Review the last pairing stage in Settings → System → Logs, keep Matic near the local adapter, confirm Pairing mode is enabled, and retry. Reload Bluetooth or replug the adapter only if the local scanner also cannot see nearby devices."
     },
     "step": {
       "discovery_failed": {

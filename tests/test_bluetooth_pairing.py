@@ -43,35 +43,17 @@ class _LocalScanner:
 
     def __init__(
         self,
-        devices: list[tuple[SimpleNamespace, SimpleNamespace, float]] | None = None,
+        devices: list[tuple[SimpleNamespace, SimpleNamespace]] | None = None,
         *,
         connectable: bool = True,
         source: str = "local-adapter",
     ) -> None:
         self.connectable = connectable
         self.source = source
-        self.discovered_devices_and_advertisement_data = {
+        self.devices = {
             device.address: (device, advertisement)
-            for device, advertisement, _timestamp in devices or []
+            for device, advertisement in devices or []
         }
-        self.discovered_device_timestamps = {
-            device.address: timestamp
-            for device, _advertisement, timestamp in devices or []
-        }
-
-    def refresh(self, addresses: set[str]) -> None:
-        """Record a new advertisement object for selected addresses."""
-        for address in addresses:
-            device, advertisement = self.discovered_devices_and_advertisement_data[
-                address
-            ]
-            self.discovered_devices_and_advertisement_data[address] = (
-                device,
-                SimpleNamespace(**vars(advertisement)),
-            )
-            self.discovered_device_timestamps[address] = (
-                self.discovered_device_timestamps.get(address, 0.0) + 1.0
-            )
 
 
 class _RemoteScanner(_LocalScanner):
@@ -82,35 +64,70 @@ def _advertisement(
     *,
     address: str = TEST_ADDRESS,
     name: str | None = "Matic Robot",
+    device_name: str | None = None,
     service_uuids: list[str] | None = None,
     rssi: int = -60,
-    timestamp: float = 99.0,
-) -> tuple[SimpleNamespace, SimpleNamespace, float]:
-    device = SimpleNamespace(address=address, name=name, details={"path": "local"})
+) -> tuple[SimpleNamespace, SimpleNamespace]:
+    device = SimpleNamespace(
+        address=address,
+        name=name if device_name is None else device_name,
+        details={"path": "local"},
+    )
     advertisement = SimpleNamespace(
         local_name=name,
         service_uuids=service_uuids or [],
         rssi=rssi,
     )
-    return device, advertisement, timestamp
+    return device, advertisement
 
 
-def _install_bluetooth(monkeypatch, scanners, *, fresh_addresses=None):
-    if fresh_addresses is None:
-        fresh_addresses = {
-            scanner: set(scanner.discovered_devices_and_advertisement_data)
-            for scanner in scanners
-        }
+def _install_bluetooth(monkeypatch, scanners, *, refreshed_addresses=None):
+    paths_by_address = {}
+    for scanner in scanners:
+        for address, (device, advertisement) in scanner.devices.items():
+            paths_by_address.setdefault(address, []).append(
+                SimpleNamespace(
+                    scanner=scanner,
+                    ble_device=device,
+                    advertisement=advertisement,
+                )
+            )
+    service_infos = []
+    for address, paths in paths_by_address.items():
+        strongest = max(paths, key=lambda path: path.advertisement.rssi)
+        advertisement = strongest.advertisement
+        device = strongest.ble_device
+        service_infos.append(
+            SimpleNamespace(
+                address=address,
+                name=advertisement.local_name or device.name or address,
+                service_uuids=advertisement.service_uuids,
+                source=strongest.scanner.source,
+                time=10.0,
+            )
+        )
+    if refreshed_addresses is None:
+        refreshed_addresses = set(paths_by_address)
 
     async def active_scan(_hass, *, duration):
         del duration
-        for scanner, addresses in fresh_addresses.items():
-            scanner.refresh(addresses)
+        for info in service_infos:
+            if info.address in refreshed_addresses:
+                info.time += 1.0
 
     scan = AsyncMock(side_effect=active_scan)
+
+    def scanner_devices_by_address(_hass, address, *, connectable):
+        del connectable
+        return paths_by_address.get(address, [])
+
     bluetooth = SimpleNamespace(
         BaseHaRemoteScanner=_RemoteScanner,
         async_current_scanners=MagicMock(return_value=scanners),
+        async_discovered_service_info=MagicMock(return_value=service_infos),
+        async_scanner_devices_by_address=MagicMock(
+            side_effect=scanner_devices_by_address
+        ),
         async_request_active_scan=scan,
     )
     monkeypatch.setitem(sys.modules, "homeassistant.components.bluetooth", bluetooth)
@@ -616,7 +633,7 @@ async def test_generic_connection_failure_remains_retryable(
     assert TEST_ADDRESS not in str(exc_info.value)
 
 
-async def test_requires_an_active_matic_advertisement(monkeypatch) -> None:
+async def test_requires_a_local_matic_cache_entry(monkeypatch) -> None:
     monkeypatch.setattr(
         bluetooth_pairing,
         "_async_matic_discoveries",
@@ -629,16 +646,16 @@ async def test_requires_an_active_matic_advertisement(monkeypatch) -> None:
         )
 
 
-async def test_discovery_requires_a_fresh_local_result(monkeypatch) -> None:
+async def test_discovery_accepts_an_unchanged_local_cache_entry(monkeypatch) -> None:
     hass = object()
-    fresh = _advertisement(timestamp=99.0)
-    stale = _advertisement(address=OTHER_ADDRESS, timestamp=80.0)
-    scanner = _LocalScanner([fresh, stale])
-    scan = _install_bluetooth(
-        monkeypatch,
-        [scanner],
-        fresh_addresses={scanner: {TEST_ADDRESS}},
+    cached = _advertisement()
+    unrelated = _advertisement(
+        address=OTHER_ADDRESS,
+        name="Other Robot",
+        service_uuids=["0000180f-0000-1000-8000-00805f9b34fb"],
     )
+    scanner = _LocalScanner([cached, unrelated])
+    scan = _install_bluetooth(monkeypatch, [scanner], refreshed_addresses=set())
 
     result = await _async_matic_discoveries(hass)
 
@@ -646,6 +663,17 @@ async def test_discovery_requires_a_fresh_local_result(monkeypatch) -> None:
         hass, duration=bluetooth_pairing.BLUETOOTH_ACTIVE_SCAN_SECONDS
     )
     assert [discovery.device.address for discovery in result] == [TEST_ADDRESS]
+
+
+async def test_discovery_uses_bluez_cached_device_name(monkeypatch) -> None:
+    scanner = _LocalScanner(
+        [_advertisement(name=None, device_name="Robot Matic", service_uuids=[])]
+    )
+    _install_bluetooth(monkeypatch, [scanner], refreshed_addresses=set())
+
+    result = await _async_matic_discoveries(object())
+
+    assert [discovery.name for discovery in result] == ["Robot Matic"]
 
 
 async def test_discovery_identifies_service_uuid_without_a_local_name(
@@ -707,6 +735,26 @@ async def test_discovery_uses_local_path_when_proxy_signal_is_stronger(
     assert result[0].source == "local"
 
 
+async def test_discovery_does_not_share_identity_between_scanner_paths(
+    monkeypatch,
+) -> None:
+    local = _LocalScanner(
+        [
+            _advertisement(
+                name="Other Robot",
+                service_uuids=["0000180f-0000-1000-8000-00805f9b34fb"],
+                rssi=-80,
+            )
+        ],
+        source="local",
+    )
+    remote = _RemoteScanner([_advertisement(rssi=-30)], source="proxy")
+    _install_bluetooth(monkeypatch, [local, remote])
+
+    with pytest.raises(BluetoothProxyOnlyError):
+        await _async_matic_discoveries(object())
+
+
 async def test_discovery_reports_proxy_only_visibility(monkeypatch) -> None:
     local = _LocalScanner([])
     remote = _RemoteScanner([_advertisement()], source="proxy")
@@ -714,6 +762,14 @@ async def test_discovery_reports_proxy_only_visibility(monkeypatch) -> None:
 
     with pytest.raises(BluetoothProxyOnlyError):
         await _async_matic_discoveries(object())
+
+
+async def test_discovery_ignores_stale_proxy_cache_entry(monkeypatch) -> None:
+    local = _LocalScanner([])
+    remote = _RemoteScanner([_advertisement()], source="proxy")
+    _install_bluetooth(monkeypatch, [local, remote], refreshed_addresses=set())
+
+    assert await _async_matic_discoveries(object()) == []
 
 
 async def test_discovery_ignores_nonconnectable_local_scanners(monkeypatch) -> None:
