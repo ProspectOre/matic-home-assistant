@@ -414,6 +414,7 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     assert frontend.MATIC_MAP_STUDIO_VERSION == studio_expected
     assert studio_expected in frontend.MATIC_MAP_STUDIO_PATH
     assert 'customElements.get("matic-map-panel-v0-3-0")' in _STUDIO_JS
+    assert 'customElements.get("matic-map-panel-v0-3-1")' in _STUDIO_JS
 
 
 def test_node_syntax_check() -> None:

@@ -35,17 +35,18 @@ the reliability of the local Map Studio after an integration reload.
   is underway no longer replaces it; returning home still stops only an
   integration-managed saved plan.
 - Map Studio registers a fresh panel element after an in-place integration
-  reload, rebinds its essential view and cleaning controls safely, and falls
-  back to the dialog `open` attribute on embedded browser surfaces that lack
-  the native dialog methods.
+  reload, gives its current and compatibility tags distinct browser
+  constructors, rebinds its essential view and cleaning controls safely, and
+  falls back to the dialog `open` attribute on embedded browser surfaces that
+  lack the native dialog methods.
 
 This release adds no robot protocol commands and keeps all robot traffic,
 cleaning history, maps, and reconciliation data local to Home Assistant.
 
 ## Verification
 
-The release candidate passes 937 Python tests / 8,864 statements at 100%
-coverage, 42 Chromium browser tests, three iPhone WebKit interaction tests,
+The release candidate passes 939 Python tests / 8,868 statements at 100%
+coverage, 43 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, the public-tree privacy gate, release
 archive inspection, and a fresh-install import check.
 

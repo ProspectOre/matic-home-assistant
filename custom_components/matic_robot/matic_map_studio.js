@@ -4497,11 +4497,12 @@ class MaticMapStudio extends HTMLElement {
   }
 }
 
-// Keep the previous tag as a standalone-test/backward-compatibility alias,
-// while the registered Home Assistant panel uses the fresh versioned tag.
-if (!customElements.get("matic-map-panel-v0-3-0")) {
-  customElements.define("matic-map-panel-v0-3-0", MaticMapStudio);
-}
+// Register the current Home Assistant panel first, then keep the previous tag
+// as a standalone-test/backward-compatibility alias with its own constructor.
 if (!customElements.get("matic-map-panel-v0-3-1")) {
   customElements.define("matic-map-panel-v0-3-1", MaticMapStudio);
+}
+if (!customElements.get("matic-map-panel-v0-3-0")) {
+  class MaticMapStudioV030 extends MaticMapStudio {}
+  customElements.define("matic-map-panel-v0-3-0", MaticMapStudioV030);
 }

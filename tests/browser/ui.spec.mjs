@@ -140,7 +140,7 @@ async function loadStudio(page, states = {}, { areaEditor = true } = {}) {
   await page.evaluate((syntheticStates) => {
     window.__authenticatedPaths = [];
     window.__serviceCalls = [];
-    const studio = document.createElement("matic-map-panel-v0-3-0");
+    const studio = document.createElement("matic-map-panel-v0-3-1");
     studio.panel = {};
     studio.hass = {
       states: syntheticStates,
@@ -168,7 +168,7 @@ async function loadStudio(page, states = {}, { areaEditor = true } = {}) {
     document.body.append(studio);
     window.__studio = studio;
   }, states);
-  return page.locator("matic-map-panel-v0-3-0");
+  return page.locator("matic-map-panel-v0-3-1");
 }
 
 function pointer(type, pointerId, x, y) {
@@ -575,6 +575,27 @@ test.describe("custom-area editor", () => {
 });
 
 test.describe("map studio", () => {
+  test("registers current and compatibility panel tags independently", async ({ page }) => {
+    await page.goto("/");
+    await page.addScriptTag({ url: "/matic_map_studio.js" });
+
+    const registrations = await page.evaluate(() => {
+      const current = customElements.get("matic-map-panel-v0-3-1");
+      const compatibility = customElements.get("matic-map-panel-v0-3-0");
+      return {
+        current: Boolean(current),
+        compatibility: Boolean(compatibility),
+        distinct: current !== compatibility,
+      };
+    });
+
+    expect(registrations).toEqual({
+      current: true,
+      compatibility: true,
+      distinct: true,
+    });
+  });
+
   test("creates and runs a photo-map area without leaving the map workspace", async ({ page }) => {
     const sceneUrl = "/api/matic_robot/slam_scene/entry";
     const areasUrl = "/api/matic_robot/areas/entry";
@@ -1752,7 +1773,7 @@ test.describe("map studio", () => {
     await page.addScriptTag({ url: "/matic_map_studio.js" });
     const translatedTitle = "Synthetic translated studio";
     await page.evaluate((title) => {
-      const studio = document.createElement("matic-map-panel-v0-3-0");
+      const studio = document.createElement("matic-map-panel-v0-3-1");
       studio.panel = {};
       studio.hass = {
         states: {},
@@ -1765,7 +1786,7 @@ test.describe("map studio", () => {
       document.body.append(studio);
       window.__studio = studio;
     }, translatedTitle);
-    const studio = page.locator("matic-map-panel-v0-3-0");
+    const studio = page.locator("matic-map-panel-v0-3-1");
     await expect(studio.locator("h1")).toHaveText(translatedTitle);
     await expect(studio.locator('[data-view="top"]')).toHaveAttribute("aria-pressed", "true");
     await expect(studio.locator(".status")).toHaveAttribute("aria-live", "polite");

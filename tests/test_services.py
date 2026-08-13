@@ -526,6 +526,58 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     assert manager.managed_motion_is_current("serial", managed_token) is True
 
 
+async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> None:
+    """A STOP queued first fences a custom-area clean waiting on its lock."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    await manager.async_save_area(
+        "serial",
+        "litter_box",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Litter box",
+            "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
+    )
+    managed_token = manager.begin_managed_motion("serial")
+    services = await _registered_services(hass, manager)
+    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_area",
+        CLEAN_AREA_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "area": "Litter box"}),
+    )
+    lock = manager.command_lock("serial")
+    await lock.acquire()
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await asyncio.sleep(0)
+        manager.mark_stop_pending("serial")
+        lock.release()
+        with pytest.raises(ServiceValidationError) as blocked:
+            await task
+
+    assert blocked.value.translation_key == "robot_stop_pending"
+    assert manager.managed_motion_is_current("serial", managed_token) is True
+    client.async_start_custom_coverage.assert_not_awaited()
+    coordinator.async_request_refresh.assert_not_awaited()
+
+
 async def test_clean_area_translates_client_failure_without_protocol_details(
     hass,
 ) -> None:

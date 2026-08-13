@@ -318,6 +318,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async with manager.command_lock(serial_number):
+            _ensure_stop_settled(hass, manager, serial_number, entity_id)
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:

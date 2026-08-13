@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 
 import pytest
@@ -170,3 +171,32 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
     )
     entity._async_ensure_stop_settled("synthetic-serial")
     assert manager.stop_pending("synthetic-serial") is False
+
+
+async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
+    """Commands queued behind STOP cannot bypass its newly created fence."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    lock = manager.command_lock("synthetic-serial")
+    await lock.acquire()
+
+    stop_task = asyncio.create_task(entity.async_stop())
+    await asyncio.sleep(0)
+    clean_task = asyncio.create_task(entity.async_start())
+    pause_task = asyncio.create_task(entity.async_pause())
+    await asyncio.sleep(0)
+    lock.release()
+
+    await stop_task
+    for task in (clean_task, pause_task):
+        with pytest.raises(ServiceValidationError) as blocked:
+            await task
+        assert blocked.value.translation_key == "robot_stop_pending"
+
+    client = entry.runtime_data.coordinator.client
+    assert [
+        item.args[0] for item in client.async_send_user_command.await_args_list
+    ] == [UserCommand.STOP]
+    client.async_start_coverage.assert_not_awaited()

@@ -118,6 +118,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             else self._plans.command_lock(serial_number)
         )
         async with context:
+            if command is not UserCommand.STOP:
+                self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_send_user_command(command)
             if command is UserCommand.STOP:
                 mark = getattr(self._plans, "mark_stop_pending", None)
@@ -167,6 +169,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             else self._plans.external_motion(serial_number)
         )
         async with context:
+            self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_start_coverage(
                 floor_plan,
                 [room.protocol_id for room in rooms],
