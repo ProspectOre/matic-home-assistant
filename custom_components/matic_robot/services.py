@@ -1657,6 +1657,12 @@ async def _async_reconcile_native_stop(
             await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
             return
         await asyncio.sleep(OEM_STOP_RECONCILIATION_POLL_SECONDS)
+    await manager.async_clear_native_reconciliation(
+        serial_number,
+        reconciliation.plan_id,
+        room.room_id,
+        reconciliation.dispatched_at,
+    )
     await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
     _LOGGER.debug("Native Matic completion was not observed after OEM STOP settle")
 

@@ -1785,7 +1785,23 @@ async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None
 async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
-    manager = SimpleNamespace(async_mark_native_completed=AsyncMock(return_value=False))
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        },
+    )
+    save.reset_mock()
     hass.states.async_set("vacuum.test", "cleaning")
     history = AsyncMock(side_effect=MaticError("synthetic offline"))
     reconciliation = _NativeReconciliation(
@@ -1819,6 +1835,48 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
             None,
         )
     history.assert_awaited_once()
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    save.assert_awaited_once()
+
+
+async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> None:
+    """An old watcher cannot remove a newer durable reconciliation marker."""
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    dispatched_at = dt_util.utcnow() - timedelta(seconds=5)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at.isoformat(),
+        },
+    )
+    save.reset_mock()
+
+    assert (
+        await manager.async_clear_native_reconciliation(
+            "serial", "away", room.room_id, dispatched_at - timedelta(seconds=1)
+        )
+        is False
+    )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    save.assert_not_awaited()
+
+    assert (
+        await manager.async_clear_native_reconciliation(
+            "serial", "away", room.room_id, dispatched_at
+        )
+        is True
+    )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    save.assert_awaited_once()
 
 
 async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:

@@ -948,6 +948,30 @@ class CleaningPlanManager:
         await self._async_save_and_notify(serial_number)
         return True
 
+    async def async_clear_native_reconciliation(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room_id: str,
+        dispatched_at: datetime,
+    ) -> bool:
+        """Durably clear one exact late-completion marker after its watcher ends."""
+        async with self.command_lock(serial_number):
+            robot = self._robot(serial_number)
+            pending = _validated_native_reconciliation(
+                robot.get("pending_native_reconciliation")
+            )
+            if (
+                pending is None
+                or pending["plan_id"] != plan_id
+                or pending["room_id"] != room_id
+                or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
+            ):
+                return False
+            robot.pop("pending_native_reconciliation", None)
+            await self._async_save_and_notify(serial_number)
+            return True
+
     async def async_mark_suspended(
         self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
     ) -> None:
