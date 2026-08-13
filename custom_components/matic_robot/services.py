@@ -57,6 +57,7 @@ from .firmware import (
     fingerprint_entry,
 )
 from .plans import (
+    OEM_STOP_RECONCILIATION_SECONDS,
     PLAN_MOTION_TOKEN,
     CleaningPlanManager,
     CleaningRoom,
@@ -95,9 +96,6 @@ ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
 SESSION_HISTORY_ATTEMPTS = 6
 SESSION_HISTORY_RETRY_SECONDS = 2
 HANDOFF_HISTORY_ATTEMPTS = 20
-# The OEM STOP countdown is nominally ten minutes.  Reconcile the native
-# session for two additional minutes before leaving the durable failure as-is.
-OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 _LOGGER = logging.getLogger(__name__)

@@ -18,9 +18,11 @@ the reliability of the local Map Studio after an integration reload.
   area, and saved-plan commands wait until Matic reports a stable `docked`,
   `charging`, or `idle` state. This prevents duplicate or replacement work
   during the countdown.
-- If Matic later publishes one new, matching native single-room completion,
-  the integration safely reconciles its room history and duration. Ambiguous,
-  stale, malformed, or unrelated session records remain uncredited.
+- If Matic publishes one new, matching native single-room completion within
+  the fixed reconciliation window, the integration safely reconciles its room
+  history and duration. Expired markers are cleared so a later OEM clean
+  cannot be credited to an old failed plan; ambiguous, malformed, or unrelated
+  session records also remain uncredited.
 - Late reconciliation tasks are tied to the integration lifecycle and are
   cancelled when a newer motion command replaces the run or the config entry
   unloads.
@@ -45,7 +47,7 @@ cleaning history, maps, and reconciliation data local to Home Assistant.
 
 ## Verification
 
-The release candidate passes 939 Python tests / 8,868 statements at 100%
+The release candidate passes 944 Python tests / 8,887 statements at 100%
 coverage, 43 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, the public-tree privacy gate, release
 archive inspection, and a fresh-install import check.

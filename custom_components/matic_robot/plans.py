@@ -8,7 +8,7 @@ from collections.abc import AsyncIterator, Callable, Iterable, Mapping, MutableM
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import median
 from time import monotonic
 from typing import Any, Literal, cast, override
@@ -37,8 +37,9 @@ DURATION_CONFIDENCE_MIN_SAMPLES = 3
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
 # roughly ten minutes before returning to the dock.  Keep a small safety
-# margin so an automation cannot dispatch a replacement during that window.
-OEM_STOP_FENCE_SECONDS = 12 * 60
+# margin for both command fencing and late native-session reconciliation.
+OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
+OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 
 
 @dataclass(frozen=True, slots=True)
@@ -163,8 +164,15 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = self._normalize_robot(robot) or recovered
-            if isinstance(robot.get("pending_native_reconciliation"), dict):
-                self.mark_stop_pending(str(serial_number))
+            pending = _validated_native_reconciliation(
+                robot.get("pending_native_reconciliation")
+            )
+            if pending is not None:
+                if _native_reconciliation_expired(pending):
+                    robot.pop("pending_native_reconciliation", None)
+                    recovered = True
+                else:
+                    self.mark_stop_pending(str(serial_number))
             active = robot.get("active_plan")
             if active:
                 rotation = robot["rotations"].setdefault(
@@ -780,7 +788,9 @@ class CleaningPlanManager:
         record["last_error"] = reason
         record["failed_runs"] = _stored_count(record, "failed_runs") + 1
         if native_reconciliation is not None:
-            pending = _validated_native_reconciliation(native_reconciliation)
+            pending = _validated_native_reconciliation(
+                native_reconciliation, create_expiry=True
+            )
             if pending is not None:
                 robot["pending_native_reconciliation"] = pending
         robot["active_plan"] = None
@@ -803,8 +813,16 @@ class CleaningPlanManager:
         safe against a later unrelated native session.
         """
         robot = self._robot(serial_number)
-        pending = robot.get("pending_native_reconciliation")
-        if not _pending_matches_room(pending, plan_id, room):
+        pending = _validated_native_reconciliation(
+            robot.get("pending_native_reconciliation")
+        )
+        if pending is None:
+            return False
+        if _native_reconciliation_expired(pending):
+            robot.pop("pending_native_reconciliation", None)
+            await self._async_save_and_notify(serial_number)
+            return False
+        if pending["plan_id"] != plan_id or pending["room_id"] != room.room_id:
             return False
         record = self._room(serial_number, plan_id, room)
         if record.get("last_result") == "completed":
@@ -927,7 +945,9 @@ class CleaningPlanManager:
         record["last_error"] = reason
         record["interrupted_runs"] = _stored_count(record, "interrupted_runs") + 1
         if native_reconciliation is not None:
-            pending = _validated_native_reconciliation(native_reconciliation)
+            pending = _validated_native_reconciliation(
+                native_reconciliation, create_expiry=True
+            )
             if pending is not None:
                 robot["pending_native_reconciliation"] = pending
         active = robot.get("active_plan")
@@ -1228,7 +1248,9 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
     return changed
 
 
-def _validated_native_reconciliation(value: object) -> dict[str, str] | None:
+def _validated_native_reconciliation(
+    value: object, *, create_expiry: bool = False
+) -> dict[str, str] | None:
     """Validate the small durable marker used to recover a late native stop."""
     if not isinstance(value, Mapping):
         return None
@@ -1247,20 +1269,31 @@ def _validated_native_reconciliation(value: object) -> dict[str, str] | None:
     parsed = dt_util.parse_datetime(dispatched_at)
     if parsed is None or parsed.tzinfo is None:
         return None
+    expires_at: object
+    if create_expiry:
+        expires_at = (
+            dt_util.utcnow() + timedelta(seconds=OEM_STOP_RECONCILIATION_SECONDS)
+        ).isoformat()
+    else:
+        expires_at = value.get("expires_at")
+    if not isinstance(expires_at, str) or not expires_at.strip():
+        return None
+    parsed_expiry = dt_util.parse_datetime(expires_at)
+    if parsed_expiry is None or parsed_expiry.tzinfo is None:
+        return None
     return {
         "plan_id": plan_id,
         "room_id": room_id,
         "room": room,
         "dispatched_at": dispatched_at,
+        "expires_at": expires_at,
     }
 
 
-def _pending_matches_room(pending: object, plan_id: str, room: CleaningRoom) -> bool:
-    """Return whether a late native record belongs to the failed managed room."""
-    validated = _validated_native_reconciliation(pending)
-    return validated is not None and (
-        validated["plan_id"] == plan_id and validated["room_id"] == room.room_id
-    )
+def _native_reconciliation_expired(pending: Mapping[str, str]) -> bool:
+    """Return whether a durable late-completion marker passed its fixed window."""
+    expires_at = cast(datetime, dt_util.parse_datetime(pending["expires_at"]))
+    return expires_at <= dt_util.utcnow()
 
 
 def _reconcile_pending_native_history(
@@ -1274,9 +1307,10 @@ def _reconcile_pending_native_history(
     )
     if pending is None:
         return False
-    dispatched_at = dt_util.parse_datetime(pending["dispatched_at"])
-    if dispatched_at is None or dispatched_at.tzinfo is None:
-        return False
+    if _native_reconciliation_expired(pending):
+        robot.pop("pending_native_reconciliation", None)
+        return True
+    dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
     room = next(
         (
             item
