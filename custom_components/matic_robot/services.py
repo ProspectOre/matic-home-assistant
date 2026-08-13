@@ -1569,18 +1569,17 @@ def _schedule_native_reconciliation(
     context: Context | None,
 ) -> None:
     """Start a lifecycle-bound watcher for a native session finishing after STOP."""
-    if (
-        reconciliation is None
-        or history_baseline is None
-        or session_history is None
-        or not callable(getattr(manager, "async_mark_native_completed", None))
-    ):
+    if reconciliation is None:
         return
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
         return
-    task = create_background_task(
-        _async_reconcile_native_stop(
+    if (
+        history_baseline is not None
+        and session_history is not None
+        and callable(getattr(manager, "async_mark_native_completed", None))
+    ):
+        watcher = _async_reconcile_native_stop(
             hass,
             manager,
             serial_number,
@@ -1592,7 +1591,18 @@ def _schedule_native_reconciliation(
             session_history,
             confirm_room_completed,
             context,
-        ),
+        )
+    else:
+        watcher = _async_expire_native_reconciliation(
+            hass,
+            manager,
+            serial_number,
+            entity_id,
+            room,
+            reconciliation,
+        )
+    task = create_background_task(
+        watcher,
         f"{DOMAIN} native stop reconciliation",
     )
     register_task = getattr(manager, "register_reconciliation_task", None)
@@ -1658,14 +1668,36 @@ async def _async_reconcile_native_stop(
             await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
             return
         await asyncio.sleep(OEM_STOP_RECONCILIATION_POLL_SECONDS)
-    await manager.async_clear_native_reconciliation(
+    cleared = await manager.async_clear_native_reconciliation(
         serial_number,
         reconciliation.plan_id,
         room.room_id,
         reconciliation.dispatched_at,
     )
-    await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
+    if cleared:
+        await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
     _LOGGER.debug("Native Matic completion was not observed after OEM STOP settle")
+
+
+async def _async_expire_native_reconciliation(
+    hass: HomeAssistant,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    room: CleaningRoom,
+    reconciliation: _NativeReconciliation,
+) -> None:
+    """Expire a durable marker when no safe history baseline exists."""
+    await asyncio.sleep(OEM_STOP_RECONCILIATION_SECONDS)
+    cleared = await manager.async_clear_native_reconciliation(
+        serial_number,
+        reconciliation.plan_id,
+        room.room_id,
+        reconciliation.dispatched_at,
+    )
+    if cleared:
+        await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
+    _LOGGER.debug("Native Matic reconciliation expired without a history baseline")
 
 
 def _native_completion_match(

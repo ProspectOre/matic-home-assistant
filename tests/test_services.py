@@ -44,6 +44,7 @@ from custom_components.matic_robot.services import (
     SAVED_PLAN_SERVICE_SCHEMA,
     PlanCancelledError,
     _async_execute_rooms,
+    _async_expire_native_reconciliation,
     _async_reconcile_native_stop,
     _async_run_room,
     _async_wait_for_vacuum_state,
@@ -1839,6 +1840,58 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
     save.assert_awaited_once()
 
 
+async def test_native_stop_reconciliation_expires_without_history_baseline(
+    hass,
+) -> None:
+    """Missing pre-dispatch history disables credit, not durable cleanup."""
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at.isoformat(),
+        },
+    )
+    save.reset_mock()
+    history = AsyncMock()
+    reconciliation = _NativeReconciliation(
+        "away", room.room_id, room.name, dispatched_at
+    )
+
+    with (
+        patch(
+            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            1,
+        ),
+        patch(
+            "custom_components.matic_robot.services.asyncio.sleep", AsyncMock()
+        ) as sleep,
+    ):
+        await _async_expire_native_reconciliation(
+            hass,
+            manager,
+            "serial",
+            "vacuum.test",
+            room,
+            reconciliation,
+        )
+
+    sleep.assert_awaited_once_with(1)
+    history.assert_not_awaited()
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    save.assert_awaited_once()
+
+
 async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> None:
     """An old watcher cannot remove a newer durable reconciliation marker."""
     manager = CleaningPlanManager(hass)
@@ -1918,7 +1971,20 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
         None,
         None,
     )
-    assert created
+    _schedule_native_reconciliation(
+        SimpleNamespace(async_create_background_task=create_background_task),
+        manager,
+        "serial",
+        "vacuum.test",
+        room,
+        reconciliation,
+        None,
+        None,
+        AsyncMock(),
+        None,
+        None,
+    )
+    assert len(created) == 2
 
     hass.states.async_set("vacuum.test", "cleaning")
     await _clear_stop_pending_if_stable(manager, "serial", hass, "vacuum.test")
