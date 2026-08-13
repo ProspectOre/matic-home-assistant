@@ -51,6 +51,7 @@ from custom_components.matic_robot.plans import (
 from custom_components.matic_robot.services import (
     SESSION_HISTORY_ATTEMPTS,
     PlanCancelledError,
+    RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
     _async_active_session_state,
@@ -1133,6 +1134,68 @@ async def test_replacement_motion_persists_reconciliation_removal_before_yield(
         manager._store.async_save.assert_awaited_once()
 
 
+@pytest.mark.parametrize(
+    ("terminal_error", "translation_key", "last_result"),
+    [
+        (TimeoutError(), "plan_timeout", "failed"),
+        (
+            RoomInterruptedError("synthetic interruption"),
+            "room_interrupted",
+            "interrupted",
+        ),
+    ],
+)
+async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
+    hass,
+    terminal_error: Exception,
+    translation_key: str,
+    last_result: str,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    token = manager.begin_managed_motion("serial")
+    dispatched_at = dt_util.utcnow()
+    sent: list[UserCommand] = []
+
+    async def replace_during_cleanup(motion_token: int, command: UserCommand) -> None:
+        assert motion_token == token
+        sent.append(command)
+        manager.replace_managed_motion("serial")
+        raise ManagedMotionReplacedError("replacement won")
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            AsyncMock(return_value="cleaning"),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            AsyncMock(side_effect=terminal_error),
+        ),
+        pytest.raises(ServiceValidationError) as failure,
+    ):
+        await _async_run_room(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            room,
+            motion_token=token,
+            session_history=AsyncMock(return_value=()),
+            managed_user_command=replace_during_cleanup,
+            prepared_dispatch=_PreparedRoomDispatch(room, frozenset(), dispatched_at),
+        )
+
+    assert failure.value.translation_key == translation_key
+    assert sent == [UserCommand.STOP]
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert "serial" not in manager._reconciliation_tasks
+    record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][room.room_id]
+    assert record["last_result"] == last_result
+
+
 async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -1491,6 +1554,13 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
         "robots": {
             "serial": {"pending_native_reconciliation": valid},
             "other": {"pending_native_reconciliation": {"plan_id": 1}},
+            "generic": {
+                "stop_fence_expires_at": (now_value + timedelta(seconds=45)).isoformat()
+            },
+            "bad-fence": {"stop_fence_expires_at": "not-a-timestamp"},
+            "stale-fence": {
+                "stop_fence_expires_at": (now_value - timedelta(seconds=1)).isoformat()
+            },
             "stale": {
                 "pending_native_reconciliation": {
                     **valid,
@@ -1513,10 +1583,16 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
         await manager.async_load()
         assert manager.stop_pending("serial") is True
         assert manager._stop_fences["serial"] == 130.0
+        assert manager._robot("serial")["stop_fence_expires_at"] == valid["expires_at"]
+        assert manager.stop_pending("generic") is True
+        assert manager._stop_fences["generic"] == 145.0
+        assert "stop_fence_expires_at" not in manager._robot("bad-fence")
+        assert "stop_fence_expires_at" not in manager._robot("stale-fence")
         assert "pending_native_reconciliation" not in manager._robot("other")
         assert "pending_native_reconciliation" not in manager._robot("stale")
         assert manager.stop_pending("stale") is False
     manager._store.async_load.assert_awaited_once()
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> None:

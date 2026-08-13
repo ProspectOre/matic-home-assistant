@@ -701,6 +701,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     assert execute.await_args_list[1].kwargs["intelligent"] is False
     assert execute.await_args_list[2].kwargs["intelligent"] is False
     assert client.async_send_user_command.await_count == 3
+    assert "stop_fence_expires_at" in manager._robot("serial")
     assert preview["plan_name"] == "Upstairs"
     assert preview["run_behavior"] == "ordered"
     assert preview["rooms"][0]["room_id"] == "room-study"
@@ -1820,7 +1821,7 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
     history.assert_awaited_once()
 
 
-def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
+async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
     reconciliation = _NativeReconciliation(
@@ -1862,15 +1863,25 @@ def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
     assert created
 
     hass.states.async_set("vacuum.test", "cleaning")
-    _clear_stop_pending_if_stable(manager, "serial", hass, "vacuum.test")
+    await _clear_stop_pending_if_stable(manager, "serial", hass, "vacuum.test")
     manager_with_fence = CleaningPlanManager(hass)
+    manager_with_fence._store = SimpleNamespace(async_save=AsyncMock())
     manager_with_fence.mark_stop_pending("serial")
     with pytest.raises(ServiceValidationError) as blocked:
-        _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+        await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
     assert blocked.value.translation_key == "robot_stop_pending"
     hass.states.async_set("vacuum.test", "docked")
-    _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+    await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
     assert manager_with_fence.stop_pending("serial") is False
+
+    synchronous_clear = MagicMock()
+    legacy_manager = SimpleNamespace(
+        stop_pending=MagicMock(return_value=True),
+        clear_stop_pending=synchronous_clear,
+    )
+    await _clear_stop_pending_if_stable(legacy_manager, "serial", hass, "vacuum.test")
+    await _ensure_stop_settled(hass, legacy_manager, "serial", "vacuum.test")
+    assert synchronous_clear.call_count == 2
 
 
 async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:

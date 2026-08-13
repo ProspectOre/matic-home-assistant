@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
+from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
@@ -259,7 +260,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         if callable(getattr(manager, "stop_pending", None)):
             for entity_id in entity_ids:
                 entry = _entry_for_entity(hass, entity_id)
-                _ensure_stop_settled(
+                await _ensure_stop_settled(
                     hass,
                     manager,
                     entry.runtime_data.coordinator.data.info.serial_number,
@@ -299,7 +300,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     async def async_clean_area(call: ServiceCall) -> None:
         """Clean one private saved area without putting coordinates in the call."""
         entity_id, entry, serial_number, _room_map = _saved_plan_context(hass, call)
-        _ensure_stop_settled(hass, manager, serial_number, entity_id)
+        await _ensure_stop_settled(hass, manager, serial_number, entity_id)
         try:
             area = manager.area(serial_number, call.data["area"])
         except KeyError as err:
@@ -316,7 +317,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async with manager.command_lock(serial_number):
-            _ensure_stop_settled(hass, manager, serial_number, entity_id)
+            await _ensure_stop_settled(hass, manager, serial_number, entity_id)
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:
@@ -383,6 +384,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
         async def async_managed_command(token: int, command: UserCommand) -> None:
             async with manager.managed_command(serial_number, token):
                 await entry.runtime_data.client.async_send_user_command(command)
+                if command is UserCommand.STOP:
+                    await manager.async_mark_stop_pending(serial_number)
                 await entry.runtime_data.coordinator.async_request_refresh()
 
         await _async_execute_rooms(
@@ -1012,18 +1015,22 @@ async def _async_run_room(
                 managed_user_command,
                 motion_token,
                 dispatch_attempted,
-                mark_stop_pending=lambda: _mark_stop_pending(manager, serial_number),
             )
             reconciliation = _build_native_reconciliation(
                 call.data["plan_id"], room, dispatched_at, room_started
             )
-            await manager.async_mark_interrupted(
-                serial_number,
-                call.data["plan_id"],
-                room,
-                "Home Assistant unloaded while cleaning this room",
-                native_reconciliation=_native_reconciliation_data(reconciliation),
-            )
+            async with _managed_reconciliation_guard(
+                manager, serial_number, motion_token
+            ) as owned:
+                await manager.async_mark_interrupted(
+                    serial_number,
+                    call.data["plan_id"],
+                    room,
+                    "Home Assistant unloaded while cleaning this room",
+                    native_reconciliation=_native_reconciliation_data(
+                        reconciliation if owned else None
+                    ),
+                )
             hass.bus.async_fire(
                 f"{DOMAIN}_room_interrupted", event_data, context=call.context
             )
@@ -1054,31 +1061,40 @@ async def _async_run_room(
             managed_user_command,
             motion_token,
             dispatch_attempted,
-            mark_stop_pending=lambda: _mark_stop_pending(manager, serial_number),
         )
         reconciliation = _build_native_reconciliation(
             call.data["plan_id"], room, dispatched_at, room_started
         )
-        await manager.async_mark_interrupted(
-            serial_number,
-            call.data["plan_id"],
-            room,
-            str(err),
-            native_reconciliation=_native_reconciliation_data(reconciliation),
-        )
-        _schedule_native_reconciliation(
-            hass,
-            manager,
-            serial_number,
-            entity_id,
-            room,
-            reconciliation,
-            history_baseline,
-            active_session,
-            session_history,
-            confirm_room_completed,
-            call.context,
-        )
+        async with _managed_reconciliation_guard(
+            manager, serial_number, motion_token
+        ) as owned:
+            current_reconciliation = reconciliation if owned else None
+            await manager.async_mark_interrupted(
+                serial_number,
+                call.data["plan_id"],
+                room,
+                str(err),
+                native_reconciliation=_native_reconciliation_data(
+                    current_reconciliation
+                ),
+            )
+            if not _managed_reconciliation_is_current(
+                manager, serial_number, motion_token
+            ):
+                current_reconciliation = None
+            _schedule_native_reconciliation(
+                hass,
+                manager,
+                serial_number,
+                entity_id,
+                room,
+                current_reconciliation,
+                history_baseline,
+                active_session,
+                session_history,
+                confirm_room_completed,
+                call.context,
+            )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
             {**event_data, "error": str(err)},
@@ -1092,7 +1108,6 @@ async def _async_run_room(
             managed_user_command,
             motion_token,
             dispatch_attempted,
-            mark_stop_pending=lambda: _mark_stop_pending(manager, serial_number),
         )
         if isinstance(err, RoomStartTimeoutError):
             failure_reason = "The robot did not begin cleaning before the start timeout"
@@ -1105,26 +1120,36 @@ async def _async_run_room(
         reconciliation = _build_native_reconciliation(
             call.data["plan_id"], room, dispatched_at, room_started
         )
-        await manager.async_mark_failed(
-            serial_number,
-            call.data["plan_id"],
-            room,
-            failure_reason,
-            native_reconciliation=_native_reconciliation_data(reconciliation),
-        )
-        _schedule_native_reconciliation(
-            hass,
-            manager,
-            serial_number,
-            entity_id,
-            room,
-            reconciliation,
-            history_baseline,
-            active_session,
-            session_history,
-            confirm_room_completed,
-            call.context,
-        )
+        async with _managed_reconciliation_guard(
+            manager, serial_number, motion_token
+        ) as owned:
+            current_reconciliation = reconciliation if owned else None
+            await manager.async_mark_failed(
+                serial_number,
+                call.data["plan_id"],
+                room,
+                failure_reason,
+                native_reconciliation=_native_reconciliation_data(
+                    current_reconciliation
+                ),
+            )
+            if not _managed_reconciliation_is_current(
+                manager, serial_number, motion_token
+            ):
+                current_reconciliation = None
+            _schedule_native_reconciliation(
+                hass,
+                manager,
+                serial_number,
+                entity_id,
+                room,
+                current_reconciliation,
+                history_baseline,
+                active_session,
+                session_history,
+                confirm_room_completed,
+                call.context,
+            )
         hass.bus.async_fire(
             f"{DOMAIN}_room_failed",
             {**event_data, "error": failure_reason},
@@ -1437,8 +1462,6 @@ async def _async_cleanup_managed_motion(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     motion_token: int | None,
     dispatch_attempted: bool,
-    *,
-    mark_stop_pending: Callable[[], None] | None = None,
 ) -> None:
     """Best-effort STOP an accepted task without replacing newer ownership.
 
@@ -1450,8 +1473,6 @@ async def _async_cleanup_managed_motion(
         return
     try:
         await sender(motion_token, UserCommand.STOP)
-        if mark_stop_pending is not None:
-            mark_stop_pending()
         _LOGGER.debug("Matic managed STOP accepted; waiting for OEM settle")
     except (HomeAssistantError, MaticError, ManagedMotionReplacedError) as err:
         _LOGGER.warning(
@@ -1460,14 +1481,36 @@ async def _async_cleanup_managed_motion(
         )
 
 
-def _mark_stop_pending(manager: CleaningPlanManager, serial_number: str) -> None:
-    """Record the OEM stop fence when the active manager supports it."""
-    mark = getattr(manager, "mark_stop_pending", None)
-    if callable(mark):
-        mark(serial_number)
+@asynccontextmanager
+async def _managed_reconciliation_guard(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    motion_token: int | None,
+) -> AsyncIterator[bool]:
+    """Serialize durable reconciliation against replacement command dispatch."""
+    guard = getattr(manager, "managed_reconciliation", None)
+    if motion_token is None or not callable(guard):
+        yield True
+        return
+    async with guard(serial_number, motion_token) as current:
+        yield bool(current)
 
 
-def _clear_stop_pending_if_stable(
+def _managed_reconciliation_is_current(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    motion_token: int | None,
+) -> bool:
+    """Recheck ownership after a durable marker write yields to other tasks."""
+    current = getattr(manager, "managed_motion_is_current", None)
+    return (
+        motion_token is None
+        or not callable(current)
+        or current(serial_number, motion_token)
+    )
+
+
+async def _clear_stop_pending_if_stable(
     manager: CleaningPlanManager,
     serial_number: str,
     hass: HomeAssistant,
@@ -1476,6 +1519,10 @@ def _clear_stop_pending_if_stable(
     """Release the fence only once the entity reports a stable terminal state."""
     state = hass.states.get(entity_id)
     if state is None or state.state not in {"docked", "charging", "idle"}:
+        return
+    async_clear = getattr(manager, "async_clear_stop_pending", None)
+    if callable(async_clear):
+        await async_clear(serial_number)
         return
     clear = getattr(manager, "clear_stop_pending", None)
     if callable(clear):
@@ -1607,10 +1654,10 @@ async def _async_reconcile_native_stop(
                     context=context,
                 )
                 _LOGGER.debug("Native Matic completion reconciled after OEM STOP")
-            _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
+            await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
             return
         await asyncio.sleep(OEM_STOP_RECONCILIATION_POLL_SECONDS)
-    _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
+    await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
     _LOGGER.debug("Native Matic completion was not observed after OEM STOP settle")
 
 
@@ -1776,7 +1823,7 @@ async def _async_execute_rooms(
     mapped_room_names: tuple[str, ...] = (),
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
-    _ensure_stop_settled(hass, manager, serial_number, entity_id)
+    await _ensure_stop_settled(hass, manager, serial_number, entity_id)
     lock = manager.lock(serial_number)
     if lock.locked():
         raise _validation_error(
@@ -1872,9 +1919,6 @@ async def _async_execute_rooms(
                             managed_user_command,
                             motion_token,
                             dispatch_attempted=True,
-                            mark_stop_pending=lambda: _mark_stop_pending(
-                                manager, serial_number
-                            ),
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
@@ -1906,7 +1950,7 @@ async def _async_execute_rooms(
             manager.unregister_run_task(serial_number)
 
 
-def _ensure_stop_settled(
+async def _ensure_stop_settled(
     hass: HomeAssistant,
     manager: CleaningPlanManager,
     serial_number: str,
@@ -1918,6 +1962,10 @@ def _ensure_stop_settled(
         return
     state = hass.states.get(entity_id)
     if state is not None and state.state in {"docked", "charging", "idle"}:
+        async_clear = getattr(manager, "async_clear_stop_pending", None)
+        if callable(async_clear):
+            await async_clear(serial_number)
+            return
         clear = getattr(manager, "clear_stop_pending", None)
         if callable(clear):
             clear(serial_number)

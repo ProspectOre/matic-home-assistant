@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from homeassistant.exceptions import ServiceValidationError
@@ -21,6 +23,7 @@ from tests.test_entities import _entry
 async def test_managed_clean_token_is_required_until_external_replacement(hass) -> None:
     entry = _entry()
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     token = manager.begin_managed_motion("synthetic-serial")
@@ -107,6 +110,7 @@ async def test_return_to_base_stops_resumable_firmware_task(
         operational=replace(state.operational, **operational_changes),
     )
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
 
@@ -116,12 +120,15 @@ async def test_return_to_base_stops_resumable_firmware_task(
     assert [
         item.args[0] for item in client.async_send_user_command.await_args_list
     ] == [UserCommand.STOP]
+    assert "stop_fence_expires_at" in manager._robot("synthetic-serial")
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
     """Persisted managed ownership also uses OEM STOP for the final return."""
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     lock = manager.lock("synthetic-serial")
@@ -135,16 +142,21 @@ async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
     assert [
         item.args[0] for item in client.async_send_user_command.await_args_list
     ] == [UserCommand.STOP]
+    assert "stop_fence_expires_at" in manager._robot("synthetic-serial")
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
 
     await entity.async_stop()
     assert manager.stop_pending("synthetic-serial") is True
+    assert "stop_fence_expires_at" in manager._robot("synthetic-serial")
+    manager._store.async_save.assert_awaited_once()
     state = entry.runtime_data.coordinator.data
     entry.runtime_data.coordinator.data = replace(
         state,
@@ -156,7 +168,7 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
         ),
     )
     with pytest.raises(ServiceValidationError) as blocked:
-        entity._async_ensure_stop_settled("synthetic-serial")
+        await entity._async_ensure_stop_settled("synthetic-serial")
     assert blocked.value.translation_key == "robot_stop_pending"
 
     state = entry.runtime_data.coordinator.data
@@ -169,14 +181,17 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
             returning=False,
         ),
     )
-    entity._async_ensure_stop_settled("synthetic-serial")
+    await entity._async_ensure_stop_settled("synthetic-serial")
     assert manager.stop_pending("synthetic-serial") is False
+    assert "stop_fence_expires_at" not in manager._robot("synthetic-serial")
+    assert manager._store.async_save.await_count == 2
 
 
 async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
     """Commands queued behind STOP cannot bypass its newly created fence."""
     entry = _entry()
     manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     lock = manager.command_lock("synthetic-serial")

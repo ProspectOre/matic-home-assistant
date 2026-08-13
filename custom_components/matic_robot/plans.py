@@ -40,6 +40,7 @@ ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # margin for both command fencing and late native-session reconciliation.
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
+STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
 
 
 @dataclass(frozen=True, slots=True)
@@ -164,6 +165,15 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = self._normalize_robot(robot) or recovered
+            fence_value = robot.get(STOP_FENCE_EXPIRES_AT)
+            fence_remaining = _stop_fence_remaining_seconds(fence_value)
+            if fence_value is not None:
+                if fence_remaining is None or fence_remaining <= 0:
+                    robot.pop(STOP_FENCE_EXPIRES_AT, None)
+                    fence_remaining = None
+                    recovered = True
+                else:
+                    self._arm_stop_pending(str(serial_number), fence_remaining)
             pending = _validated_native_reconciliation(
                 robot.get("pending_native_reconciliation")
             )
@@ -173,7 +183,11 @@ class CleaningPlanManager:
                     robot.pop("pending_native_reconciliation", None)
                     recovered = True
                 else:
-                    self.mark_stop_pending(str(serial_number), remaining)
+                    self._arm_stop_pending(str(serial_number), remaining)
+                    if fence_remaining is None or remaining > fence_remaining:
+                        robot[STOP_FENCE_EXPIRES_AT] = pending["expires_at"]
+                        fence_remaining = remaining
+                        recovered = True
             active = robot.get("active_plan")
             if active:
                 rotation = robot["rotations"].setdefault(
@@ -210,7 +224,19 @@ class CleaningPlanManager:
         duration_seconds: float = OEM_STOP_FENCE_SECONDS,
     ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
-        self._stop_fences[serial_number] = monotonic() + duration_seconds
+        self._arm_stop_pending(serial_number, duration_seconds)
+        self._robot(serial_number)[STOP_FENCE_EXPIRES_AT] = (
+            dt_util.utcnow() + timedelta(seconds=duration_seconds)
+        ).isoformat()
+
+    async def async_mark_stop_pending(
+        self,
+        serial_number: str,
+        duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+    ) -> None:
+        """Persist an accepted OEM STOP before releasing command ownership."""
+        self.mark_stop_pending(serial_number, duration_seconds)
+        await self._async_save_and_notify(serial_number)
 
     @callback
     def stop_pending(self, serial_number: str) -> bool:
@@ -220,13 +246,31 @@ class CleaningPlanManager:
             return False
         if monotonic() >= deadline:
             self._stop_fences.pop(serial_number, None)
+            self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None)
             return False
         return True
 
     @callback
-    def clear_stop_pending(self, serial_number: str) -> None:
+    def clear_stop_pending(self, serial_number: str) -> bool:
         """Clear a completed OEM stop fence after the robot reaches a stable state."""
-        self._stop_fences.pop(serial_number, None)
+        removed = self._stop_fences.pop(serial_number, None) is not None
+        return (
+            self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None) is not None
+            or removed
+        )
+
+    async def async_clear_stop_pending(self, serial_number: str) -> None:
+        """Persist removal of a fence after the robot becomes stable."""
+        if self.clear_stop_pending(serial_number):
+            await self._async_save_and_notify(serial_number)
+
+    @callback
+    def _arm_stop_pending(self, serial_number: str, duration_seconds: float) -> None:
+        """Restore one monotonic fence without changing its wall-clock expiry."""
+        deadline = monotonic() + duration_seconds
+        current = self._stop_fences.get(serial_number)
+        if current is None or deadline > current:
+            self._stop_fences[serial_number] = deadline
 
     @callback
     def begin_managed_motion(self, serial_number: str) -> int:
@@ -363,6 +407,14 @@ class CleaningPlanManager:
                 serial_number, reconciliation_removed
             )
             yield
+
+    @asynccontextmanager
+    async def managed_reconciliation(
+        self, serial_number: str, token: int
+    ) -> AsyncIterator[bool]:
+        """Serialize a late-completion marker and report current ownership."""
+        async with self.command_lock(serial_number):
+            yield self.managed_motion_is_current(serial_number, token)
 
     def cancellation_event(self, serial_number: str) -> asyncio.Event:
         """Return the cancellation signal for the current managed run."""
@@ -1332,6 +1384,16 @@ def _validated_native_reconciliation(
 def _native_reconciliation_expired(pending: Mapping[str, str]) -> bool:
     """Return whether a durable late-completion marker passed its fixed window."""
     return _native_reconciliation_remaining_seconds(pending) <= 0
+
+
+def _stop_fence_remaining_seconds(value: object) -> float | None:
+    """Return remaining wall-clock fence time from one stored absolute expiry."""
+    if not isinstance(value, str):
+        return None
+    expires_at = dt_util.parse_datetime(value)
+    if expires_at is None or expires_at.tzinfo is None:
+        return None
+    return (expires_at - dt_util.utcnow()).total_seconds()
 
 
 def _native_reconciliation_remaining_seconds(

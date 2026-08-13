@@ -111,7 +111,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
         if command is not UserCommand.STOP:
-            self._async_ensure_stop_settled(serial_number)
+            await self._async_ensure_stop_settled(serial_number)
         context = (
             self._plans.external_motion(serial_number)
             if replace_plan
@@ -119,23 +119,19 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with context:
             if command is not UserCommand.STOP:
-                self._async_ensure_stop_settled(serial_number)
+                await self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_send_user_command(command)
             if command is UserCommand.STOP:
-                mark = getattr(self._plans, "mark_stop_pending", None)
-                if callable(mark):
-                    mark(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number)
             await self.coordinator.async_request_refresh()
 
-    def _async_ensure_stop_settled(self, serial_number: str) -> None:
+    async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
         pending = getattr(self._plans, "stop_pending", None)
         if not callable(pending) or not pending(serial_number):
             return
         if self.activity in {VacuumActivity.DOCKED, VacuumActivity.IDLE}:
-            clear = getattr(self._plans, "clear_stop_pending", None)
-            if callable(clear):
-                clear(serial_number)
+            await self._plans.async_clear_stop_pending(serial_number)
             return
         raise ServiceValidationError(
             "Matic is completing its OEM stop countdown; wait until it docks",
@@ -162,14 +158,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         floor_plan = self._floor_plan()
         serial_number = self.coordinator.data.info.serial_number
-        self._async_ensure_stop_settled(serial_number)
+        await self._async_ensure_stop_settled(serial_number)
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
             else self._plans.external_motion(serial_number)
         )
         async with context:
-            self._async_ensure_stop_settled(serial_number)
+            await self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_start_coverage(
                 floor_plan,
                 [room.protocol_id for room in rooms],
@@ -221,9 +217,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # recharge-and-resume cycle, so let STOP own the return.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
-                mark = getattr(self._plans, "mark_stop_pending", None)
-                if callable(mark):
-                    mark(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number)
                 await self.coordinator.async_request_refresh()
                 return
             await self.coordinator.client.async_send_user_command(UserCommand.DOCK)

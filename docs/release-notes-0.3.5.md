@@ -17,7 +17,9 @@ the reliability of the local Map Studio after an integration reload.
 - While the native stop countdown is settling, new full-floor, room, custom
   area, and saved-plan commands wait until Matic reports a stable `docked`,
   `charging`, or `idle` state. This prevents duplicate or replacement work
-  during the countdown.
+  during the countdown. Every accepted STOP saves its absolute fence deadline,
+  so a Home Assistant restart restores only the original window's remaining
+  protection.
 - If Matic publishes one new, matching native single-room completion within
   the fixed reconciliation window, the integration safely reconciles its room
   history and duration. Expired markers are cleared so a later OEM clean
@@ -26,9 +28,9 @@ the reliability of the local Map Studio after an integration reload.
 - Late reconciliation tasks are tied to the integration lifecycle and are
   cancelled when a newer motion command replaces the run or the config entry
   unloads. Marker removal is saved before replacement motion begins, and a
-  restart restores only the original reconciliation window's remaining fence
-  time. Resetting affected plan history also cancels and removes any matching
-  late-completion reconciliation so old activity cannot recreate that history.
+  superseded cleanup cannot recreate or reschedule that marker. Resetting
+  affected plan history also cancels and removes any matching late-completion
+  reconciliation so old activity cannot recreate that history.
 - A room-to-room handoff waits for verified completion before preparing the
   next room, avoiding a queued follow-on command when a native stop or return
   is still settling.
@@ -50,7 +52,7 @@ cleaning history, maps, and reconciliation data local to Home Assistant.
 
 ## Verification
 
-The release candidate passes 946 Python tests / 8,904 statements at 100%
+The release candidate passes 948 Python tests / 8,962 statements at 100%
 coverage, 43 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, the public-tree privacy gate, release
 archive inspection, and a fresh-install import check.
