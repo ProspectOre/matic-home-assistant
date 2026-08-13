@@ -40,7 +40,11 @@ MATIC_MAP_STUDIO_VERSION = sha256(
 MATIC_MAP_STUDIO_PATH = (
     f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_VERSION}/matic-map-studio.js"
 )
-MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-0"
+# The panel element name is versioned independently from the integration
+# manifest.  Home Assistant keeps a custom-element registry alive while its
+# SPA changes panels, so reusing the same tag can leave an older constructor
+# serving a newly cache-busted module after an in-place integration reload.
+MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-1"
 DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
 DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
 

@@ -29,6 +29,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
+    OEM_STOP_RECONCILIATION_SECONDS,
     AreaBindingUpgradeResult,
     CleaningPlanManager,
     CleaningRoom,
@@ -40,13 +41,17 @@ from custom_components.matic_robot.plans import (
     _estimated_progress,
     _expected_duration,
     _latest_timestamp,
+    _reconcile_pending_native_history,
+    _record_native_completion,
     _stored_count,
+    _validated_native_reconciliation,
     resolve_room_reference,
     resolve_rooms,
 )
 from custom_components.matic_robot.services import (
     SESSION_HISTORY_ATTEMPTS,
     PlanCancelledError,
+    RoomInterruptedError,
     RoomRunOutcome,
     RoomTakenOverError,
     _async_active_session_state,
@@ -777,6 +782,57 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     assert manager.choose("serial", "weekend", rooms) == [study, kitchen]
 
 
+async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    kitchen = _room("Kitchen", "room-kitchen")
+    dispatched_at = dt_util.utcnow()
+    marker = {
+        "plan_id": "away",
+        "room_id": kitchen.room_id,
+        "room": kitchen.name,
+        "dispatched_at": dispatched_at.isoformat(),
+    }
+
+    await manager.async_mark_started("serial", "away", kitchen)
+    await manager.async_mark_failed(
+        "serial", "away", kitchen, "stopped", native_reconciliation=marker
+    )
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", watcher)
+
+    await manager.async_reset_history("serial", "other")
+    assert "pending_native_reconciliation" in manager._robot("serial")
+    assert watcher.done() is False
+
+    await manager.async_reset_history("serial", "away")
+    await asyncio.gather(watcher, return_exceptions=True)
+    assert watcher.cancelled()
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert "away" not in manager._robot("serial")["rotations"]
+    assert not await manager.async_mark_native_completed(
+        "serial",
+        "away",
+        kitchen,
+        dispatched_at=dispatched_at,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=60,
+    )
+    assert "away" not in manager._robot("serial")["rotations"]
+
+    await manager.async_mark_started("serial", "away", kitchen)
+    await manager.async_mark_failed(
+        "serial", "away", kitchen, "stopped", native_reconciliation=marker
+    )
+    second_watcher = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", second_watcher)
+    await manager.async_reset_history("serial")
+    await asyncio.gather(second_watcher, return_exceptions=True)
+    assert second_watcher.cancelled()
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert manager._robot("serial")["rotations"] == {}
+
+
 def test_rotation_recovers_from_corrupt_or_future_history(hass) -> None:
     manager = CleaningPlanManager(hass)
     kitchen = _room("Kitchen", "room-kitchen")
@@ -1043,6 +1099,105 @@ async def test_motion_arbiter_revokes_and_serializes_managed_commands(hass) -> N
     assert manager.managed_motion_is_current("serial", newer) is False
 
 
+async def test_replacement_motion_persists_reconciliation_removal_before_yield(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    marker = {
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "room": room.name,
+        "dispatched_at": dt_util.utcnow().isoformat(),
+    }
+
+    async def add_marker() -> None:
+        await manager.async_mark_started("serial", "away", room)
+        await manager.async_mark_failed(
+            "serial", "away", room, "error", native_reconciliation=marker
+        )
+        manager._store.async_save.reset_mock()
+
+    await add_marker()
+    async with manager.external_motion("serial"):
+        assert "pending_native_reconciliation" not in manager._robot("serial")
+        manager._store.async_save.assert_awaited_once()
+
+    await add_marker()
+    await manager.async_replace_managed_motion("serial")
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    manager._store.async_save.assert_awaited_once()
+
+    await add_marker()
+    token = manager.begin_managed_motion("serial")
+    async with manager.managed_command("serial", token):
+        assert "pending_native_reconciliation" not in manager._robot("serial")
+        manager._store.async_save.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("terminal_error", "translation_key", "last_result"),
+    [
+        (TimeoutError(), "plan_timeout", "failed"),
+        (
+            RoomInterruptedError("synthetic interruption"),
+            "room_interrupted",
+            "interrupted",
+        ),
+    ],
+)
+async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
+    hass,
+    terminal_error: Exception,
+    translation_key: str,
+    last_result: str,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    token = manager.begin_managed_motion("serial")
+    dispatched_at = dt_util.utcnow()
+    sent: list[UserCommand] = []
+
+    async def replace_during_cleanup(motion_token: int, command: UserCommand) -> None:
+        assert motion_token == token
+        sent.append(command)
+        manager.replace_managed_motion("serial")
+        raise ManagedMotionReplacedError("replacement won")
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            AsyncMock(return_value="cleaning"),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_room_outcome",
+            AsyncMock(side_effect=terminal_error),
+        ),
+        pytest.raises(ServiceValidationError) as failure,
+    ):
+        await _async_run_room(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            room,
+            motion_token=token,
+            session_history=AsyncMock(return_value=()),
+            managed_user_command=replace_during_cleanup,
+            prepared_dispatch=_PreparedRoomDispatch(room, frozenset(), dispatched_at),
+        )
+
+    assert failure.value.translation_key == translation_key
+    assert sent == [UserCommand.STOP]
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert "serial" not in manager._reconciliation_tasks
+    record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][room.room_id]
+    assert record["last_result"] == last_result
+
+
 async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -1069,6 +1224,444 @@ async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> No
     assert snapshot["interrupted_runs"] == 1
     assert snapshot["active_plan"] is None
     assert snapshot["last_interrupted_plan"]["room"] == "Kitchen"
+
+
+async def test_pending_native_stop_completion_is_reconciled_on_history_import(
+    hass,
+) -> None:
+    """A native session that finishes after STOP still credits the managed room."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    now = dt_util.utcnow()
+    dispatched_at = (now - timedelta(seconds=5)).isoformat()
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at,
+        },
+    )
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                room.room_id,
+                room.name,
+                "protocol-kitchen",
+                b"kitchen",
+                ((0, 0), (1, 0), (1, 1), (0, 1)),
+            ),
+        ),
+    )
+    ended_at = (now - timedelta(seconds=1)).isoformat()
+    record = CleaningSessionRecord(
+        b"new-session",
+        CleaningSession(
+            (now - timedelta(seconds=10)).isoformat(),
+            ended_at,
+            9,
+            (room.name,),
+            ((room.name, 9),),
+            True,
+            (room.name,),
+        ),
+    )
+
+    assert await manager.async_import_native_history("serial", floor_plan, [record])
+    snapshot = manager.snapshot("serial")
+    room_record = snapshot["plan_history"]["away"]["rooms"][room.room_id]
+    assert room_record["last_result"] == "completed"
+    assert room_record["completed_runs"] == 1
+    assert room_record["last_duration_seconds"] == 9
+    assert snapshot["native_reconciliation_pending"] is False
+
+
+async def test_expired_native_reconciliation_is_cleared_without_plan_credit(
+    hass,
+) -> None:
+    """A later same-room OEM clean cannot satisfy an expired managed marker."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    now = dt_util.utcnow()
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        },
+    )
+    manager._robot("serial")["pending_native_reconciliation"]["expires_at"] = (
+        now - timedelta(seconds=1)
+    ).isoformat()
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                room.room_id,
+                room.name,
+                "protocol-kitchen",
+                b"kitchen",
+                ((0, 0), (1, 0), (1, 1), (0, 1)),
+            ),
+        ),
+    )
+    unrelated = CleaningSessionRecord(
+        b"later-session",
+        CleaningSession(
+            (now - timedelta(seconds=4)).isoformat(),
+            now.isoformat(),
+            4,
+            (room.name,),
+            ((room.name, 4),),
+            True,
+            (room.name,),
+        ),
+    )
+
+    assert await manager.async_import_native_history("serial", floor_plan, [unrelated])
+    snapshot = manager.snapshot("serial")
+    plan_record = snapshot["plan_history"]["away"]["rooms"][room.room_id]
+    assert plan_record["last_result"] == "failed"
+    assert plan_record.get("completed_runs", 0) == 0
+    assert snapshot["native_reconciliation_pending"] is False
+
+
+async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
+    marker = {
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "room": room.name,
+        "dispatched_at": dispatched_at.isoformat(),
+    }
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial", "away", room, "error", native_reconciliation=marker
+    )
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "other", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    manager._robot("serial")["rotations"]["away"]["rooms"][room.room_id][
+        "last_result"
+    ] = "completed"
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_interrupted(
+        "serial", "away", room, "interrupted", native_reconciliation=marker
+    )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    manager._robot("serial")["pending_native_reconciliation"]["expires_at"] = (
+        now - timedelta(seconds=1)
+    ).isoformat()
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+
+
+async def test_stale_native_watcher_cannot_credit_new_same_room_marker(hass) -> None:
+    """A superseded watcher cannot apply old settings to a newer dispatch."""
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    current_room = _room("Kitchen", "room-kitchen")
+    stale_room = replace(current_room, cleaning_mode="vacuum")
+    now = dt_util.utcnow()
+    stale_dispatch = now - timedelta(minutes=1)
+    current_dispatch = now - timedelta(seconds=5)
+    await manager.async_mark_started("serial", "away", current_room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        current_room,
+        "stopped",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": current_room.room_id,
+            "room": current_room.name,
+            "dispatched_at": current_dispatch.isoformat(),
+        },
+    )
+    save.reset_mock()
+
+    assert (
+        await manager.async_mark_native_completed(
+            "serial",
+            "away",
+            stale_room,
+            dispatched_at=stale_dispatch,
+            completed_at=now.isoformat(),
+            duration_seconds=60,
+        )
+        is False
+    )
+    record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][
+        current_room.room_id
+    ]
+    assert record["last_result"] == "failed"
+    assert record["cleaning_mode"] == current_room.cleaning_mode
+    assert record.get("completed_runs", 0) == 0
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    save.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        None,
+        {
+            "plan_id": "",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": 1,
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": 1,
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": 1,
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "not-a-time",
+        },
+        {
+            "plan_id": "plan",
+            "room_id": "id",
+            "room": "Room",
+            "dispatched_at": "2026-01-01T00:00:00+00:00",
+            "expires_at": "2026-01-01T00:12:00",
+        },
+    ],
+)
+def test_native_reconciliation_marker_validation_rejects_bad_shapes(value) -> None:
+    assert _validated_native_reconciliation(value) is None
+
+
+async def test_native_reconciliation_import_rejects_ambiguous_and_invalid_records(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    now = dt_util.utcnow()
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                room.room_id,
+                room.name,
+                "protocol-kitchen",
+                b"kitchen",
+                ((0, 0), (1, 0), (1, 1), (0, 1)),
+            ),
+        ),
+    )
+    pending = {
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "room": room.name,
+        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        "expires_at": (
+            now + timedelta(seconds=OEM_STOP_RECONCILIATION_SECONDS)
+        ).isoformat(),
+    }
+    robot = manager._robot("serial")
+    robot["pending_native_reconciliation"] = pending
+
+    invalid = CleaningSession(None, None, None, (room.name,), (), False)
+    malformed_time = CleaningSession(
+        None,
+        (now - timedelta(seconds=1)).isoformat(),
+        1,
+        (room.name,),
+        ((room.name, 1),),
+        True,
+        (room.name,),
+    )
+    wrong_room = CleaningSession(
+        (now - timedelta(seconds=10)).isoformat(),
+        (now - timedelta(seconds=1)).isoformat(),
+        1,
+        ("Study",),
+        (("Study", 1),),
+        True,
+        ("Study",),
+    )
+    missing_completion = CleaningSession(
+        (now - timedelta(seconds=10)).isoformat(),
+        (now - timedelta(seconds=1)).isoformat(),
+        1,
+        (room.name,),
+        ((room.name, 1),),
+        True,
+        (),
+    )
+    for session in (invalid, malformed_time, wrong_room, missing_completion):
+        assert not _reconcile_pending_native_history(
+            robot, floor_plan, [CleaningSessionRecord(b"candidate", session)]
+        )
+        robot["pending_native_reconciliation"] = pending
+
+    robot["pending_native_reconciliation"] = {
+        **pending,
+        "room_id": "missing-room",
+    }
+    assert not _reconcile_pending_native_history(robot, floor_plan, [])
+
+    _record_native_completion(
+        robot,
+        "away",
+        room,
+        completed_at=now.isoformat(),
+        duration_seconds=1,
+    )
+
+
+def test_oem_stop_fence_expires_only_after_settle_window(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager.mark_stop_pending("serial")
+    assert manager.stop_pending("serial") is True
+    manager.clear_stop_pending("serial")
+    assert manager.stop_pending("serial") is False
+
+
+def test_oem_stop_fence_expiry_is_self_cleaning(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    with patch("custom_components.matic_robot.plans.monotonic", side_effect=[0, 720]):
+        manager.mark_stop_pending("serial")
+        assert manager.stop_pending("serial") is False
+
+
+async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> None:
+    now_value = dt_util.utcnow()
+    now = now_value.isoformat()
+    valid = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+        "room": "Kitchen",
+        "dispatched_at": now,
+        "expires_at": (now_value + timedelta(seconds=30)).isoformat(),
+    }
+    stored = {
+        "robots": {
+            "serial": {"pending_native_reconciliation": valid},
+            "other": {"pending_native_reconciliation": {"plan_id": 1}},
+            "generic": {
+                "stop_fence_expires_at": (now_value + timedelta(seconds=45)).isoformat()
+            },
+            "bad-fence": {"stop_fence_expires_at": "not-a-timestamp"},
+            "stale-fence": {
+                "stop_fence_expires_at": (now_value - timedelta(seconds=1)).isoformat()
+            },
+            "stale": {
+                "pending_native_reconciliation": {
+                    **valid,
+                    "expires_at": (now_value - timedelta(seconds=1)).isoformat(),
+                }
+            },
+        }
+    }
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=now_value,
+        ),
+        patch("custom_components.matic_robot.plans.monotonic", return_value=100.0),
+    ):
+        await manager.async_load()
+        assert manager.stop_pending("serial") is True
+        assert manager._stop_fences["serial"] == 130.0
+        assert manager._robot("serial")["stop_fence_expires_at"] == valid["expires_at"]
+        assert manager.stop_pending("generic") is True
+        assert manager._stop_fences["generic"] == 145.0
+        assert "stop_fence_expires_at" not in manager._robot("bad-fence")
+        assert "stop_fence_expires_at" not in manager._robot("stale-fence")
+        assert "pending_native_reconciliation" not in manager._robot("other")
+        assert "pending_native_reconciliation" not in manager._robot("stale")
+        assert manager.stop_pending("stale") is False
+    manager._store.async_load.assert_awaited_once()
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> None:
@@ -1588,6 +2181,10 @@ async def test_room_timeout_is_failure_safe() -> None:
     sender.assert_awaited_once_with(7, UserCommand.STOP)
     assert failure.value.translation_key == "plan_start_timeout"
     manager.async_mark_failed.assert_awaited_once()
+    assert (
+        manager.async_mark_failed.await_args.args[3]
+        == "The robot did not begin cleaning before the start timeout"
+    )
     manager.async_mark_resumed.assert_not_awaited()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
@@ -1629,6 +2226,10 @@ async def test_room_completion_timeout_is_failure_safe() -> None:
 
     assert failure.value.translation_key == "plan_timeout"
     manager.async_mark_failed.assert_awaited_once()
+    assert (
+        manager.async_mark_failed.await_args.args[3]
+        == "The managed room exceeded its completion timeout"
+    )
     manager.async_mark_completed.assert_not_awaited()
 
 
@@ -2051,8 +2652,9 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
     manager.async_mark_completed.assert_not_awaited()
 
 
+@pytest.mark.parametrize("use_session_reader", [False, True])
 async def test_room_prefetch_verifies_current_history_while_next_room_starts(
-    hass,
+    hass, use_session_reader: bool
 ) -> None:
     """A return dispatches the next room before current history settles."""
     room = _room("Kitchen", "room-kitchen")
@@ -2119,6 +2721,9 @@ async def test_room_prefetch_verifies_current_history_while_next_room_starts(
         session_history=history,
         managed_user_command=sender,
         prefetch_next=prefetch,
+        active_session=(
+            AsyncMock(side_effect=[True, False]) if use_session_reader else None
+        ),
     )
 
     assert completed is True
@@ -2127,7 +2732,7 @@ async def test_room_prefetch_verifies_current_history_while_next_room_starts(
     sender.assert_not_awaited()
 
 
-async def test_room_prefetch_stops_next_task_when_completion_is_unverified(
+async def test_room_prefetch_does_not_start_next_task_when_completion_is_unverified(
     hass,
 ) -> None:
     room = _room("Kitchen", "room-kitchen")
@@ -2178,7 +2783,7 @@ async def test_room_prefetch_stops_next_task_when_completion_is_unverified(
         )
 
     assert completed is False
-    sender.assert_awaited_once_with(7, UserCommand.STOP)
+    sender.assert_not_awaited()
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
 
@@ -3097,6 +3702,37 @@ async def test_run_task_lifecycle_edge_cases(hass) -> None:
     manager.register_run_task("serial")
     await manager.async_cancel_and_wait("serial")
     manager.unregister_run_task("serial")
+
+
+async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    started = asyncio.Event()
+
+    async def reconcile() -> None:
+        started.set()
+        await asyncio.Event().wait()
+
+    task = asyncio.create_task(reconcile())
+    manager.register_reconciliation_task("serial", task)
+    await started.wait()
+    await manager.async_cancel_and_wait("serial")
+    assert task.cancelled()
+    assert "serial" not in manager._reconciliation_tasks
+
+    finished = asyncio.create_task(asyncio.sleep(0))
+    manager.register_reconciliation_task("serial", finished)
+    await finished
+    await asyncio.sleep(0)
+    assert "serial" not in manager._reconciliation_tasks
+
+
+async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    task = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", task)
+    manager.replace_managed_motion("serial")
+    await asyncio.gather(task, return_exceptions=True)
+    assert task.cancelled()
 
 
 async def test_active_session_readers_are_bounded_and_cancel_safe(hass) -> None:

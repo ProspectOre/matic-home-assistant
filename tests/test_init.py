@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -11,14 +12,21 @@ from homeassistant.components import frontend
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
+    _schedule_native_reconciliation_recovery,
     async_remove_entry,
     async_setup,
     async_setup_entry,
     async_unload_entry,
 )
 from custom_components.matic_robot.client.exceptions import CannotConnectError
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import (
+    CleaningSession,
+    CleaningSessionRecord,
+    FloorPlan,
+    Room,
+)
 from custom_components.matic_robot.const import (
     CONF_CERTIFICATE_FINGERPRINT,
     CONF_HERMES_CREDENTIAL,
@@ -29,7 +37,11 @@ from custom_components.matic_robot.const import (
     DOMAIN,
     PLATFORMS,
 )
-from custom_components.matic_robot.plans import AreaBindingUpgradeResult
+from custom_components.matic_robot.plans import (
+    STOP_FENCE_EXPIRES_AT,
+    AreaBindingUpgradeResult,
+    CleaningPlanManager,
+)
 
 
 def _entry() -> SimpleNamespace:
@@ -74,6 +86,202 @@ def test_floor_plan_area_binding_support_requires_usable_geometry() -> None:
             ),
         )
     )
+
+
+async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
+    pending = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+        "room": "Kitchen",
+        "dispatched_at": "2026-08-13T12:00:00+00:00",
+        "expires_at": "2026-08-13T12:12:00+00:00",
+    }
+    plans = MagicMock()
+    plans.pending_native_reconciliation.return_value = None
+    entry = SimpleNamespace(async_create_background_task=MagicMock())
+    hass = MagicMock()
+    client = MagicMock()
+    coordinator = MagicMock()
+
+    _schedule_native_reconciliation_recovery(
+        hass, entry, client, coordinator, plans, "synthetic-serial"
+    )
+    entry.async_create_background_task.assert_not_called()
+
+    lifecycle_task = asyncio.create_task(asyncio.sleep(0))
+
+    def capture_task(_hass, target, _name):
+        target.close()
+        return lifecycle_task
+
+    plans.pending_native_reconciliation.return_value = pending
+    entry.async_create_background_task.side_effect = capture_task
+    _schedule_native_reconciliation_recovery(
+        hass, entry, client, coordinator, plans, "synthetic-serial"
+    )
+    await lifecycle_task
+
+    assert entry.async_create_background_task.call_args.args[2] == (
+        "matic_robot native stop recovery"
+    )
+    plans.register_reconciliation_task.assert_called_once_with(
+        "synthetic-serial", lifecycle_task
+    )
+
+
+async def test_restart_recovery_credits_late_native_completion(hass) -> None:
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    room = Room(
+        "room-kitchen",
+        "Kitchen",
+        "protocol-kitchen",
+        b"kitchen",
+        ((0, 0), (1, 0), (1, 1), (0, 1)),
+    )
+    floor_plan = FloorPlan(1, "partition", b"partition", (room,))
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("synthetic-serial")["pending_native_reconciliation"] = {
+        "plan_id": "away",
+        "room_id": room.id,
+        "room": room.name,
+        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        "expires_at": (now + timedelta(seconds=10)).isoformat(),
+    }
+    pending = manager.pending_native_reconciliation("synthetic-serial")
+    assert pending is not None
+    native_record = CleaningSessionRecord(
+        b"late-session",
+        CleaningSession(
+            (now - timedelta(seconds=4)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+            3,
+            (room.name,),
+            ((room.name, 3),),
+            True,
+            (room.name,),
+        ),
+    )
+    client = SimpleNamespace(
+        async_get_cleaning_session_records=AsyncMock(return_value=(native_record,))
+    )
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan))
+
+    with (
+        patch("custom_components.matic_robot.dt_util.utcnow", return_value=now),
+        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        await _async_resume_native_reconciliation(
+            client,
+            coordinator,
+            manager,
+            "synthetic-serial",
+            pending,
+        )
+
+    sleep.assert_awaited_once_with(5)
+    client.async_get_cleaning_session_records.assert_awaited_once()
+    assert manager.pending_native_reconciliation("synthetic-serial") is None
+    room_history = manager.snapshot("synthetic-serial")["plan_history"]["away"][
+        "rooms"
+    ][room.id]
+    assert room_history["last_result"] == "completed"
+    assert room_history["last_duration_seconds"] == 3
+
+
+async def test_restart_recovery_expires_marker_after_transport_error(hass) -> None:
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    dispatched_at = now - timedelta(seconds=5)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager._robot("synthetic-serial")
+    robot["pending_native_reconciliation"] = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+        "room": "Kitchen",
+        "dispatched_at": dispatched_at.isoformat(),
+        "expires_at": (now + timedelta(seconds=1)).isoformat(),
+    }
+    robot[STOP_FENCE_EXPIRES_AT] = (now + timedelta(seconds=1)).isoformat()
+    manager._stop_fences["synthetic-serial"] = 0
+    pending = manager.pending_native_reconciliation("synthetic-serial")
+    assert pending is not None
+    client = SimpleNamespace(
+        async_get_cleaning_session_records=AsyncMock(
+            side_effect=CannotConnectError("history unavailable")
+        )
+    )
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=None))
+
+    with (
+        patch(
+            "custom_components.matic_robot.dt_util.utcnow",
+            side_effect=(now, now + timedelta(seconds=2)),
+        ),
+        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()) as sleep,
+    ):
+        await _async_resume_native_reconciliation(
+            client,
+            coordinator,
+            manager,
+            "synthetic-serial",
+            pending,
+        )
+
+    sleep.assert_awaited_once_with(1)
+    client.async_get_cleaning_session_records.assert_awaited_once()
+    assert manager.pending_native_reconciliation("synthetic-serial") is None
+    assert STOP_FENCE_EXPIRES_AT not in manager._robot("synthetic-serial")
+    manager._store.async_save.assert_awaited_once()
+
+
+async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> None:
+    now = datetime(2026, 8, 13, 12, tzinfo=UTC)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager._robot("synthetic-serial")
+    robot["pending_native_reconciliation"] = {
+        "plan_id": "away",
+        "room_id": "room-kitchen",
+        "room": "Kitchen",
+        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        "expires_at": (now + timedelta(seconds=10)).isoformat(),
+    }
+    pending = manager.pending_native_reconciliation("synthetic-serial")
+    assert pending is not None
+    replacement = {
+        **pending,
+        "dispatched_at": now.isoformat(),
+    }
+
+    async def replace_marker() -> tuple[CleaningSessionRecord, ...]:
+        robot["pending_native_reconciliation"] = replacement
+        return ()
+
+    client = SimpleNamespace(
+        async_get_cleaning_session_records=AsyncMock(side_effect=replace_marker)
+    )
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan=None))
+
+    with (
+        patch("custom_components.matic_robot.dt_util.utcnow", return_value=now),
+        patch("custom_components.matic_robot.asyncio.sleep", AsyncMock()),
+        patch.object(
+            manager,
+            "async_import_native_history",
+            wraps=manager.async_import_native_history,
+        ) as import_history,
+    ):
+        await _async_resume_native_reconciliation(
+            client,
+            coordinator,
+            manager,
+            "synthetic-serial",
+            pending,
+        )
+
+    import_history.assert_not_awaited()
+    assert manager.pending_native_reconciliation("synthetic-serial") == replacement
 
 
 async def test_setup_registers_services_without_media_view() -> None:
@@ -287,6 +495,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     hass.config_entries.async_forward_entry_setups.assert_awaited_once_with(
         entry, PLATFORMS
     )
+    plans.pending_native_reconciliation.assert_called_once_with("synthetic-serial")
     assert entry.runtime_data.client is client
     assert entry.runtime_data.slam_map is slam_map
     assert entry.runtime_data.slam_history is slam_history

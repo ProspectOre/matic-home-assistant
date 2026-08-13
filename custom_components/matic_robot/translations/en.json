@@ -766,6 +766,9 @@
     "robot_error": {
       "message": "The selected Matic robot reported an error."
     },
+    "robot_stop_pending": {
+      "message": "Matic is completing its OEM stop countdown; wait until it docks."
+    },
     "robot_command_failed": {
       "message": "The robot could not complete the requested command."
     },

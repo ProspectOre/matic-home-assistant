@@ -216,6 +216,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
         has_managed_task=MagicMock(return_value=False),
+        stop_pending=MagicMock(return_value=False),
+        async_mark_stop_pending=AsyncMock(),
+        async_clear_stop_pending=AsyncMock(),
         command_lock=MagicMock(side_effect=lambda _serial: asyncio.Lock()),
         external_motion=MagicMock(side_effect=_motion_context),
         managed_command=MagicMock(side_effect=_managed_motion_context),
@@ -1258,7 +1261,6 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         UserCommand.PAUSE,
         UserCommand.STOP,
         UserCommand.STOP,
-        UserCommand.DOCK,
     ]
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
@@ -1273,7 +1275,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
-    assert coordinator.async_request_refresh.await_count == 5
+    assert coordinator.async_request_refresh.await_count == 4
 
 
 async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:

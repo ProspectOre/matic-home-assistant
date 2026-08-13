@@ -110,14 +110,34 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
+        if command is not UserCommand.STOP:
+            await self._async_ensure_stop_settled(serial_number)
         context = (
             self._plans.external_motion(serial_number)
             if replace_plan
             else self._plans.command_lock(serial_number)
         )
         async with context:
+            if command is not UserCommand.STOP:
+                await self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_send_user_command(command)
+            if command is UserCommand.STOP:
+                await self._plans.async_mark_stop_pending(serial_number)
             await self.coordinator.async_request_refresh()
+
+    async def _async_ensure_stop_settled(self, serial_number: str) -> None:
+        """Reject new motion while the firmware's graceful STOP is counting down."""
+        pending = getattr(self._plans, "stop_pending", None)
+        if not callable(pending) or not pending(serial_number):
+            return
+        if self.activity in {VacuumActivity.DOCKED, VacuumActivity.IDLE}:
+            await self._plans.async_clear_stop_pending(serial_number)
+            return
+        raise ServiceValidationError(
+            "Matic is completing its OEM stop countdown; wait until it docks",
+            translation_domain=DOMAIN,
+            translation_key="robot_stop_pending",
+        )
 
     def _floor_plan(self) -> FloorPlan:
         floor_plan = self.coordinator.data.floor_plan
@@ -138,12 +158,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         floor_plan = self._floor_plan()
         serial_number = self.coordinator.data.info.serial_number
+        await self._async_ensure_stop_settled(serial_number)
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
             else self._plans.external_motion(serial_number)
         )
         async with context:
+            await self._async_ensure_stop_settled(serial_number)
             await self.coordinator.client.async_start_coverage(
                 floor_plan,
                 [room.protocol_id for room in rooms],
@@ -189,12 +211,15 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with self._plans.external_motion(serial_number):
             if stop_before_dock:
-                # The robot treats docking mid-task as recharge-and-resume and
-                # heads back out afterwards; stop the task first so a
-                # user-requested dock is final.
+                # STOP is the OEM final-return command: firmware counts down
+                # for roughly ten minutes and then docks.  Sending DOCK here
+                # can interrupt that graceful stop and turn it into a
+                # recharge-and-resume cycle, so let STOP own the return.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
+                await self._plans.async_mark_stop_pending(serial_number)
                 await self.coordinator.async_request_refresh()
+                return
             await self.coordinator.client.async_send_user_command(UserCommand.DOCK)
             await self.coordinator.async_request_refresh()
 
