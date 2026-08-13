@@ -168,11 +168,12 @@ class CleaningPlanManager:
                 robot.get("pending_native_reconciliation")
             )
             if pending is not None:
-                if _native_reconciliation_expired(pending):
+                remaining = _native_reconciliation_remaining_seconds(pending)
+                if remaining <= 0:
                     robot.pop("pending_native_reconciliation", None)
                     recovered = True
                 else:
-                    self.mark_stop_pending(str(serial_number))
+                    self.mark_stop_pending(str(serial_number), remaining)
             active = robot.get("active_plan")
             if active:
                 rotation = robot["rotations"].setdefault(
@@ -203,9 +204,13 @@ class CleaningPlanManager:
         return self._command_locks.setdefault(serial_number, asyncio.Lock())
 
     @callback
-    def mark_stop_pending(self, serial_number: str) -> None:
+    def mark_stop_pending(
+        self,
+        serial_number: str,
+        duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+    ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
-        self._stop_fences[serial_number] = monotonic() + OEM_STOP_FENCE_SECONDS
+        self._stop_fences[serial_number] = monotonic() + duration_seconds
 
     @callback
     def stop_pending(self, serial_number: str) -> bool:
@@ -250,15 +255,26 @@ class CleaningPlanManager:
             self._managed_motion.pop(serial_number, None)
 
     @callback
-    def replace_managed_motion(self, serial_number: str) -> None:
+    def replace_managed_motion(self, serial_number: str) -> bool:
         """Cancel any managed plan before an independent motion command."""
         self.cancel(serial_number)
         self.cancel_reconciliation_tasks(serial_number)
-        self._robot(serial_number).pop("pending_native_reconciliation", None)
+        reconciliation_removed = (
+            self._robot(serial_number).pop("pending_native_reconciliation", None)
+            is not None
+        )
         self._motion_generations[serial_number] = (
             self._motion_generations.get(serial_number, 0) + 1
         )
         self._managed_motion.pop(serial_number, None)
+        return reconciliation_removed
+
+    async def async_replace_managed_motion(self, serial_number: str) -> None:
+        """Persist replacement ownership before its independent command runs."""
+        reconciliation_removed = self.replace_managed_motion(serial_number)
+        await self._async_persist_reconciliation_removal(
+            serial_number, reconciliation_removed
+        )
 
     @callback
     def register_run_task(self, serial_number: str) -> None:
@@ -324,8 +340,11 @@ class CleaningPlanManager:
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[None]:
         """Replace a managed run and serialize one independent command."""
-        self.replace_managed_motion(serial_number)
+        reconciliation_removed = self.replace_managed_motion(serial_number)
         async with self.command_lock(serial_number):
+            await self._async_persist_reconciliation_removal(
+                serial_number, reconciliation_removed
+            )
             yield
 
     @asynccontextmanager
@@ -336,6 +355,13 @@ class CleaningPlanManager:
         async with self.command_lock(serial_number):
             if not self.managed_motion_is_current(serial_number, token):
                 raise ManagedMotionReplacedError("managed motion was replaced")
+            reconciliation_removed = (
+                self._robot(serial_number).pop("pending_native_reconciliation", None)
+                is not None
+            )
+            await self._async_persist_reconciliation_removal(
+                serial_number, reconciliation_removed
+            )
             yield
 
     def cancellation_event(self, serial_number: str) -> asyncio.Event:
@@ -1175,6 +1201,13 @@ class CleaningPlanManager:
         for listener in tuple(self._listeners.get(serial_number, ())):
             listener()
 
+    async def _async_persist_reconciliation_removal(
+        self, serial_number: str, removed: bool
+    ) -> None:
+        """Save a durable-marker removal before replacement motion dispatches."""
+        if removed:
+            await self._async_save_and_notify(serial_number)
+
 
 def _elapsed_seconds(started: object, now: datetime) -> int | None:
     """Return positive elapsed wall-clock seconds from a stored ISO timestamp."""
@@ -1292,8 +1325,15 @@ def _validated_native_reconciliation(
 
 def _native_reconciliation_expired(pending: Mapping[str, str]) -> bool:
     """Return whether a durable late-completion marker passed its fixed window."""
+    return _native_reconciliation_remaining_seconds(pending) <= 0
+
+
+def _native_reconciliation_remaining_seconds(
+    pending: Mapping[str, str],
+) -> float:
+    """Return wall-clock seconds left for durable stop reconciliation."""
     expires_at = cast(datetime, dt_util.parse_datetime(pending["expires_at"]))
-    return expires_at <= dt_util.utcnow()
+    return (expires_at - dt_util.utcnow()).total_seconds()
 
 
 def _reconcile_pending_native_history(

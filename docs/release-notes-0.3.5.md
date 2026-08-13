@@ -25,7 +25,9 @@ the reliability of the local Map Studio after an integration reload.
   session records also remain uncredited.
 - Late reconciliation tasks are tied to the integration lifecycle and are
   cancelled when a newer motion command replaces the run or the config entry
-  unloads.
+  unloads. Marker removal is saved before replacement motion begins, and a
+  restart restores only the original reconciliation window's remaining fence
+  time.
 - A room-to-room handoff waits for verified completion before preparing the
   next room, avoiding a queued follow-on command when a native stop or return
   is still settling.
@@ -47,7 +49,7 @@ cleaning history, maps, and reconciliation data local to Home Assistant.
 
 ## Verification
 
-The release candidate passes 944 Python tests / 8,887 statements at 100%
+The release candidate passes 945 Python tests / 8,900 statements at 100%
 coverage, 43 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, the public-tree privacy gate, release
 archive inspection, and a fresh-install import check.

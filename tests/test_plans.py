@@ -1047,6 +1047,43 @@ async def test_motion_arbiter_revokes_and_serializes_managed_commands(hass) -> N
     assert manager.managed_motion_is_current("serial", newer) is False
 
 
+async def test_replacement_motion_persists_reconciliation_removal_before_yield(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    marker = {
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "room": room.name,
+        "dispatched_at": dt_util.utcnow().isoformat(),
+    }
+
+    async def add_marker() -> None:
+        await manager.async_mark_started("serial", "away", room)
+        await manager.async_mark_failed(
+            "serial", "away", room, "error", native_reconciliation=marker
+        )
+        manager._store.async_save.reset_mock()
+
+    await add_marker()
+    async with manager.external_motion("serial"):
+        assert "pending_native_reconciliation" not in manager._robot("serial")
+        manager._store.async_save.assert_awaited_once()
+
+    await add_marker()
+    await manager.async_replace_managed_motion("serial")
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    manager._store.async_save.assert_awaited_once()
+
+    await add_marker()
+    token = manager.begin_managed_motion("serial")
+    async with manager.managed_command("serial", token):
+        assert "pending_native_reconciliation" not in manager._robot("serial")
+        manager._store.async_save.assert_awaited_once()
+
+
 async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -1399,9 +1436,7 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
         "room_id": "room-kitchen",
         "room": "Kitchen",
         "dispatched_at": now,
-        "expires_at": (
-            now_value + timedelta(seconds=OEM_STOP_RECONCILIATION_SECONDS)
-        ).isoformat(),
+        "expires_at": (now_value + timedelta(seconds=30)).isoformat(),
     }
     stored = {
         "robots": {
@@ -1419,11 +1454,19 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
     manager._store = SimpleNamespace(
         async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
     )
-    await manager.async_load()
-    assert manager.stop_pending("serial") is True
-    assert "pending_native_reconciliation" not in manager._robot("other")
-    assert "pending_native_reconciliation" not in manager._robot("stale")
-    assert manager.stop_pending("stale") is False
+    with (
+        patch(
+            "custom_components.matic_robot.plans.dt_util.utcnow",
+            return_value=now_value,
+        ),
+        patch("custom_components.matic_robot.plans.monotonic", return_value=100.0),
+    ):
+        await manager.async_load()
+        assert manager.stop_pending("serial") is True
+        assert manager._stop_fences["serial"] == 130.0
+        assert "pending_native_reconciliation" not in manager._robot("other")
+        assert "pending_native_reconciliation" not in manager._robot("stale")
+        assert manager.stop_pending("stale") is False
     manager._store.async_load.assert_awaited_once()
 
 

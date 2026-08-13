@@ -331,7 +331,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 call.data.get("cleaning_mode"),
                 call.data.get("coverage_setting"),
             )
-            manager.replace_managed_motion(serial_number)
+            await manager.async_replace_managed_motion(serial_number)
             try:
                 await entry.runtime_data.client.async_start_custom_coverage(
                     floor_plan,
