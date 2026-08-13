@@ -27,7 +27,8 @@ the reliability of the local Map Studio after an integration reload.
   are cleared so a later OEM clean cannot be credited to an old failed plan;
   ambiguous, malformed, or unrelated session records also remain uncredited. A
   live watcher that reaches the end of that window now durably removes its
-  pending marker as well.
+  pending marker as well. If Home Assistant or the integration restarts during
+  that window, polling resumes for only the original window's remaining time.
 - Late reconciliation tasks are tied to the integration lifecycle and are
   cancelled when a newer motion command replaces the run or the config entry
   unloads. Marker removal is saved before replacement motion begins, and a
@@ -55,7 +56,7 @@ cleaning history, maps, and reconciliation data local to Home Assistant.
 
 ## Verification
 
-The release candidate passes 950 Python tests / 8,972 statements at 100%
+The release candidate passes 954 Python tests / 9,004 statements at 100%
 coverage, 43 Chromium browser tests, three iPhone WebKit interaction tests,
 strict typing, lint and format checks, the public-tree privacy gate, release
 archive inspection, and a fresh-install import check.

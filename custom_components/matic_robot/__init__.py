@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from dataclasses import dataclass
+from datetime import datetime
+from typing import cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
@@ -39,7 +42,10 @@ from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
-from .services import async_register_services
+from .services import (
+    OEM_STOP_RECONCILIATION_POLL_SECONDS,
+    async_register_services,
+)
 from .slam_history import (
     SlamHistoryStore,
     async_collect_slam_history,
@@ -137,6 +143,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        _schedule_native_reconciliation_recovery(
+            hass,
+            entry,
+            client,
+            coordinator,
+            plans,
+            serial_number,
+        )
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
@@ -213,6 +227,71 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         client.close()
         raise
     return True
+
+
+def _schedule_native_reconciliation_recovery(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    client: MaticHermesClient,
+    coordinator: MaticCoordinator,
+    plans: CleaningPlanManager,
+    serial_number: str,
+) -> None:
+    """Resume a durable late-completion watcher after entry setup."""
+    pending = plans.pending_native_reconciliation(serial_number)
+    if not isinstance(pending, dict):
+        return
+    task = entry.async_create_background_task(
+        hass,
+        _async_resume_native_reconciliation(
+            client,
+            coordinator,
+            plans,
+            serial_number,
+            pending,
+        ),
+        f"{DOMAIN} native stop recovery",
+    )
+    if isinstance(task, asyncio.Task):
+        plans.register_reconciliation_task(serial_number, task)
+
+
+async def _async_resume_native_reconciliation(
+    client: MaticHermesClient,
+    coordinator: MaticCoordinator,
+    plans: CleaningPlanManager,
+    serial_number: str,
+    pending: dict[str, str],
+) -> None:
+    """Poll native history for only a retained marker's remaining window."""
+    dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
+    expires_at = cast(datetime, dt_util.parse_datetime(pending["expires_at"]))
+    while plans.pending_native_reconciliation(serial_number) == pending:
+        remaining = (expires_at - dt_util.utcnow()).total_seconds()
+        if remaining <= 0:
+            plans.stop_pending(serial_number)
+            await plans.async_clear_native_reconciliation(
+                serial_number,
+                pending["plan_id"],
+                pending["room_id"],
+                dispatched_at,
+            )
+            return
+        await asyncio.sleep(min(OEM_STOP_RECONCILIATION_POLL_SECONDS, remaining))
+        if plans.pending_native_reconciliation(serial_number) == pending:
+            try:
+                native_history = await client.async_get_cleaning_session_records()
+            except MaticError as err:
+                _LOGGER.debug(
+                    "Native cleaning history recovery is unavailable: %s", err
+                )
+            else:
+                if plans.pending_native_reconciliation(serial_number) == pending:
+                    await plans.async_import_native_history(
+                        serial_number,
+                        coordinator.data.floor_plan,
+                        native_history,
+                    )
 
 
 def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:

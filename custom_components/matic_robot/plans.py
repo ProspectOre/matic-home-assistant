@@ -504,6 +504,16 @@ class CleaningPlanManager:
         """Return a copy of all saved plan definitions."""
         return deepcopy(self._robot(serial_number)["plans"])
 
+    @callback
+    def pending_native_reconciliation(
+        self, serial_number: str
+    ) -> dict[str, str] | None:
+        """Return a copy of the exact late-completion marker, when present."""
+        pending = _validated_native_reconciliation(
+            self._robot(serial_number).get("pending_native_reconciliation")
+        )
+        return deepcopy(pending) if pending is not None else None
+
     async def async_import_native_history(
         self,
         serial_number: str,
