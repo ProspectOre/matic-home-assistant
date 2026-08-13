@@ -604,6 +604,12 @@ class CleaningPlanManager:
     ) -> None:
         """Reset one plan's room history or all managed history."""
         robot = self._robot(serial_number)
+        pending = _validated_native_reconciliation(
+            robot.get("pending_native_reconciliation")
+        )
+        if plan_id is None or (pending is not None and pending["plan_id"] == plan_id):
+            self.cancel_reconciliation_tasks(serial_number)
+            robot.pop("pending_native_reconciliation", None)
         if plan_id is None:
             robot["rotations"] = {}
             robot["rooms"] = {}

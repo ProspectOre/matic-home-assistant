@@ -781,6 +781,55 @@ async def test_plan_reset_ignores_old_shared_history_but_accepts_new_activity(
     assert manager.choose("serial", "weekend", rooms) == [study, kitchen]
 
 
+async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    kitchen = _room("Kitchen", "room-kitchen")
+    marker = {
+        "plan_id": "away",
+        "room_id": kitchen.room_id,
+        "room": kitchen.name,
+        "dispatched_at": dt_util.utcnow().isoformat(),
+    }
+
+    await manager.async_mark_started("serial", "away", kitchen)
+    await manager.async_mark_failed(
+        "serial", "away", kitchen, "stopped", native_reconciliation=marker
+    )
+    watcher = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", watcher)
+
+    await manager.async_reset_history("serial", "other")
+    assert "pending_native_reconciliation" in manager._robot("serial")
+    assert watcher.done() is False
+
+    await manager.async_reset_history("serial", "away")
+    await asyncio.gather(watcher, return_exceptions=True)
+    assert watcher.cancelled()
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert "away" not in manager._robot("serial")["rotations"]
+    assert not await manager.async_mark_native_completed(
+        "serial",
+        "away",
+        kitchen,
+        completed_at=dt_util.utcnow().isoformat(),
+        duration_seconds=60,
+    )
+    assert "away" not in manager._robot("serial")["rotations"]
+
+    await manager.async_mark_started("serial", "away", kitchen)
+    await manager.async_mark_failed(
+        "serial", "away", kitchen, "stopped", native_reconciliation=marker
+    )
+    second_watcher = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", second_watcher)
+    await manager.async_reset_history("serial")
+    await asyncio.gather(second_watcher, return_exceptions=True)
+    assert second_watcher.cancelled()
+    assert "pending_native_reconciliation" not in manager._robot("serial")
+    assert manager._robot("serial")["rotations"] == {}
+
+
 def test_rotation_recovers_from_corrupt_or_future_history(hass) -> None:
     manager = CleaningPlanManager(hass)
     kitchen = _room("Kitchen", "room-kitchen")
