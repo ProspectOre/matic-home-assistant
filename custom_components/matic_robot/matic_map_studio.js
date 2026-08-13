@@ -316,8 +316,15 @@ class MaticMapStudio extends HTMLElement {
     const identityChanged = previousIdentity !== undefined
       && previousIdentity !== value?.user?.id;
     if (!this.shadowRoot.hasChildNodes() || languageChanged || identityChanged) {
-      this._render();
+      try {
+        this._render();
+      } catch (_error) {
+        // Keep the map usable if an optional browser surface aborts the full
+        // render pass.  The recovery binding below still exposes the core
+        // view and cleaning controls.
+      }
     }
+    this._bindCriticalControls();
     this._update();
   }
 
@@ -333,7 +340,14 @@ class MaticMapStudio extends HTMLElement {
 
   connectedCallback() {
     this._loadPreferences();
-    if (!this.shadowRoot.hasChildNodes()) this._render();
+    if (!this.shadowRoot.hasChildNodes()) {
+      try {
+        this._render();
+      } catch (_error) {
+        // See set hass(): a partial render can still be recovered below.
+      }
+    }
+    this._bindCriticalControls();
     const viewport = this.shadowRoot.querySelector(".viewport");
     if (!this._gl) {
       this._initWebGL();
@@ -809,6 +823,8 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _guardButton(button, action) {
+    if (!button || button.dataset.maticGuardButton === "true") return;
+    button.dataset.maticGuardButton = "true";
     button.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
       event.stopPropagation();
@@ -818,6 +834,36 @@ class MaticMapStudio extends HTMLElement {
       event.stopPropagation();
       action();
     });
+  }
+
+  _bindCriticalControls() {
+    if (!this.shadowRoot) return;
+    const bind = (selector, action) => this._guardButton(
+      this.shadowRoot.querySelector(selector),
+      action,
+    );
+    bind('[data-view="three"]', () => this._setView("three"));
+    bind('[data-view="top"]', () => this._setView(this._planView));
+    bind(".cleaning-plans", () => this._openCleaningWorkspace("plans"));
+    bind(".cleaning-areas", () => this._openCleaningWorkspace("areas"));
+    bind(".areas-close", () => this._closeAreasWorkspace());
+    for (const button of this.shadowRoot.querySelectorAll(
+      "[data-cleaning-view]",
+    )) {
+      this._guardButton(button, () => this._setCleaningView(
+        button.dataset.cleaningView,
+      ));
+    }
+    bind(".plan-new", () => this._selectPlan(undefined));
+    bind(".plan-save", () => this._savePlan());
+    bind(".plan-delete", () => this._deletePlan());
+    bind(".plan-select", () => this._selectCurrentPlan());
+    bind(".plan-run", () => this._runPlan());
+    bind(".area-new", () => this._selectArea(undefined));
+    bind(".area-sheet-toggle", () => this._toggleAreaSheet());
+    bind(".area-save", () => this._saveArea());
+    bind(".area-delete", () => this._deleteArea());
+    bind(".area-run", () => this._runArea());
   }
 
   _clearPrivateMap() {
@@ -3081,7 +3127,14 @@ class MaticMapStudio extends HTMLElement {
 
   async _openCleaningWorkspace(view) {
     const workspace = this.shadowRoot.querySelector(".areas-workspace");
-    if (!workspace.open) workspace.showModal();
+    if (!workspace.open) {
+      // Some embedded HA browser surfaces expose <dialog> without the
+      // HTMLDialogElement showModal()/close() methods.  The open attribute
+      // still gives the workspace its native dialog presentation and keeps
+      // the editor usable there.
+      if (typeof workspace.showModal === "function") workspace.showModal();
+      else workspace.setAttribute("open", "");
+    }
     try {
       await this._ensureAreaEditor();
       await this._setCleaningView(view);
@@ -3133,7 +3186,10 @@ class MaticMapStudio extends HTMLElement {
     this._areasAbortController = undefined;
     this._plansAbortController?.abort();
     this._plansAbortController = undefined;
-    this.shadowRoot.querySelector(".areas-workspace")?.close();
+    const workspace = this.shadowRoot.querySelector(".areas-workspace");
+    if (!workspace) return;
+    if (typeof workspace.close === "function") workspace.close();
+    else workspace.removeAttribute("open");
   }
 
   _setAreaWorkspaceStatus(message, tone = "normal") {
@@ -4441,6 +4497,11 @@ class MaticMapStudio extends HTMLElement {
   }
 }
 
+// Keep the previous tag as a standalone-test/backward-compatibility alias,
+// while the registered Home Assistant panel uses the fresh versioned tag.
 if (!customElements.get("matic-map-panel-v0-3-0")) {
   customElements.define("matic-map-panel-v0-3-0", MaticMapStudio);
+}
+if (!customElements.get("matic-map-panel-v0-3-1")) {
+  customElements.define("matic-map-panel-v0-3-1", MaticMapStudio);
 }

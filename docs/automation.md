@@ -371,7 +371,10 @@ scripts, and dashboards.
 - [Pet-aware cleaning](../blueprints/automation/matic_robot/pet_aware.yaml)
 - [Scheduled intelligent cleaning](../blueprints/automation/matic_robot/room_rotation.yaml)
 
-Each blueprint calls the saved-plan actions and can be edited after import.
+Each blueprint calls the saved-plan actions and can be edited after import. The
+**Clean when everyone leaves** blueprint rechecks that everyone is away after
+its settle period and starts only while Matic is `docked` or `idle`; it never
+replaces a cleaning already in progress.
 
 ## Fault semantics
 

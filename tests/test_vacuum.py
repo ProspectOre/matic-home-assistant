@@ -98,7 +98,7 @@ async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> N
 async def test_return_to_base_stops_resumable_firmware_task(
     hass, operational_changes
 ) -> None:
-    """Returning/recharging firmware state is stopped before an explicit dock."""
+    """OEM STOP owns the graceful return after an active task."""
     entry = _entry(idle=True)
     state = entry.runtime_data.coordinator.data
     entry.runtime_data.coordinator.data = replace(
@@ -114,11 +114,11 @@ async def test_return_to_base_stops_resumable_firmware_task(
     client = entry.runtime_data.coordinator.client
     assert [
         item.args[0] for item in client.async_send_user_command.await_args_list
-    ] == [UserCommand.STOP, UserCommand.DOCK]
+    ] == [UserCommand.STOP]
 
 
 async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
-    """Persisted managed ownership also forces STOP before DOCK."""
+    """Persisted managed ownership also uses OEM STOP for the final return."""
     entry = _entry(idle=True)
     manager = CleaningPlanManager(hass)
     entry.runtime_data.cleaning_plans = manager
@@ -133,4 +133,40 @@ async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
     client = entry.runtime_data.coordinator.client
     assert [
         item.args[0] for item in client.async_send_user_command.await_args_list
-    ] == [UserCommand.STOP, UserCommand.DOCK]
+    ] == [UserCommand.STOP]
+
+
+async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+
+    await entity.async_stop()
+    assert manager.stop_pending("synthetic-serial") is True
+    state = entry.runtime_data.coordinator.data
+    entry.runtime_data.coordinator.data = replace(
+        state,
+        operational=replace(
+            state.operational,
+            cleaning=True,
+            charging=False,
+            returning=False,
+        ),
+    )
+    with pytest.raises(ServiceValidationError) as blocked:
+        entity._async_ensure_stop_settled("synthetic-serial")
+    assert blocked.value.translation_key == "robot_stop_pending"
+
+    state = entry.runtime_data.coordinator.data
+    entry.runtime_data.coordinator.data = replace(
+        state,
+        operational=replace(
+            state.operational,
+            cleaning=False,
+            charging=True,
+            returning=False,
+        ),
+    )
+    entity._async_ensure_stop_settled("synthetic-serial")
+    assert manager.stop_pending("synthetic-serial") is False

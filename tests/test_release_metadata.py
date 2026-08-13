@@ -451,7 +451,7 @@ def test_documented_entity_surface_matches_release_contract() -> None:
 
 
 def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:
-    """Keep the primary presence workflow safe when someone returns early."""
+    """Keep the primary presence workflow safe around active cleanings."""
     blueprint = (
         ROOT / "blueprints/automation/matic_robot/clean_when_away.yaml"
     ).read_text()
@@ -459,5 +459,7 @@ def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:
     assert "mode: parallel" in blueprint
     assert "id: everyone_left" in blueprint
     assert "id: someone_returned" in blueprint
+    assert "vacuum_entity: !input vacuum" in blueprint
+    assert "states(vacuum_entity) in ('docked', 'idle')" in blueprint
     assert "action: matic_robot.intelligent_clean" in blueprint
     assert "action: matic_robot.stop_intelligent_cleaning" in blueprint

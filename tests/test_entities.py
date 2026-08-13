@@ -1258,7 +1258,6 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         UserCommand.PAUSE,
         UserCommand.STOP,
         UserCommand.STOP,
-        UserCommand.DOCK,
     ]
     # A user stop or dock ends the managed plan instead of letting the
     # runner treat the docked robot as a finished room and continue.
@@ -1273,7 +1272,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
-    assert coordinator.async_request_refresh.await_count == 5
+    assert coordinator.async_request_refresh.await_count == 4
 
 
 async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:

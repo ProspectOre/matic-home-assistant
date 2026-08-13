@@ -10,6 +10,7 @@ from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from statistics import median
+from time import monotonic
 from typing import Any, Literal, cast, override
 
 from homeassistant.core import HomeAssistant, callback
@@ -24,7 +25,7 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
-from .client.models import CleaningSessionRecord, FloorPlan
+from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import DOMAIN
 
 STORAGE_VERSION = 1
@@ -34,6 +35,10 @@ PLAN_MOTION_TOKEN = "_matic_plan_run"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
+# Matic's native STOP is graceful: it can keep the current task alive for
+# roughly ten minutes before returning to the dock.  Keep a small safety
+# margin so an automation cannot dispatch a replacement during that window.
+OEM_STOP_FENCE_SECONDS = 12 * 60
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,7 +138,9 @@ class CleaningPlanManager:
         self._motion_generations: dict[str, int] = {}
         self._managed_motion: dict[str, int] = {}
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
+        self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._cancellation_reasons: dict[str, str] = {}
+        self._stop_fences: dict[str, float] = {}
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -156,6 +163,8 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = self._normalize_robot(robot) or recovered
+            if isinstance(robot.get("pending_native_reconciliation"), dict):
+                self.mark_stop_pending(str(serial_number))
             active = robot.get("active_plan")
             if active:
                 rotation = robot["rotations"].setdefault(
@@ -184,6 +193,27 @@ class CleaningPlanManager:
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
         return self._command_locks.setdefault(serial_number, asyncio.Lock())
+
+    @callback
+    def mark_stop_pending(self, serial_number: str) -> None:
+        """Fence replacement motion while Matic's native STOP settles."""
+        self._stop_fences[serial_number] = monotonic() + OEM_STOP_FENCE_SECONDS
+
+    @callback
+    def stop_pending(self, serial_number: str) -> bool:
+        """Return whether an OEM stop countdown is still in its settle window."""
+        deadline = self._stop_fences.get(serial_number)
+        if deadline is None:
+            return False
+        if monotonic() >= deadline:
+            self._stop_fences.pop(serial_number, None)
+            return False
+        return True
+
+    @callback
+    def clear_stop_pending(self, serial_number: str) -> None:
+        """Clear a completed OEM stop fence after the robot reaches a stable state."""
+        self._stop_fences.pop(serial_number, None)
 
     @callback
     def begin_managed_motion(self, serial_number: str) -> int:
@@ -215,6 +245,8 @@ class CleaningPlanManager:
     def replace_managed_motion(self, serial_number: str) -> None:
         """Cancel any managed plan before an independent motion command."""
         self.cancel(serial_number)
+        self.cancel_reconciliation_tasks(serial_number)
+        self._robot(serial_number).pop("pending_native_reconciliation", None)
         self._motion_generations[serial_number] = (
             self._motion_generations.get(serial_number, 0) + 1
         )
@@ -235,6 +267,30 @@ class CleaningPlanManager:
             self._run_tasks.pop(serial_number, None)
         self._cancellation_reasons.pop(serial_number, None)
 
+    @callback
+    def register_reconciliation_task(
+        self, serial_number: str, task: asyncio.Task[None]
+    ) -> None:
+        """Tie a late native-completion watcher to this robot's lifecycle."""
+        tasks = self._reconciliation_tasks.setdefault(serial_number, set())
+        tasks.add(task)
+
+        def _discard(done: asyncio.Task[None]) -> None:
+            current = self._reconciliation_tasks.get(serial_number)
+            if current is None:
+                return
+            current.discard(done)
+            if not current:
+                self._reconciliation_tasks.pop(serial_number, None)
+
+        task.add_done_callback(_discard)
+
+    @callback
+    def cancel_reconciliation_tasks(self, serial_number: str) -> None:
+        """Cancel obsolete late-completion watchers without blocking."""
+        for task in tuple(self._reconciliation_tasks.pop(serial_number, set())):
+            task.cancel()
+
     def cancellation_reason(self, serial_number: str) -> str | None:
         """Return the lifecycle reason attached to the current cancellation."""
         return self._cancellation_reasons.get(serial_number)
@@ -242,14 +298,20 @@ class CleaningPlanManager:
     async def async_cancel_and_wait(self, serial_number: str) -> None:
         """Interrupt a managed run and wait before its client can be closed."""
         task = self._run_tasks.get(serial_number)
-        if task is None or task.done():
-            return
-        self._cancellation_reasons[serial_number] = "config_entry_unload"
-        self.finish_room_event(serial_number).clear()
-        self.cancellation_event(serial_number).set()
-        if task is asyncio.current_task():
-            return
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None and not task.done():
+            self._cancellation_reasons[serial_number] = "config_entry_unload"
+            self.finish_room_event(serial_number).clear()
+            self.cancellation_event(serial_number).set()
+            if task is not asyncio.current_task():
+                await asyncio.gather(task, return_exceptions=True)
+
+        reconciliation_tasks = tuple(
+            self._reconciliation_tasks.pop(serial_number, set())
+        )
+        for reconciliation_task in reconciliation_tasks:
+            reconciliation_task.cancel()
+        if reconciliation_tasks:
+            await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[None]:
@@ -366,7 +428,12 @@ class CleaningPlanManager:
         if floor_plan is None:
             return False
         robot = self._robot(serial_number)
-        if not _import_native_room_history(robot, floor_plan, records):
+        records = tuple(records)
+        changed = _import_native_room_history(robot, floor_plan, records)
+        changed = (
+            _reconcile_pending_native_history(robot, floor_plan, records) or changed
+        )
+        if not changed:
             return False
         await self._async_save_and_notify(serial_number)
         return True
@@ -629,6 +696,7 @@ class CleaningPlanManager:
         record["last_started"] = now
         record["last_result"] = "running"
         robot = self._robot(serial_number)
+        robot.pop("pending_native_reconciliation", None)
         robot["active_plan"] = {
             "plan_id": plan_id,
             "plan_name": self._plan_name(serial_number, plan_id),
@@ -701,15 +769,82 @@ class CleaningPlanManager:
         plan_id: str,
         room: CleaningRoom,
         reason: str,
+        *,
+        native_reconciliation: Mapping[str, object] | None = None,
     ) -> None:
         """Persist failure separately so it never advances room history."""
+        robot = self._robot(serial_number)
         record = self._room(serial_number, plan_id, room)
         record["last_result"] = "failed"
         record["last_failed"] = dt_util.utcnow().isoformat()
         record["last_error"] = reason
         record["failed_runs"] = _stored_count(record, "failed_runs") + 1
-        self._robot(serial_number)["active_plan"] = None
+        if native_reconciliation is not None:
+            pending = _validated_native_reconciliation(native_reconciliation)
+            if pending is not None:
+                robot["pending_native_reconciliation"] = pending
+        robot["active_plan"] = None
         await self._async_save_and_notify(serial_number)
+
+    async def async_mark_native_completed(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        completed_at: str | None = None,
+        duration_seconds: int | None = None,
+    ) -> bool:
+        """Credit a native completion that arrived after managed cleanup.
+
+        The native robot can finish its graceful STOP countdown after the
+        managed runner has already recorded an error.  This method applies
+        only to the pending plan/room captured by that runner and is therefore
+        safe against a later unrelated native session.
+        """
+        robot = self._robot(serial_number)
+        pending = robot.get("pending_native_reconciliation")
+        if not _pending_matches_room(pending, plan_id, room):
+            return False
+        record = self._room(serial_number, plan_id, room)
+        if record.get("last_result") == "completed":
+            robot.pop("pending_native_reconciliation", None)
+            await self._async_save_and_notify(serial_number)
+            return False
+        completed_value = (
+            completed_at
+            if _latest_timestamp(completed_at) is not None
+            else dt_util.utcnow().isoformat()
+        )
+        duration = (
+            duration_seconds
+            if isinstance(duration_seconds, int)
+            and not isinstance(duration_seconds, bool)
+            and duration_seconds > 0
+            else None
+        )
+        record["last_completed"] = completed_value
+        record["last_result"] = "completed"
+        record["completed_runs"] = _stored_count(record, "completed_runs") + 1
+        record["last_native_reconciled"] = dt_util.utcnow().isoformat()
+        if duration is not None:
+            samples = _stored_count(record, "duration_samples") + 1
+            history = _duration_history(record)
+            history.append(duration)
+            history = history[-DURATION_HISTORY_MAX_SAMPLES:]
+            record["last_duration_seconds"] = duration
+            record["duration_history_seconds"] = history
+            record["average_duration_seconds"] = round(median(history))
+            record["duration_samples"] = samples
+        global_room = self._global_room(robot, room)
+        global_room["name"] = room.name
+        global_room["last_completed"] = completed_value
+        if duration is not None:
+            global_room["last_duration_seconds"] = duration
+        global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
+        robot.pop("pending_native_reconciliation", None)
+        await self._async_save_and_notify(serial_number)
+        return True
 
     async def async_mark_suspended(
         self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
@@ -775,19 +910,30 @@ class CleaningPlanManager:
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_interrupted(
-        self, serial_number: str, plan_id: str, room: CleaningRoom, reason: str
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        reason: str,
+        *,
+        native_reconciliation: Mapping[str, object] | None = None,
     ) -> None:
         """Persist an unexplained terminal transition without room credit."""
         now = dt_util.utcnow().isoformat()
+        robot = self._robot(serial_number)
         record = self._room(serial_number, plan_id, room)
         record["last_result"] = "interrupted"
         record["last_interrupted"] = now
         record["last_error"] = reason
         record["interrupted_runs"] = _stored_count(record, "interrupted_runs") + 1
-        active = self._robot(serial_number).get("active_plan")
+        if native_reconciliation is not None:
+            pending = _validated_native_reconciliation(native_reconciliation)
+            if pending is not None:
+                robot["pending_native_reconciliation"] = pending
+        active = robot.get("active_plan")
         if active is not None:
-            self._robot(serial_number)["last_interrupted_plan"] = deepcopy(active)
-        self._robot(serial_number)["active_plan"] = None
+            robot["last_interrupted_plan"] = deepcopy(active)
+        robot["active_plan"] = None
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_cancelled(
@@ -858,6 +1004,9 @@ class CleaningPlanManager:
                 }
                 for room_id, room in robot["rooms"].items()
             },
+            "native_reconciliation_pending": isinstance(
+                robot.get("pending_native_reconciliation"), dict
+            ),
             "plans": plans,
             "plan_history": deepcopy(robot["rotations"]),
             "selected_plan": robot.get("selected_plan"),
@@ -938,6 +1087,10 @@ class CleaningPlanManager:
         elif "active_plan" not in robot:
             robot["active_plan"] = None
             changed = True
+        pending = robot.get("pending_native_reconciliation")
+        if pending is not None and _validated_native_reconciliation(pending) is None:
+            robot.pop("pending_native_reconciliation", None)
+            changed = True
         changed = _sync_verified_global_room_history(robot) or changed
         return changed
 
@@ -962,12 +1115,15 @@ class CleaningPlanManager:
         return cast(dict[str, Any], rotation)
 
     @staticmethod
-    def _global_room(robot: dict[str, Any], room: CleaningRoom) -> dict[str, Any]:
+    def _global_room(
+        robot: dict[str, Any], room: CleaningRoom | Room
+    ) -> dict[str, Any]:
         records = robot["rooms"]
-        record = records.get(room.room_id)
+        room_id = room.room_id if isinstance(room, CleaningRoom) else room.id
+        record = records.get(room_id)
         if not isinstance(record, dict):
             record = {"name": room.name, "completed_runs": 0}
-            records[room.room_id] = record
+            records[room_id] = record
         return cast(dict[str, Any], record)
 
     def _room(
@@ -1070,6 +1226,151 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
             global_room.update(updates)
             changed = True
     return changed
+
+
+def _validated_native_reconciliation(value: object) -> dict[str, str] | None:
+    """Validate the small durable marker used to recover a late native stop."""
+    if not isinstance(value, Mapping):
+        return None
+    plan_id = value.get("plan_id")
+    room_id = value.get("room_id")
+    room = value.get("room")
+    dispatched_at = value.get("dispatched_at")
+    if not isinstance(plan_id, str) or not plan_id.strip():
+        return None
+    if not isinstance(room_id, str) or not room_id.strip():
+        return None
+    if not isinstance(room, str) or not room.strip():
+        return None
+    if not isinstance(dispatched_at, str) or not dispatched_at.strip():
+        return None
+    parsed = dt_util.parse_datetime(dispatched_at)
+    if parsed is None or parsed.tzinfo is None:
+        return None
+    return {
+        "plan_id": plan_id,
+        "room_id": room_id,
+        "room": room,
+        "dispatched_at": dispatched_at,
+    }
+
+
+def _pending_matches_room(pending: object, plan_id: str, room: CleaningRoom) -> bool:
+    """Return whether a late native record belongs to the failed managed room."""
+    validated = _validated_native_reconciliation(pending)
+    return validated is not None and (
+        validated["plan_id"] == plan_id and validated["room_id"] == room.room_id
+    )
+
+
+def _reconcile_pending_native_history(
+    robot: dict[str, Any],
+    floor_plan: FloorPlan,
+    records: Iterable[CleaningSessionRecord],
+) -> bool:
+    """Apply exactly one retained native completion to a pending plan room."""
+    pending = _validated_native_reconciliation(
+        robot.get("pending_native_reconciliation")
+    )
+    if pending is None:
+        return False
+    dispatched_at = dt_util.parse_datetime(pending["dispatched_at"])
+    if dispatched_at is None or dispatched_at.tzinfo is None:
+        return False
+    room = next(
+        (
+            item
+            for item in floor_plan.rooms
+            if item.id == pending["room_id"]
+            and _native_room_key(item.name) == _native_room_key(pending["room"])
+        ),
+        None,
+    )
+    if room is None:
+        return False
+    target = _native_room_key(room.name)
+    now = dt_util.utcnow()
+    matches: list[tuple[CleaningSessionRecord, str, int]] = []
+    for record in records:
+        session = record.session
+        if session.completed is not True:
+            continue
+        started = dt_util.parse_datetime(session.started_at or "")
+        ended = dt_util.parse_datetime(session.ended_at or "")
+        if (
+            started is None
+            or ended is None
+            or started > ended
+            or ended < dispatched_at
+            or ended > now
+        ):
+            continue
+        native_rooms = tuple(_native_room_key(name) for name in session.rooms)
+        if native_rooms != (target,):
+            continue
+        completed_rooms = {_native_room_key(name) for name in session.completed_rooms}
+        if target not in completed_rooms:
+            continue
+        duration = next(
+            (
+                value
+                for name, value in session.room_durations
+                if _native_room_key(name) == target
+                and isinstance(value, int)
+                and not isinstance(value, bool)
+                and value > 0
+            ),
+            None,
+        )
+        if duration is not None and isinstance(session.ended_at, str):
+            matches.append((record, session.ended_at, duration))
+    if len(matches) != 1:
+        return False
+    _record_native_completion(
+        robot,
+        pending["plan_id"],
+        room,
+        completed_at=matches[0][1],
+        duration_seconds=matches[0][2],
+    )
+    robot.pop("pending_native_reconciliation", None)
+    return True
+
+
+def _record_native_completion(
+    robot: dict[str, Any],
+    plan_id: str,
+    room: CleaningRoom | Room,
+    *,
+    completed_at: str,
+    duration_seconds: int,
+) -> None:
+    """Commit one verified native completion into plan and global history."""
+    rotation = robot["rotations"].setdefault(plan_id, {"rooms": {}})
+    room_records = rotation.setdefault("rooms", {})
+    room_id = room.room_id if isinstance(room, CleaningRoom) else room.id
+    record = room_records.setdefault(room_id, {})
+    record["room_id"] = room_id
+    record["name"] = room.name
+    if isinstance(room, CleaningRoom):
+        record["cleaning_mode"] = room.cleaning_mode
+        record["coverage_setting"] = room.coverage_setting
+    record["last_completed"] = completed_at
+    record["last_result"] = "completed"
+    record["completed_runs"] = _stored_count(record, "completed_runs") + 1
+    record["last_native_reconciled"] = dt_util.utcnow().isoformat()
+    history = _duration_history(record)
+    history.append(duration_seconds)
+    history = history[-DURATION_HISTORY_MAX_SAMPLES:]
+    record["last_duration_seconds"] = duration_seconds
+    record["duration_history_seconds"] = history
+    record["average_duration_seconds"] = round(median(history))
+    record["duration_samples"] = _stored_count(record, "duration_samples") + 1
+    global_room = CleaningPlanManager._global_room(robot, room)
+    global_room["name"] = room.name
+    global_room["last_completed"] = completed_at
+    global_room["last_duration_seconds"] = duration_seconds
+    global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
 
 
 def _import_native_room_history(

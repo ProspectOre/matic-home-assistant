@@ -1,6 +1,7 @@
 """Automation action coverage for room-native cleaning plans."""
 
 import asyncio
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -8,6 +9,7 @@ import pytest
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import ServiceCall
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
@@ -24,6 +26,8 @@ from custom_components.matic_robot.client.exceptions import (
     MaticError,
 )
 from custom_components.matic_robot.client.models import (
+    CleaningSession,
+    CleaningSessionRecord,
     FloorPlan,
     HermesCollectionEntry,
     Room,
@@ -40,12 +44,18 @@ from custom_components.matic_robot.services import (
     SAVED_PLAN_SERVICE_SCHEMA,
     PlanCancelledError,
     _async_execute_rooms,
+    _async_reconcile_native_stop,
     _async_run_room,
     _async_wait_for_vacuum_state,
+    _clear_stop_pending_if_stable,
+    _ensure_stop_settled,
     _entry_for_entity,
+    _native_completion_match,
+    _NativeReconciliation,
     _resolve_loaded_matic_vacuums,
     _resolve_room_id,
     _saved_plan_context,
+    _schedule_native_reconciliation,
     async_register_services,
 )
 
@@ -197,6 +207,38 @@ async def test_clean_action_without_rooms_targets_entire_floor() -> None:
     ):
         await _registered_handler(services, "clean")(call)
     assert services.async_call.await_args.args[2]["command"] == "clean_all"
+
+
+async def test_clean_action_checks_oem_stop_fence() -> None:
+    """The generic clean service cannot bypass a graceful OEM STOP."""
+    hass = SimpleNamespace(data={})
+    manager = SimpleNamespace(
+        async_load=AsyncMock(), stop_pending=MagicMock(return_value=False)
+    )
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"], "ordered": False}
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(info=SimpleNamespace(serial_number="serial"))
+            )
+        )
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        patch(
+            "custom_components.matic_robot.services._entry_for_entity",
+            return_value=entry,
+        ),
+    ):
+        await _registered_handler(services, "clean")(call)
+
+    manager.stop_pending.assert_called_once_with("serial")
 
 
 async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
@@ -1626,6 +1668,237 @@ async def test_room_failures_translate_client_errors_at_boundary(
     manager.async_mark_failed.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
+
+
+async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None:
+    """The ten-minute OEM stop can finish a room after the runner saw an error."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    now = dt_util.utcnow()
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        },
+    )
+    session = CleaningSession(
+        (now - timedelta(seconds=10)).isoformat(),
+        (now - timedelta(seconds=1)).isoformat(),
+        9,
+        (room.name,),
+        ((room.name, 9),),
+        True,
+        (room.name,),
+    )
+    reads = AsyncMock(side_effect=[(), (CleaningSessionRecord(b"new", session),)])
+    hass.states.async_set("vacuum.test", "docked")
+    confirmed = MagicMock()
+    reconciliation = _NativeReconciliation(
+        "away", room.room_id, room.name, now - timedelta(seconds=5)
+    )
+    with patch(
+        "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+        0,
+    ):
+        await _async_reconcile_native_stop(
+            hass,
+            manager,
+            "serial",
+            "vacuum.test",
+            room,
+            reconciliation,
+            frozenset(),
+            None,
+            reads,
+            confirmed,
+            None,
+        )
+
+    record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][room.room_id]
+    assert record["last_result"] == "completed"
+    assert record["last_duration_seconds"] == 9
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    confirmed.assert_called_once_with(room.name)
+
+
+async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) -> None:
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    now = dt_util.utcnow()
+    manager = SimpleNamespace(async_mark_native_completed=AsyncMock(return_value=False))
+    hass.states.async_set("vacuum.test", "cleaning")
+    history = AsyncMock(side_effect=MaticError("synthetic offline"))
+    reconciliation = _NativeReconciliation(
+        "away", room.room_id, room.name, now - timedelta(seconds=5)
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.monotonic",
+            side_effect=[0, 0, 1],
+        ),
+        patch(
+            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            1,
+        ),
+        patch(
+            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+            0,
+        ),
+    ):
+        await _async_reconcile_native_stop(
+            hass,
+            manager,
+            "serial",
+            "vacuum.test",
+            room,
+            reconciliation,
+            frozenset(),
+            None,
+            history,
+            None,
+            None,
+        )
+    history.assert_awaited_once()
+
+
+def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    now = dt_util.utcnow()
+    reconciliation = _NativeReconciliation(
+        "away", room.room_id, room.name, now - timedelta(seconds=5)
+    )
+    manager = SimpleNamespace(async_mark_native_completed=AsyncMock())
+    _schedule_native_reconciliation(
+        SimpleNamespace(),
+        manager,
+        "serial",
+        "vacuum.test",
+        room,
+        reconciliation,
+        frozenset(),
+        None,
+        AsyncMock(),
+        None,
+        None,
+    )
+    created: list[str] = []
+
+    def create_background_task(coro, name: str) -> None:
+        created.append(name)
+        coro.close()
+
+    _schedule_native_reconciliation(
+        SimpleNamespace(async_create_background_task=create_background_task),
+        manager,
+        "serial",
+        "vacuum.test",
+        room,
+        reconciliation,
+        frozenset(),
+        None,
+        AsyncMock(),
+        None,
+        None,
+    )
+    assert created
+
+    hass.states.async_set("vacuum.test", "cleaning")
+    _clear_stop_pending_if_stable(manager, "serial", hass, "vacuum.test")
+    manager_with_fence = CleaningPlanManager(hass)
+    manager_with_fence.mark_stop_pending("serial")
+    with pytest.raises(ServiceValidationError) as blocked:
+        _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+    assert blocked.value.translation_key == "robot_stop_pending"
+    hass.states.async_set("vacuum.test", "docked")
+    _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+    assert manager_with_fence.stop_pending("serial") is False
+
+
+async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    reconciliation = _NativeReconciliation(
+        "away", room.room_id, room.name, dt_util.utcnow() - timedelta(seconds=5)
+    )
+    registered = MagicMock()
+    manager = SimpleNamespace(
+        async_mark_native_completed=AsyncMock(),
+        register_reconciliation_task=registered,
+    )
+
+    def create_background_task(coro, name: str):
+        return asyncio.create_task(coro, name=name)
+
+    with patch(
+        "custom_components.matic_robot.services._async_reconcile_native_stop",
+        AsyncMock(),
+    ):
+        _schedule_native_reconciliation(
+            SimpleNamespace(async_create_background_task=create_background_task),
+            manager,
+            "serial",
+            "vacuum.test",
+            room,
+            reconciliation,
+            frozenset(),
+            None,
+            AsyncMock(),
+            None,
+            None,
+        )
+        task = registered.call_args.args[1]
+        await task
+
+    registered.assert_called_once_with("serial", task)
+
+
+def test_native_completion_match_rejects_old_or_invalid_records() -> None:
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    old = CleaningSessionRecord(
+        b"old",
+        CleaningSession(
+            (now - timedelta(seconds=10)).isoformat(),
+            (now - timedelta(seconds=1)).isoformat(),
+            1,
+            (room.name,),
+            ((room.name, 1),),
+            True,
+            (room.name,),
+        ),
+    )
+    missing_dates = CleaningSessionRecord(
+        b"missing",
+        CleaningSession(None, None, None, (room.name,), (), True, (room.name,)),
+    )
+    future = CleaningSessionRecord(
+        b"future",
+        CleaningSession(
+            (now + timedelta(seconds=1)).isoformat(),
+            (now + timedelta(seconds=2)).isoformat(),
+            1,
+            (room.name,),
+            ((room.name, 1),),
+            True,
+            (room.name,),
+        ),
+    )
+    assert (
+        _native_completion_match((old,), frozenset({b"old"}), room, dispatched_at)
+        is None
+    )
+    assert (
+        _native_completion_match((missing_dates,), frozenset(), room, dispatched_at)
+        is None
+    )
+    assert _native_completion_match((future,), frozenset(), room, dispatched_at) is None
 
 
 async def test_wait_returns_immediately_when_state_is_already_desired(hass) -> None:
