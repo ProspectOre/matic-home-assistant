@@ -786,11 +786,12 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     kitchen = _room("Kitchen", "room-kitchen")
+    dispatched_at = dt_util.utcnow()
     marker = {
         "plan_id": "away",
         "room_id": kitchen.room_id,
         "room": kitchen.name,
-        "dispatched_at": dt_util.utcnow().isoformat(),
+        "dispatched_at": dispatched_at.isoformat(),
     }
 
     await manager.async_mark_started("serial", "away", kitchen)
@@ -813,6 +814,7 @@ async def test_plan_reset_discards_matching_native_reconciliation(hass) -> None:
         "serial",
         "away",
         kitchen,
+        dispatched_at=dispatched_at,
         completed_at=dt_util.utcnow().isoformat(),
         duration_seconds=60,
     )
@@ -1346,24 +1348,40 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = _room("Kitchen", "room-kitchen")
-    assert await manager.async_mark_native_completed("serial", "away", room) is False
     now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
     marker = {
         "plan_id": "away",
         "room_id": room.room_id,
         "room": room.name,
-        "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+        "dispatched_at": dispatched_at.isoformat(),
     }
     await manager.async_mark_started("serial", "away", room)
     await manager.async_mark_failed(
         "serial", "away", room, "error", native_reconciliation=marker
     )
-    assert await manager.async_mark_native_completed("serial", "other", room) is False
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "other", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
     assert manager.snapshot("serial")["native_reconciliation_pending"] is True
     manager._robot("serial")["rotations"]["away"]["rooms"][room.room_id][
         "last_result"
     ] = "completed"
-    assert await manager.async_mark_native_completed("serial", "away", room) is False
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
     await manager.async_mark_started("serial", "away", room)
     await manager.async_mark_interrupted(
         "serial", "away", room, "interrupted", native_reconciliation=marker
@@ -1372,8 +1390,59 @@ async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
     manager._robot("serial")["pending_native_reconciliation"]["expires_at"] = (
         now - timedelta(seconds=1)
     ).isoformat()
-    assert await manager.async_mark_native_completed("serial", "away", room) is False
+    assert (
+        await manager.async_mark_native_completed(
+            "serial", "away", room, dispatched_at=dispatched_at
+        )
+        is False
+    )
     assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+
+
+async def test_stale_native_watcher_cannot_credit_new_same_room_marker(hass) -> None:
+    """A superseded watcher cannot apply old settings to a newer dispatch."""
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    current_room = _room("Kitchen", "room-kitchen")
+    stale_room = replace(current_room, cleaning_mode="vacuum")
+    now = dt_util.utcnow()
+    stale_dispatch = now - timedelta(minutes=1)
+    current_dispatch = now - timedelta(seconds=5)
+    await manager.async_mark_started("serial", "away", current_room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        current_room,
+        "stopped",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": current_room.room_id,
+            "room": current_room.name,
+            "dispatched_at": current_dispatch.isoformat(),
+        },
+    )
+    save.reset_mock()
+
+    assert (
+        await manager.async_mark_native_completed(
+            "serial",
+            "away",
+            stale_room,
+            dispatched_at=stale_dispatch,
+            completed_at=now.isoformat(),
+            duration_seconds=60,
+        )
+        is False
+    )
+    record = manager.snapshot("serial")["plan_history"]["away"]["rooms"][
+        current_room.room_id
+    ]
+    assert record["last_result"] == "failed"
+    assert record["cleaning_mode"] == current_room.cleaning_mode
+    assert record.get("completed_runs", 0) == 0
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    save.assert_not_awaited()
 
 
 @pytest.mark.parametrize(

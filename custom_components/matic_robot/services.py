@@ -1636,6 +1636,7 @@ async def _async_reconcile_native_stop(
                 serial_number,
                 reconciliation.plan_id,
                 room,
+                dispatched_at=reconciliation.dispatched_at,
                 completed_at=record.session.ended_at,
                 duration_seconds=duration,
             )

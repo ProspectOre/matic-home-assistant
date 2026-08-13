@@ -886,6 +886,7 @@ class CleaningPlanManager:
         plan_id: str,
         room: CleaningRoom,
         *,
+        dispatched_at: datetime,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
     ) -> bool:
@@ -893,8 +894,8 @@ class CleaningPlanManager:
 
         The native robot can finish its graceful STOP countdown after the
         managed runner has already recorded an error.  This method applies
-        only to the pending plan/room captured by that runner and is therefore
-        safe against a later unrelated native session.
+        only to the exact pending dispatch captured by that runner and is
+        therefore safe against later or superseding native sessions.
         """
         robot = self._robot(serial_number)
         pending = _validated_native_reconciliation(
@@ -906,7 +907,11 @@ class CleaningPlanManager:
             robot.pop("pending_native_reconciliation", None)
             await self._async_save_and_notify(serial_number)
             return False
-        if pending["plan_id"] != plan_id or pending["room_id"] != room.room_id:
+        if (
+            pending["plan_id"] != plan_id
+            or pending["room_id"] != room.room_id
+            or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
+        ):
             return False
         record = self._room(serial_number, plan_id, room)
         if record.get("last_result") == "completed":
