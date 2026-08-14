@@ -2,7 +2,7 @@ name: Audit Active Regular Review Findings
 
 on:
   schedule:
-    - cron: '17,47 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
 
 # GitHub Actions does not expose review-thread reopening as an Actions trigger.
@@ -13,13 +13,50 @@ permissions:
   statuses: write
 
 jobs:
+  discover:
+    name: discover-open-prs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
+    steps:
+      - id: prs
+        name: Enumerate open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c '{include: [.[][] | {pr_number: .number}]}'
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
   audit:
-    name: audit-open-prs
+    name: audit (${{ matrix.pr_number }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Serialize the final recheck and status mutation with the evaluator. This
+    # remains quiet: it never posts a comment or requests a review.
+    concurrency:
+      group: review-gate-${{ matrix.pr_number }}
+      cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke successful gates with active regular-review findings
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: chatgpt-codex-connector
           REVIEW_GATE_CONTEXT: review-gate
@@ -57,7 +94,7 @@ jobs:
               | jq -rs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
                   def regular_heading:
                     ascii_downcase
-                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)");
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
                   def security_heading:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
@@ -83,24 +120,30 @@ jobs:
                   | length'
           }
 
-          open_prs="$(
-            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
-              | jq -r '.[][] | [.number, .head.sha] | @tsv'
-          )"
-          while IFS=$'\t' read -r pr_number head_sha; do
-            [[ -n "$pr_number" ]] || continue
-            [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || continue
-            if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
-              continue
-            fi
-            findings="$(active_regular_finding_count "$pr_number" "$head_sha")"
-            if [[ "$findings" -eq 0 ]]; then
-              continue
-            fi
-            gh api "repos/$REPO/statuses/$head_sha" --silent \
-              -f state=pending \
-              -f context="$REVIEW_GATE_CONTEXT" \
-              -f description="Active regular Codex findings require a fresh review" \
-              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
-            echo "Revoked review-gate for PR #$pr_number with $findings active regular finding(s)."
-          done <<< "$open_prs"
+          head_sha="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null \
+              | jq -er '.head.sha'
+          )" || exit 0
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || exit 0
+          if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
+            exit 0
+          fi
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          if [[ "$findings" -eq 0 ]]; then
+            exit 0
+          fi
+          # The evaluator may have completed while the first GraphQL read was
+          # in flight. Recheck both state and findings under the shared lock.
+          if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
+            exit 0
+          fi
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          if [[ "$findings" -eq 0 ]]; then
+            exit 0
+          fi
+          gh api "repos/$REPO/statuses/$head_sha" --silent \
+            -f state=pending \
+            -f context="$REVIEW_GATE_CONTEXT" \
+            -f description="Active regular Codex findings require a fresh review" \
+            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          echo "Revoked review-gate for PR #$PR_NUMBER with $findings active regular finding(s)."

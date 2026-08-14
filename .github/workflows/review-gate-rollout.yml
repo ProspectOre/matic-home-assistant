@@ -113,11 +113,11 @@ jobs:
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
               | jq -r --argjson pr "$PR_NUMBER" '.[] | .workflow_runs[]?
                   | select(.status != "completed")
-                  | select(any(.pull_requests[]?; .number == $pr))
+                  | select(any(.pull_requests[]?; .number == $pr) or .event == "workflow_dispatch")
                   | .id'
           }
           for run_id in $(active_gate_runs); do
-            gh run cancel "$run_id" --repo "$REPO"
+            gh run cancel "$run_id" --repo "$REPO" || true
           done
           for _attempt in $(seq 1 15); do
             if [[ -z "$(active_gate_runs)" ]]; then
@@ -132,7 +132,7 @@ jobs:
 
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.node_id, .head.sha, ((.auto_merge // false) | tostring)] | @tsv'
+              | jq -er '[.node_id, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
           )"
           IFS=$'\t' read -r pr_node_id head_sha auto_merge_enabled <<< "$pr_state"
           if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then

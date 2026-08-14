@@ -4,13 +4,15 @@ on:
   pull_request_target:
     types: [edited]
 
-# A retarget preempts an evaluator for the same PR. Normal review events queue
-# behind it, so the durable base marker is written before any later success.
+# A retarget persists independently from evaluation. After its durable marker is
+# written, it dispatches an evaluator that queues behind any in-flight review
+# and therefore cannot be overwritten by that review's final success stamp.
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number }}
+  group: review-gate-base-change-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:
+  actions: write
   statuses: write
 
 jobs:
@@ -22,6 +24,7 @@ jobs:
       - name: Revoke the required gate and persist a base-change marker
         env:
           GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_GATE_CONTEXT: review-gate
@@ -35,6 +38,10 @@ jobs:
           }
           if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The base-change event did not provide a valid head SHA."
+            exit 1
+          fi
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "The base-change event did not provide a valid pull request number."
             exit 1
           fi
 
@@ -52,6 +59,8 @@ jobs:
           stamp_status "$REVIEW_GATE_CONTEXT"
           stamp_status "$REVIEW_BASE_CONTEXT"
           # Write the required context again after the marker. This makes the
-          # invalidation win if an evaluator was finishing as the PR retargeted.
+          # current state fail closed before the follow-up evaluator runs.
           stamp_status "$REVIEW_GATE_CONTEXT"
+          gh workflow run review-gate.yml --repo "$REPO" \
+            -f pull_request="$PR_NUMBER"
           echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."

@@ -61,13 +61,26 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     ).read_text()
     audit = (ROOT / ".github" / "workflows" / "review-gate-audit.yml").read_text()
 
-    assert "cancel-in-progress: false" in review_gate
+    assert "cancel-in-progress: true" in review_gate
     assert "group: review-gate-" in review_gate
+    assert "github.event.issue.number" in review_gate
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
-    assert "never issue comments; security" in review_gate
-    assert "issue_comment:" not in review_gate
+    assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in review_gate
+    assert "issue_comment:" in review_gate
+    assert "EVENT_COMMENT_AUTHOR" in review_gate
+    assert "EVENT_REVIEW_AUTHOR" in review_gate
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in review_gate
+    assert '"$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN"' in review_gate
+    assert "event_pull_request_review_is_regular" in review_gate
+    assert "security review cannot momentarily block" in review_gate
+    assert "Submitted PR reviews are the only qualifying clean evidence." in review_gate
+    assert "Security-review messages and all other" in review_gate
     assert "updatedAt" in review_gate
     assert "stock_clean_envelope" in review_gate
+    assert 'source == "review"' in review_gate
+    assert "total_count" in review_gate
+    assert "latest_regular_issue_comment_at" in review_gate
+    assert "latest_finding_at" in review_gate
     assert "shared_open_head_count" in review_gate
     assert "final_gate_snapshot" in review_gate
     assert "Disarming automatic merge on" in review_gate
@@ -76,19 +89,27 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "github.event.changes.base != null" in base_change
     assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
+    assert "group: review-gate-base-change-" in base_change
     assert "Base changed; push a new head before @codex review" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
-    assert "group: review-gate-" in base_change
     assert "cancel-in-progress: true" in base_change
+    assert "gh workflow run review-gate.yml" in base_change
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
-    assert "group: review-gate-" in base_advance
+    assert "group: review-gate-base-advance-" in base_advance
     assert "cancel-in-progress: true" in base_advance
     assert "review-gate-base-change" in base_advance
+    assert "disablePullRequestAutoMerge" in base_advance
+    assert "((.auto_merge != null) | tostring)" in base_advance
+    assert "gh workflow run review-gate.yml" in base_advance
     assert "schedule:" in audit
+    assert "*/5 * * * *" in audit
+    assert "matrix.pr_number" in audit
+    assert "group: review-gate-${{ matrix.pr_number }}" in audit
     assert "reviewThreads" in audit
+    assert "review result" in audit
     assert "Active regular Codex findings require a fresh review" in audit
     assert "def security_heading:" in audit
     assert "security_heading) | not" in audit
@@ -97,8 +118,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "actions: write" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout
     assert "disablePullRequestAutoMerge" in rollout
+    assert "((.auto_merge != null) | tostring)" in rollout
     assert "cancel-legacy-auto-merge-runs" in rollout
     assert "active_gate_runs" in rollout
+    assert '.event == "workflow_dispatch"' in rollout
     assert "group: review-gate-" in rollout
     assert "gh pr merge" not in rollout
     assert "--auto" not in rollout
