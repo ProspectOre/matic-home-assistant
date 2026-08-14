@@ -7,10 +7,13 @@ on:
 
 # GitHub Actions does not expose review-thread reopening as an Actions trigger.
 # Protected branches require conversation resolution, so an active or reopened
-# thread blocks a merge immediately. This quiet audit reconciles the custom
-# regular-review status without posting comments or requesting another review.
+# thread blocks a merge immediately. This quiet audit also reconciles fork
+# review events and transient router failures without posting comments or
+# requesting another review.
 permissions:
   actions: write
+  contents: read
+  issues: read
   pull-requests: read
   statuses: write
 
@@ -61,7 +64,9 @@ jobs:
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: chatgpt-codex-connector
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
           REVIEW_GATE_CONTEXT: review-gate
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -74,20 +79,93 @@ jobs:
             exit 1
           }
 
-          current_gate_state() {
+          current_gate_snapshot() {
             local head_sha="$1"
             gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -r --arg context "$REVIEW_GATE_CONTEXT" \
-                  '([.[][] | select(.context == $context)] | max_by(.updated_at)? | .state) // "missing"'
+              | jq -c --arg context "$REVIEW_GATE_CONTEXT" '
+                  ([.[][]
+                    | select(.context == $context)
+                    | {state, updated_at}]
+                   | max_by(.updated_at)?) as $latest
+                  | if $latest == null then
+                      {state: "missing", updated_at: ""}
+                    else
+                      $latest
+                    end'
           }
 
           stamp_pending() {
             local head_sha="$1"
+            local description="$2"
             gh api "repos/$REPO/statuses/$head_sha" --silent \
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
-              -f description="Trusted evaluator unavailable; regular review must be re-evaluated" \
+              -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          latest_regular_comment_at() {
+            local head_sha="$1"
+            local head_prefix="${head_sha:0:10}"
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
+              | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  [.[][]
+                   | select((.user.login // "") == $bot)
+                   | (.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select(($body | availability_notice) | not)
+                   | select($body | exact_head)
+                   | (.updated_at // .created_at)]
+                  | max // empty'
+          }
+
+          latest_regular_review_at() {
+            local head_sha="$1"
+            local head_prefix="${head_sha:0:10}"
+            review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
+            review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
+            # Keep dismissed normal reviews in the timestamp so the trusted
+            # evaluator can revoke a fork PR's formerly clean gate.
+            # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
+            gh api graphql --paginate \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { state submittedAt updatedAt body author { login } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+              -F owner="$review_owner" \
+              -F name="$review_repo" \
+              -F number="$PR_NUMBER" \
+              | jq -rs -r --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  [.[].data.repository.pullRequest.reviews.nodes[]?
+                   | select((.author.login // "") == $bot)
+                   | select((.commit.oid // "") == $head)
+                   | (.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select(($body | availability_notice) | not)
+                   | select($body | exact_head)
+                   | (.updatedAt // .submittedAt)]
+                  | max // empty'
           }
 
           active_regular_finding_count() {
@@ -138,11 +216,44 @@ jobs:
 
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null \
-              | jq -er '[.head.sha, .base.ref] | @tsv'
+              | jq -er '[.head.sha, (.head.repo.full_name // "")] | @tsv'
           )" || exit 0
-          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
-          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$workflow_ref" ]] || exit 0
-          if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
+          IFS=$'\t' read -r head_sha head_repo <<< "$pr_state"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$WORKFLOW_REF" ]] || exit 0
+          gate_snapshot="$(current_gate_snapshot "$head_sha")"
+          gate_state="$(jq -r '.state' <<< "$gate_snapshot")"
+          gate_updated_at="$(jq -r '.updated_at // empty' <<< "$gate_snapshot")"
+
+          # A same-repository router stamps review-gate before it dispatches.
+          # If a normal issue-comment router failed before that mutation, the
+          # newer comment below replays safely under this default-branch audit.
+          # Fork review routers cannot write at all, so their current normal
+          # review is reconciled here by the same trusted path.
+          latest_evidence_at="$(latest_regular_comment_at "$head_sha")"
+          if [[ "$head_repo" != "$REPO" ]]; then
+            latest_review_at="$(latest_regular_review_at "$head_sha")"
+            if [[ -n "$latest_review_at" \
+              && ( -z "$latest_evidence_at" || "$latest_review_at" > "$latest_evidence_at" ) ]]; then
+              latest_evidence_at="$latest_review_at"
+            fi
+          fi
+          if [[ -n "$latest_evidence_at" \
+            && ( -z "$gate_updated_at" || "$latest_evidence_at" > "$gate_updated_at" ) ]]; then
+            stamp_pending "$head_sha" \
+              "Regular review state changed; evaluating trusted evidence"
+            if ! gh api \
+              "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+              --silent >/dev/null 2>&1; then
+              echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; revoked the required gate."
+              exit 0
+            fi
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+              -f pull_request="$PR_NUMBER"
+            echo "Dispatched trusted review-gate for a newer normal review delivery on PR #$PR_NUMBER."
+            exit 0
+          fi
+
+          if [[ "$gate_state" != "success" ]]; then
             exit 0
           fi
           findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
@@ -151,20 +262,22 @@ jobs:
           fi
           # The evaluator may have completed while the first GraphQL read was
           # in flight. Recheck both state and findings under the shared lock.
-          if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
+          gate_snapshot="$(current_gate_snapshot "$head_sha")"
+          if [[ "$(jq -r '.state' <<< "$gate_snapshot")" != "success" ]]; then
             exit 0
           fi
           findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
           if [[ "$findings" -eq 0 ]]; then
             exit 0
           fi
+          stamp_pending "$head_sha" \
+            "Active regular review findings; evaluating trusted evidence"
           if ! gh api \
-            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$workflow_ref" \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
             --silent >/dev/null 2>&1; then
-            stamp_pending "$head_sha"
-            echo "Trusted review-gate evaluator is not installed on $workflow_ref; revoked the required gate."
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; revoked the required gate."
             exit 0
           fi
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$workflow_ref" \
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
             -f pull_request="$PR_NUMBER"
           echo "Dispatched review-gate for PR #$PR_NUMBER with $findings active regular finding(s)."

@@ -13,6 +13,7 @@ concurrency:
 
 permissions:
   actions: write
+  contents: read
   issues: read
   pull-requests: read
   statuses: write
@@ -25,7 +26,6 @@ jobs:
       regular: ${{ steps.classify.outputs.regular }}
       clean: ${{ steps.classify.outputs.clean }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
-      workflow_ref: ${{ steps.classify.outputs.workflow_ref }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - id: classify
@@ -59,13 +59,39 @@ jobs:
             echo "The issue-comment event did not provide a pull request number."
             exit 1
           fi
+          if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
+            echo "Ignoring a comment from another author."
+            exit 0
+          fi
+          body_could_be_regular_comment() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)' >/dev/null
+          }
+          if ! body_could_be_regular_comment "$EVENT_COMMENT_BODY" \
+            && ! body_could_be_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
+            echo "Ignoring a non-regular issue comment before the pull request lookup."
+            exit 0
+          fi
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.head.sha, .base.ref] | @tsv'
+              | jq -er '.head.sha'
           )"
-          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
-          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || -z "$workflow_ref" ]]; then
-            echo "Could not resolve the current pull request head and trusted base ref."
+          head_sha="$pr_state"
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the current pull request head."
             exit 1
           fi
           head_prefix="${head_sha:0:10}"
@@ -118,10 +144,6 @@ jobs:
                   | select(stock_clean_issue_comment_envelope)' >/dev/null
           }
 
-          if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
-            echo "Ignoring a comment from another author."
-            exit 0
-          fi
           if ! body_is_regular_comment "$EVENT_COMMENT_BODY" \
             && ! body_is_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
             echo "Ignoring a non-regular issue comment."
@@ -130,7 +152,6 @@ jobs:
           {
             echo "regular=true"
             echo "head_sha=$head_sha"
-            echo "workflow_ref=$workflow_ref"
           } >> "$GITHUB_OUTPUT"
           if body_is_clean_comment "$EVENT_COMMENT_BODY"; then
             echo "clean=true" >> "$GITHUB_OUTPUT"
@@ -154,7 +175,7 @@ jobs:
           REPO: ${{ github.repository }}
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_GATE_CONTEXT: review-gate
-          WORKFLOW_REF: ${{ needs.classify.outputs.workflow_ref }}
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"

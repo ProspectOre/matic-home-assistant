@@ -12,6 +12,7 @@ concurrency:
 
 permissions:
   actions: write
+  contents: read
   statuses: write
 
 jobs:
@@ -105,7 +106,11 @@ jobs:
   invalidate:
     name: invalidate-regular-review
     needs: route
-    if: needs.route.outputs.regular == 'true'
+    # GitHub downgrades pull_request_review tokens for forks to read-only.
+    # The trusted scheduled audit reconciles those fork verdicts instead.
+    if: >-
+      needs.route.outputs.regular == 'true'
+      && github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
       group: review-gate-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -120,7 +125,7 @@ jobs:
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_INVALIDATED: ${{ needs.route.outputs.review_invalidated }}
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
-          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"

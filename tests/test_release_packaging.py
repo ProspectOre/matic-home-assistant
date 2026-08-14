@@ -116,8 +116,18 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in regular_review
     assert "Regular review invalidated; require a newer normal review" in regular_review
     assert "needs: route" in regular_review
-    assert "if: needs.route.outputs.regular == 'true'" in regular_review
-    assert "WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}" in regular_review
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in regular_review
+    )
+    assert (
+        "GitHub downgrades pull_request_review tokens for forks to read-only"
+        in regular_review
+    )
+    assert "contents: read" in regular_review
+    assert (
+        "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_review
+    )
     assert "Trusted review-gate evaluator is not installed" in regular_review
     assert (
         "group: review-gate-${{ github.event.pull_request.number }}" in regular_review
@@ -131,6 +141,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel-in-progress: false" in regular_comment
     assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
+    assert "body_could_be_regular_comment" in regular_comment
+    assert "before the pull request lookup" in regular_comment
     assert "body_is_regular_comment" in regular_comment
     assert "body_is_clean_comment" in regular_comment
     assert "def security_heading:" in regular_comment
@@ -141,7 +153,11 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "name: classify-regular-comment" in regular_comment
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
-    assert "[.head.sha, .base.ref]" in regular_comment
+    assert "| jq -er '.head.sha'" in regular_comment
+    assert (
+        "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_comment
+    )
+    assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
     assert '--ref "$WORKFLOW_REF"' in regular_comment
@@ -150,7 +166,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "gh pr merge" not in regular_review + regular_comment
     assert "--auto" not in regular_review + regular_comment
     assert "github.event.changes.base != null" in base_change
-    assert "WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}" in base_change
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in base_change
+    assert "contents: read" in base_change
     assert "EVENT_BASE_SHA" in base_change
     assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
@@ -182,23 +199,33 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "((.auto_merge != null) | tostring)" in base_advance
     assert "cancel_active_gate_runs" in base_advance
     assert "gh workflow run review-gate.yml" in base_advance
-    assert '--ref "$current_base"' in base_advance
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in base_advance
+    assert '--ref "$WORKFLOW_REF"' in base_advance
+    assert "contents: read" in base_advance
     assert "Trusted review-gate evaluator is not installed" in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
     assert "actions: write" in audit
+    assert "contents: read" in audit
+    assert "issues: read" in audit
     assert "statuses: write" in audit
     assert "group: review-gate-${{ matrix.pr_number }}" in audit
     assert "reviewThreads" in audit
     assert "review result" in audit
     assert "gh workflow run review-gate.yml" in audit
-    assert '--ref "$workflow_ref"' in audit
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in audit
+    assert '--ref "$WORKFLOW_REF"' in audit
     assert "Trusted review-gate evaluator is not installed" in audit
     assert "def security_heading:" in audit
     assert "security_heading) | not" in audit
     assert "def availability_notice:" in audit
     assert "availability_notice) | not" in audit
+    assert "latest_regular_comment_at" in audit
+    assert "latest_regular_review_at" in audit
+    assert "Keep dismissed normal reviews in the timestamp" in audit
+    assert "head.repo.full_name" in audit
+    assert "Fork review routers cannot write at all" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "actions: write" in rollout

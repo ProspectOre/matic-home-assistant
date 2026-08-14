@@ -11,6 +11,7 @@ on:
 
 permissions:
   actions: write
+  contents: read
   pull-requests: write
   statuses: write
 
@@ -107,6 +108,7 @@ jobs:
           REPO: ${{ github.repository }}
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_GATE_CONTEXT: review-gate
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -182,11 +184,11 @@ jobs:
           cancel_active_gate_runs
           stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
           if ! gh api \
-            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$current_base" \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
             --silent >/dev/null 2>&1; then
-            echo "Trusted review-gate evaluator is not installed on $current_base; leaving the required gate pending."
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
             exit 0
           fi
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$current_base" \
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
             -f pull_request="$PR_NUMBER"
           echo "Base branch advancement invalidated regular review for PR #$PR_NUMBER."
