@@ -22,7 +22,7 @@ real robot actually returned after an OTA.
 
 | Collection/property | Decoded data | Current HA exposure |
 | --- | --- | --- |
-| `kabuki_state` | Battery, state/error codes, activity, firmware fallback, channel/profile, current/previous area | Vacuum; activity, battery and current-area sensors; seven operational binary sensors; attributes |
+| `kabuki_state` | Battery, state/error codes, activity, firmware fallback, channel/profile, current/previous area, Cues voice/gesture lifecycle and following presence | Vacuum; activity, battery, current-area and Cues lifecycle sensors; operational binary sensors; Cues event entity and bus event; attributes |
 | `coverage_plan` | Mission, partition, named room IDs and geometry | Rooms sensor, map camera, vacuum segments/Areas, cleaning target |
 | `latest_pose` | Robot position and heading across both verified wire layouts; payload-free vector paths in endpoint inspection | Map camera |
 | `approximate_trajectory` | Mission-correlated, finite 2D route updates and mission-scoped clear markers | Typed client stream; no HA entity or map overlay yet |
@@ -42,7 +42,7 @@ real robot actually returned after an OTA.
 | `coverage_time` | Accumulated coverage seconds | Coverage-time sensor |
 | `child_lock_enabled_state` | Child-lock state | Child-lock switch |
 | `petwaste_enabled_state` | Pet-waste avoidance state | Pet-waste-avoidance switch |
-| `voice_enabled_state` | Hey Matic state | Voice-assistant switch |
+| `voice_enabled_state` | Matic Cues state | Cues switch |
 | `matter_pairing_state` | Pairing-mode presence | Matter-pairing binary sensor |
 | `deep_mop_override_setting_state` | Double-pass mop state | Deep-mop switch |
 | `water_flow_override_state` | Water-flow multiplier | Water-flow number |
@@ -53,7 +53,9 @@ real robot actually returned after an OTA.
 ## Allowlisted exploratory reads
 
 These are bounded, payload-free reads through `inspect_hermes_endpoint` and the
-weekly `firmware_snapshot` action. Payloads are not decoded into entities unless listed above. “Candidate” is a
+automatic/manual `firmware_snapshot` workflow. The snapshot records hashes and
+bounded value-free wire shapes where the payload is a small protobuf message.
+Payloads are not decoded into entities unless listed above. “Candidate” is a
 research direction, not a promise that the field exists or is safe on every
 firmware.
 
@@ -84,7 +86,7 @@ credentials, arbitrary names, and raw payload output are deliberately excluded.
 | `user_command` | Full-floor/room coverage and official drawn-circle custom coverage; vacuum, mop or both; Quick/Optimal/Heavy Duty; ordered/unordered | Vacuum start/Area/segment cleaning; `matic_robot.clean`; `matic_robot.clean_area`; saved plans and areas |
 | `child_lock_enabled_command` | Boolean | Child-lock switch |
 | `petwaste_enabled_command` | Boolean | Pet-waste-avoidance switch |
-| `voice_enabled_command` | Boolean | Voice-assistant switch |
+| `voice_enabled_command` | Boolean | Cues switch |
 | `deep_mop_override_setting_command` | Enable/disable | Deep-mop switch |
 | `water_flow_override_command` | 0.5–2.0 in 0.1 steps | Water-flow number |
 
@@ -101,6 +103,8 @@ Home Assistant error handling.
 - [Snapshot template](firmware-versions/template.md) — copy after each OTA.
 
 The integration persists 52 safe snapshots, emits an event on a new version,
-raises a Home Assistant Repair only for compatibility drift, and separates
-endpoint availability changes from normal content changes. The Markdown ledger
+then emits a silent analysis event after the automatic comparison. It separates
+endpoint availability changes, normal content changes, and newly added wire
+shapes. Only availability/transport drift creates a Home Assistant Repair;
+structural candidates remain diagnostic until reviewed. The Markdown ledger
 remains the reviewed compatibility claim.

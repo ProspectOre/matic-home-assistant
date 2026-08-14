@@ -8,12 +8,15 @@ import pytest
 from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot.client.wire import (
+    MAX_WIRE_SHAPE_BYTES,
+    MAX_WIRE_SHAPE_FIELDS,
     decode_fields,
     first_bytes,
     first_varint,
     packed_floats,
     point,
     uuid_string,
+    wire_shape,
 )
 
 
@@ -57,3 +60,24 @@ def test_uuid_search_skips_non_message_and_invalid_nested_fields() -> None:
     )
 
     assert uuid_string(payload) == "01010101-0101-0101-0202-020202020202"
+
+
+def test_wire_shape_is_bounded_value_free_and_recurses_only_on_approved_paths() -> None:
+    nested = b"\x8a\x01\x02\x12\x00"
+    payload = b"\x08\x01\x08\x7f\x92\x01" + bytes((len(nested),)) + nested
+
+    assert wire_shape(payload) == ("1:0", "18:2")
+    assert wire_shape(payload, nested_message_paths=((18,), (18, 17))) == (
+        "1:0",
+        "18:2",
+        "18:2/17:2",
+        "18:2/17:2/2:2",
+    )
+
+
+def test_wire_shape_fails_closed_for_invalid_large_or_complex_values() -> None:
+    assert wire_shape(b"") == ()
+    assert wire_shape(b"\x00") is None
+    assert wire_shape(b"\x0a\x01\x80", nested_message_paths=((1,),)) == ("1:2",)
+    assert wire_shape(b"x" * (MAX_WIRE_SHAPE_BYTES + 1)) is None
+    assert wire_shape(b"\x08\x01" * (MAX_WIRE_SHAPE_FIELDS + 1)) is None

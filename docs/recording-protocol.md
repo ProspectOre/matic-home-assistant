@@ -15,6 +15,14 @@ photographic pixels. The default-disabled **Photorealistic map** and admin-only
 Map Studio use accumulated local SLAM color/structure pages; they do not expose
 recording collections, clips, microphones, or a live video stream.
 
+The privacy-safe [Matic Cues surface](automation.md#matic-cues) is also separate.
+It exposes only bounded lifecycle enums, classified intent kinds, and following
+presence from `kabuki_state`. It does not expose transcripts, media, person
+identity, pointing coordinates, rejection details, raw Cues collections, or
+recording-only intent variants. Enabling Cues still opts the robot into Matic's
+documented post-chime audio processing, so review the linked consent guidance
+before using the switch.
+
 ## Why recording controls are not included
 
 Camera and microphone content can reveal people, conversations, belongings,

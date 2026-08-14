@@ -24,7 +24,7 @@ protocol_version: N
 | 15 telemetry properties | Pending | |
 | Schedule and coverage-history collections | Pending | |
 | Dock and sink collection counts | Pending | |
-| Allowlisted exploratory reads | Pending | |
+| Allowlisted exploratory reads and wire-shape candidates | Pending | |
 | Stop, pause, resume and dock | Not tested | |
 | Coverage/room commands and cleaning settings | Not tested | |
 
@@ -44,7 +44,7 @@ protocol_version: N
 - [ ] When credential recovery is claimed, exercise explicit replacement and
   stale-bond removal.
 - [ ] Confirm coordinator refresh and decoded reads.
-- [ ] Run a hash-only exploratory availability sweep.
+- [ ] Run a payload-free availability and wire-shape sweep.
 - [ ] Review privacy-safe diagnostics for protocol drift.
 - [ ] Compare with the preceding firmware snapshot.
 - [ ] Exercise supported writes deliberately and record exact coverage.

@@ -107,6 +107,16 @@ class MaticStateSensorDescription(SensorEntityDescription):
 
 STATE_DESCRIPTIONS = (
     MaticStateSensorDescription(
+        key="cues_voice_status",
+        translation_key="cues_voice_status",
+        value_fn=lambda state: state.operational.cues_voice_status,
+    ),
+    MaticStateSensorDescription(
+        key="cues_gesture_status",
+        translation_key="cues_gesture_status",
+        value_fn=lambda state: state.operational.cues_gesture_status,
+    ),
+    MaticStateSensorDescription(
         key="protocol_version",
         translation_key="protocol_version",
         entity_category=EntityCategory.DIAGNOSTIC,

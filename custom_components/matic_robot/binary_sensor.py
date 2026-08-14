@@ -110,6 +110,12 @@ DESCRIPTIONS = (
         entity_registry_enabled_default=False,
         value_fn=lambda state: state.telemetry.uploader_opt_in,
     ),
+    MaticBinarySensorDescription(
+        key="following_person",
+        translation_key="following_person",
+        device_class=BinarySensorDeviceClass.RUNNING,
+        value_fn=lambda state: state.operational.following_person,
+    ),
 )
 
 

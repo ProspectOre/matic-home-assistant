@@ -544,6 +544,9 @@
           "off": "Not allowed",
           "on": "Allowed"
         }
+      },
+      "following_person": {
+        "name": "Following a person"
       }
     },
     "button": {
@@ -624,6 +627,28 @@
       },
       "current_area": {
         "name": "Current area"
+      },
+      "cues_voice_status": {
+        "name": "Cues voice status",
+        "state": {
+          "disabled": "Disabled",
+          "listening_for_wake_word": "Ready for wake word",
+          "listening_for_intent": "Listening for intent",
+          "thinking_for_intent": "Processing intent",
+          "classified": "Intent classified",
+          "rejected": "Intent rejected"
+        }
+      },
+      "cues_gesture_status": {
+        "name": "Cues gesture status",
+        "state": {
+          "awaiting_pointed_target": "Waiting for pointed target",
+          "pointed_target_accepted": "Pointed target accepted",
+          "no_target_found": "No target found",
+          "facing_user": "Facing user",
+          "person_not_found": "Person not found",
+          "following": "Following"
+        }
       },
       "coverage_time": {
         "name": "Coverage time"
@@ -714,7 +739,50 @@
         "name": "Pet-waste avoidance"
       },
       "voice_assistant": {
-        "name": "Hey Matic"
+        "name": "Matic Cues"
+      }
+    },
+    "event": {
+      "cues": {
+        "name": "Cues",
+        "state_attributes": {
+          "event_type": {
+            "state": {
+              "disabled": "Disabled",
+              "ready": "Ready",
+              "wake_word_detected": "Wake word detected",
+              "intent_processing": "Processing intent",
+              "intent_classified": "Intent classified",
+              "intent_rejected": "Intent rejected",
+              "gesture_awaiting_pointed_target": "Waiting for pointed target",
+              "gesture_pointed_target_accepted": "Pointed target accepted",
+              "gesture_no_target_found": "No target found",
+              "gesture_facing_user": "Facing user",
+              "gesture_person_not_found": "Person not found",
+              "gesture_following": "Following gesture",
+              "following_started": "Following started",
+              "following_stopped": "Following stopped"
+            }
+          },
+          "intent": {
+            "name": "Intent",
+            "state": {
+              "clean": "Clean",
+              "clean_all": "Clean all",
+              "dock": "Dock",
+              "go_away": "Go away",
+              "navigate": "Navigate",
+              "pause": "Pause",
+              "redo_last_clean": "Redo last clean",
+              "resume": "Resume",
+              "sink_summon": "Sink summon",
+              "stop": "Stop",
+              "follow_person": "Follow person",
+              "point_to_clean": "Point to clean",
+              "unknown": "Unknown"
+            }
+          }
+        }
       }
     },
     "update": {
@@ -1051,7 +1119,7 @@
     },
     "firmware_snapshot": {
       "name": "Firmware snapshot",
-      "description": "Checks every known non-credential Hermes endpoint, stores a payload-free weekly compatibility record, and reports changes from the prior snapshot."
+      "description": "Checks every known non-credential Hermes endpoint, stores a payload-free compatibility record, and reports availability, content, and value-free wire-shape changes from the prior snapshot."
     }
   }
 }

@@ -7,6 +7,7 @@ PLATFORMS: Final = [
     "binary_sensor",
     "button",
     "camera",
+    "event",
     "number",
     "select",
     "sensor",
@@ -33,4 +34,23 @@ DATA_FIRMWARE_TRACKER: Final = "firmware_tracker"
 DATA_SLAM_MAP_STORE: Final = "slam_map_store"
 
 EVENT_FIRMWARE_CHANGED: Final = f"{DOMAIN}_firmware_changed"
+EVENT_FIRMWARE_ANALYZED: Final = f"{DOMAIN}_firmware_analyzed"
 EVENT_CLEANING_FINISHED: Final = f"{DOMAIN}_cleaning_finished"
+EVENT_CUES: Final = f"{DOMAIN}_cues"
+
+CUES_EVENT_TYPES: Final = (
+    "disabled",
+    "ready",
+    "wake_word_detected",
+    "intent_processing",
+    "intent_classified",
+    "intent_rejected",
+    "gesture_awaiting_pointed_target",
+    "gesture_pointed_target_accepted",
+    "gesture_no_target_found",
+    "gesture_facing_user",
+    "gesture_person_not_found",
+    "gesture_following",
+    "following_started",
+    "following_stopped",
+)

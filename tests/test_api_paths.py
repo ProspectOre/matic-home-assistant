@@ -461,6 +461,22 @@ async def test_state_read_reconnects_and_retries_stale_channel() -> None:
     failed_channel.close.assert_called_once_with()
 
 
+async def test_state_subscription_decodes_updates_and_rejects_malformed() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    valid = KabukiOutputWire(states=[106]).SerializeToString()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", valid)
+        yield HermesCollectionEntry(b"", b"\x0a\xff")
+
+    client.async_subscribe_collection_entries = entries
+    updates = client.async_subscribe_state()
+
+    assert (await anext(updates)).activity is RobotActivity.DOCKED
+    with pytest.raises(CannotConnectError, match="malformed subscribed"):
+        await anext(updates)
+
+
 async def test_stale_reader_reuses_channel_replaced_by_concurrent_reader() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     failed_channel = SimpleNamespace(close=MagicMock())
@@ -696,6 +712,35 @@ async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(receive, 0.5)
     assert stream.cancelled.is_set()
+
+
+async def test_subscribe_collection_entries_reconnects_failed_channel(
+    monkeypatch,
+) -> None:
+    stream = _BidirectionalSequenceStream([])
+    stream.recv_message = AsyncMock(side_effect=StreamTerminatedError("dropped"))
+    method = _OpenMethod(stream)
+    failed_channel = SimpleNamespace(close=MagicMock())
+    fresh_channel = object()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = failed_channel
+
+    async def connect_fresh_channel() -> None:
+        client._channel = fresh_channel
+
+    client._async_connect_locked = AsyncMock(side_effect=connect_fresh_channel)
+
+    with pytest.raises(CannotConnectError, match="connection failed"):
+        await anext(client.async_subscribe_collection_entries("live_map"))
+
+    assert client._channel is fresh_channel
+    client._async_connect_locked.assert_awaited_once_with()
+    failed_channel.close.assert_called_once_with()
+    assert stream.cancelled is True
 
 
 async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:

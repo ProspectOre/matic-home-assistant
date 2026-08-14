@@ -741,7 +741,10 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "sensitivity": endpoint.sensitivity,
             "entry_count": len(values),
             "limit": call.data["limit"],
-            "entries": [fingerprint_entry(value) for value in values],
+            "entries": [
+                fingerprint_entry(value, endpoint_name=endpoint_name)
+                for value in values
+            ],
         }
         if endpoint_name == "latest_pose":
             response["pose_vector_paths"] = [

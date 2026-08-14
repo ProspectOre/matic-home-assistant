@@ -143,6 +143,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        entry.async_create_background_task(
+            hass,
+            coordinator.async_watch_cues(),
+            f"{DOMAIN} Cues state collector",
+        )
         _schedule_native_reconciliation_recovery(
             hass,
             entry,

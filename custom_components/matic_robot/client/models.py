@@ -34,6 +34,46 @@ class RobotActivity(StrEnum):
     READY = "ready"
 
 
+class CuesVoiceStatus(StrEnum):
+    """Privacy-safe Matic Cues voice lifecycle reported by the robot."""
+
+    DISABLED = "disabled"
+    LISTENING_FOR_WAKE_WORD = "listening_for_wake_word"
+    LISTENING_FOR_INTENT = "listening_for_intent"
+    THINKING_FOR_INTENT = "thinking_for_intent"
+    CLASSIFIED = "classified"
+    REJECTED = "rejected"
+
+
+class CuesGestureStatus(StrEnum):
+    """Privacy-safe Matic Cues gesture lifecycle reported by the robot."""
+
+    AWAITING_POINTED_TARGET = "awaiting_pointed_target"
+    POINTED_TARGET_ACCEPTED = "pointed_target_accepted"
+    NO_TARGET_FOUND = "no_target_found"
+    FACING_USER = "facing_user"
+    PERSON_NOT_FOUND = "person_not_found"
+    FOLLOWING = "following"
+
+
+class CuesIntent(StrEnum):
+    """Automation-safe intent classifications exposed by Matic Cues."""
+
+    CLEAN = "clean"
+    CLEAN_ALL = "clean_all"
+    DOCK = "dock"
+    GO_AWAY = "go_away"
+    NAVIGATE = "navigate"
+    PAUSE = "pause"
+    REDO_LAST_CLEAN = "redo_last_clean"
+    RESUME = "resume"
+    SINK_SUMMON = "sink_summon"
+    STOP = "stop"
+    FOLLOW_PERSON = "follow_person"
+    POINT_TO_CLEAN = "point_to_clean"
+    UNKNOWN = "unknown"
+
+
 @dataclass(frozen=True, slots=True)
 class RobotOperationalState:
     """Verified fields from the local ``kabuki_state`` property."""
@@ -52,6 +92,10 @@ class RobotOperationalState:
     current_area: str | None = None
     previous_area: str | None = None
     robot_profile: str | None = None
+    cues_voice_status: CuesVoiceStatus | None = None
+    cues_voice_intent: CuesIntent | None = None
+    cues_gesture_status: CuesGestureStatus | None = None
+    following_person: bool | None = None
 
     @property
     def activity(self) -> RobotActivity:

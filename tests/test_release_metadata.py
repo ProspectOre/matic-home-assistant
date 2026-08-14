@@ -412,10 +412,9 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
         inspection = services["inspect_hermes_endpoint"]
         assert "payload-free" in inspection["description"]
         assert set(inspection["fields"]) == {"endpoint", "limit"}
-        assert (
-            "weekly compatibility record"
-            in services["firmware_snapshot"]["description"]
-        )
+        firmware_snapshot = services["firmware_snapshot"]["description"]
+        assert "payload-free compatibility record" in firmware_snapshot
+        assert "value-free wire-shape changes" in firmware_snapshot
         assert (
             "Review the **Firmware snapshot** response"
             in translations["issues"]["firmware_regression"]["description"]
@@ -439,8 +438,9 @@ def test_documented_entity_surface_matches_release_contract() -> None:
     readme = " ".join((ROOT / "README.md").read_text().split())
     automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
     surface = (
-        "51 fixed entities — 21 sensors, 12 binary sensors, 5 buttons, "
-        "4 switches, 4 selects, 1 number, 2 cameras, 1 update, and 1 vacuum"
+        "55 fixed entities — 23 sensors, 13 binary sensors, 5 buttons, "
+        "4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and "
+        "1 vacuum"
     )
 
     assert surface in readme

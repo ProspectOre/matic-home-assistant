@@ -5,11 +5,14 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.firmware import (
+    ANALYSIS_VERSION,
     MAX_HISTORY,
     FirmwareTracker,
     _compare_snapshots,
     _compatibility_status,
+    fingerprint_entry,
     snapshot_timestamp,
 )
 
@@ -19,8 +22,10 @@ def _snapshot(
     *,
     status: str = "populated",
     value_hash: str = "one",
+    wire_shapes: list[str] | None = None,
 ) -> dict[str, object]:
     return {
+        "analysis_version": ANALYSIS_VERSION,
         "captured_at": "2026-07-20T00:00:00+00:00",
         "firmware_version": version,
         "protocol_version": 25,
@@ -28,12 +33,21 @@ def _snapshot(
         "populated_endpoints": int(status == "populated"),
         "empty_endpoints": int(status == "empty"),
         "failed_endpoints": int(status == "error"),
+        "structural_endpoints": 1,
+        "wire_shape_count": len(wire_shapes) if wire_shapes is not None else 1,
         "endpoints": [
             {
                 "name": "current_version",
                 "kind": "property",
                 "status": status,
-                "entries": [{"value_sha256": value_hash}],
+                "entries": [
+                    {
+                        "value_sha256": value_hash,
+                        "wire_shape": wire_shapes
+                        if wire_shapes is not None
+                        else ["1:2"],
+                    }
+                ],
             }
         ],
     }
@@ -91,26 +105,39 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "observed_version": None,
         "observed_protocol": None,
         "compatibility_status": "baseline",
+        "analysis_version": ANALYSIS_VERSION,
         "last_snapshot_at": "2026-07-20T00:00:00+00:00",
         "snapshot_count": MAX_HISTORY,
         "endpoint_count": 1,
         "populated_endpoints": 1,
         "empty_endpoints": 0,
         "failed_endpoints": 0,
+        "structural_endpoints": 1,
+        "wire_shape_count": 1,
         "changed_endpoints": 0,
         "content_changed_endpoints": 0,
+        "wire_shape_changed_endpoints": 0,
+        "new_wire_shape_count": 0,
+        "wire_shape_candidate_endpoints": [],
     }
     assert tracker.summary("missing")["snapshot_count"] == 0
     assert tracker.needs_snapshot("entry", "v169.0", 25) is False
     assert tracker.needs_snapshot("entry", "v169.0", None) is True
     assert tracker.needs_snapshot("entry", "v170", 25) is True
+    legacy_snapshot = _snapshot("v169.0")
+    legacy_snapshot.pop("analysis_version")
+    tracker._data["robots"]["legacy"] = {"snapshot": legacy_snapshot}
+    assert tracker.needs_snapshot("legacy", "v169.0", 25) is True
     assert FirmwareTracker.issue_id("entry") == "firmware_changed_923fe53966c6"
     delete_issue.assert_called_once()
 
+    analysis_events = []
+    hass.bus.async_listen("matic_robot_firmware_analyzed", analysis_events.append)
     with patch(
         "custom_components.matic_robot.firmware.ir.async_create_issue"
     ) as create_issue:
         await tracker.async_record_snapshot("entry", _snapshot("v170", status="error"))
+    await hass.async_block_till_done()
     assert create_issue.call_args.kwargs["translation_key"] == "firmware_regression"
     assert create_issue.call_args.kwargs["translation_placeholders"] == {
         "previous": "v169.0",
@@ -120,6 +147,20 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
         "count": "1",
     }
     assert "entry" not in create_issue.call_args.args[2]
+    assert analysis_events[0].data == {
+        "entry_id": "entry",
+        "firmware_version": "v170",
+        "protocol_version": 25,
+        "compatibility_status": "regression",
+        "analysis_version": ANALYSIS_VERSION,
+        "structural_endpoints": 1,
+        "wire_shape_count": 1,
+        "availability_changed_endpoints": 1,
+        "content_changed_endpoints": 1,
+        "wire_shape_changed_endpoints": [],
+        "new_wire_shape_count": 0,
+        "new_wire_shapes": {},
+    }
 
     with patch(
         "custom_components.matic_robot.firmware.ir.async_delete_issue"
@@ -147,6 +188,63 @@ async def test_removed_robots_forget_history_and_withdraw_repairs(hass) -> None:
     delete_issue.assert_called_once()
     assert tracker._data["robots"] == {}
     tracker._store.async_save.assert_awaited_once()
+
+
+async def test_wire_shape_candidates_stay_silent_and_compatible(hass) -> None:
+    previous = _snapshot("v168.11", wire_shapes=["1:2"])
+    stored = {
+        "robots": {
+            "entry": {
+                "observed_version": "v168.11",
+                "observed_protocol": 25,
+                "compatibility_status": "compatible",
+                "snapshot": previous,
+                "history": [previous],
+            }
+        }
+    }
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=stored), async_save=AsyncMock()
+    )
+    await tracker.async_load()
+    events = []
+    hass.bus.async_listen("matic_robot_firmware_analyzed", events.append)
+    current = _snapshot("v169.0", wire_shapes=["1:2", "18:2", "18:2/17:2"])
+
+    with (
+        patch(
+            "custom_components.matic_robot.firmware.ir.async_create_issue"
+        ) as create_issue,
+        patch(
+            "custom_components.matic_robot.firmware.ir.async_delete_issue"
+        ) as delete_issue,
+    ):
+        comparison = await tracker.async_record_snapshot("entry", current)
+    await hass.async_block_till_done()
+
+    create_issue.assert_not_called()
+    delete_issue.assert_called_once()
+    assert comparison["wire_shape_changed_endpoints"] == ["current_version"]
+    summary = tracker.summary("entry")
+    assert summary["compatibility_status"] == "compatible"
+    assert summary["wire_shape_changed_endpoints"] == 1
+    assert summary["new_wire_shape_count"] == 2
+    assert summary["wire_shape_candidate_endpoints"] == ["current_version"]
+    assert events[0].data == {
+        "entry_id": "entry",
+        "firmware_version": "v169.0",
+        "protocol_version": 25,
+        "compatibility_status": "compatible",
+        "analysis_version": ANALYSIS_VERSION,
+        "structural_endpoints": 1,
+        "wire_shape_count": 3,
+        "availability_changed_endpoints": 0,
+        "content_changed_endpoints": 1,
+        "wire_shape_changed_endpoints": ["current_version"],
+        "new_wire_shape_count": 2,
+        "new_wire_shapes": {"current_version": ["18:2", "18:2/17:2"]},
+    }
 
 
 def test_activity_dependent_population_is_not_availability_drift() -> None:
@@ -228,6 +326,8 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
         "protocol_changed": False,
         "changed_endpoints": ["current_version"],
         "content_changed_endpoints": ["current_version"],
+        "wire_shape_changed_endpoints": [],
+        "new_wire_shapes": {},
     }
 
     added = _snapshot()
@@ -236,6 +336,33 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
         {"name": "zones", "kind": "collection", "status": "empty", "entries": []},
     ]
     assert _compare_snapshots(previous, added)["changed_endpoints"] == ["zones"]
+
+    structural = _snapshot("v169", wire_shapes=["1:2", "18:2", "18:2/17:2"])
+    structural_comparison = _compare_snapshots(previous, structural)
+    assert structural_comparison["wire_shape_changed_endpoints"] == ["current_version"]
+    assert structural_comparison["new_wire_shapes"] == {
+        "current_version": ["18:2", "18:2/17:2"]
+    }
+    assert _compatibility_status("pending", structural_comparison) == "compatible"
+
+    removed_shape = _compare_snapshots(structural, previous)
+    assert removed_shape["wire_shape_changed_endpoints"] == []
+    assert removed_shape["new_wire_shapes"] == {}
+
+    legacy = _snapshot()
+    legacy_entry = legacy["endpoints"][0]
+    assert isinstance(legacy_entry, dict)
+    legacy_entry["entries"][0].pop("wire_shape")
+    assert _compare_snapshots(legacy, structural)["new_wire_shapes"] == {}
+
+    malformed = _snapshot("v169")
+    malformed_entry = malformed["endpoints"][0]
+    assert isinstance(malformed_entry, dict)
+    malformed_entry["entries"] = [
+        {"wire_shape": None},
+        {"wire_shape": [1]},
+    ]
+    assert _compare_snapshots(previous, malformed)["new_wire_shapes"] == {}
 
     assert _compatibility_status(None, {"baseline": True}) == "baseline"
     assert (
@@ -277,3 +404,19 @@ def test_snapshot_timestamp_uses_home_assistant_utc_clock() -> None:
         return_value=SimpleNamespace(isoformat=MagicMock(return_value="timestamp")),
     ):
         assert snapshot_timestamp() == "timestamp"
+
+
+def test_fingerprint_entry_keeps_only_hashes_sizes_and_wire_shape() -> None:
+    payload = b"\x92\x01\x05\x8a\x01\x02\x12\x00"
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"private-key", payload), endpoint_name="kabuki_state"
+    )
+
+    assert fingerprint["wire_shape"] == [
+        "18:2",
+        "18:2/17:2",
+        "18:2/17:2/2:2",
+    ]
+    rendered = repr(fingerprint)
+    assert "private-key" not in rendered
+    assert repr(payload) not in rendered

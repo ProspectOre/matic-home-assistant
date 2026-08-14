@@ -396,6 +396,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator = SimpleNamespace(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
+        async_watch_cues=AsyncMock(),
         data=SimpleNamespace(
             floor_plan=FloorPlan(
                 42,
@@ -503,7 +504,8 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 3
+    assert entry.async_create_background_task.call_count == 4
+    coordinator.async_watch_cues.assert_called_once_with()
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -585,7 +587,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 6
+    assert entry.async_create_background_task.call_count == 7
     assert plans.async_upgrade_area_bindings.await_count == 5
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",

@@ -23,6 +23,7 @@ from custom_components.matic_robot import (
     update,
     vacuum,
 )
+from custom_components.matic_robot import event as event_platform
 from custom_components.matic_robot.client.commands import (
     CleaningMode,
     CoverageSetting,
@@ -42,6 +43,7 @@ from custom_components.matic_robot.client.models import (
     Room,
     WifiNetwork,
 )
+from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plans import PlanStopDecision
 
@@ -167,6 +169,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_request_full_refresh=AsyncMock(),
         async_discard_current_room=MagicMock(),
         async_add_listener=MagicMock(return_value=MagicMock()),
+        async_add_cues_listener=MagicMock(return_value=MagicMock()),
         last_update_success=True,
     )
     history = SimpleNamespace(
@@ -273,25 +276,27 @@ async def test_platform_setups_create_the_full_entity_surface(hass) -> None:
     await add_platform("sensor", sensor.async_setup_entry)
     await add_platform("select", select.async_setup_entry)
     await add_platform("camera", camera.async_setup_entry)
+    await add_platform("event", event_platform.async_setup_entry)
     await add_platform("number", number.async_setup_entry)
     await add_platform("switch", switch.async_setup_entry)
     await add_platform("update", update.async_setup_entry)
     await add_platform("vacuum", vacuum.async_setup_entry)
 
-    # 51 fixed entities plus two opt-in statistics sensors per mapped room.
+    # 55 fixed entities plus two opt-in statistics sensors per mapped room.
     assert platform_counts == {
-        "binary_sensor": 12,
+        "binary_sensor": 13,
         "button": 5,
         "camera": 2,
+        "event": 1,
         "number": 1,
         "select": 4,
-        "sensor": 25,
+        "sensor": 27,
         "switch": 4,
         "update": 1,
         "vacuum": 1,
     }
-    assert len(entities) == 55
-    assert len({entity.unique_id for entity in entities}) == 55
+    assert len(entities) == 59
+    assert len({entity.unique_id for entity in entities}) == 59
     assert all(entity.device_info["manufacturer"] == "Matic" for entity in entities)
 
 
@@ -332,6 +337,23 @@ async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     )
     listener()
     assert len(added) == 2
+
+
+async def test_cues_event_entity_records_live_event(hass) -> None:
+    entry = _entry()
+    entity = event_platform.MaticCuesEventEntity(entry)
+    entity.hass = hass
+    entity.entity_id = "event.test_robot_cues"
+    entity.async_write_ha_state = MagicMock()
+
+    await entity.async_added_to_hass()
+    listener = entry.runtime_data.coordinator.async_add_cues_listener.call_args.args[0]
+    listener(MaticCuesEvent("intent_classified", {"intent": "clean_all"}))
+
+    assert entity.state_attributes["event_type"] == "intent_classified"
+    assert entity.state_attributes["intent"] == "clean_all"
+    assert entity._unrecorded_attributes == frozenset({"intent"})
+    entity.async_write_ha_state.assert_called_once_with()
 
 
 async def test_room_sensors_wait_for_a_floor_plan(hass) -> None:
@@ -752,6 +774,7 @@ def test_sensor_and_binary_sensor_values() -> None:
         True,
         None,
         None,
+        None,
     ]
     assert {
         description.key
@@ -800,7 +823,22 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert [
         sensor.MaticStateSensor(entry, description).native_value
         for description in sensor.STATE_DESCRIPTIONS
-    ] == [25, None, "stable", "idle", "connected", 3, 7, 4, 1, 600, 600, -45]
+    ] == [
+        None,
+        None,
+        25,
+        None,
+        "stable",
+        "idle",
+        "connected",
+        3,
+        7,
+        4,
+        1,
+        600,
+        600,
+        -45,
+    ]
 
     state_sensors = {
         description.key: sensor.MaticStateSensor(entry, description)

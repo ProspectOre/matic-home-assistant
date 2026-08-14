@@ -8,6 +8,12 @@ from uuid import UUID
 
 from google.protobuf.message import DecodeError
 
+MAX_WIRE_SHAPE_BYTES = 64 * 1024
+MAX_WIRE_SHAPE_FIELDS = 256
+MAX_WIRE_SHAPE_DEPTH = 4
+
+type WireShapePath = tuple[tuple[int, int], ...]
+
 
 @dataclass(frozen=True, slots=True)
 class WireField:
@@ -16,6 +22,10 @@ class WireField:
     number: int
     wire_type: int
     value: int | bytes
+
+
+class _WireShapeLimitError(Exception):
+    """Signal that a structural fingerprint exceeded its public bounds."""
 
 
 def decode_fields(payload: bytes) -> tuple[WireField, ...]:
@@ -42,6 +52,68 @@ def decode_fields(payload: bytes) -> tuple[WireField, ...]:
             raise DecodeError(f"unsupported protobuf wire type {wire_type}")
         fields.append(WireField(number, wire_type, value))
     return tuple(fields)
+
+
+def wire_shape(
+    payload: bytes,
+    *,
+    nested_message_paths: tuple[tuple[int, ...], ...] = (),
+) -> tuple[str, ...] | None:
+    """Return a bounded, value-free protobuf structural fingerprint.
+
+    Every observed field contributes only its number and protobuf wire type.
+    Repeated occurrences collapse into one path, so collection sizes and other
+    activity-dependent counts are not retained. Length-delimited values are
+    traversed only along explicitly approved message paths; strings, media,
+    coordinates, and other opaque bytes are never interpreted or persisted.
+
+    ``None`` means the value was too large, too complex, or not a protobuf
+    message. A valid empty protobuf message returns an empty tuple.
+    """
+    if len(payload) > MAX_WIRE_SHAPE_BYTES:
+        return None
+    approved_paths = {
+        path
+        for path in nested_message_paths
+        if path and len(path) <= MAX_WIRE_SHAPE_DEPTH
+    }
+    shapes: set[WireShapePath] = set()
+    field_count = 0
+
+    def visit(
+        message: bytes,
+        number_path: tuple[int, ...],
+        shape_path: WireShapePath,
+    ) -> None:
+        nonlocal field_count
+        fields = decode_fields(message)
+        field_count += len(fields)
+        if field_count > MAX_WIRE_SHAPE_FIELDS:
+            raise _WireShapeLimitError
+        for field in fields:
+            child_numbers = (*number_path, field.number)
+            child_shape = (*shape_path, (field.number, field.wire_type))
+            shapes.add(child_shape)
+            if (
+                field.wire_type == 2
+                and isinstance(field.value, bytes)
+                and child_numbers in approved_paths
+            ):
+                try:
+                    visit(field.value, child_numbers, child_shape)
+                except DecodeError:
+                    # The approved field was populated with an opaque or
+                    # malformed value. Retain its outer shape only.
+                    continue
+
+    try:
+        visit(payload, (), ())
+    except DecodeError, _WireShapeLimitError:
+        return None
+    return tuple(
+        "/".join(f"{number}:{wire_type}" for number, wire_type in path)
+        for path in sorted(shapes)
+    )
 
 
 def bytes_fields(payload: bytes, number: int) -> tuple[bytes, ...]:

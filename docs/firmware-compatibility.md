@@ -24,13 +24,14 @@ separates an observed update from verified compatibility.
 
 | Firmware | First observed | Integration | Status | Evidence | Changes or capabilities |
 | --- | --- | --- | --- | --- | --- |
+| [v172.9](firmware-versions/v172.md) | 2026-08-13 | development | Core read verified | Live authenticated `kabuki_state` and settings read; protocol 25; Cues setting read/write; all six voice and gesture stages; accepted/rejected intent paths; following true/false; analyzer sweep 31 populated / 9 empty / 0 failed with 26 structural endpoints and 77 value-free paths | Adds the privacy-safe Matic Cues read surface and upgrades automatic OTA analysis with bounded structural candidates. The complete Cues lifecycle and first structural analysis format were observed live; unexercised intent kinds remain app-schema-derived with synthetic fixtures. |
 | [v171.10](firmware-versions/v171.md) | 2026-08-09 | 0.3.4 candidate | Read verified | The 0.3.4 candidate was live-validated on HA 2026.7.2 Container with a local BlueZ adapter on an ARM64 Linux host; protocol 25; initial credential issuance completed; coordinator, state, telemetry, map, rooms, and pose decoded; payload-free sweep 32 populated / 8 empty / 0 failed | Release 0.3.3 discarded an unchanged local scanner entry as not fresh; 0.3.4 accepts that retained entry after the active sweep. Reauthorization, credential replacement, stale-bond recovery, and controls remain pending. |
 | [v169.9](firmware-versions/v169.md) | 2026-07-27 | 0.3.0 | Control verified | Live on HA 2026.7.4; protocol 25; snapshot 28 populated / 12 empty / 0 failed; no endpoint availability changes | Full local map, pose, rooms, telemetry, and update state remained available; quick and standard coverage, all three cleaning modes, complete saved-plan handoff, both intelligent-stop branches, and persisted custom-area cleaning passed live without false credit |
 | [v168.11](firmware-versions/v168.md) | 2026-07-20 | 0.2.0–0.2.3 | Core read verified | Live on HA 2026.7.2; protocol 25; automatic baseline snapshot 28 populated / 12 empty / 0 failed; selected stop/dock/room-plan paths later exercised | Uploader-state decoder fix released and live-confirmed; robot-side stream resets handled as transport noise; complete control matrix remains pending |
 
 No v170 build was observed, so the ledger makes no v170 compatibility claim.
-The v171.10 validation result is a direct live observation and does not infer
-behavior for the missing release.
+The v171.10 and v172.9 validation results are direct live observations and do
+not infer behavior for the missing release.
 
 An empty or pending entry is not a compatibility claim. Synthetic tests show
 that the integration handles the documented protocol shapes; only real-robot
@@ -68,13 +69,20 @@ check in this order:
 
 The integration automatically records the first firmware as a baseline. Each
 newly observed firmware or protocol pair fires `matic_robot_firmware_changed`
-and starts a background, payload-free snapshot of all known endpoints. A Home
-Assistant Repair is created only when availability or transport status changes;
-a normal weekly OTA does not create an issue.
+and starts a background, payload-free snapshot of all known endpoints. The
+snapshot also compares bounded value-free protobuf shapes so newly added field
+paths become capability candidates instead of disappearing inside opaque hash
+changes. `matic_robot_firmware_analyzed` reports the silent counts and paths for
+advanced automations. A Home Assistant Repair is created only when availability or
+transport status changes; a normal weekly OTA or structural candidate does not
+create an issue or notification.
 
-That automated snapshot runs only after authentication. It cannot validate
-initial pairing, reauthorization, credential replacement, or the physical
-Bluetooth adapter path; those remain deliberate manual checks.
+That automated snapshot runs only after authentication. Structural analysis
+records field numbers and wire types, never values, and nested traversal stops
+before classified intents, rejection detail, targets, coordinates, and media.
+It cannot infer meaning, discover an endpoint name absent from the allowlist,
+or validate initial pairing, reauthorization, credential replacement, physical
+controls, or the Bluetooth adapter path; those remain deliberate manual checks.
 
 The event can also drive a local notification:
 

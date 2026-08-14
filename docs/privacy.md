@@ -19,8 +19,9 @@ pairing attempt; it is not stored in the config entry, logs, diagnostics, or
 rotation history.
 
 The entity state machine contains activity, battery, firmware metadata,
-current/previous Area context, preference state, summary counts, and diagnostic
-state. High-context diagnostic entities are disabled by default. Attributes
+current/previous Area context, preference state, summary counts, diagnostic
+state, and bounded Cues lifecycle classifications. High-context diagnostic
+entities are disabled by default. Attributes
 that carry home context — the connected Wi-Fi SSID, schedule definitions, room
 names and IDs, the latest session's visited/completed rooms and durations, and
 full plan/history records — stay live on the state machine for templates but
@@ -33,6 +34,18 @@ room's name and cleaning durations as long-term statistics; and the
 rooms, verified completed rooms, and per-room durations in its payload. Home
 Assistant's recorder retains enabled entity states according to the user's
 recorder settings.
+
+Cues contributes only voice/gesture lifecycle enums, a following-person
+boolean, and an automation-safe classified intent. The event entity excludes
+its `intent` attribute from Recorder history. No transcript, audio, image,
+video, person identity, pointing coordinate, rejection detail, or raw Cues
+collection is exposed or stored. Recording-only classifications are reduced to
+`unknown`. The integration's setting command is local, but enabling Cues opts
+the robot into Matic's separately documented processing: Matic says on-device
+processing handles the wake word, sound direction, and gestures, while audio
+after the chime is sent to Google Gemini and video is not sent. See Matic's
+[Cues overview](https://maticrobots.com/hey-matic) and
+[voice-data explanation](https://maticrobots.com/blog/how-your-voice-data-is-handled).
 
 The visible-by-default room-map camera renders geometry and pose and contains
 no photographic pixels. The separate photographic SLAM camera accumulates the
@@ -74,6 +87,17 @@ room-geometry bindings so a legacy area, remap, floor change, or geometry drift
 fails closed instead of applying old coordinates to a new map. The resulting
 Repair exposes only an affected-area count, never names, coordinates, or map
 identifiers.
+
+Firmware compatibility history uses another private local store capped at 52
+snapshots. It retains endpoint reachability, sizes, irreversible hashes, and—on
+bounded protobuf values—unique field-number/wire-type paths. Repeated fields
+collapse into one path, so counts are not retained. Nested Kabuki traversal is
+limited to audited voice/gesture lifecycle envelopes and stops before
+classified intent, rejection details, target data, coordinates, media, and all
+other opaque values. Structural candidates and their paths may appear in the
+private snapshot store, diagnostic sensor, explicit action response, and silent
+analysis event. They never create a Repair or notification, and require human
+evidence before the integration assigns meaning.
 
 The current photographic/structural map and its timeline use private integration
 storage, not Recorder. Timeline retention is limited to 12 time-spaced scenes
