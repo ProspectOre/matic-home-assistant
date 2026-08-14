@@ -25,7 +25,6 @@ jobs:
       regular: ${{ steps.classify.outputs.regular }}
       clean: ${{ steps.classify.outputs.clean }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
-      head_repository: ${{ steps.classify.outputs.head_repository }}
       workflow_ref: ${{ steps.classify.outputs.workflow_ref }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -62,11 +61,11 @@ jobs:
           fi
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.head.sha, .head.ref, .head.repo.full_name] | @tsv'
+              | jq -er '[.head.sha, .base.ref] | @tsv'
           )"
-          IFS=$'\t' read -r head_sha workflow_ref head_repository <<< "$pr_state"
-          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || -z "$workflow_ref" || -z "$head_repository" ]]; then
-            echo "Could not resolve the current pull request head and source ref."
+          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || -z "$workflow_ref" ]]; then
+            echo "Could not resolve the current pull request head and trusted base ref."
             exit 1
           fi
           head_prefix="${head_sha:0:10}"
@@ -131,7 +130,6 @@ jobs:
           {
             echo "regular=true"
             echo "head_sha=$head_sha"
-            echo "head_repository=$head_repository"
             echo "workflow_ref=$workflow_ref"
           } >> "$GITHUB_OUTPUT"
           if body_is_clean_comment "$EVENT_COMMENT_BODY"; then
@@ -141,9 +139,7 @@ jobs:
   invalidate:
     name: invalidate-on-regular-comment
     needs: classify
-    if: >-
-      needs.classify.outputs.regular == 'true'
-      && needs.classify.outputs.head_repository == github.repository
+    if: needs.classify.outputs.regular == 'true'
     concurrency:
       group: review-gate-${{ github.event.issue.number }}
       cancel-in-progress: true
@@ -179,6 +175,12 @@ jobs:
           if [[ "$CLEAN" != "true" ]]; then
             stamp_pending "$REVIEW_COMMENT_CONTEXT" \
               "Regular issue-comment invalidated; require a newer clean normal verdict"
+          fi
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
           fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
             -f pull_request="$PR_NUMBER"

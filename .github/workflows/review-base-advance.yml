@@ -59,7 +59,7 @@ jobs:
           # this job waited is left to its newer event-driven evaluation.
           matrix="$(
             jq -cn --slurpfile prs "$review_gate_prs_file" --slurpfile runs "$review_gate_runs_file" \
-              --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" --arg repo "$REPO" \
+              --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
               --argjson pushed_at "$base_pushed_at" '
                 def snapshot_before_base_push($number):
                   [$runs[] | .workflow_runs[]?
@@ -70,7 +70,6 @@ jobs:
                   | last;
                 {include: [$prs[][]
                   | select(.base.ref == $base)
-                  | select(.head.repo.full_name == $repo)
                   | . as $pr
                   | if $event == "workflow_dispatch" then
                       {pr_number: $pr.number, event_head_sha: $pr.head.sha}
@@ -121,19 +120,15 @@ jobs:
           fi
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.node_id, .base.ref, .base.sha, .head.sha, .head.ref, .head.repo.full_name, ((.auto_merge != null) | tostring)] | @tsv'
+              | jq -er '[.node_id, .base.ref, .base.sha, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
           )"
-          IFS=$'\t' read -r pr_node_id current_base base_sha head_sha head_ref head_repository auto_merge_enabled <<< "$pr_state"
+          IFS=$'\t' read -r pr_node_id current_base base_sha head_sha auto_merge_enabled <<< "$pr_state"
           if [[ "$current_base" != "$BASE_BRANCH" ]]; then
             echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
             exit 0
           fi
           if [[ "$head_sha" != "$EVENT_HEAD_SHA" ]]; then
             echo "PR #$PR_NUMBER gained a new head after the base advance; leaving it reviewable."
-            exit 0
-          fi
-          if [[ "$head_repository" != "$REPO" || -z "$head_ref" ]]; then
-            echo "PR #$PR_NUMBER is not a same-repository branch; leaving its gate pending."
             exit 0
           fi
           if [[ ! "$pr_node_id" =~ ^PR_ || ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
@@ -186,6 +181,12 @@ jobs:
           stamp_pending "$REVIEW_BASE_CONTEXT" "$marker_description"
           cancel_active_gate_runs
           stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
-          gh workflow run review-gate.yml --repo "$REPO" --ref "$head_ref" \
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$current_base" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $current_base; leaving the required gate pending."
+            exit 0
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$current_base" \
             -f pull_request="$PR_NUMBER"
           echo "Base branch advancement invalidated regular review for PR #$PR_NUMBER."

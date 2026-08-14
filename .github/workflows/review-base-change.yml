@@ -17,9 +17,7 @@ permissions:
 jobs:
   invalidate:
     name: mark-base-change
-    if: >-
-      github.event.changes.base != null
-      && github.event.pull_request.head.repo.full_name == github.repository
+    if: github.event.changes.base != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke the required gate and persist a base-change marker
@@ -29,7 +27,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}
+          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
         run: |
@@ -95,6 +93,12 @@ jobs:
           # Write the required context again after the marker. This makes the
           # current state fail closed before the follow-up evaluator runs.
           stamp_status "$REVIEW_GATE_CONTEXT" "$gate_description"
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
+          fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
             -f pull_request="$PR_NUMBER"
           echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."

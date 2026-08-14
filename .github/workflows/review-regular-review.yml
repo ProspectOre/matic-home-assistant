@@ -105,9 +105,7 @@ jobs:
   invalidate:
     name: invalidate-regular-review
     needs: route
-    if: >-
-      needs.route.outputs.regular == 'true'
-      && github.event.pull_request.head.repo.full_name == github.repository
+    if: needs.route.outputs.regular == 'true'
     concurrency:
       group: review-gate-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -122,10 +120,7 @@ jobs:
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_INVALIDATED: ${{ needs.route.outputs.review_invalidated }}
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
-          # The evaluator is introduced by this PR, so dispatch its verified
-          # same-repository head rather than a base branch that may not yet
-          # contain a workflow_dispatch trigger.
-          WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}
+          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -147,6 +142,12 @@ jobs:
           if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
             stamp_pending "$REVIEW_REVIEW_CONTEXT" \
               "Regular review invalidated; require a newer normal review"
+          fi
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
           fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
             -f pull_request="$PR_NUMBER"

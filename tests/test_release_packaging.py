@@ -116,15 +116,11 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in regular_review
     assert "Regular review invalidated; require a newer normal review" in regular_review
     assert "needs: route" in regular_review
-    assert "needs.route.outputs.regular == 'true'" in regular_review
+    assert "if: needs.route.outputs.regular == 'true'" in regular_review
+    assert "WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}" in regular_review
+    assert "Trusted review-gate evaluator is not installed" in regular_review
     assert (
-        "github.event.pull_request.head.repo.full_name == github.repository"
-        in regular_review
-    )
-    assert "WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}" in regular_review
-    assert (
-        "group: review-gate-${{ github.event.pull_request.number }}"
-        in regular_review
+        "group: review-gate-${{ github.event.pull_request.number }}" in regular_review
     )
     assert '--ref "$WORKFLOW_REF"' in regular_review
     assert "gh workflow run review-gate.yml" in regular_review
@@ -144,24 +140,17 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
     assert "name: classify-regular-comment" in regular_comment
     assert "needs: classify" in regular_comment
-    assert "needs.classify.outputs.regular == 'true'" in regular_comment
-    assert (
-        "needs.classify.outputs.head_repository == github.repository"
-        in regular_comment
-    )
-    assert "[.head.sha, .head.ref, .head.repo.full_name]" in regular_comment
+    assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
+    assert "[.head.sha, .base.ref]" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
+    assert "Trusted review-gate evaluator is not installed" in regular_comment
     assert "gh pr merge" not in regular_review + regular_comment
     assert "--auto" not in regular_review + regular_comment
     assert "github.event.changes.base != null" in base_change
-    assert (
-        "github.event.pull_request.head.repo.full_name == github.repository"
-        in base_change
-    )
-    assert "WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}" in base_change
+    assert "WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}" in base_change
     assert "EVENT_BASE_SHA" in base_change
     assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
@@ -174,6 +163,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel_active_gate_runs" in base_change
     assert "gh workflow run review-gate.yml" in base_change
     assert '--ref "$WORKFLOW_REF"' in base_change
+    assert "Trusted review-gate evaluator is not installed" in base_change
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
@@ -184,7 +174,6 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
-    assert "select(.head.repo.full_name == $repo)" in base_advance
     assert "gained a new head after the base advance" in base_advance
     assert "group: review-gate-base-advance-" in base_advance
     assert "cancel-in-progress: true" in base_advance
@@ -193,18 +182,19 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "((.auto_merge != null) | tostring)" in base_advance
     assert "cancel_active_gate_runs" in base_advance
     assert "gh workflow run review-gate.yml" in base_advance
-    assert '--ref "$head_ref"' in base_advance
+    assert '--ref "$current_base"' in base_advance
+    assert "Trusted review-gate evaluator is not installed" in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
     assert "actions: write" in audit
-    assert "statuses: read" in audit
+    assert "statuses: write" in audit
     assert "group: review-gate-${{ matrix.pr_number }}" in audit
     assert "reviewThreads" in audit
     assert "review result" in audit
     assert "gh workflow run review-gate.yml" in audit
     assert '--ref "$workflow_ref"' in audit
-    assert "head_repository" in audit
+    assert "Trusted review-gate evaluator is not installed" in audit
     assert "def security_heading:" in audit
     assert "security_heading) | not" in audit
     assert "def availability_notice:" in audit
