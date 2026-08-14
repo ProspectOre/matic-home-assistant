@@ -73,11 +73,15 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "review-gate-base-change" in base_change
     assert "Base changed; push a new head before @codex review" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
+    assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
     assert "pulls?state=open" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout
     assert "disablePullRequestAutoMerge" in rollout
+    assert rollout.index("Disarming automatic merge; waiting") < rollout.index(
+        '"$auto_merge_enabled" != "true"'
+    )
     assert "gh pr merge" not in rollout
     assert "--auto" not in rollout
 

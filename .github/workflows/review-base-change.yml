@@ -47,4 +47,7 @@ jobs:
           # later fails, a retarget cannot retain a stale green review gate.
           stamp_status "$REVIEW_GATE_CONTEXT"
           stamp_status "$REVIEW_BASE_CONTEXT"
+          # Write the required context again after the marker. This makes the
+          # invalidation win if an evaluator was finishing as the PR retargeted.
+          stamp_status "$REVIEW_GATE_CONTEXT"
           echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."

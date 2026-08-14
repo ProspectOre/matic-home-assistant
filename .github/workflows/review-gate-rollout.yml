@@ -59,15 +59,16 @@ jobs:
               echo "Could not resolve automatic-merge state for PR #$pr_number."
               exit 1
             fi
-            if [[ "$auto_merge_enabled" != "true" ]]; then
-              continue
-            fi
-
+            # Every open head may retain a success from a less strict version of
+            # the gate. Reset it before considering whether it was auto-armed.
             gh api "repos/$REPO/statuses/$head_sha" --silent \
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
               -f description="Disarming automatic merge; waiting for @codex review" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+            if [[ "$auto_merge_enabled" != "true" ]]; then
+              continue
+            fi
             # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
             gh api graphql \
               -f query='mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }' \
