@@ -23,8 +23,6 @@ jobs:
         name: Find pull requests targeting the advanced branch
         env:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
-          BASE_PUSHED_AT: ${{ github.event.repository.pushed_at }}
-          EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
         run: |
@@ -38,44 +36,25 @@ jobs:
             echo "Could not resolve the advanced base branch." >&2
             exit 1
           fi
-          if [[ "$EVENT_NAME" == "push" && ! "$BASE_PUSHED_AT" =~ ^[0-9]+$ ]]; then
-            echo "Could not determine when the base branch was advanced." >&2
-            exit 1
-          fi
-          base_pushed_at="${BASE_PUSHED_AT:-0}"
           # Pull-request histories can exceed the platform argument limit;
           # retain paginated API JSON in a scoped temporary file.
           review_gate_prs_file="$(mktemp)"
           trap 'rm -f "$review_gate_prs_file"' EXIT
           gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
-          # Invalidate PR heads that existed when the default base advanced.
-          # A current head with a commit timestamp after that push is a newer
-          # synchronize and already requires its own exact-head review, so do
-          # not place an obsolete base-change marker on it.
+          # GitHub does not expose the time a particular SHA became a PR head.
+          # Over-invalidate rather than trusting contributor-controlled commit
+          # timestamps. The gate permits a clean review posted after this base
+          # push on the same head, so a delayed workflow never requires a push.
           matrix='{"include":[]}'
           while IFS=$'\t' read -r pr_number event_head_sha; do
-            head_committed_at="$(
-              gh api "repos/$REPO/commits/$event_head_sha" \
-                | jq -er '.commit.committer.date | fromdateiso8601'
-            )" || {
-              echo "Could not determine when PR #$pr_number head was committed; skipping it."
-              continue
-            }
-            if [[ "$EVENT_NAME" == "push" && "$head_committed_at" -gt "$base_pushed_at" ]]; then
-              echo "PR #$pr_number gained a new head after the base advance; leaving it reviewable."
-              continue
-            fi
             matrix="$(
               jq -c --argjson pr "$pr_number" --arg head "$event_head_sha" \
                 '.include += [{pr_number: $pr, event_head_sha: $head}]' <<< "$matrix"
             )"
           done < <(
-            jq -r --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
-              --argjson pushed_at "$base_pushed_at" '
-                .[][]
+            jq -r --arg base "$BASE_BRANCH" '
+                .[]
                 | select(.base.ref == $base)
-                | select($event == "workflow_dispatch"
-                    or ((.created_at | fromdateiso8601) <= $pushed_at))
                 | [.number, .head.sha]
                 | @tsv' "$review_gate_prs_file"
           )
@@ -100,6 +79,7 @@ jobs:
       - name: Persist a base-change marker and revoke the required gate
         env:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_PUSHED_AT: ${{ github.event_name == 'push' && github.event.repository.pushed_at || '' }}
           EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr_number }}
@@ -127,10 +107,8 @@ jobs:
             echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
             exit 0
           fi
-          if [[ "$head_sha" != "$EVENT_HEAD_SHA" ]]; then
-            echo "PR #$PR_NUMBER gained a new head after the base advance; leaving it reviewable."
-            exit 0
-          fi
+          # Discovery can race a synchronize. Mark the current head instead of
+          # trusting commit metadata or silently leaving a stale green gate.
           if [[ ! "$pr_node_id" =~ ^PR_ || ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
             echo "Could not resolve the current PR state for #$PR_NUMBER." >&2
             exit 1
@@ -145,8 +123,13 @@ jobs:
               -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
-          gate_description="Base changed; push a new head before @codex review"
-          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha; push a new head before @codex review"
+          if [[ "$BASE_PUSHED_AT" =~ ^[0-9]+$ ]]; then
+            base_advanced_at="$(jq -nr --argjson epoch "$BASE_PUSHED_AT" '$epoch | todateiso8601')"
+          else
+            base_advanced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+          gate_description="Base changed; request a fresh @codex review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha at $base_advanced_at; request a fresh @codex review"
 
           active_gate_runs() {
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \

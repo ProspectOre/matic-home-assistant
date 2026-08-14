@@ -144,7 +144,7 @@ jobs:
             exit 0
           fi
           head_prefix="$(printf '%.10s' "$head_sha")"
-          base_marker_description="Base changed for PR #$pr_number at base $base_sha; push a new head before @codex review"
+          base_marker_description="Base changed for PR #$pr_number at base $base_sha at $(date -u +%Y-%m-%dT%H:%M:%SZ); request a fresh @codex review"
 
           stamp_status() {
             local context="$1"
@@ -177,24 +177,26 @@ jobs:
               -F pullRequestId="$pull_request_id" >/dev/null
           }
 
-          base_change_marker_exists() {
-            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg prefix "Base changed for PR #$pr_number at base " '
-                  any(.[][];
-                    (.context == $context)
-                    and (.state == "pending")
-                    and ((.description // "") | startswith($prefix)))' \
-              >/dev/null
-          }
-
           latest_base_change_at() {
+            local marker_times retarget_times
+            marker_times="$(
+              gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+                | jq -r --arg context "$REVIEW_BASE_CONTEXT" --arg prefix "Base changed for PR #$pr_number at base " '
+                    [.[][] | select(.context == $context and .state == "pending")
+                     | select((.description // "") | startswith($prefix))
+                     | (.description // "") as $description
+                     | if ($description | test(" at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z;"))
+                       then ($description | capture(" at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
+                       else .updated_at end] | .[]?'
+            )"
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
-            gh api graphql --paginate \
+            retarget_times="$(gh api graphql --paginate \
               -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { timelineItems(first: 100, after: $endCursor, itemTypes: [BASE_REF_CHANGED_EVENT]) { nodes { ... on BaseRefChangedEvent { createdAt } } pageInfo { hasNextPage endCursor } } } } }' \
               -F owner="$review_owner" \
               -F name="$review_repo" \
               -F number="$pr_number" \
-              | jq -rs -r '[.[] | .data.repository.pullRequest.timelineItems.nodes[]? | .createdAt] | max // empty'
+              | jq -rs -r '[.[] | .data.repository.pullRequest.timelineItems.nodes[]? | .createdAt] | .[]?')"
+            printf '%s\n%s\n' "$marker_times" "$retarget_times" | awk 'NF' | sort | tail -n 1
           }
 
           latest_regular_issue_comment_at() {
@@ -417,8 +419,8 @@ jobs:
             fi
             if [[ -n "$base_changed_at" && ( "$base_changed_at" == "$verdict_at" || "$base_changed_at" > "$verdict_at" ) ]]; then
               stamp_base_change_marker
-              stamp_review_gate pending "Base changed; push a new head before @codex review"
-              echo "The PR base changed after the regular review; a new head is required."
+              stamp_review_gate pending "Base changed; request a fresh @codex review"
+              echo "The PR base changed after the regular review; request a fresh regular review."
               exit 0
             fi
           }
@@ -446,12 +448,6 @@ jobs:
             echo "Refusing to use regular-review evidence for an ambiguous or mismatched open PR head."
             exit 0
           fi
-          if base_change_marker_exists; then
-            stamp_review_gate pending "Base changed; push a new head before @codex review"
-            echo "The base-change marker requires a fresh PR head and regular review."
-            exit 0
-          fi
-
           # The event head was revoked before its first API read. Revoke the
           # resolved head as well for manual dispatches and stale event payloads.
           stamp_review_gate pending "Evaluating regular Codex review on $head_prefix"
@@ -473,8 +469,8 @@ jobs:
           fi
           if [[ "$final_base_sha" != "$base_sha" ]]; then
             stamp_base_change_marker
-            stamp_review_gate pending "Base changed; push a new head before @codex review"
-            echo "The PR base changed during evaluation; a new head is required."
+            stamp_review_gate pending "Base changed; request a fresh @codex review"
+            echo "The PR base changed during evaluation; request a fresh regular review."
             exit 0
           fi
           if [[ "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" ]]; then
@@ -486,11 +482,6 @@ jobs:
             echo "The PR became draft or automatic merge was enabled during evaluation."
             exit 0
           fi
-          if base_change_marker_exists; then
-            stamp_review_gate pending "Base changed; push a new head before @codex review"
-            echo "A base-change marker arrived during evaluation."
-            exit 0
-          fi
           final_gate_snapshot="$(read_gate_snapshot)"
           require_clean_regular_snapshot "$final_gate_snapshot"
 
@@ -499,18 +490,13 @@ jobs:
           if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_base_ref" != "$DEFAULT_BRANCH" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" ]]; then
             if [[ "$last_head_sha" == "$head_sha" && "$last_base_sha" != "$base_sha" ]]; then
               stamp_base_change_marker
-              stamp_review_gate pending "Base changed; push a new head before @codex review"
+              stamp_review_gate pending "Base changed; request a fresh @codex review"
             fi
             if [[ "$last_auto_merge_enabled" == "true" ]]; then
               disable_auto_merge "$last_pr_node_id"
               echo "Disabled automatic merge that was enabled during final revalidation."
             fi
             echo "The PR state changed during final revalidation; it was not marked successful."
-            exit 0
-          fi
-          if base_change_marker_exists; then
-            stamp_review_gate pending "Base changed; push a new head before @codex review"
-            echo "A base-change marker arrived during final revalidation."
             exit 0
           fi
           final_shared_head_count="$(shared_open_head_count)"
@@ -538,6 +524,7 @@ jobs:
               exit 1
               ;;
           esac
+          stamp_status "$REVIEW_BASE_CONTEXT" success "Regular review revalidated base $base_sha"
           stamp_review_gate success "Clean regular Codex review for $head_prefix; evidence $evidence_marker"
           echo "The exact pull request head has an affirmative clean regular Codex review."
           echo "Security-review messages are intentionally not review-gate evidence."
