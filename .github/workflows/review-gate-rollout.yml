@@ -1,0 +1,207 @@
+name: Disarm Existing Automatic Merge Requests
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/review-gate.yml
+      - .github/workflows/review-regular-review.yml
+      - .github/workflows/review-fork-regular-review.yml
+      - .github/workflows/review-regular-comment.yml
+      - .github/workflows/review-base-change.yml
+      - .github/workflows/review-base-advance.yml
+      - .github/workflows/review-gate-audit.yml
+      - .github/workflows/review-gate-rollout.yml
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  pull-requests: write
+  statuses: write
+
+jobs:
+  discover:
+    name: discover-open-prs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
+    steps:
+      - id: prs
+        name: Enumerate open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c '{include: [.[][] | {pr_number: .number}]}'
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  cancel-legacy-auto-merge-runs:
+    name: cancel-legacy-auto-merge-runs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Cancel queued or running retired auto-merge workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          active_legacy_runs() {
+            gh api "repos/$REPO/actions/runs?per_page=100" --paginate --slurp \
+              | jq -r '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(.path == ".github/workflows/auto-merge.yml" or .path == ".github/workflows/auto-merge.yaml")
+                  | .id'
+          }
+          for run_id in $(active_legacy_runs); do
+            gh run cancel "$run_id" --repo "$REPO" || true
+          done
+          for _attempt in $(seq 1 15); do
+            if [[ -z "$(active_legacy_runs)" ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Retired auto-merge workflow runs did not stop in time." >&2
+          exit 1
+
+  disarm-open-prs:
+    name: disarm-open-prs (${{ matrix.pr_number }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # This preempts a previous-policy evaluator for this PR. A new evaluator
+    # queues behind the sweep and observes its final pending status.
+    concurrency:
+      group: review-gate-${{ matrix.pr_number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the gate and disable automatic merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_GATE_CONTEXT: review-gate
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to inspect open pull requests."
+            exit 1
+          }
+
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '[.node_id, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
+          )"
+          IFS=$'\t' read -r pr_node_id head_sha auto_merge_enabled <<< "$pr_state"
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+            echo "Could not resolve automatic-merge state for PR #$PR_NUMBER." >&2
+            exit 1
+          fi
+
+          stamp_pending() {
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending \
+              -f context="$REVIEW_GATE_CONTEXT" \
+              -f description="Disarming automatic merge; waiting for @codex review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          # Revoke the gate before waiting for an evaluator to stop. A prior
+          # success must never remain actionable during the cancellation poll.
+          stamp_pending
+
+          active_gate_runs() {
+            gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name)
+                  | .id'
+          }
+          for run_id in $(active_gate_runs); do
+            gh run cancel "$run_id" --repo "$REPO" || true
+          done
+          for _attempt in $(seq 1 15); do
+            if [[ -z "$(active_gate_runs)" ]]; then
+              break
+            fi
+            sleep 2
+          done
+          if [[ -n "$(active_gate_runs)" ]]; then
+            echo "Review-gate runs for PR #$PR_NUMBER did not stop in time." >&2
+            exit 1
+          fi
+
+          # Refresh the PR after cancellation in case its head or auto-merge
+          # state changed while this rollout job held the per-PR lock.
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '[.node_id, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
+          )"
+          IFS=$'\t' read -r pr_node_id head_sha auto_merge_enabled <<< "$pr_state"
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+            echo "Could not resolve automatic-merge state for PR #$PR_NUMBER." >&2
+            exit 1
+          fi
+
+          # Reset every open head, including PRs that were already manually
+          # disarmed but may carry an older-policy success status.
+          stamp_pending
+          if [[ "$auto_merge_enabled" == "true" ]]; then
+            # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
+            gh api graphql \
+              -f query='mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }' \
+              -F pullRequestId="$pr_node_id" >/dev/null
+            echo "Disabled automatic merge for PR #$PR_NUMBER."
+          fi
+          # This is the final write under the per-PR lock. It cannot be
+          # resurrected by a queued evaluator before that evaluator rechecks.
+          stamp_pending
+
+  verify-repository-policy:
+    name: verify-repository-auto-merge-disabled
+    needs: [discover, cancel-legacy-auto-merge-runs, disarm-open-prs]
+    if: always()
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Verify cleanup completed and repository auto-merge is disabled
+        env:
+          CANCEL_RESULT: ${{ needs.cancel-legacy-auto-merge-runs.result }}
+          DISARM_RESULT: ${{ needs.disarm-open-prs.result }}
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$DISCOVER_RESULT" != "success" \
+            || "$CANCEL_RESULT" != "success" \
+            || ( "$DISARM_RESULT" != "success" && "$DISARM_RESULT" != "skipped" ) ]]; then
+            echo "Review-gate rollout cleanup did not complete successfully." >&2
+            exit 1
+          fi
+          if [[ "$(gh api "repos/$REPO" --jq '.allow_auto_merge')" != "false" ]]; then
+            echo "Repository auto-merge must be disabled for the manual review gate." >&2
+            exit 1
+          fi

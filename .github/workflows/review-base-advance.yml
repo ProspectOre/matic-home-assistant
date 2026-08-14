@@ -1,0 +1,180 @@
+name: Invalidate Review Gates on Base Advance
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: write
+  statuses: write
+
+jobs:
+  discover:
+    name: discover-targeting-prs
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
+    steps:
+      - id: prs
+        name: Find pull requests targeting the advanced branch
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          if [[ -z "$BASE_BRANCH" ]]; then
+            echo "Could not resolve the advanced base branch." >&2
+            exit 1
+          fi
+          # Pull-request histories can exceed the platform argument limit;
+          # retain paginated API JSON in a scoped temporary file.
+          review_gate_prs_file="$(mktemp)"
+          trap 'rm -f "$review_gate_prs_file"' EXIT
+          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
+          # GitHub does not expose the time a particular SHA became a PR head.
+          # Over-invalidate rather than trusting contributor-controlled commit
+          # timestamps. A durable marker requires the contributor to push a
+          # new head before a regular review can qualify after this base push.
+          matrix='{"include":[]}'
+          while IFS=$'\t' read -r pr_number event_head_sha; do
+            matrix="$(
+              jq -c --argjson pr "$pr_number" --arg head "$event_head_sha" \
+                '.include += [{pr_number: $pr, event_head_sha: $head}]' <<< "$matrix"
+            )"
+          done < <(
+            jq -r --arg base "$BASE_BRANCH" '
+                .[]
+                | select(.base.ref == $base)
+                | [.number, .head.sha]
+                | @tsv' "$review_gate_prs_file"
+          )
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  invalidate:
+    name: invalidate (${{ matrix.pr_number }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Keep this invalidator independent from normal evaluation so a later
+    # review event cannot replace it while it is waiting for a runner. Its
+    # follow-up evaluation observes the durable marker under the gate lock.
+    concurrency:
+      group: review-gate-base-advance-${{ matrix.pr_number }}
+      cancel-in-progress: false
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Persist a base-change marker and revoke the required gate
+        env:
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BASE_PUSHED_AT: ${{ github.event_name == 'push' && github.event.repository.pushed_at || '' }}
+          EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
+          EVENT_BASE_SHA: ${{ github.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BASE_CONTEXT: review-gate-base-change
+          REVIEW_GATE_CONTEXT: review-gate
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the base-advance event state." >&2
+            exit 1
+          fi
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '[.node_id, .base.ref, .base.sha, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
+          )"
+          IFS=$'\t' read -r pr_node_id current_base base_sha head_sha auto_merge_enabled <<< "$pr_state"
+          if [[ "$current_base" != "$BASE_BRANCH" ]]; then
+            echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
+            exit 0
+          fi
+          if [[ "$base_sha" != "$EVENT_BASE_SHA" ]]; then
+            echo "A newer base push superseded this invalidation; skipping the older event."
+            exit 0
+          fi
+          # Discovery can race a synchronize. Mark the current head instead of
+          # trusting commit metadata or silently leaving a stale green gate.
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+            echo "Could not resolve the current PR state for #$PR_NUMBER." >&2
+            exit 1
+          fi
+
+          stamp_pending() {
+            local context="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          if [[ "$BASE_PUSHED_AT" =~ ^[0-9]+$ ]]; then
+            base_advanced_at="$(jq -nr --argjson epoch "$BASE_PUSHED_AT" '$epoch | todateiso8601')"
+          else
+            base_advanced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          fi
+          gate_description="Base changed; push a new head before @codex review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha at $base_advanced_at; push a new head before @codex review"
+
+          active_gate_runs() {
+            gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name)
+                  | .id'
+          }
+
+          cancel_active_gate_runs() {
+            for run_id in $(active_gate_runs); do
+              gh run cancel "$run_id" --repo "$REPO" || true
+            done
+            for _attempt in $(seq 1 15); do
+              if [[ -z "$(active_gate_runs)" ]]; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Review-gate runs for PR #$PR_NUMBER did not stop in time." >&2
+            exit 1
+          }
+
+          stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
+          if [[ "$auto_merge_enabled" == "true" ]]; then
+            # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
+            gh api graphql \
+              -f query='mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }' \
+              -F pullRequestId="$pr_node_id" >/dev/null
+            echo "Disabled automatic merge for PR #$PR_NUMBER."
+          fi
+          stamp_pending "$REVIEW_BASE_CONTEXT" "$marker_description"
+          cancel_active_gate_runs
+          stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+            -f pull_request="$PR_NUMBER"
+          echo "Base branch advancement invalidated regular review for PR #$PR_NUMBER."

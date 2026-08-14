@@ -1,0 +1,192 @@
+name: Route Regular Codex Review Events
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+# Run every review delivery independently so rapid edits cannot replace a
+# queued state transition. Only a confirmed regular review enters the
+# evaluator's per-PR lock below.
+
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  route:
+    name: route-regular-review
+    if: github.event.pull_request.number != null
+    outputs:
+      regular: ${{ steps.classify.outputs.regular }}
+      review_invalidated: ${{ steps.classify.outputs.review_invalidated }}
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - id: classify
+        name: Classify regular Codex review events
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REVIEW_COMMIT_SHA: ${{ github.event.review.commit_id }}
+          EVENT_REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
+          EVENT_PREVIOUS_REVIEW_BODY: ${{ github.event.changes.body.from }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to classify review events."
+            exit 1
+          }
+          {
+            echo "regular=false"
+            echo "review_invalidated=false"
+          } >> "$GITHUB_OUTPUT"
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_REVIEW_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The review event did not provide a valid pull request state."
+            exit 1
+          fi
+
+          body_is_regular_review() {
+            local review_body="$1"
+            printf '%s' "$review_body" \
+              | jq -e -R -s '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)' >/dev/null
+          }
+
+          if [[ "$EVENT_REVIEW_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
+            echo "Ignoring a review from another author."
+            exit 0
+          fi
+          if [[ "$EVENT_REVIEW_COMMIT_SHA" != "$EVENT_HEAD_SHA" ]]; then
+            echo "Ignoring a review attached to an older pull request head."
+            exit 0
+          fi
+          current_is_regular=false
+          previous_is_regular=false
+          if body_is_regular_review "$EVENT_REVIEW_BODY"; then
+            current_is_regular=true
+          fi
+          if body_is_regular_review "$EVENT_PREVIOUS_REVIEW_BODY"; then
+            previous_is_regular=true
+          fi
+          if [[ "$current_is_regular" != "true" && "$previous_is_regular" != "true" ]]; then
+            echo "Ignoring a non-regular pull request review."
+            exit 0
+          fi
+          echo "regular=true" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_ACTION" == "dismissed" \
+            || ( "$previous_is_regular" == "true" && "$current_is_regular" != "true" ) ]]; then
+            echo "review_invalidated=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  fork_signal:
+    name: fork-regular-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.event.review.id }}-${{ needs.route.outputs.review_invalidated }}
+    needs: route
+    if: >-
+      needs.route.outputs.regular == 'true'
+      && github.event.pull_request.head.repo.full_name != github.repository
+    # Fork review workflows receive read-only tokens. This job executes no PR
+    # code and carries only a strictly parsed handoff to the trusted follow-up.
+    permissions: {}
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Record a trusted fork-review handoff
+        run: ':'
+
+  invalidate:
+    name: invalidate-regular-review
+    needs: route
+    # GitHub downgrades pull_request_review tokens for forks to read-only.
+    # fork_signal hands those regular events to a default-branch workflow_run.
+    if: >-
+      needs.route.outputs.regular == 'true'
+      && github.event.pull_request.head.repo.full_name == github.repository
+    concurrency:
+      group: review-gate-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the regular gate under its per-PR lock
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
+          EVENT_REVIEW_COMMIT_SHA: ${{ github.event.review.commit_id }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_INVALIDATED: ${{ needs.route.outputs.review_invalidated }}
+          REVIEW_ID: ${{ github.event.review.id }}
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$REVIEW_ID" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_REVIEW_COMMIT_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" ]]; then
+            echo "The regular-review event did not provide a dispatchable pull request state." >&2
+            exit 1
+          fi
+          if ! current_review="$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" 2>/dev/null)"; then
+            echo "Ignoring a stale delivery for missing review $REVIEW_ID."
+            exit 0
+          fi
+          current_review_state="$(jq -er '[.user.login, .commit_id, .state, ((.body // "") | @base64)] | @tsv' <<< "$current_review")"
+          IFS=$'\t' read -r current_author current_commit current_state current_body_b64 <<< "$current_review_state"
+          event_body_b64="$(jq -rn --arg body "$EVENT_REVIEW_BODY" '$body | @base64')"
+          if [[ "$current_author" != "$EVENT_REVIEW_AUTHOR" \
+            || "$current_commit" != "$EVENT_REVIEW_COMMIT_SHA" \
+            || "$current_body_b64" != "$event_body_b64" \
+            || ( "$EVENT_ACTION" == "dismissed" && "$current_state" != "DISMISSED" ) \
+            || ( "$EVENT_ACTION" != "dismissed" && "$current_state" == "DISMISSED" ) ]]; then
+            echo "Ignoring a stale review delivery superseded by newer review state."
+            exit 0
+          fi
+          stamp_pending() {
+            local context="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          stamp_pending "$REVIEW_GATE_CONTEXT" \
+            "Review state changed; evaluating regular Codex review"
+          if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
+            stamp_pending "$REVIEW_REVIEW_CONTEXT" \
+              "Regular review invalidated; require a newer normal review"
+          fi
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+            -f pull_request="$PR_NUMBER"
+          echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."

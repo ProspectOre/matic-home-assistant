@@ -1,0 +1,234 @@
+name: Invalidate Review Gate on Regular Comment
+
+on:
+  issue_comment:
+    types: [created, edited, deleted]
+
+# Run every comment delivery independently so rapid edits cannot replace a
+# queued state transition. Only a confirmed regular verdict enters the
+# evaluator's per-PR lock below.
+
+permissions:
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  classify:
+    name: classify-regular-comment
+    if: github.event.issue.pull_request != null
+    outputs:
+      regular: ${{ steps.classify.outputs.regular }}
+      clean: ${{ steps.classify.outputs.clean }}
+      head_sha: ${{ steps.classify.outputs.head_sha }}
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - id: classify
+        name: Classify regular Codex issue-comment verdicts
+        env:
+          EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_PREVIOUS_COMMENT_BODY: ${{ github.event.changes.body.from }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
+          REVIEW_GATE_CONTEXT: review-gate
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to classify issue comments."
+            exit 1
+          }
+          {
+            echo "regular=false"
+            echo "clean=false"
+          } >> "$GITHUB_OUTPUT"
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
+            echo "The issue-comment event did not provide a pull request number."
+            exit 1
+          fi
+          if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
+            echo "Ignoring a comment from another author."
+            exit 0
+          fi
+          body_could_be_regular_comment() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)' >/dev/null
+          }
+          if ! body_could_be_regular_comment "$EVENT_COMMENT_BODY" \
+            && ! body_could_be_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
+            echo "Ignoring a non-regular issue comment before the pull request lookup."
+            exit 0
+          fi
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '.head.sha'
+          )"
+          head_sha="$pr_state"
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the current pull request head."
+            exit 1
+          fi
+          head_prefix="${head_sha:0:10}"
+
+          body_is_regular_comment() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)
+                  | select(exact_head)' >/dev/null
+          }
+
+          body_is_clean_comment() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  # A top-level issue comment has no review-thread metadata, so
+                  # only an explicit clean verdict can preserve the gate.
+                  def stock_clean_issue_comment_envelope:
+                    test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                    or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)
+                  | select(exact_head)
+                  | select(stock_clean_issue_comment_envelope)' >/dev/null
+          }
+
+          if ! body_is_regular_comment "$EVENT_COMMENT_BODY" \
+            && ! body_is_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
+            echo "Ignoring a non-regular issue comment."
+            exit 0
+          fi
+          {
+            echo "regular=true"
+            echo "head_sha=$head_sha"
+          } >> "$GITHUB_OUTPUT"
+          if body_is_clean_comment "$EVENT_COMMENT_BODY"; then
+            echo "clean=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  invalidate:
+    name: invalidate-on-regular-comment
+    needs: classify
+    if: needs.classify.outputs.regular == 'true'
+    concurrency:
+      group: review-gate-${{ github.event.issue.number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the regular gate under its per-PR lock
+        env:
+          CLEAN: ${{ needs.classify.outputs.clean }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_UPDATED_AT: ${{ github.event.comment.updated_at }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
+          REVIEW_GATE_CONTEXT: review-gate
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" || -z "$EVENT_COMMENT_UPDATED_AT" ]]; then
+            echo "The regular issue-comment event did not provide a dispatchable pull request state." >&2
+            exit 1
+          fi
+          current_comment_at="$EVENT_COMMENT_UPDATED_AT"
+          if [[ "$EVENT_ACTION" == "deleted" ]]; then
+            if gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" --silent >/dev/null 2>&1; then
+              echo "Ignoring a stale deleted-comment delivery for comment $EVENT_COMMENT_ID."
+              exit 0
+            fi
+          else
+            if ! current_comment="$(gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" 2>/dev/null)"; then
+              echo "Ignoring a stale comment delivery for missing comment $EVENT_COMMENT_ID."
+              exit 0
+            fi
+            current_comment_state="$(jq -er '[.user.login, ((.body // "") | @base64)] | @tsv' <<< "$current_comment")"
+            IFS=$'\t' read -r current_author current_body_b64 <<< "$current_comment_state"
+            current_comment_at="$(jq -er '.updated_at // .created_at' <<< "$current_comment")"
+            event_body_b64="$(jq -rn --arg body "$EVENT_COMMENT_BODY" '$body | @base64')"
+            if [[ "$current_author" != "$EVENT_COMMENT_AUTHOR" || "$current_body_b64" != "$event_body_b64" ]]; then
+              echo "Ignoring a stale comment delivery superseded by a newer edit."
+              exit 0
+            fi
+          fi
+          if [[ ! "$current_comment_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "Could not resolve the current regular-comment timestamp." >&2
+            exit 1
+          fi
+          stamp_pending() {
+            local context="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$HEAD_SHA" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          stamp_pending "$REVIEW_GATE_CONTEXT" "Regular issue-comment verdict; evaluating review"
+          if [[ "$CLEAN" != "true" ]]; then
+            stamp_pending "$REVIEW_COMMENT_CONTEXT" \
+              "Regular issue-comment invalidated at $current_comment_at; require a newer clean normal verdict"
+          fi
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+            -f pull_request="$PR_NUMBER"
+          echo "Dispatched regular-comment evaluation for PR #$PR_NUMBER."

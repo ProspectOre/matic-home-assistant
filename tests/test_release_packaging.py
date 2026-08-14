@@ -49,6 +49,281 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     )
 
 
+def test_review_gate_uses_only_regular_review_evidence() -> None:
+    """Keep manual shipping independent from security-review availability."""
+    review_gate = (ROOT / ".github" / "workflows" / "review-gate.yml").read_text()
+    regular_review = (
+        ROOT / ".github" / "workflows" / "review-regular-review.yml"
+    ).read_text()
+    fork_regular_review = (
+        ROOT / ".github" / "workflows" / "review-fork-regular-review.yml"
+    ).read_text()
+    regular_comment = (
+        ROOT / ".github" / "workflows" / "review-regular-comment.yml"
+    ).read_text()
+    base_change = (
+        ROOT / ".github" / "workflows" / "review-base-change.yml"
+    ).read_text()
+    rollout = (ROOT / ".github" / "workflows" / "review-gate-rollout.yml").read_text()
+    base_advance = (
+        ROOT / ".github" / "workflows" / "review-base-advance.yml"
+    ).read_text()
+    audit = (ROOT / ".github" / "workflows" / "review-gate-audit.yml").read_text()
+
+    assert "cancel-in-progress: true" in review_gate
+    assert "group: review-gate-" in review_gate
+    assert (
+        "types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]"
+        in review_gate
+    )
+    assert "baseRefName" in review_gate
+    assert "Retarget to the repository default branch before review" in review_gate
+    assert "pull_request_review:" not in review_gate
+    assert "issue_comment:" not in review_gate
+    assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
+    assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in review_gate
+    assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in review_gate
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in review_gate
+    assert "Dedicated routers classify review and" in review_gate
+    assert (
+        "Exact-head regular PR reviews and explicit clean regular issue" in review_gate
+    )
+    assert "updatedAt" in review_gate
+    assert "stock_clean_envelope" in review_gate
+    assert "stock_clean_issue_comment_envelope" in review_gate
+    assert "didn.t find any major issues" in review_gate
+    assert "codex[[:space:]]+in[[:space:]]+github" in review_gate
+    assert "def availability_notice:" in review_gate
+    assert "availability_notice) | not" in review_gate
+    assert 'source == "issue_comment"' in review_gate
+    assert "total_count" in review_gate
+    assert "latest_regular_issue_comment_at" in review_gate
+    assert "latest_regular_review_invalidation_at" in review_gate
+    assert "latest_finding_at" in review_gate
+    assert "base_change_marker_exists" in review_gate
+    assert "Regular review invalidated at $latest_finding_at" in review_gate
+    assert "shared_open_head_count" in review_gate
+    assert "shared_open_head_owner" in review_gate
+    assert "$pr.state" in review_gate
+    assert '"$pr_state" != "OPEN"' in review_gate
+    assert "final_gate_snapshot" in review_gate
+    assert "evidence_marker" in review_gate
+    assert "; evidence $evidence_marker" in review_gate
+    assert "Disarming automatic merge on" in review_gate
+    assert "gh pr merge" not in review_gate
+    assert "--auto" not in review_gate
+
+    assert "name: Route Regular Codex Review Events" in regular_review
+    assert "pull_request_review:" in regular_review
+    assert "Run every review delivery independently" in regular_review
+    assert "review-gate-review-event-" not in regular_review
+    assert "cancel-in-progress: false" not in regular_review
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in regular_review
+    assert "EVENT_PREVIOUS_REVIEW_BODY" in regular_review
+    assert "body_is_regular_review" in regular_review
+    assert "def security_heading:" in regular_review
+    assert "security_heading | not" in regular_review
+    assert "EVENT_REVIEW_COMMIT_SHA" in regular_review
+    assert "def availability_notice:" in regular_review
+    assert "availability_notice | not" in regular_review
+    assert "Ignoring a review attached to an older pull request head" in regular_review
+    assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in regular_review
+    assert "Regular review invalidated; require a newer normal review" in regular_review
+    assert "needs: route" in regular_review
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in regular_review
+    )
+    assert (
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in regular_review
+    )
+    assert (
+        "fork-regular-review-${{ github.event.pull_request.number }}" in regular_review
+    )
+    assert "permissions: {}" in regular_review
+    assert (
+        "GitHub downgrades pull_request_review tokens for forks to read-only"
+        in regular_review
+    )
+    assert "contents: read" in regular_review
+    assert (
+        "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_review
+    )
+    assert "Trusted review-gate evaluator is not installed" in regular_review
+    assert (
+        "group: review-gate-${{ github.event.pull_request.number }}" in regular_review
+    )
+    assert '--ref "$WORKFLOW_REF"' in regular_review
+    assert "gh workflow run review-gate.yml" in regular_review
+    assert "name: Reconcile Fork Regular Codex Review Events" in fork_regular_review
+    assert "workflow_run:" in fork_regular_review
+    assert 'workflows: ["Route Regular Codex Review Events"]' in fork_regular_review
+    assert "github.event.workflow_run.conclusion == 'success'" in fork_regular_review
+    assert (
+        "github.event.workflow_run.event == 'pull_request_review'"
+        in fork_regular_review
+    )
+    assert "group: review-gate-${{ needs.route.outputs.pr_number }}" in (
+        fork_regular_review
+    )
+    assert "cancel-in-progress: true" in fork_regular_review
+    assert "fork-regular-review-(?<pr>" in fork_regular_review
+    assert "source_pr_number" in fork_regular_review
+    assert "actions/runs/$SOURCE_RUN_ID" in fork_regular_review
+    assert '"$source_pr_number" == "$pr_number"' in fork_regular_review
+    assert '"$head_repository" != "$REPO"' in fork_regular_review
+    assert "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" in fork_regular_review
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in fork_regular_review
+    assert "body_is_regular_review" in fork_regular_review
+    assert "security_heading | not" in fork_regular_review
+    assert "availability_notice | not" in fork_regular_review
+    assert 'review_state" != "DISMISSED"' in fork_regular_review
+    assert (
+        "Regular review invalidated; require a newer normal review"
+        in fork_regular_review
+    )
+    assert "gh workflow run review-gate.yml" in fork_regular_review
+    assert '--ref "$WORKFLOW_REF"' in fork_regular_review
+    assert "actions/checkout" not in fork_regular_review
+
+    assert "name: Invalidate Review Gate on Regular Comment" in regular_comment
+    assert "issue_comment:" in regular_comment
+    assert "Run every comment delivery independently" in regular_comment
+    assert "review-gate-comment-event-" not in regular_comment
+    assert "cancel-in-progress: false" not in regular_comment
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in regular_comment
+    assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
+    assert "body_could_be_regular_comment" in regular_comment
+    assert "before the pull request lookup" in regular_comment
+    assert "body_is_regular_comment" in regular_comment
+    assert "body_is_clean_comment" in regular_comment
+    assert "def security_heading:" in regular_comment
+    assert "security_heading | not" in regular_comment
+    assert "def availability_notice:" in regular_comment
+    assert "availability_notice | not" in regular_comment
+    assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
+    assert "name: classify-regular-comment" in regular_comment
+    assert "needs: classify" in regular_comment
+    assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
+    assert "| jq -er '.head.sha'" in regular_comment
+    assert (
+        "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_comment
+    )
+    assert "contents: read" in regular_comment
+    assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
+    assert "stock_clean_issue_comment_envelope" in regular_comment
+    assert '--ref "$WORKFLOW_REF"' in regular_comment
+    assert "gh workflow run review-gate.yml" in regular_comment
+    assert "Trusted review-gate evaluator is not installed" in regular_comment
+    assert "gh pr merge" not in regular_review + fork_regular_review + regular_comment
+    assert "--auto" not in regular_review + fork_regular_review + regular_comment
+    assert "github.event.changes.base != null" in base_change
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in base_change
+    assert "contents: read" in base_change
+    assert "EVENT_BASE_SHA" in base_change
+    assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
+    assert "review-gate-base-change" in base_change
+    assert (
+        "group: review-gate-base-change-${{ github.event.pull_request.number }}"
+        in base_change
+    )
+    assert "Base changed; push a new head before @codex review" in base_change
+    assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
+    assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
+    assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
+    assert "cancel-in-progress: true" in base_change
+    assert "cancel_active_gate_runs" in base_change
+    assert "gh workflow run review-gate.yml" in base_change
+    assert '--ref "$WORKFLOW_REF"' in base_change
+    assert "Trusted review-gate evaluator is not installed" in base_change
+    assert "gh pr merge" not in base_change
+    assert "--auto" not in base_change
+    assert "pulls?state=open" in base_advance
+    assert "BASE_PUSHED_AT" in base_advance
+    assert "commits/$event_head_sha/statuses" not in base_advance
+    assert "Over-invalidate rather than trusting contributor-controlled commit" in (
+        base_advance
+    )
+    assert "base_advanced_at" in base_advance
+    assert "push a new head before @codex review" in base_advance
+    assert "mktemp" in base_advance
+    assert "event_head_sha" in base_advance
+    assert "EVENT_HEAD_SHA" in base_advance
+    assert "EVENT_BASE_SHA" in base_advance
+    assert ".[]\n                | select(.base.ref == $base)" in base_advance
+    assert "group: review-gate-base-advance-" in base_advance
+    assert "cancel-in-progress: false" in base_advance
+    assert "review-gate-base-change" in base_advance
+    assert "disablePullRequestAutoMerge" in base_advance
+    assert "((.auto_merge != null) | tostring)" in base_advance
+    assert "cancel_active_gate_runs" in base_advance
+    assert "gh workflow run review-gate.yml" in base_advance
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in base_advance
+    assert '--ref "$WORKFLOW_REF"' in base_advance
+    assert "contents: read" in base_advance
+    assert "Trusted review-gate evaluator is not installed" in base_advance
+    assert "startswith($prefix)" in review_gate
+    assert "push:\n  workflow_dispatch:" in base_advance
+    assert "github.event.repository.default_branch" in base_advance
+    assert "schedule:" in audit
+    assert "*/5 * * * *" in audit
+    assert "matrix.pr_number" in audit
+    assert "actions: write" in audit
+    assert "contents: read" in audit
+    assert "issues: read" in audit
+    assert "statuses: write" in audit
+    assert "group: review-gate-${{ matrix.pr_number }}" in audit
+    assert "reviewThreads" in audit
+    assert "review result" in audit
+    assert "gh workflow run review-gate.yml" in audit
+    assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in audit
+    assert '--ref "$WORKFLOW_REF"' in audit
+    assert "Trusted review-gate evaluator is not installed" in audit
+    assert "def security_heading:" in audit
+    assert "security_heading) | not" in audit
+    assert "def availability_notice:" in audit
+    assert "availability_notice) | not" in audit
+    assert "current_regular_comment_records" in audit
+    assert "current_regular_review_records" in audit
+    assert "databaseId state submittedAt updatedAt" in audit
+    assert 'select((.state // "") != "DISMISSED")' in audit
+    assert 'select((.pullRequestReview.state // "") != "DISMISSED")' in audit
+    assert "evidence_marker" in audit
+    assert "is_reconciliation_pending" in audit
+    assert "Reconcile every head through the trusted default-branch workflow" in audit
+    assert "didn.t find any major issues" in audit
+    assert "issue_comment:" not in audit
+    assert "pulls?state=open" in rollout
+    assert "allow_auto_merge" in rollout
+    assert "Repository auto-merge must be disabled" in rollout
+    assert "disarm-open-prs:" in rollout
+    assert "needs: discover" in rollout
+    assert "verify-repository-policy:" in rollout
+    assert "if: always()" in rollout
+    assert "review-fork-regular-review.yml" in rollout
+    assert "actions: write" in rollout
+    assert "Disarming automatic merge; waiting for @codex review" in rollout
+    assert "disablePullRequestAutoMerge" in rollout
+    assert "((.auto_merge != null) | tostring)" in rollout
+    assert "cancel-legacy-auto-merge-runs" in rollout
+    assert 'gh run cancel "$run_id" --repo "$REPO" || true' in rollout
+    assert "active_gate_runs" in rollout
+    assert '.event == "workflow_dispatch"' not in rollout
+    assert '.event == "issue_comment"' not in rollout
+    assert rollout.index("stamp_pending") < rollout.index("active_gate_runs")
+    assert "Refresh the PR after cancellation" in rollout
+    assert "group: review-gate-" in rollout
+    assert "review-regular-review.yml" in rollout
+    assert "review-regular-comment.yml" in rollout
+    assert "gh pr merge" not in rollout
+    assert "--auto" not in rollout
+    assert "issues/comments/$EVENT_COMMENT_ID" in regular_comment
+    assert "superseded by a newer edit" in regular_comment
+    assert "pulls/$PR_NUMBER/reviews/$REVIEW_ID" in regular_review
+    assert "superseded by newer review state" in regular_review
+
+
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
     """Pin external actions while documenting the corresponding upstream ref."""
     for path in (ROOT / ".github" / "workflows").glob("*.yml"):

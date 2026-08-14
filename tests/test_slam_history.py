@@ -190,16 +190,16 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
             side_effect=lambda listener: listeners.append(listener) or remove_listener
         ),
     )
-    history = SimpleNamespace(async_add=AsyncMock())
+    history_added = asyncio.Event()
+    history = SimpleNamespace(
+        async_add=AsyncMock(side_effect=lambda *_args: history_added.set())
+    )
     task = asyncio.create_task(
         async_collect_slam_history(hass, slam_map, history, lambda: None)
     )
     try:
         with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
-            for _index in range(20):
-                if history.async_add.await_count:
-                    break
-                await asyncio.sleep(0)
+            await asyncio.wait_for(history_added.wait(), timeout=1)
         history.async_add.assert_awaited_once()
     finally:
         task.cancel()

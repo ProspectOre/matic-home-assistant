@@ -1,0 +1,314 @@
+name: Audit Active Regular Review Findings
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+# GitHub Actions does not expose review-thread reopening as an Actions trigger.
+# Protected branches require conversation resolution, so an active or reopened
+# thread blocks a merge immediately. This quiet audit also reconciles fork
+# review events and transient router failures without posting comments or
+# requesting another review.
+permissions:
+  actions: write
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  discover:
+    name: discover-open-prs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
+    steps:
+      - id: prs
+        name: Enumerate open pull requests
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c '{include: [.[][] | {pr_number: .number}]}'
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  audit:
+    name: audit (${{ matrix.pr_number }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # Recheck under the evaluator's per-PR lock so an in-flight success cannot
+    # race a findings-triggered follow-up dispatch.
+    concurrency:
+      group: review-gate-${{ matrix.pr_number }}
+      cancel-in-progress: false
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke successful gates with active regular-review findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_LOGIN: chatgpt-codex-connector
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to audit review threads." >&2
+            exit 1
+          }
+
+          current_gate_snapshot() {
+            local head_sha="$1"
+            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+              | jq -c --arg context "$REVIEW_GATE_CONTEXT" '
+                  ([.[][]
+                    | select(.context == $context)
+                    | {state, updated_at, description}]
+                   | max_by(.updated_at)?) as $latest
+                  | if $latest == null then
+                      {state: "missing", updated_at: "", description: ""}
+                    else
+                      $latest
+                    end'
+          }
+
+          stamp_pending() {
+            local head_sha="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending \
+              -f context="$REVIEW_GATE_CONTEXT" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          is_reconciliation_pending() {
+            local description="$1"
+            case "$description" in
+              "Review state changed; evaluating regular Codex review"|"Regular issue-comment verdict; evaluating review"|"Regular review state changed; evaluating trusted evidence"|"Active regular review findings; evaluating trusted evidence"|"Evaluating regular Codex review on "*)
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          }
+
+          dispatch_trusted_evaluator() {
+            local reason="$1"
+            if ! gh api \
+              "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+              --silent >/dev/null 2>&1; then
+              echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; revoked the required gate."
+              return 0
+            fi
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+              -f pull_request="$PR_NUMBER"
+            echo "Dispatched trusted review-gate for $reason on PR #$PR_NUMBER."
+          }
+
+          current_regular_comment_records() {
+            local head_sha="$1"
+            local head_prefix="${head_sha:0:10}"
+            gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
+              | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  [.[][]
+                   | select((.user.login // "") == $bot)
+                   | (.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select(($body | availability_notice) | not)
+                   | select($body | exact_head)
+                   | {id: ("issue-comment:" + (.id | tostring)),
+                      at: (.updated_at // .created_at)}]'
+          }
+
+          current_regular_review_records() {
+            local head_sha="$1"
+            local head_prefix="${head_sha:0:10}"
+            review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
+            review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
+            # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
+            gh api graphql --paginate \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+              -F owner="$review_owner" \
+              -F name="$review_repo" \
+              -F number="$PR_NUMBER" \
+              | jq -rs -c --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  [.[].data.repository.pullRequest.reviews.nodes[]?
+                   | select((.author.login // "") == $bot)
+                   | select((.state // "") != "DISMISSED")
+                   | select((.commit.oid // "") == $head)
+                   | (.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select(($body | availability_notice) | not)
+                   | select($body | exact_head)
+                   | {id: ("review:" + (.databaseId | tostring)),
+                      at: (.updatedAt // .submittedAt)}]'
+          }
+
+          active_regular_finding_count() {
+            local pr_number="$1"
+            local head_sha="$2"
+            local head_prefix="${head_sha:0:10}"
+            review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
+            review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
+            # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
+            gh api graphql --paginate \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { replyTo { databaseId } author { login } pullRequestReview { state body author { login } commit { oid } } } } pageInfo { hasNextPage endCursor } } } } } }' \
+              -F owner="$review_owner" \
+              -F name="$review_repo" \
+              -F number="$pr_number" \
+              | jq -rs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  def stock_clean_envelope:
+                    test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
+                    or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                    or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+                  [.[]
+                   | .data.repository.pullRequest.reviewThreads.nodes[]?
+                   | select(.isResolved | not)
+                   | select(.isOutdated | not)
+                   | .comments.nodes[]?
+                   | select(.replyTo == null)
+                   | select((.author.login // "") == $bot)
+                   | select(.pullRequestReview != null)
+                   | select((.pullRequestReview.author.login // "") == $bot)
+                   | select((.pullRequestReview.state // "") != "DISMISSED")
+                   | select((.pullRequestReview.commit.oid // "") == $head)
+                   | (.pullRequestReview.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select(($body | availability_notice) | not)
+                   | select($body | exact_head)
+                   | select($body | stock_clean_envelope)]
+                  | length'
+          }
+
+          head_sha="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null \
+              | jq -er '.head.sha'
+          )" || exit 0
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$WORKFLOW_REF" ]] || exit 0
+          gate_snapshot="$(current_gate_snapshot "$head_sha")"
+          gate_state="$(jq -r '.state' <<< "$gate_snapshot")"
+          gate_updated_at="$(jq -r '.updated_at // empty' <<< "$gate_snapshot")"
+          gate_description="$(jq -r '.description // empty' <<< "$gate_snapshot")"
+          comment_records="$(current_regular_comment_records "$head_sha")"
+          review_records="$(current_regular_review_records "$head_sha")"
+          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reviews "$review_records" '$comments + $reviews')"
+          latest_evidence_at="$(jq -r '[.[].at] | max // empty' <<< "$evidence_records")"
+          evidence_ids="$(jq -c '[.[].id]' <<< "$evidence_records")"
+          evidence_marker="$(
+            jq -r '
+              (.description // "") as $description
+              | if ($description | test("; evidence (review|issue-comment):[1-9][0-9]*$")) then
+                  ($description | capture("; evidence (?<id>(?:review|issue-comment):[1-9][0-9]*)$").id)
+                else
+                  ""
+                end' <<< "$gate_snapshot"
+          )"
+
+          # Reconcile every head through the trusted default-branch workflow.
+          # The stored marker tracks the exact normal delivery that earned a
+          # clean gate, so edits to a review cannot be masked by a separate
+          # security review or availability notice.
+          needs_reconciliation=false
+          reconciliation_reason=""
+          if [[ -n "$latest_evidence_at" && ( -z "$gate_updated_at" || "$latest_evidence_at" > "$gate_updated_at" ) ]]; then
+            needs_reconciliation=true
+            reconciliation_reason="a newer normal review delivery"
+          elif [[ "$gate_state" == "pending" ]] && is_reconciliation_pending "$gate_description"; then
+            needs_reconciliation=true
+            reconciliation_reason="a pending normal review evaluation"
+          elif [[ "$gate_state" == "success" && -n "$evidence_marker" ]] && ! jq -e --arg evidence "$evidence_marker" 'index($evidence) != null' <<< "$evidence_ids" >/dev/null; then
+            needs_reconciliation=true
+            reconciliation_reason="clean normal evidence that is no longer current"
+          elif [[ "$gate_state" == "success" && -z "$evidence_marker" ]]; then
+            needs_reconciliation=true
+            reconciliation_reason="legacy clean normal evidence"
+          fi
+          if [[ "$needs_reconciliation" == "true" ]]; then
+            if [[ "$gate_state" != "pending" ]] || ! is_reconciliation_pending "$gate_description"; then
+              stamp_pending "$head_sha" \
+                "Regular review state changed; evaluating trusted evidence"
+            fi
+            dispatch_trusted_evaluator "$reconciliation_reason"
+            exit 0
+          fi
+
+          if [[ "$gate_state" != "success" ]]; then
+            exit 0
+          fi
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          if [[ "$findings" -eq 0 ]]; then
+            exit 0
+          fi
+          # The evaluator may have completed while the first GraphQL read was
+          # in flight. Recheck both state and findings under the shared lock.
+          gate_snapshot="$(current_gate_snapshot "$head_sha")"
+          if [[ "$(jq -r '.state' <<< "$gate_snapshot")" != "success" ]]; then
+            exit 0
+          fi
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          if [[ "$findings" -eq 0 ]]; then
+            exit 0
+          fi
+          stamp_pending "$head_sha" \
+            "Active regular review findings; evaluating trusted evidence"
+          dispatch_trusted_evaluator "$findings active regular finding(s)"
