@@ -1,0 +1,116 @@
+name: Reconcile Fork Regular Codex Review Events
+
+on:
+  workflow_run:
+    workflows: ["Route Regular Codex Review Events"]
+    types: [completed]
+
+# workflow_run runs from the default branch and can write even when the source
+# pull_request_review workflow received a read-only fork token. Never check out
+# or execute source-run or pull-request code here.
+permissions:
+  actions: write
+  contents: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  reconcile:
+    if: >-
+      github.event.workflow_run.conclusion == 'success'
+      && github.event.workflow_run.event == 'pull_request_review'
+    concurrency:
+      group: review-gate-fork-review-${{ github.event.workflow_run.id }}
+      cancel-in-progress: false
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the gate for a classified fork review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required." >&2
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to reconcile fork reviews." >&2
+            exit 1
+          }
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ && -n "$WORKFLOW_REF" ]] || exit 1
+
+          # The unprivileged source job cannot write a status. Its dynamic job
+          # name is the only handoff, so parse it strictly and revalidate the
+          # review and current PR head via the GitHub API before any mutation.
+          signal="$(
+            gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" --paginate --slurp \
+              | jq -cer '
+                  [.[] | .jobs[]?
+                   | select(.conclusion == "success")
+                   | .name
+                   | capture("^fork-regular-review-(?<pr>[1-9][0-9]*)-(?<head>[0-9a-f]{40})-(?<review>[1-9][0-9]*)-(?<invalidated>true|false)$")]
+                  | if length == 1 then .[0] else null end'
+          )"
+          [[ "$signal" != "null" ]] || exit 0
+          pr_number="$(jq -r '.pr' <<< "$signal")"
+          event_head_sha="$(jq -r '.head' <<< "$signal")"
+          review_id="$(jq -r '.review' <<< "$signal")"
+          review_invalidated="$(jq -r '.invalidated' <<< "$signal")"
+          [[ "$pr_number" =~ ^[1-9][0-9]*$ \
+            && "$event_head_sha" =~ ^[0-9a-f]{40}$ \
+            && "$review_id" =~ ^[1-9][0-9]*$ \
+            && "$review_invalidated" =~ ^(true|false)$ ]] || exit 1
+
+          source_pr_number="$(
+            gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID" \
+              | jq -er '[.pull_requests[]?.number] | if length == 1 then .[0] else empty end'
+          )" || exit 0
+          [[ "$source_pr_number" == "$pr_number" ]] || exit 0
+
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$pr_number" \
+              | jq -er '[.head.sha, .state, (.head.repo.full_name // "")] | @tsv'
+          )" || exit 0
+          IFS=$'\t' read -r current_head_sha pr_state head_repository <<< "$pr_state"
+          [[ "$current_head_sha" == "$event_head_sha" \
+            && "$pr_state" == "open" \
+            && "$head_repository" != "$REPO" ]] || exit 0
+          review_state="$(
+            gh api "repos/$REPO/pulls/$pr_number/reviews/$review_id" \
+              | jq -er '[.user.login, .commit_id] | @tsv'
+          )" || exit 0
+          IFS=$'\t' read -r review_author review_commit_sha <<< "$review_state"
+          [[ "$review_author" == "$REVIEW_BOT_EVENT_LOGIN" \
+            && "$review_commit_sha" == "$event_head_sha" ]] || exit 0
+
+          stamp_pending() {
+            local context="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$event_head_sha" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          stamp_pending "$REVIEW_GATE_CONTEXT" \
+            "Review state changed; evaluating regular Codex review"
+          if [[ "$review_invalidated" == "true" ]]; then
+            stamp_pending "$REVIEW_REVIEW_CONTEXT" \
+              "Regular review invalidated; require a newer normal review"
+          fi
+          if ! gh api \
+            "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \
+            --silent >/dev/null 2>&1; then
+            echo "Trusted review-gate evaluator is not installed on $WORKFLOW_REF; leaving the required gate pending."
+            exit 0
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+            -f pull_request="$pr_number"
+          echo "Dispatched fork regular-review evaluation for PR #$pr_number."

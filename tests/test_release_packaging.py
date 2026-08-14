@@ -55,6 +55,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     regular_review = (
         ROOT / ".github" / "workflows" / "review-regular-review.yml"
     ).read_text()
+    fork_regular_review = (
+        ROOT / ".github" / "workflows" / "review-fork-regular-review.yml"
+    ).read_text()
     regular_comment = (
         ROOT / ".github" / "workflows" / "review-regular-comment.yml"
     ).read_text()
@@ -123,6 +126,14 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         in regular_review
     )
     assert (
+        "github.event.pull_request.head.repo.full_name != github.repository"
+        in regular_review
+    )
+    assert (
+        "fork-regular-review-${{ github.event.pull_request.number }}" in regular_review
+    )
+    assert "permissions: {}" in regular_review
+    assert (
         "GitHub downgrades pull_request_review tokens for forks to read-only"
         in regular_review
     )
@@ -136,6 +147,32 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     )
     assert '--ref "$WORKFLOW_REF"' in regular_review
     assert "gh workflow run review-gate.yml" in regular_review
+    assert "name: Reconcile Fork Regular Codex Review Events" in fork_regular_review
+    assert "workflow_run:" in fork_regular_review
+    assert 'workflows: ["Route Regular Codex Review Events"]' in fork_regular_review
+    assert "github.event.workflow_run.conclusion == 'success'" in fork_regular_review
+    assert (
+        "github.event.workflow_run.event == 'pull_request_review'"
+        in fork_regular_review
+    )
+    assert (
+        "review-gate-fork-review-${{ github.event.workflow_run.id }}"
+        in fork_regular_review
+    )
+    assert "fork-regular-review-(?<pr>" in fork_regular_review
+    assert "source_pr_number" in fork_regular_review
+    assert "actions/runs/$SOURCE_RUN_ID" in fork_regular_review
+    assert '"$source_pr_number" == "$pr_number"' in fork_regular_review
+    assert '"$head_repository" != "$REPO"' in fork_regular_review
+    assert "repos/$REPO/pulls/$pr_number/reviews/$review_id" in fork_regular_review
+    assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in fork_regular_review
+    assert (
+        "Regular review invalidated; require a newer normal review"
+        in fork_regular_review
+    )
+    assert "gh workflow run review-gate.yml" in fork_regular_review
+    assert '--ref "$WORKFLOW_REF"' in fork_regular_review
+    assert "actions/checkout" not in fork_regular_review
 
     assert "name: Invalidate Review Gate on Regular Comment" in regular_comment
     assert "issue_comment:" in regular_comment
@@ -165,8 +202,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "Trusted review-gate evaluator is not installed" in regular_comment
-    assert "gh pr merge" not in regular_review + regular_comment
-    assert "--auto" not in regular_review + regular_comment
+    assert "gh pr merge" not in regular_review + fork_regular_review + regular_comment
+    assert "--auto" not in regular_review + fork_regular_review + regular_comment
     assert "github.event.changes.base != null" in base_change
     assert "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in base_change
     assert "contents: read" in base_change
@@ -234,6 +271,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
+    assert "review-fork-regular-review.yml" in rollout
     assert "actions: write" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout
     assert "disablePullRequestAutoMerge" in rollout

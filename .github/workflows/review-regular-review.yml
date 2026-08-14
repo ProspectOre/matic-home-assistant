@@ -103,11 +103,25 @@ jobs:
             echo "review_invalidated=true" >> "$GITHUB_OUTPUT"
           fi
 
+  fork_signal:
+    name: fork-regular-review-${{ github.event.pull_request.number }}-${{ github.event.pull_request.head.sha }}-${{ github.event.review.id }}-${{ needs.route.outputs.review_invalidated }}
+    needs: route
+    if: >-
+      needs.route.outputs.regular == 'true'
+      && github.event.pull_request.head.repo.full_name != github.repository
+    # Fork review workflows receive read-only tokens. This job executes no PR
+    # code and carries only a strictly parsed handoff to the trusted follow-up.
+    permissions: {}
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Record a trusted fork-review handoff
+        run: ':'
+
   invalidate:
     name: invalidate-regular-review
     needs: route
     # GitHub downgrades pull_request_review tokens for forks to read-only.
-    # The trusted scheduled audit reconciles those fork verdicts instead.
+    # fork_signal hands those regular events to a default-branch workflow_run.
     if: >-
       needs.route.outputs.regular == 'true'
       && github.event.pull_request.head.repo.full_name == github.repository
