@@ -4,7 +4,9 @@ run-name: "review-gate #${{ inputs.pull_request || github.event.pull_request.num
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review]
+    # Repository-level auto-merge is disabled; this event is defense in depth
+    # if that administrative policy ever drifts.
+    types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]
   workflow_dispatch:
     inputs:
       pull_request:
@@ -35,6 +37,7 @@ jobs:
     steps:
       - name: Evaluate exact-head regular Codex review
         env:
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
@@ -105,7 +108,7 @@ jobs:
           read_pr_snapshot() {
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
             gh api graphql \
-              -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id state headRefOid baseRefOid isDraft autoMergeRequest { enabledAt } } } }' \
+              -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id state headRefOid baseRefOid baseRefName isDraft autoMergeRequest { enabledAt } } } }' \
               -F owner="$review_owner" \
               -F name="$review_repo" \
               -F number="$pr_number" \
@@ -114,6 +117,7 @@ jobs:
                   | select($pr != null)
                   | [$pr.headRefOid,
                      $pr.baseRefOid,
+                     $pr.baseRefName,
                      ($pr.isDraft | tostring),
                      $pr.id,
                      (($pr.autoMergeRequest != null) | tostring),
@@ -122,7 +126,7 @@ jobs:
           }
 
           pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r head_sha base_sha is_draft pr_node_id auto_merge_enabled pr_state <<< "$pr_snapshot"
+          IFS=$'\t' read -r head_sha base_sha base_ref is_draft pr_node_id auto_merge_enabled pr_state <<< "$pr_snapshot"
           if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Could not resolve valid pull request head and base SHAs."
             exit 1
@@ -425,6 +429,11 @@ jobs:
             disable_auto_merge "$pr_node_id"
             echo "Disabled automatic merge for PR #$pr_number."
           fi
+          if [[ -z "$DEFAULT_BRANCH" || "$base_ref" != "$DEFAULT_BRANCH" ]]; then
+            stamp_review_gate pending "Retarget to the repository default branch before review"
+            echo "PR #$pr_number targets unsupported base '$base_ref'; expected '$DEFAULT_BRANCH'."
+            exit 0
+          fi
 
           if [[ "$is_draft" == "true" ]]; then
             stamp_review_gate pending "Waiting for pull request to leave draft"
@@ -453,7 +462,7 @@ jobs:
           # catches a new result, finding, comment, head, or base change that
           # arrived while the first snapshot was being evaluated.
           final_pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r final_head_sha final_base_sha final_is_draft final_pr_node_id final_auto_merge_enabled final_pr_state <<< "$final_pr_snapshot"
+          IFS=$'\t' read -r final_head_sha final_base_sha final_base_ref final_is_draft final_pr_node_id final_auto_merge_enabled final_pr_state <<< "$final_pr_snapshot"
           if [[ "$final_pr_state" != "OPEN" ]]; then
             echo "The PR was closed during evaluation; it was not marked successful."
             exit 0
@@ -468,7 +477,7 @@ jobs:
             echo "The PR base changed during evaluation; a new head is required."
             exit 0
           fi
-          if [[ "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" ]]; then
+          if [[ "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" ]]; then
             if [[ "$final_auto_merge_enabled" == "true" ]]; then
               disable_auto_merge "$final_pr_node_id"
               echo "Disabled automatic merge that was enabled during evaluation."
@@ -486,8 +495,8 @@ jobs:
           require_clean_regular_snapshot "$final_gate_snapshot"
 
           last_pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r last_head_sha last_base_sha last_is_draft last_pr_node_id last_auto_merge_enabled last_pr_state <<< "$last_pr_snapshot"
-          if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" ]]; then
+          IFS=$'\t' read -r last_head_sha last_base_sha last_base_ref last_is_draft last_pr_node_id last_auto_merge_enabled last_pr_state <<< "$last_pr_snapshot"
+          if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_base_ref" != "$DEFAULT_BRANCH" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" ]]; then
             if [[ "$last_head_sha" == "$head_sha" && "$last_base_sha" != "$base_sha" ]]; then
               stamp_base_change_marker
               stamp_review_gate pending "Base changed; push a new head before @codex review"

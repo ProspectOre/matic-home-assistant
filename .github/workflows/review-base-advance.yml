@@ -4,11 +4,6 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      base_branch:
-        description: Base branch whose open pull requests should be invalidated
-        required: false
-        type: string
 
 permissions:
   actions: write
@@ -27,7 +22,7 @@ jobs:
       - id: prs
         name: Find pull requests targeting the advanced branch
         env:
-          BASE_BRANCH: ${{ inputs.base_branch || github.ref_name }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
           BASE_PUSHED_AT: ${{ github.event.repository.pushed_at }}
           EVENT_NAME: ${{ github.event_name }}
           GH_TOKEN: ${{ github.token }}
@@ -53,36 +48,20 @@ jobs:
           review_gate_prs_file="$(mktemp)"
           trap 'rm -f "$review_gate_prs_file"' EXIT
           gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
-          # Push-triggered invalidation is deliberately conservative: only a
-          # current PR head with durable review-gate status evidence created
-          # before this base push can be invalidated. Workflow-run head_sha is
-          # the workflow ref for pull_request_target/workflow_dispatch and is
-          # therefore not evidence of the evaluated PR head.
-          matrix='{"include":[]}'
-          while IFS=$'\t' read -r pr_number event_head_sha; do
-            include_head=false
-            if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
-              include_head=true
-            elif gh api "repos/$REPO/commits/$event_head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -e --arg context "review-gate" --argjson pushed_at "$base_pushed_at" '
-                  any(.[][];
-                    (.context == $context)
-                    and ((.created_at | fromdateiso8601) <= $pushed_at))' >/dev/null; then
-              include_head=true
-            fi
-            if [[ "$include_head" == "true" ]]; then
-              matrix="$(
-                jq -c --argjson pr "$pr_number" --arg head "$event_head_sha" \
-                  '.include += [{pr_number: $pr, event_head_sha: $head}]' <<< "$matrix"
-              )"
-            fi
-          done < <(
-            jq -r --arg base "$BASE_BRANCH" '
-              .[]
-              | select(.base.ref == $base)
-              | [.number, .head.sha]
-              | @tsv' "$review_gate_prs_file"
-          )
+          # Conservatively invalidate every current head for a PR that already
+          # existed when the default base advanced. A head pushed while this
+          # job waited is safe to include because it already requires a fresh
+          # exact-head review; PRs opened after the base push are left alone.
+          matrix="$(
+            jq -sc --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
+              --argjson pushed_at "$base_pushed_at" '
+                {include: [.[][]
+                  | select(.base.ref == $base)
+                  | select($event == "workflow_dispatch"
+                      or ((.created_at | fromdateiso8601) <= $pushed_at))
+                  | {pr_number: .number, event_head_sha: .head.sha}]}'
+              "$review_gate_prs_file"
+          )"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
 
@@ -103,7 +82,7 @@ jobs:
     steps:
       - name: Persist a base-change marker and revoke the required gate
         env:
-          BASE_BRANCH: ${{ inputs.base_branch || github.ref_name }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
           EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr_number }}

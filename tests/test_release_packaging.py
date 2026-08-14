@@ -72,11 +72,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
 
     assert "cancel-in-progress: true" in review_gate
     assert "group: review-gate-" in review_gate
-    assert "types: [opened, reopened, synchronize, ready_for_review]" in review_gate
     assert (
         "types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]"
-        not in review_gate
+        in review_gate
     )
+    assert "baseRefName" in review_gate
+    assert "Retarget to the repository default branch before review" in review_gate
     assert "pull_request_review:" not in review_gate
     assert "issue_comment:" not in review_gate
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
@@ -238,7 +239,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
     assert "BASE_PUSHED_AT" in base_advance
-    assert "commits/$event_head_sha/statuses" in base_advance
+    assert "commits/$event_head_sha/statuses" not in base_advance
+    assert ".created_at | fromdateiso8601" in base_advance
     assert "created_at | fromdateiso8601" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
@@ -283,6 +285,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "evidence_marker" in audit
     assert "is_reconciliation_pending" in audit
     assert "Reconcile every head through the trusted default-branch workflow" in audit
+    assert "didn.t find any major issues" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "allow_auto_merge" in rollout
