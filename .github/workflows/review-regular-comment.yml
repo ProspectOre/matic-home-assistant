@@ -4,12 +4,9 @@ on:
   issue_comment:
     types: [created, edited, deleted]
 
-# Classify every comment independently. Only a confirmed regular verdict enters
-# the evaluator's per-PR lock, so security and availability notices cannot
-# cancel or delay a normal review evaluation.
-concurrency:
-  group: review-gate-comment-event-${{ github.event.comment.id }}
-  cancel-in-progress: false
+# Run every comment delivery independently so rapid edits cannot replace a
+# queued state transition. Only a confirmed regular verdict enters the
+# evaluator's per-PR lock below.
 
 permissions:
   actions: write

@@ -4,11 +4,9 @@ on:
   pull_request_review:
     types: [submitted, edited, dismissed]
 
-# Each review has its own lightweight router. A security or unrelated review
-# therefore cannot cancel the evaluator responsible for the regular gate.
-concurrency:
-  group: review-gate-review-event-${{ github.event.review.id }}
-  cancel-in-progress: false
+# Run every review delivery independently so rapid edits cannot replace a
+# queued state transition. Only a confirmed regular review enters the
+# evaluator's per-PR lock below.
 
 permissions:
   actions: write

@@ -4,10 +4,11 @@ on:
   pull_request_target:
     types: [edited]
 
-# A retarget takes the evaluator's per-PR lock, cancelling any in-flight
-# evaluation before it writes the durable marker and dispatches a replacement.
+# A retarget has its own per-PR lock so later review deliveries cannot cancel
+# it before the durable marker is written. It explicitly stops active
+# evaluators below, then restamps pending before dispatching a replacement.
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number }}
+  group: review-gate-base-change-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
 permissions:

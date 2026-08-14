@@ -107,8 +107,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
 
     assert "name: Route Regular Codex Review Events" in regular_review
     assert "pull_request_review:" in regular_review
-    assert "review-gate-review-event-${{ github.event.review.id }}" in regular_review
-    assert "cancel-in-progress: false" in regular_review
+    assert "Run every review delivery independently" in regular_review
+    assert "review-gate-review-event-" not in regular_review
+    assert "cancel-in-progress: false" not in regular_review
     assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in regular_review
     assert "EVENT_PREVIOUS_REVIEW_BODY" in regular_review
     assert "body_is_regular_review" in regular_review
@@ -176,8 +177,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
 
     assert "name: Invalidate Review Gate on Regular Comment" in regular_comment
     assert "issue_comment:" in regular_comment
-    assert "review-gate-comment-event-${{ github.event.comment.id }}" in regular_comment
-    assert "cancel-in-progress: false" in regular_comment
+    assert "Run every comment delivery independently" in regular_comment
+    assert "review-gate-comment-event-" not in regular_comment
+    assert "cancel-in-progress: false" not in regular_comment
     assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
     assert "body_could_be_regular_comment" in regular_comment
@@ -210,7 +212,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "EVENT_BASE_SHA" in base_change
     assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
-    assert "group: review-gate-${{ github.event.pull_request.number }}" in base_change
+    assert (
+        "group: review-gate-base-change-${{ github.event.pull_request.number }}"
+        in base_change
+    )
     assert "Base changed; push a new head before @codex review" in base_change
     assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
