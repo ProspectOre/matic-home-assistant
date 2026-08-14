@@ -1,12 +1,10 @@
 name: Codex Review Gate
 
+run-name: "review-gate #${{ inputs.pull_request || github.event.pull_request.number }}"
+
 on:
   pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]
-  pull_request_review:
-    types: [submitted, edited, dismissed]
-  issue_comment:
-    types: [created, edited, deleted]
   workflow_dispatch:
     inputs:
       pull_request:
@@ -14,11 +12,11 @@ on:
         required: true
         type: string
 
-# The latest review-state event wins. Every event stamps the exact head pending
-# before its first fallible lookup, so a new auto-merge or review event cancels
-# any stale evaluator instead of allowing it to publish a late success.
+# The latest state-changing PR event wins. Dedicated routers classify review and
+# issue-comment events before dispatching here, so ignored security activity
+# cannot cancel an evaluator that is enforcing this gate.
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
+  group: review-gate-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}
   cancel-in-progress: true
 
 permissions:
@@ -33,7 +31,6 @@ jobs:
     if: >-
       github.event_name == 'workflow_dispatch'
       || github.event.pull_request.number != null
-      || github.event.issue.pull_request != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Evaluate exact-head regular Codex review
@@ -41,13 +38,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_ISSUE_PR_NUMBER: ${{ github.event.issue.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          EVENT_REVIEW_AUTHOR: ${{ github.event.review.user.login }}
-          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
-          EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
-          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
-          EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           REVIEW_BOT: chatgpt-codex-connector[bot]
           REVIEW_BOT_LOGIN: chatgpt-codex-connector
@@ -55,6 +46,7 @@ jobs:
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -67,14 +59,14 @@ jobs:
             exit 1
           }
 
-          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+          if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]]; then
             if [[ ! "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
               echo "Pull request input must be a positive integer."
               exit 1
             fi
             pr_number="$INPUT_PR"
           else
-            pr_number="${EVENT_PR_NUMBER:-${EVENT_ISSUE_PR_NUMBER:-}}"
+            pr_number="$EVENT_PR_NUMBER"
           fi
 
           if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
@@ -102,32 +94,9 @@ jobs:
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
 
-          event_pull_request_review_is_regular() {
-            [[ "$EVENT_REVIEW_AUTHOR" == "$REVIEW_BOT_EVENT_LOGIN" ]] || return 1
-            printf '%s' "$EVENT_REVIEW_BODY" \
-              | jq -e -R -s '
-                  def regular_heading:
-                    ascii_downcase
-                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
-                  def security_heading:
-                    ascii_downcase
-                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
-                  select(regular_heading)
-                  | select(security_heading | not)' >/dev/null
-          }
-
-          # Security and other non-regular PR review events never change this
-          # status. Inline-thread changes are handled by the quiet audit, so a
-          # security review cannot momentarily block the regular-review path.
-          if [[ "$EVENT_NAME" == "pull_request_review" ]] && ! event_pull_request_review_is_regular; then
-            echo "Ignoring a non-regular pull request review."
-            exit 0
-          fi
-
-          # Regular PR-review event payloads carry the exact head. Revoke its
-          # prior success before the first fallible API lookup. Issue comments
-          # are never qualifying evidence and are classified before they can
-          # invalidate this regular-review gate.
+          # PR-state event payloads carry the exact head. Revoke its prior
+          # success before the first fallible lookup; dedicated routers have
+          # already classified review and issue-comment events.
           if [[ -n "$event_head_sha" ]]; then
             stamp_status_for_sha "$event_head_sha" "$REVIEW_GATE_CONTEXT" pending \
               "Review state changed; evaluating regular Codex review"
@@ -166,32 +135,7 @@ jobs:
             exit 0
           fi
           head_prefix="$(printf '%.10s' "$head_sha")"
-
-          event_issue_comment_is_regular() {
-            printf '%s' "$EVENT_COMMENT_BODY" \
-              | jq -e -R -s --arg head "$head_sha" --arg prefix "$head_prefix" '
-                  def regular_heading:
-                    ascii_downcase
-                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
-                  def security_heading:
-                    ascii_downcase
-                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
-                  def exact_head:
-                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
-                  select(regular_heading)
-                  | select(security_heading | not)
-                  | select(exact_head)' >/dev/null
-          }
-
-          # Only an exact-head, bot-authored regular-review issue comment can
-          # invalidate this gate. Security-review messages and all other
-          # comments are outside the regular-review protocol.
-          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
-            if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]] || ! event_issue_comment_is_regular; then
-              echo "Ignoring a non-regular issue comment."
-              exit 0
-            fi
-          fi
+          base_marker_description="Base changed for PR #$pr_number at base $base_sha; push a new head before @codex review"
 
           stamp_status() {
             local context="$1"
@@ -206,15 +150,8 @@ jobs:
 
           stamp_base_change_marker() {
             stamp_status "$REVIEW_BASE_CONTEXT" pending \
-              "Base changed; push a new head before @codex review"
+              "$base_marker_description"
           }
-
-          if [[ "$EVENT_NAME" == "issue_comment" ]]; then
-            # A normal regular-review issue comment can only invalidate. A
-            # later submitted PR review must explicitly clear this marker.
-            stamp_status "$REVIEW_COMMENT_CONTEXT" pending \
-              "Regular issue-comment verdict; require a newer PR review"
-          fi
 
           disable_auto_merge() {
             local pull_request_id="$1"
@@ -233,11 +170,11 @@ jobs:
 
           base_change_marker_exists() {
             gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -e --arg context "$REVIEW_BASE_CONTEXT" '
+              | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg description "$base_marker_description" '
                   any(.[][];
                     (.context == $context)
                     and (.state == "pending")
-                    and ((.description // "") | startswith("Base changed; push a new head before @codex review")))' \
+                    and ((.description // "") == $description))' \
               >/dev/null
           }
 
@@ -257,14 +194,25 @@ jobs:
                   [.[][]
                    | select(.context == $context)
                    | select(.state == "pending")
-                   | select((.description // "") | startswith("Regular issue-comment verdict;"))
+                   | select((.description // "") | startswith("Regular issue-comment invalidated;"))
                    | .updated_at]
                   | max // empty'
           }
 
-          # Submitted PR reviews are the only qualifying clean evidence. Normal
-          # issue-comment verdicts can invalidate that evidence, while security
-          # review results and availability notices are ignored completely.
+          latest_regular_review_invalidation_at() {
+            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+              | jq -r --arg context "$REVIEW_REVIEW_CONTEXT" '
+                  [.[][]
+                   | select(.context == $context)
+                   | select(.state == "pending")
+                   | select((.description // "") | startswith("Regular review invalidated;"))
+                   | .updated_at]
+                  | max // empty'
+          }
+
+          # Exact-head regular PR reviews and explicit clean regular issue
+          # comments can qualify. Findings-bearing issue comments invalidate;
+          # security review results and availability notices are ignored.
           regular_evidence() {
             local review_records issue_comment_records
             review_records="$(
@@ -283,11 +231,13 @@ jobs:
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
                     def exact_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
-                    # The connector stock review envelope has no body-only
-                    # findings. Textual "no major/blocking issues" claims are
-                    # intentionally not accepted as a clean verdict.
+                    # A "no major/blocking issues" claim must carry the
+                    # known connector footer; a body-only claim is not a
+                    # clean verdict.
                     def stock_clean_envelope:
-                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>");
+                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
+                      or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                      or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
                     [.[]
                      | .data.repository.pullRequest.reviews.nodes[]?
                      | select((.author.login // "") == $bot)
@@ -314,7 +264,9 @@ jobs:
                     def exact_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
                     def stock_clean_envelope:
-                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>");
+                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
+                      or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                      or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
                     [.[][]
                      | select((.user.login // "") == $bot)
                      | (.body // "") as $body
@@ -368,7 +320,7 @@ jobs:
           }
 
           read_gate_snapshot() {
-            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count base_changed_at latest_finding_at issue_comment_at
+            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count base_changed_at latest_finding_at issue_comment_at review_invalidation_at
             evidence="$(regular_evidence)"
             deliveries="$(jq -c '.deliveries' <<< "$evidence")"
             reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
@@ -376,18 +328,20 @@ jobs:
             thread_summary="$(regular_review_thread_summary "$review_ids")"
             verdict_selection="$(
               issue_comment_at="$(latest_regular_issue_comment_at)"
-              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" '
+              review_invalidation_at="$(latest_regular_review_invalidation_at)"
+              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
                 | (([$deliveries[] | select(.clean | not) | .at]
                     + [$reviews[]
                        | select(.id as $id | ($finding_ids | index($id)) != null)
                        | .at]
-                    + (if $issue_comment_at == "" then [] else [$issue_comment_at] end))
+                    + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
+                    + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
                    | max // "") as $latest_finding_at
                 | ($deliveries | sort_by(.at) | last) as $latest_delivery
                 | {verdict:
                      (if $latest_delivery != null
-                           and $latest_delivery.source == "review"
+                           and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
                            and $latest_delivery.clean
                            and (($finding_ids | index($latest_delivery.id)) == null)
                            and $latest_delivery.at > $latest_finding_at

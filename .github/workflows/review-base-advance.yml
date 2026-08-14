@@ -79,27 +79,53 @@ jobs:
           }
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.node_id, .base.ref, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
+              | jq -er '[.node_id, .base.ref, .base.sha, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
           )"
-          IFS=$'\t' read -r pr_node_id current_base head_sha auto_merge_enabled <<< "$pr_state"
+          IFS=$'\t' read -r pr_node_id current_base base_sha head_sha auto_merge_enabled <<< "$pr_state"
           if [[ "$current_base" != "$BASE_BRANCH" ]]; then
             echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
             exit 0
           fi
-          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
             echo "Could not resolve the current PR state for #$PR_NUMBER." >&2
             exit 1
           fi
 
           stamp_pending() {
             local context="$1"
+            local description="$2"
             gh api "repos/$REPO/statuses/$head_sha" --silent \
               -f state=pending \
               -f context="$context" \
-              -f description="Base changed; push a new head before @codex review" \
+              -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
-          stamp_pending "$REVIEW_GATE_CONTEXT"
+          gate_description="Base changed; push a new head before @codex review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha; push a new head before @codex review"
+
+          active_gate_runs() {
+            gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name)
+                  | .id'
+          }
+
+          cancel_active_gate_runs() {
+            for run_id in $(active_gate_runs); do
+              gh run cancel "$run_id" --repo "$REPO" || true
+            done
+            for _attempt in $(seq 1 15); do
+              if [[ -z "$(active_gate_runs)" ]]; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Review-gate runs for PR #$PR_NUMBER did not stop in time." >&2
+            exit 1
+          }
+
+          stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
           if [[ "$auto_merge_enabled" == "true" ]]; then
             # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
             gh api graphql \
@@ -107,8 +133,9 @@ jobs:
               -F pullRequestId="$pr_node_id" >/dev/null
             echo "Disabled automatic merge for PR #$PR_NUMBER."
           fi
-          stamp_pending "$REVIEW_BASE_CONTEXT"
-          stamp_pending "$REVIEW_GATE_CONTEXT"
+          stamp_pending "$REVIEW_BASE_CONTEXT" "$marker_description"
+          cancel_active_gate_runs
+          stamp_pending "$REVIEW_GATE_CONTEXT" "$gate_description"
           gh workflow run review-gate.yml --repo "$REPO" \
             -f pull_request="$PR_NUMBER"
           echo "Base branch advancement invalidated regular review for PR #$PR_NUMBER."

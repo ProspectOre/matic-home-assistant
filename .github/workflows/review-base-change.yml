@@ -26,6 +26,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
+          EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
@@ -40,6 +41,10 @@ jobs:
             echo "The base-change event did not provide a valid head SHA."
             exit 1
           fi
+          if [[ ! "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The base-change event did not provide a valid base SHA."
+            exit 1
+          fi
           if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]; then
             echo "The base-change event did not provide a valid pull request number."
             exit 1
@@ -47,20 +52,47 @@ jobs:
 
           stamp_status() {
             local context="$1"
+            local description="$2"
             gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
               -f state=pending \
               -f context="$context" \
-              -f description="Base changed; push a new head before @codex review" \
+              -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          gate_description="Base changed; push a new head before @codex review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA; push a new head before @codex review"
+
+          active_gate_runs() {
+            gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name)
+                  | .id'
+          }
+
+          cancel_active_gate_runs() {
+            for run_id in $(active_gate_runs); do
+              gh run cancel "$run_id" --repo "$REPO" || true
+            done
+            for _attempt in $(seq 1 15); do
+              if [[ -z "$(active_gate_runs)" ]]; then
+                return 0
+              fi
+              sleep 2
+            done
+            echo "Review-gate runs for PR #$PR_NUMBER did not stop in time." >&2
+            exit 1
           }
 
           # Revoke the required context first. Even if the durable marker write
           # later fails, a retarget cannot retain a stale green review gate.
-          stamp_status "$REVIEW_GATE_CONTEXT"
-          stamp_status "$REVIEW_BASE_CONTEXT"
+          stamp_status "$REVIEW_GATE_CONTEXT" "$gate_description"
+          stamp_status "$REVIEW_BASE_CONTEXT" "$marker_description"
+          cancel_active_gate_runs
           # Write the required context again after the marker. This makes the
           # current state fail closed before the follow-up evaluator runs.
-          stamp_status "$REVIEW_GATE_CONTEXT"
+          stamp_status "$REVIEW_GATE_CONTEXT" "$gate_description"
           gh workflow run review-gate.yml --repo "$REPO" \
             -f pull_request="$PR_NUMBER"
           echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."

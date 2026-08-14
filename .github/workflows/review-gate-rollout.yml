@@ -5,6 +5,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/review-gate.yml
+      - .github/workflows/review-regular-review.yml
+      - .github/workflows/review-regular-comment.yml
       - .github/workflows/review-base-change.yml
       - .github/workflows/review-base-advance.yml
       - .github/workflows/review-gate-audit.yml
@@ -111,9 +113,9 @@ jobs:
 
           active_gate_runs() {
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
-              | jq -r --argjson pr "$PR_NUMBER" '.[] | .workflow_runs[]?
+              | jq -r --argjson pr "$PR_NUMBER" --arg run_name "review-gate #$PR_NUMBER" '.[] | .workflow_runs[]?
                   | select(.status != "completed")
-                  | select(any(.pull_requests[]?; .number == $pr) or .event == "workflow_dispatch")
+                  | select(any(.pull_requests[]?; .number == $pr) or .display_title == $run_name or .event == "workflow_dispatch" or .event == "issue_comment")
                   | .id'
           }
           for run_id in $(active_gate_runs); do

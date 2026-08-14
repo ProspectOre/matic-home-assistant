@@ -6,11 +6,12 @@ on:
   workflow_dispatch:
 
 # GitHub Actions does not expose review-thread reopening as an Actions trigger.
-# This quiet audit only revokes an already-successful gate when such a regular
-# finding is active; it never posts comments or requests another review.
+# Protected branches require conversation resolution, so an active or reopened
+# thread blocks a merge immediately. This quiet audit reconciles the custom
+# regular-review status without posting comments or requesting another review.
 permissions:
+  actions: write
   pull-requests: read
-  statuses: write
 
 jobs:
   discover:
@@ -46,10 +47,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    # Serialize the final recheck and status mutation with the evaluator. This
-    # remains quiet: it never posts a comment or requests a review.
+    # Keep audits off the evaluator's queue. A findings result dispatches a
+    # fresh evaluator, which rechecks the current state under its own lock.
     concurrency:
-      group: review-gate-${{ matrix.pr_number }}
+      group: review-gate-audit-${{ matrix.pr_number }}
       cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -101,7 +102,8 @@ jobs:
                   def exact_head:
                     test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
                   def stock_clean_envelope:
-                    test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>");
+                    test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
+                    or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
                   [.[]
                    | .data.repository.pullRequest.reviewThreads.nodes[]?
                    | select(.isResolved | not)
@@ -141,9 +143,5 @@ jobs:
           if [[ "$findings" -eq 0 ]]; then
             exit 0
           fi
-          gh api "repos/$REPO/statuses/$head_sha" --silent \
-            -f state=pending \
-            -f context="$REVIEW_GATE_CONTEXT" \
-            -f description="Active regular Codex findings require a fresh review" \
-            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
-          echo "Revoked review-gate for PR #$PR_NUMBER with $findings active regular finding(s)."
+          gh workflow run review-gate.yml --repo "$REPO" -f pull_request="$PR_NUMBER"
+          echo "Dispatched review-gate for PR #$PR_NUMBER with $findings active regular finding(s)."

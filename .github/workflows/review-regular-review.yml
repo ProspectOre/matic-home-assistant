@@ -1,0 +1,104 @@
+name: Route Regular Codex Review Events
+
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+
+# Each review has its own lightweight router. A security or unrelated review
+# therefore cannot cancel the evaluator responsible for the regular gate.
+concurrency:
+  group: review-gate-review-event-${{ github.event.review.id }}
+  cancel-in-progress: false
+
+permissions:
+  actions: write
+  statuses: write
+
+jobs:
+  route:
+    name: route-regular-review
+    if: github.event.pull_request.number != null
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Dispatch only regular Codex review events
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REVIEW_AUTHOR: ${{ github.event.review.user.login }}
+          EVENT_REVIEW_BODY: ${{ github.event.review.body }}
+          EVENT_PREVIOUS_REVIEW_BODY: ${{ github.event.changes.body.from }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to classify review events."
+            exit 1
+          }
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The review event did not provide a valid pull request state."
+            exit 1
+          fi
+
+          body_is_regular_review() {
+            local review_body="$1"
+            printf '%s' "$review_body" \
+              | jq -e -R -s '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  select(regular_heading)
+                  | select(security_heading | not)' >/dev/null
+          }
+
+          if [[ "$EVENT_REVIEW_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
+            echo "Ignoring a review from another author."
+            exit 0
+          fi
+          current_is_regular=false
+          previous_is_regular=false
+          if body_is_regular_review "$EVENT_REVIEW_BODY"; then
+            current_is_regular=true
+          fi
+          if body_is_regular_review "$EVENT_PREVIOUS_REVIEW_BODY"; then
+            previous_is_regular=true
+          fi
+          if [[ "$current_is_regular" != "true" && "$previous_is_regular" != "true" ]]; then
+            echo "Ignoring a non-regular pull request review."
+            exit 0
+          fi
+
+          stamp_pending() {
+            local context="$1"
+            local description="$2"
+            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          # Security-only reviews never reach this point. A normal review that
+          # is dismissed or reclassified is itself a normal-gate invalidation,
+          # not a security-review blocker; a newer normal verdict is required.
+          stamp_pending "$REVIEW_GATE_CONTEXT" \
+            "Review state changed; evaluating regular Codex review"
+          if [[ "$EVENT_ACTION" == "dismissed" \
+            || ( "$previous_is_regular" == "true" && "$current_is_regular" != "true" ) ]]; then
+            stamp_pending "$REVIEW_REVIEW_CONTEXT" \
+              "Regular review invalidated; require a newer normal review"
+          fi
+          gh workflow run review-gate.yml --repo "$REPO" -f pull_request="$PR_NUMBER"
+          echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."
