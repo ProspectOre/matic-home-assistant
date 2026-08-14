@@ -4,7 +4,7 @@ run-name: "review-gate #${{ inputs.pull_request || github.event.pull_request.num
 
 on:
   pull_request_target:
-    types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]
+    types: [opened, reopened, synchronize, ready_for_review]
   workflow_dispatch:
     inputs:
       pull_request:

@@ -72,6 +72,11 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
 
     assert "cancel-in-progress: true" in review_gate
     assert "group: review-gate-" in review_gate
+    assert "types: [opened, reopened, synchronize, ready_for_review]" in review_gate
+    assert (
+        "types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]"
+        not in review_gate
+    )
     assert "pull_request_review:" not in review_gate
     assert "issue_comment:" not in review_gate
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
@@ -276,6 +281,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
+    assert "allow_auto_merge" in rollout
+    assert "Repository auto-merge must be disabled" in rollout
     assert "review-fork-regular-review.yml" in rollout
     assert "actions: write" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout
@@ -284,13 +291,19 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel-legacy-auto-merge-runs" in rollout
     assert 'gh run cancel "$run_id" --repo "$REPO" || true' in rollout
     assert "active_gate_runs" in rollout
-    assert '.event == "workflow_dispatch"' in rollout
-    assert '.event == "issue_comment"' in rollout
+    assert '.event == "workflow_dispatch"' not in rollout
+    assert '.event == "issue_comment"' not in rollout
+    assert rollout.index("stamp_pending") < rollout.index("active_gate_runs")
+    assert "Refresh the PR after cancellation" in rollout
     assert "group: review-gate-" in rollout
     assert "review-regular-review.yml" in rollout
     assert "review-regular-comment.yml" in rollout
     assert "gh pr merge" not in rollout
     assert "--auto" not in rollout
+    assert "issues/comments/$EVENT_COMMENT_ID" in regular_comment
+    assert "superseded by a newer edit" in regular_comment
+    assert "pulls/$PR_NUMBER/reviews/$REVIEW_ID" in regular_review
+    assert "superseded by newer review state" in regular_review
 
 
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:

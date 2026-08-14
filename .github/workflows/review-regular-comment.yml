@@ -166,6 +166,10 @@ jobs:
       - name: Revoke the regular gate under its per-PR lock
         env:
           CLEAN: ${{ needs.classify.outputs.clean }}
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
           PR_NUMBER: ${{ github.event.issue.number }}
@@ -176,9 +180,27 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" ]]; then
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" ]]; then
             echo "The regular issue-comment event did not provide a dispatchable pull request state." >&2
             exit 1
+          fi
+          if [[ "$EVENT_ACTION" == "deleted" ]]; then
+            if gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" --silent >/dev/null 2>&1; then
+              echo "Ignoring a stale deleted-comment delivery for comment $EVENT_COMMENT_ID."
+              exit 0
+            fi
+          else
+            if ! current_comment="$(gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" 2>/dev/null)"; then
+              echo "Ignoring a stale comment delivery for missing comment $EVENT_COMMENT_ID."
+              exit 0
+            fi
+            current_comment_state="$(jq -er '[.user.login, ((.body // "") | @base64)] | @tsv' <<< "$current_comment")"
+            IFS=$'\t' read -r current_author current_body_b64 <<< "$current_comment_state"
+            event_body_b64="$(jq -rn --arg body "$EVENT_COMMENT_BODY" '$body | @base64')"
+            if [[ "$current_author" != "$EVENT_COMMENT_AUTHOR" || "$current_body_b64" != "$event_body_b64" ]]; then
+              echo "Ignoring a stale comment delivery superseded by a newer edit."
+              exit 0
+            fi
           fi
           stamp_pending() {
             local context="$1"
