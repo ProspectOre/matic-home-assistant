@@ -226,7 +226,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "group: review-gate-base-change-${{ github.event.pull_request.number }}"
         in base_change
     )
-    assert "Base changed; push a new head before @codex review" in base_change
+    assert "Base changed; request a fresh @codex review" in base_change
     assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
@@ -240,16 +240,15 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "pulls?state=open" in base_advance
     assert "BASE_PUSHED_AT" in base_advance
     assert "commits/$event_head_sha/statuses" not in base_advance
-    assert ".created_at | fromdateiso8601" in base_advance
-    assert ".commit.committer.date | fromdateiso8601" in base_advance
-    assert "gained a new head after the base advance; leaving it reviewable" in (
+    assert "Over-invalidate rather than trusting contributor-controlled commit" in (
         base_advance
     )
-    assert "created_at | fromdateiso8601" in base_advance
+    assert "base_advanced_at" in base_advance
+    assert "request a fresh @codex review" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
-    assert "gained a new head after the base advance" in base_advance
+    assert ".[]\n                | select(.base.ref == $base)" in base_advance
     assert "group: review-gate-base-advance-" in base_advance
     assert "cancel-in-progress: true" in base_advance
     assert "review-gate-base-change" in base_advance
