@@ -129,10 +129,12 @@ jobs:
 
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null \
-              | jq -er '[.head.sha, .base.ref] | @tsv'
+              | jq -er '[.head.sha, .head.ref, .head.repo.full_name] | @tsv'
           )" || exit 0
-          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
-          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$workflow_ref" ]] || exit 0
+          IFS=$'\t' read -r head_sha workflow_ref head_repository <<< "$pr_state"
+          # A dispatch runs the workflow definition from the PR branch. Do
+          # that only for a branch owned by this repository.
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$workflow_ref" && "$head_repository" == "$REPO" ]] || exit 0
           if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
             exit 0
           fi

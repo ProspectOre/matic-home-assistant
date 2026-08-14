@@ -17,7 +17,9 @@ permissions:
 jobs:
   invalidate:
     name: mark-base-change
-    if: github.event.changes.base != null
+    if: >-
+      github.event.changes.base != null
+      && github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke the required gate and persist a base-change marker
@@ -27,7 +29,7 @@ jobs:
           REPO: ${{ github.repository }}
           EVENT_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
+          WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
         run: |

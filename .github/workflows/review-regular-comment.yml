@@ -25,6 +25,7 @@ jobs:
       regular: ${{ steps.classify.outputs.regular }}
       clean: ${{ steps.classify.outputs.clean }}
       head_sha: ${{ steps.classify.outputs.head_sha }}
+      head_repository: ${{ steps.classify.outputs.head_repository }}
       workflow_ref: ${{ steps.classify.outputs.workflow_ref }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -61,11 +62,11 @@ jobs:
           fi
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
-              | jq -er '[.head.sha, .base.ref] | @tsv'
+              | jq -er '[.head.sha, .head.ref, .head.repo.full_name] | @tsv'
           )"
-          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
-          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || -z "$workflow_ref" ]]; then
-            echo "Could not resolve the current pull request head and base ref."
+          IFS=$'\t' read -r head_sha workflow_ref head_repository <<< "$pr_state"
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || -z "$workflow_ref" || -z "$head_repository" ]]; then
+            echo "Could not resolve the current pull request head and source ref."
             exit 1
           fi
           head_prefix="${head_sha:0:10}"
@@ -130,6 +131,7 @@ jobs:
           {
             echo "regular=true"
             echo "head_sha=$head_sha"
+            echo "head_repository=$head_repository"
             echo "workflow_ref=$workflow_ref"
           } >> "$GITHUB_OUTPUT"
           if body_is_clean_comment "$EVENT_COMMENT_BODY"; then
@@ -139,7 +141,9 @@ jobs:
   invalidate:
     name: invalidate-on-regular-comment
     needs: classify
-    if: needs.classify.outputs.regular == 'true'
+    if: >-
+      needs.classify.outputs.regular == 'true'
+      && needs.classify.outputs.head_repository == github.repository
     concurrency:
       group: review-gate-${{ github.event.issue.number }}
       cancel-in-progress: true

@@ -105,7 +105,9 @@ jobs:
   invalidate:
     name: invalidate-regular-review
     needs: route
-    if: needs.route.outputs.regular == 'true'
+    if: >-
+      needs.route.outputs.regular == 'true'
+      && github.event.pull_request.head.repo.full_name == github.repository
     concurrency:
       group: review-gate-${{ github.event.pull_request.number }}
       cancel-in-progress: true
@@ -120,7 +122,10 @@ jobs:
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_INVALIDATED: ${{ needs.route.outputs.review_invalidated }}
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
-          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
+          # The evaluator is introduced by this PR, so dispatch its verified
+          # same-repository head rather than a base branch that may not yet
+          # contain a workflow_dispatch trigger.
+          WORKFLOW_REF: ${{ github.event.pull_request.head.ref }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
