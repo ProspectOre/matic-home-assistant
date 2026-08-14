@@ -238,9 +238,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
     assert "BASE_PUSHED_AT" in base_advance
-    assert "snapshot_before_base_push" in base_advance
-    assert "pull_requests" in base_advance
-    assert "--slurpfile prs" in base_advance
+    assert "commits/$event_head_sha/statuses" in base_advance
+    assert "created_at | fromdateiso8601" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
@@ -256,6 +255,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '--ref "$WORKFLOW_REF"' in base_advance
     assert "contents: read" in base_advance
     assert "Trusted review-gate evaluator is not installed" in base_advance
+    assert "startswith($prefix)" in review_gate
     assert "push:\n    branches: [main]" in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
@@ -287,6 +287,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "pulls?state=open" in rollout
     assert "allow_auto_merge" in rollout
     assert "Repository auto-merge must be disabled" in rollout
+    assert "disarm-open-prs:" in rollout
+    assert "needs: discover" in rollout
+    assert "verify-repository-policy:" in rollout
+    assert "if: always()" in rollout
     assert "review-fork-regular-review.yml" in rollout
     assert "actions: write" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout

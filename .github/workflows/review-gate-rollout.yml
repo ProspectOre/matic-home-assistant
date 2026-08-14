@@ -39,10 +39,6 @@ jobs:
             echo "GitHub CLI (gh) is required."
             exit 1
           }
-          if [[ "$(gh api "repos/$REPO" --jq '.allow_auto_merge')" != "false" ]]; then
-            echo "Repository auto-merge must be disabled before the manual review gate is rolled out." >&2
-            exit 1
-          fi
           matrix="$(
             gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
               | jq -c '{include: [.[][] | {pr_number: .number}]}'
@@ -86,7 +82,7 @@ jobs:
 
   disarm-open-prs:
     name: disarm-open-prs (${{ matrix.pr_number }})
-    needs: [discover, cancel-legacy-auto-merge-runs]
+    needs: discover
     if: needs.discover.outputs.count != '0'
     strategy:
       fail-fast: false
@@ -183,3 +179,29 @@ jobs:
           # This is the final write under the per-PR lock. It cannot be
           # resurrected by a queued evaluator before that evaluator rechecks.
           stamp_pending
+
+  verify-repository-policy:
+    name: verify-repository-auto-merge-disabled
+    needs: [discover, cancel-legacy-auto-merge-runs, disarm-open-prs]
+    if: always()
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Verify cleanup completed and repository auto-merge is disabled
+        env:
+          CANCEL_RESULT: ${{ needs.cancel-legacy-auto-merge-runs.result }}
+          DISARM_RESULT: ${{ needs.disarm-open-prs.result }}
+          DISCOVER_RESULT: ${{ needs.discover.result }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [[ "$DISCOVER_RESULT" != "success" \
+            || "$CANCEL_RESULT" != "success" \
+            || ( "$DISARM_RESULT" != "success" && "$DISARM_RESULT" != "skipped" ) ]]; then
+            echo "Review-gate rollout cleanup did not complete successfully." >&2
+            exit 1
+          fi
+          if [[ "$(gh api "repos/$REPO" --jq '.allow_auto_merge')" != "false" ]]; then
+            echo "Repository auto-merge must be disabled for the manual review gate." >&2
+            exit 1
+          fi

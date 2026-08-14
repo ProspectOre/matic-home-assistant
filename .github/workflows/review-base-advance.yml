@@ -48,40 +48,41 @@ jobs:
             exit 1
           fi
           base_pushed_at="${BASE_PUSHED_AT:-0}"
-          # Workflow histories can exceed the platform argument limit; retain
-          # paginated API JSON in scoped temporary files instead of argv.
+          # Pull-request histories can exceed the platform argument limit;
+          # retain paginated API JSON in a scoped temporary file.
           review_gate_prs_file="$(mktemp)"
-          review_gate_runs_file="$(mktemp)"
-          trap 'rm -f "$review_gate_prs_file" "$review_gate_runs_file"' EXIT
+          trap 'rm -f "$review_gate_prs_file"' EXIT
           gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
-          gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate > "$review_gate_runs_file"
           # Push-triggered invalidation is deliberately conservative: only a
-          # PR/head recorded by a review-gate run created before this base push
-          # can be invalidated. A PR opened later or given a fresh head while
-          # this job waited is left to its newer event-driven evaluation.
-          matrix="$(
-            jq -cn --slurpfile prs "$review_gate_prs_file" --slurpfile runs "$review_gate_runs_file" \
-              --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
-              --argjson pushed_at "$base_pushed_at" '
-                def snapshot_before_base_push($number):
-                  [$runs[] | .workflow_runs[]?
-                   | select(any(.pull_requests[]?; .number == $number))
-                   | select((.created_at | fromdateiso8601) <= $pushed_at)
-                   | {created_at, head_sha}]
-                  | sort_by(.created_at)
-                  | last;
-                {include: [$prs[][]
-                  | select(.base.ref == $base)
-                  | . as $pr
-                  | if $event == "workflow_dispatch" then
-                      {pr_number: $pr.number, event_head_sha: $pr.head.sha}
-                    else
-                      (snapshot_before_base_push($pr.number)) as $snapshot
-                      | select($snapshot != null)
-                      | select($snapshot.head_sha == $pr.head.sha)
-                      | {pr_number: $pr.number, event_head_sha: $snapshot.head_sha}
-                    end]}'
-          )"
+          # current PR head with durable review-gate status evidence created
+          # before this base push can be invalidated. Workflow-run head_sha is
+          # the workflow ref for pull_request_target/workflow_dispatch and is
+          # therefore not evidence of the evaluated PR head.
+          matrix='{"include":[]}'
+          while IFS=$'\t' read -r pr_number event_head_sha; do
+            include_head=false
+            if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+              include_head=true
+            elif gh api "repos/$REPO/commits/$event_head_sha/statuses?per_page=100" --paginate --slurp \
+              | jq -e --arg context "review-gate" --argjson pushed_at "$base_pushed_at" '
+                  any(.[][];
+                    (.context == $context)
+                    and ((.created_at | fromdateiso8601) <= $pushed_at))' >/dev/null; then
+              include_head=true
+            fi
+            if [[ "$include_head" == "true" ]]; then
+              matrix="$(
+                jq -c --argjson pr "$pr_number" --arg head "$event_head_sha" \
+                  '.include += [{pr_number: $pr, event_head_sha: $head}]' <<< "$matrix"
+              )"
+            fi
+          done < <(
+            jq -r --arg base "$BASE_BRANCH" '
+              .[]
+              | select(.base.ref == $base)
+              | [.number, .head.sha]
+              | @tsv' "$review_gate_prs_file"
+          )
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
 

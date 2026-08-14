@@ -175,11 +175,11 @@ jobs:
 
           base_change_marker_exists() {
             gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg description "$base_marker_description" '
+              | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg prefix "Base changed for PR #$pr_number at base " '
                   any(.[][];
                     (.context == $context)
                     and (.state == "pending")
-                    and ((.description // "") == $description))' \
+                    and ((.description // "") | startswith($prefix)))' \
               >/dev/null
           }
 
