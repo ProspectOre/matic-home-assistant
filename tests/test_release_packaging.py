@@ -160,6 +160,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "BASE_PUSHED_AT" in base_advance
     assert "snapshot_before_base_push" in base_advance
     assert "pull_requests" in base_advance
+    assert "--slurpfile prs" in base_advance
+    assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
     assert "gained a new head after the base advance" in base_advance

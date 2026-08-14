@@ -46,14 +46,19 @@ jobs:
             exit 1
           fi
           base_pushed_at="${BASE_PUSHED_AT:-0}"
-          open_prs="$(gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp)"
-          gate_runs="$(gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp)"
+          # Workflow histories can exceed the platform argument limit; retain
+          # paginated API JSON in scoped temporary files instead of argv.
+          review_gate_prs_file="$(mktemp)"
+          review_gate_runs_file="$(mktemp)"
+          trap 'rm -f "$review_gate_prs_file" "$review_gate_runs_file"' EXIT
+          gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
+          gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate > "$review_gate_runs_file"
           # Push-triggered invalidation is deliberately conservative: only a
           # PR/head recorded by a review-gate run created before this base push
           # can be invalidated. A PR opened later or given a fresh head while
           # this job waited is left to its newer event-driven evaluation.
           matrix="$(
-            jq -cn --argjson prs "$open_prs" --argjson runs "$gate_runs" \
+            jq -cn --slurpfile prs "$review_gate_prs_file" --slurpfile runs "$review_gate_runs_file" \
               --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
               --argjson pushed_at "$base_pushed_at" '
                 def snapshot_before_base_push($number):
