@@ -2,7 +2,6 @@ name: Invalidate Review Gates on Base Advance
 
 on:
   push:
-    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -14,6 +13,7 @@ permissions:
 jobs:
   discover:
     name: discover-targeting-prs
+    if: github.event_name != 'push' || github.ref_name == github.event.repository.default_branch
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     outputs:
       matrix: ${{ steps.prs.outputs.matrix }}
@@ -43,8 +43,8 @@ jobs:
           gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
           # GitHub does not expose the time a particular SHA became a PR head.
           # Over-invalidate rather than trusting contributor-controlled commit
-          # timestamps. The gate permits a clean review posted after this base
-          # push on the same head, so a delayed workflow never requires a push.
+          # timestamps. A durable marker requires the contributor to push a
+          # new head before a regular review can qualify after this base push.
           matrix='{"include":[]}'
           while IFS=$'\t' read -r pr_number event_head_sha; do
             matrix="$(
@@ -73,7 +73,7 @@ jobs:
     # follow-up evaluation observes the durable marker under the gate lock.
     concurrency:
       group: review-gate-base-advance-${{ matrix.pr_number }}
-      cancel-in-progress: true
+      cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Persist a base-change marker and revoke the required gate
@@ -81,6 +81,7 @@ jobs:
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
           BASE_PUSHED_AT: ${{ github.event_name == 'push' && github.event.repository.pushed_at || '' }}
           EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
+          EVENT_BASE_SHA: ${{ github.sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
@@ -94,8 +95,8 @@ jobs:
             echo "GitHub CLI (gh) is required."
             exit 1
           }
-          if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Could not resolve the PR head at the base-advance event." >&2
+          if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_BASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the base-advance event state." >&2
             exit 1
           fi
           pr_state="$(
@@ -105,6 +106,10 @@ jobs:
           IFS=$'\t' read -r pr_node_id current_base base_sha head_sha auto_merge_enabled <<< "$pr_state"
           if [[ "$current_base" != "$BASE_BRANCH" ]]; then
             echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
+            exit 0
+          fi
+          if [[ "$base_sha" != "$EVENT_BASE_SHA" ]]; then
+            echo "A newer base push superseded this invalidation; skipping the older event."
             exit 0
           fi
           # Discovery can race a synchronize. Mark the current head instead of
@@ -128,8 +133,8 @@ jobs:
           else
             base_advanced_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           fi
-          gate_description="Base changed; request a fresh @codex review"
-          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha at $base_advanced_at; request a fresh @codex review"
+          gate_description="Base changed; push a new head before @codex review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $base_sha at $base_advanced_at; push a new head before @codex review"
 
           active_gate_runs() {
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \

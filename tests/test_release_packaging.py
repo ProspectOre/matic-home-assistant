@@ -100,6 +100,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "latest_regular_issue_comment_at" in review_gate
     assert "latest_regular_review_invalidation_at" in review_gate
     assert "latest_finding_at" in review_gate
+    assert "base_change_marker_exists" in review_gate
+    assert "Regular review invalidated at $latest_finding_at" in review_gate
     assert "shared_open_head_count" in review_gate
     assert "shared_open_head_owner" in review_gate
     assert "$pr.state" in review_gate
@@ -226,7 +228,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "group: review-gate-base-change-${{ github.event.pull_request.number }}"
         in base_change
     )
-    assert "Base changed; request a fresh @codex review" in base_change
+    assert "Base changed; push a new head before @codex review" in base_change
     assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
@@ -244,13 +246,14 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         base_advance
     )
     assert "base_advanced_at" in base_advance
-    assert "request a fresh @codex review" in base_advance
+    assert "push a new head before @codex review" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
+    assert "EVENT_BASE_SHA" in base_advance
     assert ".[]\n                | select(.base.ref == $base)" in base_advance
     assert "group: review-gate-base-advance-" in base_advance
-    assert "cancel-in-progress: true" in base_advance
+    assert "cancel-in-progress: false" in base_advance
     assert "review-gate-base-change" in base_advance
     assert "disablePullRequestAutoMerge" in base_advance
     assert "((.auto_merge != null) | tostring)" in base_advance
@@ -261,7 +264,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "contents: read" in base_advance
     assert "Trusted review-gate evaluator is not installed" in base_advance
     assert "startswith($prefix)" in review_gate
-    assert "push:\n    branches: [main]" in base_advance
+    assert "push:\n  workflow_dispatch:" in base_advance
+    assert "github.event.repository.default_branch" in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
