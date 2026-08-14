@@ -1,0 +1,40 @@
+name: Invalidate Review Gate on Base Change
+
+on:
+  pull_request_target:
+    types: [edited]
+
+# Do not add workflow concurrency here. Every base-retarget event must persist
+# its marker, even if ordinary review evaluation is busy or replaced.
+permissions:
+  statuses: write
+
+jobs:
+  invalidate:
+    name: mark-base-change
+    if: github.event.changes.base != null
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Persist base-change marker on the retargeted head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_BASE_CONTEXT: review-gate-base-change
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The base-change event did not provide a valid head SHA."
+            exit 1
+          fi
+          gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
+            -f state=pending \
+            -f context="$REVIEW_BASE_CONTEXT" \
+            -f description="Base changed; push a new head before @codex review" \
+            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."

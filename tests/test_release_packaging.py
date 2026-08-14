@@ -49,6 +49,30 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     )
 
 
+def test_review_gate_uses_only_regular_review_evidence() -> None:
+    """Keep manual shipping independent from security-review availability."""
+    review_gate = (ROOT / ".github" / "workflows" / "review-gate.yml").read_text()
+    base_change = (
+        ROOT / ".github" / "workflows" / "review-base-change.yml"
+    ).read_text()
+
+    assert "cancel-in-progress: true" in review_gate
+    assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
+    assert (
+        "Security-review results and availability notices are never selected"
+        in review_gate
+    )
+    assert "updatedAt" in review_gate
+    assert "final_gate_snapshot" in review_gate
+    assert "gh pr merge" not in review_gate
+    assert "--auto" not in review_gate
+    assert "github.event.changes.base != null" in base_change
+    assert "review-gate-base-change" in base_change
+    assert "Base changed; push a new head before @codex review" in base_change
+    assert "gh pr merge" not in base_change
+    assert "--auto" not in base_change
+
+
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:
     """Pin external actions while documenting the corresponding upstream ref."""
     for path in (ROOT / ".github" / "workflows").glob("*.yml"):
