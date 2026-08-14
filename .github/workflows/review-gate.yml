@@ -1,0 +1,162 @@
+name: Codex Review Gate
+
+on:
+  pull_request_target:
+    types: [opened, reopened, synchronize, ready_for_review]
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  issue_comment:
+    types: [created, edited, deleted]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+  workflow_dispatch:
+    inputs:
+      pull_request:
+        description: Pull request number
+        required: true
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+  statuses: write
+
+jobs:
+  evaluate:
+    name: evaluate-review
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
+      || github.event.pull_request.number != null
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Evaluate exact-head Codex review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_PR: ${{ inputs.pull_request }}
+          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
+          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+        run: |
+          set -euo pipefail
+
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            if [[ ! "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
+              echo "Pull request input must be a positive integer."
+              exit 1
+            fi
+            pr_number="$INPUT_PR"
+          elif [[ -n "${EVENT_ISSUE_NUMBER:-}" ]]; then
+            pr_number="$EVENT_ISSUE_NUMBER"
+          else
+            pr_number="$EVENT_PR_NUMBER"
+          fi
+
+          if [[ ! "$pr_number" =~ ^[1-9][0-9]*$ ]]; then
+            echo "Could not resolve a pull request number."
+            exit 1
+          fi
+
+          pr_ref="https://github.com/$REPO/pull/$pr_number"
+          head_sha="$(gh pr view "$pr_ref" --json headRefOid --jq '.headRefOid')"
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve a valid pull request head SHA."
+            exit 1
+          fi
+
+          stamp_review_gate() {
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state="$1" \
+              -f context="$REVIEW_GATE_CONTEXT" \
+              -f description="$2" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          if [[ "$(gh pr view "$pr_ref" --json isDraft --jq '.isDraft')" == "true" ]]; then
+            stamp_review_gate pending "Waiting for pull request to leave draft"
+            exit 0
+          fi
+
+          latest_verdict="$(
+            {
+              HEAD_PREFIX="${head_sha:0:10}" gh api \
+                "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                --jq '.[]
+                      | select(.user.login == env.REVIEW_BOT)
+                      | select(.state != "DISMISSED")
+                      | select((.body // "") | contains("Reviewed commit:"))
+                      | select((.body // "") | contains(env.HEAD_PREFIX))
+                      | [.submitted_at,
+                         (if ((.body // "") | ascii_downcase
+                              | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))
+                          then "clean" else "findings" end)]
+                      | @tsv'
+              HEAD_PREFIX="${head_sha:0:10}" gh api \
+                "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                --jq '.[]
+                      | select(.user.login == env.REVIEW_BOT)
+                      | select((.body // "") | contains("Reviewed commit:"))
+                      | select((.body // "") | contains(env.HEAD_PREFIX))
+                      | [.created_at,
+                         (if ((.body // "") | ascii_downcase
+                              | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))
+                          then "clean" else "findings" end)]
+                      | @tsv'
+            } | sort -k1,1 | tail -n 1
+          )"
+
+          if [[ -z "$latest_verdict" ]]; then
+            stamp_review_gate pending "Waiting for @codex review on ${head_sha:0:10}"
+            echo "No Codex verdict covers the exact pull request head."
+            exit 0
+          fi
+          IFS=$'\t' read -r verdict_at verdict_kind <<< "$latest_verdict"
+
+          finding_count="$(
+            HEAD_SHA="$head_sha" gh api \
+              "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+              --jq '[.[]
+                    | select(.user.login == env.REVIEW_BOT)
+                    | select(.in_reply_to_id == null)
+                    | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)]
+                    | length' \
+              | awk '{ total += $1 } END { print total + 0 }'
+          )"
+          latest_finding_at="$(
+            HEAD_SHA="$head_sha" gh api \
+              "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+              --jq '.[]
+                    | select(.user.login == env.REVIEW_BOT)
+                    | select(.in_reply_to_id == null)
+                    | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)
+                    | .created_at' \
+              | sort | tail -n 1
+          )"
+
+          if [[ "$verdict_kind" != "clean" \
+            || ( -n "$latest_finding_at" \
+              && ( "$latest_finding_at" == "$verdict_at" \
+                || "$latest_finding_at" > "$verdict_at" ) ) ]]; then
+            stamp_review_gate pending "Codex reported findings on ${head_sha:0:10}"
+            echo "Codex reported $finding_count finding(s) on the exact head."
+            echo "Fix them, push a new head, and tag @codex review again."
+            exit 0
+          fi
+
+          stamp_review_gate success "Clean Codex review for ${head_sha:0:10}"
+          echo "The exact pull request head has a clean Codex review."
+          echo "This workflow never enables or performs a merge."

@@ -871,6 +871,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     # FetchCollection is a tracked bidirectional subscription.  The
                     # server sends one update, then waits for its sequence id to be
                     # acknowledged before advancing to the next cached or live item.
+                    cancel_stream = True
                     try:
                         await stream.send_message(request, end=False)
                         while (response := await stream.recv_message()) is not None:
@@ -887,13 +888,21 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                                 )
                             if entry is not None:
                                 yield entry
+                    except asyncio.CancelledError:
+                        # grpclib's context manager handles exceptional exits with
+                        # an immediate local reset. Do not await its network reset
+                        # while HA is already cancelling this subscription: a
+                        # stalled transport would hold config-entry unload open.
+                        cancel_stream = False
+                        raise
                     finally:
                         # Long-lived bidirectional streams otherwise attempt a
                         # graceful close during config-entry teardown. A robot that
                         # is still holding the subscription open can leave Home
                         # Assistant waiting for that handshake until its task-leak
                         # timeout. Explicit cancellation is local, bounded cleanup.
-                        await _async_cancel_stream(stream)
+                        if cancel_stream:
+                            await _async_cancel_stream(stream)
         except CannotConnectError:
             _LOGGER.debug(
                 "Replacing failed Hermes %s subscription channel", collection_name
