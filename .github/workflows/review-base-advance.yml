@@ -48,20 +48,37 @@ jobs:
           review_gate_prs_file="$(mktemp)"
           trap 'rm -f "$review_gate_prs_file"' EXIT
           gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate > "$review_gate_prs_file"
-          # Conservatively invalidate every current head for a PR that already
-          # existed when the default base advanced. A head pushed while this
-          # job waited is safe to include because it already requires a fresh
-          # exact-head review; PRs opened after the base push are left alone.
-          matrix="$(
-            jq -sc --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
+          # Invalidate PR heads that existed when the default base advanced.
+          # A current head with a commit timestamp after that push is a newer
+          # synchronize and already requires its own exact-head review, so do
+          # not place an obsolete base-change marker on it.
+          matrix='{"include":[]}'
+          while IFS=$'\t' read -r pr_number event_head_sha; do
+            head_committed_at="$(
+              gh api "repos/$REPO/commits/$event_head_sha" \
+                | jq -er '.commit.committer.date | fromdateiso8601'
+            )" || {
+              echo "Could not determine when PR #$pr_number head was committed; skipping it."
+              continue
+            }
+            if [[ "$EVENT_NAME" == "push" && "$head_committed_at" -gt "$base_pushed_at" ]]; then
+              echo "PR #$pr_number gained a new head after the base advance; leaving it reviewable."
+              continue
+            fi
+            matrix="$(
+              jq -c --argjson pr "$pr_number" --arg head "$event_head_sha" \
+                '.include += [{pr_number: $pr, event_head_sha: $head}]' <<< "$matrix"
+            )"
+          done < <(
+            jq -r --arg base "$BASE_BRANCH" --arg event "$EVENT_NAME" \
               --argjson pushed_at "$base_pushed_at" '
-                {include: [.[][]
-                  | select(.base.ref == $base)
-                  | select($event == "workflow_dispatch"
-                      or ((.created_at | fromdateiso8601) <= $pushed_at))
-                  | {pr_number: .number, event_head_sha: .head.sha}]}'
-              "$review_gate_prs_file"
-          )"
+                .[][]
+                | select(.base.ref == $base)
+                | select($event == "workflow_dispatch"
+                    or ((.created_at | fromdateiso8601) <= $pushed_at))
+                | [.number, .head.sha]
+                | @tsv' "$review_gate_prs_file"
+          )
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
 

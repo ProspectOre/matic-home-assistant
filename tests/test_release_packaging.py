@@ -241,6 +241,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "BASE_PUSHED_AT" in base_advance
     assert "commits/$event_head_sha/statuses" not in base_advance
     assert ".created_at | fromdateiso8601" in base_advance
+    assert ".commit.committer.date | fromdateiso8601" in base_advance
+    assert "gained a new head after the base advance; leaving it reviewable" in (
+        base_advance
+    )
     assert "created_at | fromdateiso8601" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
