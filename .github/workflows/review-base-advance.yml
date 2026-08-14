@@ -1,0 +1,103 @@
+name: Invalidate Review Gates on Base Advance
+
+on:
+  push:
+  workflow_dispatch:
+    inputs:
+      base_branch:
+        description: Base branch whose open pull requests should be invalidated
+        required: false
+        type: string
+
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  discover:
+    name: discover-targeting-prs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
+    steps:
+      - id: prs
+        name: Find pull requests targeting the advanced branch
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          if [[ -z "$BASE_BRANCH" ]]; then
+            echo "Could not resolve the advanced base branch." >&2
+            exit 1
+          fi
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c --arg base "$BASE_BRANCH" \
+                  '{include: [.[][] | select(.base.ref == $base) | {pr_number: .number}]}'
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  invalidate:
+    name: invalidate (${{ matrix.pr_number }})
+    needs: discover
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # A base update must stop any in-flight evaluator before it can stamp a
+    # stale success. Normal review events use the same group and queue here.
+    concurrency:
+      group: review-gate-${{ matrix.pr_number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Persist a base-change marker and revoke the required gate
+        env:
+          BASE_BRANCH: ${{ inputs.base_branch || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BASE_CONTEXT: review-gate-base-change
+          REVIEW_GATE_CONTEXT: review-gate
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '[.base.ref, .head.sha] | @tsv'
+          )"
+          IFS=$'\t' read -r current_base head_sha <<< "$pr_state"
+          if [[ "$current_base" != "$BASE_BRANCH" ]]; then
+            echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
+            exit 0
+          fi
+          if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve a valid PR head SHA for #$PR_NUMBER." >&2
+            exit 1
+          fi
+
+          stamp_pending() {
+            local context="$1"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="Base changed; push a new head before @codex review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+          stamp_pending "$REVIEW_GATE_CONTEXT"
+          stamp_pending "$REVIEW_BASE_CONTEXT"
+          stamp_pending "$REVIEW_GATE_CONTEXT"
+          echo "Base branch advancement invalidated regular review for PR #$PR_NUMBER."

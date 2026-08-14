@@ -1,0 +1,106 @@
+name: Audit Active Regular Review Findings
+
+on:
+  schedule:
+    - cron: '17,47 * * * *'
+  workflow_dispatch:
+
+# GitHub Actions does not expose review-thread reopening as an Actions trigger.
+# This quiet audit only revokes an already-successful gate when such a regular
+# finding is active; it never posts comments or requests another review.
+permissions:
+  pull-requests: read
+  statuses: write
+
+jobs:
+  audit:
+    name: audit-open-prs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke successful gates with active regular-review findings
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_LOGIN: chatgpt-codex-connector
+          REVIEW_GATE_CONTEXT: review-gate
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to audit review threads." >&2
+            exit 1
+          }
+
+          current_gate_state() {
+            local head_sha="$1"
+            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+              | jq -r --arg context "$REVIEW_GATE_CONTEXT" \
+                  '([.[][] | select(.context == $context)] | max_by(.updated_at)? | .state) // "missing"'
+          }
+
+          active_regular_finding_count() {
+            local pr_number="$1"
+            local head_sha="$2"
+            local head_prefix="${head_sha:0:10}"
+            review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
+            review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
+            # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
+            gh api graphql --paginate \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { replyTo { databaseId } author { login } pullRequestReview { body author { login } commit { oid } } } } pageInfo { hasNextPage endCursor } } } } } }' \
+              -F owner="$review_owner" \
+              -F name="$review_repo" \
+              -F number="$pr_number" \
+              | jq -rs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def exact_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  def stock_clean_envelope:
+                    test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>");
+                  [.[]
+                   | .data.repository.pullRequest.reviewThreads.nodes[]?
+                   | select(.isResolved | not)
+                   | select(.isOutdated | not)
+                   | .comments.nodes[]?
+                   | select(.replyTo == null)
+                   | select((.author.login // "") == $bot)
+                   | select(.pullRequestReview != null)
+                   | select((.pullRequestReview.author.login // "") == $bot)
+                   | select((.pullRequestReview.commit.oid // "") == $head)
+                   | (.pullRequestReview.body // "") as $body
+                   | select($body | regular_heading)
+                   | select(($body | security_heading) | not)
+                   | select($body | exact_head)
+                   | select($body | stock_clean_envelope)]
+                  | length'
+          }
+
+          open_prs="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -r '.[][] | [.number, .head.sha] | @tsv'
+          )"
+          while IFS=$'\t' read -r pr_number head_sha; do
+            [[ -n "$pr_number" ]] || continue
+            [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || continue
+            if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
+              continue
+            fi
+            findings="$(active_regular_finding_count "$pr_number" "$head_sha")"
+            if [[ "$findings" -eq 0 ]]; then
+              continue
+            fi
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending \
+              -f context="$REVIEW_GATE_CONTEXT" \
+              -f description="Active regular Codex findings require a fresh review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+            echo "Revoked review-gate for PR #$pr_number with $findings active regular finding(s)."
+          done <<< "$open_prs"

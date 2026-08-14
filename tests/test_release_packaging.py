@@ -56,14 +56,19 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         ROOT / ".github" / "workflows" / "review-base-change.yml"
     ).read_text()
     rollout = (ROOT / ".github" / "workflows" / "review-gate-rollout.yml").read_text()
+    base_advance = (
+        ROOT / ".github" / "workflows" / "review-base-advance.yml"
+    ).read_text()
+    audit = (ROOT / ".github" / "workflows" / "review-gate-audit.yml").read_text()
 
-    assert "cancel-in-progress: true" in review_gate
+    assert "cancel-in-progress: false" in review_gate
+    assert "group: review-gate-" in review_gate
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
-    assert (
-        "Security-review results and availability notices are never selected"
-        in review_gate
-    )
+    assert "never issue comments; security" in review_gate
+    assert "issue_comment:" not in review_gate
     assert "updatedAt" in review_gate
+    assert "stock_clean_envelope" in review_gate
+    assert "shared_open_head_count" in review_gate
     assert "final_gate_snapshot" in review_gate
     assert "Disarming automatic merge on" in review_gate
     assert "gh pr merge" not in review_gate
@@ -74,14 +79,27 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Base changed; push a new head before @codex review" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
+    assert "group: review-gate-" in base_change
+    assert "cancel-in-progress: true" in base_change
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
+    assert "pulls?state=open" in base_advance
+    assert "group: review-gate-" in base_advance
+    assert "cancel-in-progress: true" in base_advance
+    assert "review-gate-base-change" in base_advance
+    assert "schedule:" in audit
+    assert "reviewThreads" in audit
+    assert "Active regular Codex findings require a fresh review" in audit
+    assert "def security_heading:" in audit
+    assert "security_heading) | not" in audit
+    assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
+    assert "actions: write" in rollout
     assert "Disarming automatic merge; waiting for @codex review" in rollout
     assert "disablePullRequestAutoMerge" in rollout
-    assert rollout.index("Disarming automatic merge; waiting") < rollout.index(
-        '"$auto_merge_enabled" != "true"'
-    )
+    assert "cancel-legacy-auto-merge-runs" in rollout
+    assert "active_gate_runs" in rollout
+    assert "group: review-gate-" in rollout
     assert "gh pr merge" not in rollout
     assert "--auto" not in rollout
 

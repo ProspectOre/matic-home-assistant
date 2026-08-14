@@ -6,21 +6,95 @@ on:
     paths:
       - .github/workflows/review-gate.yml
       - .github/workflows/review-base-change.yml
+      - .github/workflows/review-base-advance.yml
+      - .github/workflows/review-gate-audit.yml
       - .github/workflows/review-gate-rollout.yml
   workflow_dispatch:
 
 permissions:
+  actions: write
   pull-requests: write
   statuses: write
 
 jobs:
-  disarm-open-prs:
-    name: disarm-open-prs
+  discover:
+    name: discover-open-prs
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    outputs:
+      matrix: ${{ steps.prs.outputs.matrix }}
+      count: ${{ steps.prs.outputs.count }}
     steps:
-      - name: Revoke review gates and disable existing automatic merges
+      - id: prs
+        name: Enumerate open pull requests
         env:
           GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c '{include: [.[][] | {pr_number: .number}]}'
+          )"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
+
+  cancel-legacy-auto-merge-runs:
+    name: cancel-legacy-auto-merge-runs
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Cancel queued or running retired auto-merge workflows
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required."
+            exit 1
+          }
+          active_legacy_runs() {
+            gh api "repos/$REPO/actions/runs?per_page=100" --paginate --slurp \
+              | jq -r '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(.path == ".github/workflows/auto-merge.yml" or .path == ".github/workflows/auto-merge.yaml")
+                  | .id'
+          }
+          for run_id in $(active_legacy_runs); do
+            gh run cancel "$run_id" --repo "$REPO"
+          done
+          for _attempt in $(seq 1 15); do
+            if [[ -z "$(active_legacy_runs)" ]]; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "Retired auto-merge workflow runs did not stop in time." >&2
+          exit 1
+
+  disarm-open-prs:
+    name: disarm-open-prs (${{ matrix.pr_number }})
+    needs: [discover, cancel-legacy-auto-merge-runs]
+    if: needs.discover.outputs.count != '0'
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
+    # This preempts a previous-policy evaluator for this PR. A new evaluator
+    # queues behind the sweep and observes its final pending status.
+    concurrency:
+      group: review-gate-${{ matrix.pr_number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the gate and disable automatic merge
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_GATE_CONTEXT: review-gate
         run: |
@@ -35,43 +109,54 @@ jobs:
             exit 1
           }
 
-          review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
-          review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
-          open_prs="$(
-            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
-              | jq -r '.[][] | .number'
-          )"
-          for pr_number in $open_prs; do
-            pr_state="$(
-              # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
-              gh api graphql \
-                -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id headRefOid autoMergeRequest { enabledAt } } } }' \
-                -F owner="$review_owner" \
-                -F name="$review_repo" \
-                -F number="$pr_number" \
-                | jq -er '.data.repository.pullRequest as $pr
-                    | select($pr != null)
-                    | [$pr.id, $pr.headRefOid, (($pr.autoMergeRequest != null) | tostring)]
-                    | @tsv'
-            )"
-            IFS=$'\t' read -r pr_node_id head_sha auto_merge_enabled <<< "$pr_state"
-            if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
-              echo "Could not resolve automatic-merge state for PR #$pr_number."
-              exit 1
+          active_gate_runs() {
+            gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \
+              | jq -r --argjson pr "$PR_NUMBER" '.[] | .workflow_runs[]?
+                  | select(.status != "completed")
+                  | select(any(.pull_requests[]?; .number == $pr))
+                  | .id'
+          }
+          for run_id in $(active_gate_runs); do
+            gh run cancel "$run_id" --repo "$REPO"
+          done
+          for _attempt in $(seq 1 15); do
+            if [[ -z "$(active_gate_runs)" ]]; then
+              break
             fi
-            # Every open head may retain a success from a less strict version of
-            # the gate. Reset it before considering whether it was auto-armed.
+            sleep 2
+          done
+          if [[ -n "$(active_gate_runs)" ]]; then
+            echo "Review-gate runs for PR #$PR_NUMBER did not stop in time." >&2
+            exit 1
+          fi
+
+          pr_state="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
+              | jq -er '[.node_id, .head.sha, ((.auto_merge // false) | tostring)] | @tsv'
+          )"
+          IFS=$'\t' read -r pr_node_id head_sha auto_merge_enabled <<< "$pr_state"
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+            echo "Could not resolve automatic-merge state for PR #$PR_NUMBER." >&2
+            exit 1
+          fi
+
+          stamp_pending() {
             gh api "repos/$REPO/statuses/$head_sha" --silent \
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
               -f description="Disarming automatic merge; waiting for @codex review" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
-            if [[ "$auto_merge_enabled" != "true" ]]; then
-              continue
-            fi
+          }
+          # Reset every open head, including PRs that were already manually
+          # disarmed but may carry an older-policy success status.
+          stamp_pending
+          if [[ "$auto_merge_enabled" == "true" ]]; then
             # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
             gh api graphql \
               -f query='mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }' \
               -F pullRequestId="$pr_node_id" >/dev/null
-            echo "Disabled automatic merge for PR #$pr_number."
-          done
+            echo "Disabled automatic merge for PR #$PR_NUMBER."
+          fi
+          # This is the final write under the per-PR lock. It cannot be
+          # resurrected by a queued evaluator before that evaluator rechecks.
+          stamp_pending

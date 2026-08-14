@@ -4,8 +4,12 @@ on:
   pull_request_target:
     types: [edited]
 
-# Do not add workflow concurrency here. Every base-retarget event must persist
-# its marker, even if ordinary review evaluation is busy or replaced.
+# A retarget preempts an evaluator for the same PR. Normal review events queue
+# behind it, so the durable base marker is written before any later success.
+concurrency:
+  group: review-gate-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
 permissions:
   statuses: write
 

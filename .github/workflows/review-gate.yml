@@ -5,8 +5,6 @@ on:
     types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]
   pull_request_review:
     types: [submitted, edited, dismissed]
-  issue_comment:
-    types: [created, edited, deleted]
   pull_request_review_comment:
     types: [created, edited, deleted]
   workflow_dispatch:
@@ -16,16 +14,15 @@ on:
         required: true
         type: string
 
-# A newly delivered regular-review result or finding must replace a stale
-# evaluator before it can stamp success. Base-change invalidation has its own
-# workflow and intentionally does not share this concurrency group.
+# Base invalidation uses this same per-PR lock with cancellation enabled. Review
+# events queue instead of cancelling that invalidation, so a retarget cannot be
+# dropped between its final marker check and a status write.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.event.issue.number || inputs.pull_request || github.ref }}
-  cancel-in-progress: true
+  group: review-gate-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: read
-  issues: read
   pull-requests: write
   statuses: write
 
@@ -34,7 +31,6 @@ jobs:
     name: evaluate-review
     if: >-
       github.event_name == 'workflow_dispatch'
-      || (github.event_name == 'issue_comment' && github.event.issue.pull_request != null)
       || github.event.pull_request.number != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -43,7 +39,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           EVENT_NAME: ${{ github.event_name }}
           REPO: ${{ github.repository }}
           REVIEW_BOT: chatgpt-codex-connector[bot]
@@ -68,8 +64,6 @@ jobs:
               exit 1
             fi
             pr_number="$INPUT_PR"
-          elif [[ -n "${EVENT_ISSUE_NUMBER:-}" ]]; then
-            pr_number="$EVENT_ISSUE_NUMBER"
           else
             pr_number="$EVENT_PR_NUMBER"
           fi
@@ -81,6 +75,31 @@ jobs:
 
           review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
           review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
+          event_head_sha="${EVENT_HEAD_SHA:-}"
+          if [[ -n "$event_head_sha" && ! "$event_head_sha" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "The review event did not provide a valid pull request head SHA."
+            exit 1
+          fi
+
+          stamp_status_for_sha() {
+            local target_sha="$1"
+            local context="$2"
+            local state="$3"
+            local description="$4"
+            gh api "repos/$REPO/statuses/$target_sha" --silent \
+              -f state="$state" \
+              -f context="$context" \
+              -f description="$description" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          # PR-review event payloads carry the exact head. Revoke its prior
+          # success before the first fallible API lookup; issue comments are not
+          # evidence and do not trigger this workflow.
+          if [[ -n "$event_head_sha" ]]; then
+            stamp_status_for_sha "$event_head_sha" "$REVIEW_GATE_CONTEXT" pending \
+              "Review state changed; evaluating regular Codex review"
+          fi
 
           read_pr_snapshot() {
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
@@ -110,17 +129,17 @@ jobs:
             echo "Could not resolve the pull request state for PR #$pr_number."
             exit 1
           fi
+          if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
+            echo "The event head changed before evaluation; the newer PR event will re-evaluate it."
+            exit 0
+          fi
           head_prefix="$(printf '%.10s' "$head_sha")"
 
           stamp_status() {
             local context="$1"
             local state="$2"
             local description="$3"
-            gh api "repos/$REPO/statuses/$head_sha" --silent \
-              -f state="$state" \
-              -f context="$context" \
-              -f description="$description" \
-              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+            stamp_status_for_sha "$head_sha" "$context" "$state" "$description"
           }
 
           stamp_review_gate() {
@@ -168,38 +187,14 @@ jobs:
           }
 
           # This function deliberately returns regular-review evidence only.
-          # Security-review results and availability notices are never selected,
-          # counted, or used in any review-gate decision.
+          # It reads only submitted PR reviews, never issue comments; security
+          # review results and availability notices cannot qualify or block it.
           regular_evidence() {
-            local issue_records review_records
-            issue_records="$(
-              gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-                | jq -c --arg bot "$REVIEW_BOT" --arg head "$head_sha" --arg prefix "$head_prefix" '
-                    def regular_heading:
-                      ascii_downcase
-                      | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
-                    def security_heading:
-                      ascii_downcase
-                      | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
-                    def exact_head:
-                      test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
-                    def clean_result:
-                      ascii_downcase
-                      | test("didn.t find( any)?( major)? issues|did not find( any)?( major)? issues|no (major |blocking )?(issues|findings)( found)?|found no (major |blocking )?(issues|findings)");
-                    [.[][]
-                     | select((.user.login // "") == $bot)
-                     | (.body // "") as $body
-                     | select($body | regular_heading)
-                     | select(($body | security_heading) | not)
-                     | select($body | exact_head)
-                     | {at: (.updated_at // .created_at),
-                        kind: (if ($body | clean_result) then "clean" else "findings" end),
-                        source: "issue", id: (.id | tostring)}]'
-            )"
+            local review_records
             review_records="$(
               # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
               gh api graphql --paginate \
-                -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login } } pageInfo { hasNextPage endCursor } } } } }' \
+                -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
                 -F owner="$review_owner" \
                 -F name="$review_repo" \
                 -F number="$pr_number" \
@@ -212,23 +207,26 @@ jobs:
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
                     def exact_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
-                    def clean_result:
-                      ascii_downcase
-                      | test("didn.t find( any)?( major)? issues|did not find( any)?( major)? issues|no (major |blocking )?(issues|findings)( found)?|found no (major |blocking )?(issues|findings)");
+                    # The connector stock review envelope has no body-only
+                    # findings. Textual "no major/blocking issues" claims are
+                    # intentionally not accepted as a clean verdict.
+                    def stock_clean_envelope:
+                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>");
                     [.[]
                      | .data.repository.pullRequest.reviews.nodes[]?
                      | select((.author.login // "") == $bot)
                      | select((.state // "") != "DISMISSED")
+                     | select((.commit.oid // "") == $head)
                      | (.body // "") as $body
                      | select($body | regular_heading)
                      | select(($body | security_heading) | not)
                      | select($body | exact_head)
+                     | select($body | stock_clean_envelope)
                      | {at: (.updatedAt // .submittedAt),
-                        kind: (if ($body | clean_result) then "clean" else "findings" end),
-                        source: "review", id: (.databaseId | tostring)}]'
+                        id: (.databaseId | tostring)}]'
             )"
-            jq -cn --argjson issues "$issue_records" --argjson reviews "$review_records" '
-              {verdict: (([$issues[], $reviews[]] | sort_by(.at) | last) // null),
+            jq -cn --argjson reviews "$review_records" '
+              {verdict: (($reviews | sort_by(.at) | last) // null),
                review_ids: [$reviews[].id]}'
           }
 
@@ -254,39 +252,36 @@ jobs:
                   | length'
           }
 
-          latest_finding_gate_at() {
-            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -r --arg context "$REVIEW_GATE_CONTEXT" '
-                  [.[][]
-                   | select(.context == $context)
-                   | select(.state == "pending")
-                   | select((.description // "") | startswith("Codex reported findings on "))
-                   | .updated_at]
-                  | max // empty'
+          shared_open_head_count() {
+            # Commit statuses are keyed by SHA, not PR number. A shared open
+            # head is therefore fail-closed rather than borrowing another PR's
+            # clean status or review evidence.
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+              | jq -rs --arg head "$head_sha" '
+                  [.[][] | select((.head.sha // "") == $head) | .number]
+                  | unique
+                  | length'
           }
 
           read_gate_snapshot() {
-            local evidence verdict review_ids finding_count finding_gate_at base_changed_at
+            local evidence verdict review_ids finding_count base_changed_at
             evidence="$(regular_evidence)"
             verdict="$(jq -c '.verdict' <<< "$evidence")"
             review_ids="$(jq -c '.review_ids' <<< "$evidence")"
             finding_count="$(active_regular_finding_count "$review_ids")"
-            finding_gate_at="$(latest_finding_gate_at)"
             base_changed_at="$(latest_base_change_at)"
             jq -cn \
               --argjson verdict "$verdict" \
               --argjson finding_count "$finding_count" \
-              --arg finding_gate_at "$finding_gate_at" \
               --arg base_changed_at "$base_changed_at" \
               '{verdict: $verdict,
                 finding_count: $finding_count,
-                finding_gate_at: $finding_gate_at,
                 base_changed_at: $base_changed_at}'
           }
 
           require_clean_regular_snapshot() {
             local gate_snapshot="$1"
-            local verdict verdict_at verdict_kind finding_count finding_gate_at base_changed_at
+            local verdict verdict_at finding_count base_changed_at
             verdict="$(jq -c '.verdict' <<< "$gate_snapshot")"
             if [[ "$verdict" == "null" ]]; then
               stamp_review_gate pending "Waiting for @codex review on $head_prefix"
@@ -294,19 +289,12 @@ jobs:
               exit 0
             fi
             verdict_at="$(jq -r '.at // empty' <<< "$verdict")"
-            verdict_kind="$(jq -r '.kind // empty' <<< "$verdict")"
             finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
-            finding_gate_at="$(jq -r '.finding_gate_at' <<< "$gate_snapshot")"
             base_changed_at="$(jq -r '.base_changed_at' <<< "$gate_snapshot")"
-            if [[ -z "$verdict_at" || "$verdict_kind" != "clean" || "$finding_count" -gt 0 ]]; then
+            if [[ -z "$verdict_at" || "$finding_count" -gt 0 ]]; then
               stamp_review_gate pending "Codex reported findings on $head_prefix"
               echo "Codex reported $finding_count active regular-review finding(s) on the exact head."
               echo "Fix them, push a new head, and tag @codex review again."
-              exit 0
-            fi
-            if [[ -n "$finding_gate_at" && ( "$finding_gate_at" == "$verdict_at" || "$finding_gate_at" > "$verdict_at" ) ]]; then
-              stamp_review_gate pending "Waiting for newer clean Codex review on $head_prefix"
-              echo "A prior regular finding requires a newer affirmative clean review."
               exit 0
             fi
             if [[ -n "$base_changed_at" && ( "$base_changed_at" == "$verdict_at" || "$base_changed_at" > "$verdict_at" ) ]]; then
@@ -328,14 +316,20 @@ jobs:
             stamp_review_gate pending "Waiting for pull request to leave draft"
             exit 0
           fi
+          shared_head_count="$(shared_open_head_count)"
+          if [[ "$shared_head_count" != "1" ]]; then
+            stamp_review_gate pending "Current head is shared by multiple open pull requests"
+            echo "Refusing to share regular-review evidence across $shared_head_count open PRs."
+            exit 0
+          fi
           if base_change_marker_exists; then
             stamp_review_gate pending "Base changed; push a new head before @codex review"
             echo "The base-change marker requires a fresh PR head and regular review."
             exit 0
           fi
 
-          # Clear any stale success before reads. Later review/comment events cancel
-          # this run and start a fresh evaluator rather than queue behind it.
+          # The event head was revoked before its first API read. Revoke the
+          # resolved head as well for manual dispatches and stale event payloads.
           stamp_review_gate pending "Evaluating regular Codex review on $head_prefix"
           gate_snapshot="$(read_gate_snapshot)"
           require_clean_regular_snapshot "$gate_snapshot"
@@ -389,6 +383,12 @@ jobs:
           if base_change_marker_exists; then
             stamp_review_gate pending "Base changed; push a new head before @codex review"
             echo "A base-change marker arrived during final revalidation."
+            exit 0
+          fi
+          final_shared_head_count="$(shared_open_head_count)"
+          if [[ "$final_shared_head_count" != "1" ]]; then
+            stamp_review_gate pending "Current head is shared by multiple open pull requests"
+            echo "A second open PR shares this head; the gate was not marked successful."
             exit 0
           fi
 
