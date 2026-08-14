@@ -91,67 +91,40 @@ jobs:
             exit 0
           fi
 
-          matching_reviews="$(
-            HEAD_PREFIX="${head_sha:0:10}" gh api \
-              "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
-              --jq '[.[]
-                    | select(.user.login == env.REVIEW_BOT)
-                    | select(.state != "DISMISSED")
-                    | select((.body // "") | contains("Reviewed commit:"))
-                    | select((.body // "") | contains(env.HEAD_PREFIX))]
-                    | length' \
-              | awk '{ total += $1 } END { print total + 0 }'
-          )"
-          matching_comments="$(
-            HEAD_PREFIX="${head_sha:0:10}" gh api \
-              "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
-              --jq '[.[]
-                    | select(.user.login == env.REVIEW_BOT)
-                    | select((.body // "") | contains("Reviewed commit:"))
-                    | select((.body // "") | contains(env.HEAD_PREFIX))]
-                    | length' \
-              | awk '{ total += $1 } END { print total + 0 }'
-          )"
-          clean_reviews="$(
-            HEAD_PREFIX="${head_sha:0:10}" gh api \
-              "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
-              --jq '[.[]
-                    | select(.user.login == env.REVIEW_BOT)
-                    | select(.state != "DISMISSED")
-                    | select((.body // "") | contains("Reviewed commit:"))
-                    | select((.body // "") | contains(env.HEAD_PREFIX))
-                    | select((.body // "") | ascii_downcase
-                        | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))]
-                    | length' \
-              | awk '{ total += $1 } END { print total + 0 }'
-          )"
-          clean_comments="$(
-            HEAD_PREFIX="${head_sha:0:10}" gh api \
-              "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
-              --jq '[.[]
-                    | select(.user.login == env.REVIEW_BOT)
-                    | select((.body // "") | contains("Reviewed commit:"))
-                    | select((.body // "") | contains(env.HEAD_PREFIX))
-                    | select((.body // "") | ascii_downcase
-                        | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))]
-                    | length' \
-              | awk '{ total += $1 } END { print total + 0 }'
+          latest_verdict="$(
+            {
+              HEAD_PREFIX="${head_sha:0:10}" gh api \
+                "repos/$REPO/pulls/$pr_number/reviews?per_page=100" --paginate \
+                --jq '.[]
+                      | select(.user.login == env.REVIEW_BOT)
+                      | select(.state != "DISMISSED")
+                      | select((.body // "") | contains("Reviewed commit:"))
+                      | select((.body // "") | contains(env.HEAD_PREFIX))
+                      | [.submitted_at,
+                         (if ((.body // "") | ascii_downcase
+                              | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))
+                          then "clean" else "findings" end)]
+                      | @tsv'
+              HEAD_PREFIX="${head_sha:0:10}" gh api \
+                "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate \
+                --jq '.[]
+                      | select(.user.login == env.REVIEW_BOT)
+                      | select((.body // "") | contains("Reviewed commit:"))
+                      | select((.body // "") | contains(env.HEAD_PREFIX))
+                      | [.created_at,
+                         (if ((.body // "") | ascii_downcase
+                              | test("didn.t find any major issues|found no major issues|no major issues found|no issues found"))
+                          then "clean" else "findings" end)]
+                      | @tsv'
+            } | sort -k1,1 | tail -n 1
           )"
 
-          reviewed=false
-          explicitly_clean=false
-          if ((matching_reviews + matching_comments > 0)); then
-            reviewed=true
-          fi
-          if ((clean_reviews + clean_comments > 0)); then
-            explicitly_clean=true
-          fi
-
-          if [[ "$reviewed" != "true" ]]; then
+          if [[ -z "$latest_verdict" ]]; then
             stamp_review_gate pending "Waiting for @codex review on ${head_sha:0:10}"
             echo "No Codex verdict covers the exact pull request head."
             exit 0
           fi
+          IFS=$'\t' read -r verdict_at verdict_kind <<< "$latest_verdict"
 
           finding_count="$(
             HEAD_SHA="$head_sha" gh api \
@@ -163,8 +136,21 @@ jobs:
                     | length' \
               | awk '{ total += $1 } END { print total + 0 }'
           )"
+          latest_finding_at="$(
+            HEAD_SHA="$head_sha" gh api \
+              "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate \
+              --jq '.[]
+                    | select(.user.login == env.REVIEW_BOT)
+                    | select(.in_reply_to_id == null)
+                    | select((.commit_id // .original_commit_id // "") == env.HEAD_SHA)
+                    | .created_at' \
+              | sort | tail -n 1
+          )"
 
-          if [[ "$explicitly_clean" != "true" && "$finding_count" != "0" ]]; then
+          if [[ "$verdict_kind" != "clean" \
+            || ( -n "$latest_finding_at" \
+              && ( "$latest_finding_at" == "$verdict_at" \
+                || "$latest_finding_at" > "$verdict_at" ) ) ]]; then
             stamp_review_gate pending "Codex reported findings on ${head_sha:0:10}"
             echo "Codex reported $finding_count finding(s) on the exact head."
             echo "Fix them, push a new head, and tag @codex review again."
