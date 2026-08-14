@@ -714,6 +714,35 @@ async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
     assert stream.cancelled.is_set()
 
 
+async def test_subscribe_collection_entries_reconnects_failed_channel(
+    monkeypatch,
+) -> None:
+    stream = _BidirectionalSequenceStream([])
+    stream.recv_message = AsyncMock(side_effect=StreamTerminatedError("dropped"))
+    method = _OpenMethod(stream)
+    failed_channel = SimpleNamespace(close=MagicMock())
+    fresh_channel = object()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = failed_channel
+
+    async def connect_fresh_channel() -> None:
+        client._channel = fresh_channel
+
+    client._async_connect_locked = AsyncMock(side_effect=connect_fresh_channel)
+
+    with pytest.raises(CannotConnectError, match="connection failed"):
+        await anext(client.async_subscribe_collection_entries("live_map"))
+
+    assert client._channel is fresh_channel
+    client._async_connect_locked.assert_awaited_once_with()
+    failed_channel.close.assert_called_once_with()
+    assert stream.cancelled is True
+
+
 async def test_subscribe_collection_entries_requires_a_connected_channel() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_connect = AsyncMock()

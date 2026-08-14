@@ -856,42 +856,50 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         channel = self._channel
         if channel is None:
             raise CannotConnectError("Hermes channel did not open")
+        failed_channel = channel
         request = CollectionRequest(
             initial_request=InitialRequest(
                 collection_name=collection_name,
                 config=SubscriptionServiceConfig(),
             )
         )
-        async with self._map_stream_errors(f"{collection_name} subscription"):
-            async with HermesStub(channel).FetchCollection.open(
-                metadata=self._metadata
-            ) as stream:
-                # FetchCollection is a tracked bidirectional subscription.  The
-                # server sends one update, then waits for its sequence id to be
-                # acknowledged before advancing to the next cached or live item.
-                try:
-                    await stream.send_message(request, end=False)
-                    while (response := await stream.recv_message()) is not None:
-                        entry = None
-                        if response.HasField("value"):
-                            entry = HermesCollectionEntry(
-                                bytes(response.key_bytes),
-                                _response_value_bytes(response),
-                            )
-                        if response.HasField("sequence_id"):
-                            await stream.send_message(
-                                CollectionRequest(sequence_id=response.sequence_id),
-                                end=False,
-                            )
-                        if entry is not None:
-                            yield entry
-                finally:
-                    # Long-lived bidirectional streams otherwise attempt a
-                    # graceful close during config-entry teardown. A robot that
-                    # is still holding the subscription open can leave Home
-                    # Assistant waiting for that handshake until its task-leak
-                    # timeout. Explicit cancellation is local, bounded cleanup.
-                    await _async_cancel_stream(stream)
+        try:
+            async with self._map_stream_errors(f"{collection_name} subscription"):
+                async with HermesStub(channel).FetchCollection.open(
+                    metadata=self._metadata
+                ) as stream:
+                    # FetchCollection is a tracked bidirectional subscription.  The
+                    # server sends one update, then waits for its sequence id to be
+                    # acknowledged before advancing to the next cached or live item.
+                    try:
+                        await stream.send_message(request, end=False)
+                        while (response := await stream.recv_message()) is not None:
+                            entry = None
+                            if response.HasField("value"):
+                                entry = HermesCollectionEntry(
+                                    bytes(response.key_bytes),
+                                    _response_value_bytes(response),
+                                )
+                            if response.HasField("sequence_id"):
+                                await stream.send_message(
+                                    CollectionRequest(sequence_id=response.sequence_id),
+                                    end=False,
+                                )
+                            if entry is not None:
+                                yield entry
+                    finally:
+                        # Long-lived bidirectional streams otherwise attempt a
+                        # graceful close during config-entry teardown. A robot that
+                        # is still holding the subscription open can leave Home
+                        # Assistant waiting for that handshake until its task-leak
+                        # timeout. Explicit cancellation is local, bounded cleanup.
+                        await _async_cancel_stream(stream)
+        except CannotConnectError:
+            _LOGGER.debug(
+                "Replacing failed Hermes %s subscription channel", collection_name
+            )
+            await self._async_reconnect_after_read_failure(failed_channel)
+            raise
 
     async def async_get_tracked_collection_entries(
         self,
