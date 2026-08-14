@@ -170,6 +170,7 @@ jobs:
           EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
           EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_UPDATED_AT: ${{ github.event.comment.updated_at }}
           GH_TOKEN: ${{ github.token }}
           HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
           PR_NUMBER: ${{ github.event.issue.number }}
@@ -180,10 +181,11 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" ]]; then
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" || -z "$EVENT_COMMENT_UPDATED_AT" ]]; then
             echo "The regular issue-comment event did not provide a dispatchable pull request state." >&2
             exit 1
           fi
+          current_comment_at="$EVENT_COMMENT_UPDATED_AT"
           if [[ "$EVENT_ACTION" == "deleted" ]]; then
             if gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" --silent >/dev/null 2>&1; then
               echo "Ignoring a stale deleted-comment delivery for comment $EVENT_COMMENT_ID."
@@ -196,11 +198,16 @@ jobs:
             fi
             current_comment_state="$(jq -er '[.user.login, ((.body // "") | @base64)] | @tsv' <<< "$current_comment")"
             IFS=$'\t' read -r current_author current_body_b64 <<< "$current_comment_state"
+            current_comment_at="$(jq -er '.updated_at // .created_at' <<< "$current_comment")"
             event_body_b64="$(jq -rn --arg body "$EVENT_COMMENT_BODY" '$body | @base64')"
             if [[ "$current_author" != "$EVENT_COMMENT_AUTHOR" || "$current_body_b64" != "$event_body_b64" ]]; then
               echo "Ignoring a stale comment delivery superseded by a newer edit."
               exit 0
             fi
+          fi
+          if [[ ! "$current_comment_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
+            echo "Could not resolve the current regular-comment timestamp." >&2
+            exit 1
           fi
           stamp_pending() {
             local context="$1"
@@ -214,7 +221,7 @@ jobs:
           stamp_pending "$REVIEW_GATE_CONTEXT" "Regular issue-comment verdict; evaluating review"
           if [[ "$CLEAN" != "true" ]]; then
             stamp_pending "$REVIEW_COMMENT_CONTEXT" \
-              "Regular issue-comment invalidated; require a newer clean normal verdict"
+              "Regular issue-comment invalidated at $current_comment_at; require a newer clean normal verdict"
           fi
           if ! gh api \
             "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \

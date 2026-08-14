@@ -205,8 +205,12 @@ jobs:
                   [.[][]
                    | select(.context == $context)
                    | select(.state == "pending")
-                   | select((.description // "") | startswith("Regular issue-comment invalidated;"))
-                   | .updated_at]
+                   | (.description // "") as $description
+                   | select($description | startswith("Regular issue-comment invalidated"))
+                   | if ($description | test("^Regular issue-comment invalidated at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z;"))
+                     then ($description | capture("^Regular issue-comment invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
+                     else .updated_at
+                     end]
                   | max // empty'
           }
 
