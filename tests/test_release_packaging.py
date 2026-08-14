@@ -161,17 +161,21 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "github.event.workflow_run.event == 'pull_request_review'"
         in fork_regular_review
     )
-    assert (
-        "review-gate-fork-review-${{ github.event.workflow_run.id }}"
-        in fork_regular_review
+    assert "group: review-gate-${{ needs.route.outputs.pr_number }}" in (
+        fork_regular_review
     )
+    assert "cancel-in-progress: true" in fork_regular_review
     assert "fork-regular-review-(?<pr>" in fork_regular_review
     assert "source_pr_number" in fork_regular_review
     assert "actions/runs/$SOURCE_RUN_ID" in fork_regular_review
     assert '"$source_pr_number" == "$pr_number"' in fork_regular_review
     assert '"$head_repository" != "$REPO"' in fork_regular_review
-    assert "repos/$REPO/pulls/$pr_number/reviews/$review_id" in fork_regular_review
+    assert "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" in fork_regular_review
     assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in fork_regular_review
+    assert "body_is_regular_review" in fork_regular_review
+    assert "security_heading | not" in fork_regular_review
+    assert "availability_notice | not" in fork_regular_review
+    assert 'review_state" != "DISMISSED"' in fork_regular_review
     assert (
         "Regular review invalidated; require a newer normal review"
         in fork_regular_review

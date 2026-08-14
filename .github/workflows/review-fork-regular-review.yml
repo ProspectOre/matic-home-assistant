@@ -15,24 +15,23 @@ permissions:
   statuses: write
 
 jobs:
-  reconcile:
+  route:
     if: >-
       github.event.workflow_run.conclusion == 'success'
       && github.event.workflow_run.event == 'pull_request_review'
-    concurrency:
-      group: review-gate-fork-review-${{ github.event.workflow_run.id }}
-      cancel-in-progress: false
+    outputs:
+      event_head_sha: ${{ steps.signal.outputs.event_head_sha }}
+      pr_number: ${{ steps.signal.outputs.pr_number }}
+      review_id: ${{ steps.signal.outputs.review_id }}
+      valid: ${{ steps.signal.outputs.valid }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
-      - name: Revoke the gate for a classified fork review
+      - id: signal
+        name: Validate the unprivileged fork-review handoff
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
-          REVIEW_GATE_CONTEXT: review-gate
-          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
           SOURCE_RUN_ID: ${{ github.event.workflow_run.id }}
-          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -44,11 +43,12 @@ jobs:
             echo "jq is required to reconcile fork reviews." >&2
             exit 1
           }
-          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ && -n "$WORKFLOW_REF" ]] || exit 1
+          echo "valid=false" >> "$GITHUB_OUTPUT"
+          [[ "$SOURCE_RUN_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
 
           # The unprivileged source job cannot write a status. Its dynamic job
-          # name is the only handoff, so parse it strictly and revalidate the
-          # review and current PR head via the GitHub API before any mutation.
+          # name is the only handoff, so parse it strictly before entering the
+          # shared per-PR gate lock in the trusted reconcile job.
           signal="$(
             gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID/jobs?per_page=100" --paginate --slurp \
               | jq -cer '
@@ -62,11 +62,9 @@ jobs:
           pr_number="$(jq -r '.pr' <<< "$signal")"
           event_head_sha="$(jq -r '.head' <<< "$signal")"
           review_id="$(jq -r '.review' <<< "$signal")"
-          review_invalidated="$(jq -r '.invalidated' <<< "$signal")"
           [[ "$pr_number" =~ ^[1-9][0-9]*$ \
             && "$event_head_sha" =~ ^[0-9a-f]{40}$ \
-            && "$review_id" =~ ^[1-9][0-9]*$ \
-            && "$review_invalidated" =~ ^(true|false)$ ]] || exit 1
+            && "$review_id" =~ ^[1-9][0-9]*$ ]] || exit 1
 
           source_pr_number="$(
             gh api "repos/$REPO/actions/runs/$SOURCE_RUN_ID" \
@@ -74,26 +72,96 @@ jobs:
           )" || exit 0
           [[ "$source_pr_number" == "$pr_number" ]] || exit 0
 
+          {
+            echo "event_head_sha=$event_head_sha"
+            echo "pr_number=$pr_number"
+            echo "review_id=$review_id"
+            echo "valid=true"
+          } >> "$GITHUB_OUTPUT"
+
+  reconcile:
+    needs: route
+    if: needs.route.outputs.valid == 'true'
+    concurrency:
+      group: review-gate-${{ needs.route.outputs.pr_number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the gate for the current fork review state
+        env:
+          EVENT_HEAD_SHA: ${{ needs.route.outputs.event_head_sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.route.outputs.pr_number }}
+          REPO: ${{ github.repository }}
+          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_ID: ${{ needs.route.outputs.review_id }}
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          command -v gh >/dev/null 2>&1 || {
+            echo "GitHub CLI (gh) is required." >&2
+            exit 1
+          }
+          command -v jq >/dev/null || {
+            echo "jq is required to reconcile fork reviews." >&2
+            exit 1
+          }
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ \
+            && "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ \
+            && "$REVIEW_ID" =~ ^[1-9][0-9]*$ \
+            && -n "$WORKFLOW_REF" ]] || exit 1
+
           pr_state="$(
-            gh api "repos/$REPO/pulls/$pr_number" \
+            gh api "repos/$REPO/pulls/$PR_NUMBER" \
               | jq -er '[.head.sha, .state, (.head.repo.full_name // "")] | @tsv'
           )" || exit 0
           IFS=$'\t' read -r current_head_sha pr_state head_repository <<< "$pr_state"
-          [[ "$current_head_sha" == "$event_head_sha" \
+          [[ "$current_head_sha" == "$EVENT_HEAD_SHA" \
             && "$pr_state" == "open" \
             && "$head_repository" != "$REPO" ]] || exit 0
-          review_state="$(
-            gh api "repos/$REPO/pulls/$pr_number/reviews/$review_id" \
-              | jq -er '[.user.login, .commit_id] | @tsv'
+
+          current_review="$(
+            gh api "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID"
           )" || exit 0
-          IFS=$'\t' read -r review_author review_commit_sha <<< "$review_state"
+          review_state="$(
+            jq -er '[.user.login, .commit_id, .state] | @tsv' <<< "$current_review"
+          )"
+          IFS=$'\t' read -r review_author review_commit_sha review_state <<< "$review_state"
+          review_body="$(jq -r '.body // ""' <<< "$current_review")"
           [[ "$review_author" == "$REVIEW_BOT_EVENT_LOGIN" \
-            && "$review_commit_sha" == "$event_head_sha" ]] || exit 0
+            && "$review_commit_sha" == "$EVENT_HEAD_SHA" ]] || exit 0
+
+          body_is_regular_review() {
+            local review_body="$1"
+            printf '%s' "$review_body" \
+              | jq -e -R -s '
+                  def regular_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+                  def security_heading:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
+                  select(regular_heading)
+                  | select(security_heading | not)
+                  | select(availability_notice | not)' >/dev/null
+          }
+
+          review_invalidated=true
+          if [[ "$review_state" != "DISMISSED" ]] \
+            && body_is_regular_review "$review_body"; then
+            review_invalidated=false
+          fi
 
           stamp_pending() {
             local context="$1"
             local description="$2"
-            gh api "repos/$REPO/statuses/$event_head_sha" --silent \
+            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
               -f state=pending \
               -f context="$context" \
               -f description="$description" \
@@ -112,5 +180,5 @@ jobs:
             exit 0
           fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
-            -f pull_request="$pr_number"
-          echo "Dispatched fork regular-review evaluation for PR #$pr_number."
+            -f pull_request="$PR_NUMBER"
+          echo "Dispatched fork regular-review evaluation for PR #$PR_NUMBER."
