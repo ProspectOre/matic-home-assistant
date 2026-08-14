@@ -102,8 +102,13 @@ class _BlockingBidirectionalStream(_Stream):
         self.receiving = asyncio.Event()
         self.cancelled = asyncio.Event()
 
-    async def __aexit__(self, *args):
-        await self.cancelled.wait()
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if exc_val is None:
+            await self.cancelled.wait()
+        else:
+            # grpclib resets the local HTTP/2 stream synchronously when the
+            # context exits with an exception such as task cancellation.
+            self.cancelled.set()
 
     async def send_message(self, request, *, end):
         assert end is False
@@ -115,6 +120,20 @@ class _BlockingBidirectionalStream(_Stream):
 
     async def cancel(self):
         self.cancelled.set()
+
+
+class _HangingCancelBidirectionalStream(_BlockingBidirectionalStream):
+    def __init__(self) -> None:
+        super().__init__()
+        self.exited = asyncio.Event()
+        self.cancel_started = asyncio.Event()
+
+    async def __aexit__(self, *args):
+        self.exited.set()
+
+    async def cancel(self):
+        self.cancel_started.set()
+        await asyncio.Event().wait()
 
 
 class _TimeoutStream(_Stream):
@@ -712,6 +731,30 @@ async def test_subscribe_collection_entries_cancels_blocked_stream_on_teardown(
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(receive, 0.5)
     assert stream.cancelled.is_set()
+
+
+async def test_subscribe_collection_entries_does_not_await_cancel_during_task_cancel(
+    monkeypatch,
+) -> None:
+    stream = _HangingCancelBidirectionalStream()
+    method = _OpenMethod(stream)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=method),
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    receive = asyncio.create_task(
+        anext(client.async_subscribe_collection_entries("kabuki_state"))
+    )
+    await stream.receiving.wait()
+    receive.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(receive, 0.5)
+    assert stream.exited.is_set()
+    assert not stream.cancel_started.is_set()
 
 
 async def test_subscribe_collection_entries_reconnects_failed_channel(
