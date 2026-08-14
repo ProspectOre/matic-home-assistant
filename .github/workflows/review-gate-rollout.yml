@@ -68,7 +68,7 @@ jobs:
                   | .id'
           }
           for run_id in $(active_legacy_runs); do
-            gh run cancel "$run_id" --repo "$REPO"
+            gh run cancel "$run_id" --repo "$REPO" || true
           done
           for _attempt in $(seq 1 15); do
             if [[ -z "$(active_legacy_runs)" ]]; then

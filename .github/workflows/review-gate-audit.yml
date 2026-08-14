@@ -48,10 +48,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    # Keep audits off the evaluator's queue. A findings result dispatches a
-    # fresh evaluator, which rechecks the current state under its own lock.
+    # Recheck under the evaluator's per-PR lock so an in-flight success cannot
+    # race a findings-triggered follow-up dispatch.
     concurrency:
-      group: review-gate-audit-${{ matrix.pr_number }}
+      group: review-gate-${{ matrix.pr_number }}
       cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
@@ -127,11 +127,12 @@ jobs:
                   | length'
           }
 
-          head_sha="$(
+          pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" 2>/dev/null \
-              | jq -er '.head.sha'
+              | jq -er '[.head.sha, .base.ref] | @tsv'
           )" || exit 0
-          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]] || exit 0
+          IFS=$'\t' read -r head_sha workflow_ref <<< "$pr_state"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$workflow_ref" ]] || exit 0
           if [[ "$(current_gate_state "$head_sha")" != "success" ]]; then
             exit 0
           fi
@@ -148,5 +149,6 @@ jobs:
           if [[ "$findings" -eq 0 ]]; then
             exit 0
           fi
-          gh workflow run review-gate.yml --repo "$REPO" -f pull_request="$PR_NUMBER"
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$workflow_ref" \
+            -f pull_request="$PR_NUMBER"
           echo "Dispatched review-gate for PR #$PR_NUMBER with $findings active regular finding(s)."

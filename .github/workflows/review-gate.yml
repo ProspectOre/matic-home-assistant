@@ -105,7 +105,7 @@ jobs:
           read_pr_snapshot() {
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
             gh api graphql \
-              -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id headRefOid baseRefOid isDraft autoMergeRequest { enabledAt } } } }' \
+              -f query='query($owner: String!, $name: String!, $number: Int!) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { id state headRefOid baseRefOid isDraft autoMergeRequest { enabledAt } } } }' \
               -F owner="$review_owner" \
               -F name="$review_repo" \
               -F number="$pr_number" \
@@ -116,19 +116,24 @@ jobs:
                      $pr.baseRefOid,
                      ($pr.isDraft | tostring),
                      $pr.id,
-                     (($pr.autoMergeRequest != null) | tostring)]
+                     (($pr.autoMergeRequest != null) | tostring),
+                     $pr.state]
                   | @tsv'
           }
 
           pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r head_sha base_sha is_draft pr_node_id auto_merge_enabled <<< "$pr_snapshot"
+          IFS=$'\t' read -r head_sha base_sha is_draft pr_node_id auto_merge_enabled pr_state <<< "$pr_snapshot"
           if [[ ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$base_sha" =~ ^[0-9a-f]{40}$ ]]; then
             echo "Could not resolve valid pull request head and base SHAs."
             exit 1
           fi
-          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$is_draft" =~ ^(true|false)$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then
+          if [[ ! "$pr_node_id" =~ ^PR_ || ! "$is_draft" =~ ^(true|false)$ || ! "$auto_merge_enabled" =~ ^(true|false)$ || ! "$pr_state" =~ ^(OPEN|CLOSED|MERGED)$ ]]; then
             echo "Could not resolve the pull request state for PR #$pr_number."
             exit 1
+          fi
+          if [[ "$pr_state" != "OPEN" ]]; then
+            echo "PR #$pr_number is no longer open; it will not publish review-gate."
+            exit 0
           fi
           if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
             echo "The event head changed before evaluation; the newer PR event will re-evaluate it."
@@ -270,9 +275,10 @@ jobs:
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
                     def exact_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
-                    def stock_clean_envelope:
-                      test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
-                      or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                    # An issue comment has no review-thread metadata. A generic
+                    # suggestions envelope therefore cannot prove a clean verdict.
+                    def stock_clean_issue_comment_envelope:
+                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
                       or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
                     [.[][]
                      | select((.user.login // "") == $bot)
@@ -284,7 +290,7 @@ jobs:
                      | {at: (.updated_at // .created_at),
                         id: ("issue-comment-" + (.id | tostring)),
                         source: "issue_comment",
-                        clean: ($body | stock_clean_envelope)}]'
+                        clean: ($body | stock_clean_issue_comment_envelope)}]'
             )"
             jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
               {deliveries: ($reviews + $issue_comments),
@@ -325,6 +331,14 @@ jobs:
                   [.[][] | select((.head.sha // "") == $head) | .number]
                   | unique
                   | length'
+          }
+
+          shared_open_head_owner() {
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
+              | jq -rs --arg head "$head_sha" '
+                  [.[][] | select((.head.sha // "") == $head) | .number]
+                  | unique
+                  | if length == 1 then .[0] | tostring else "" end'
           }
 
           read_gate_snapshot() {
@@ -417,9 +431,10 @@ jobs:
             exit 0
           fi
           shared_head_count="$(shared_open_head_count)"
-          if [[ "$shared_head_count" != "1" ]]; then
+          shared_head_owner="$(shared_open_head_owner)"
+          if [[ "$shared_head_count" != "1" || "$shared_head_owner" != "$pr_number" ]]; then
             stamp_review_gate pending "Current head is shared by multiple open pull requests"
-            echo "Refusing to share regular-review evidence across $shared_head_count open PRs."
+            echo "Refusing to use regular-review evidence for an ambiguous or mismatched open PR head."
             exit 0
           fi
           if base_change_marker_exists; then
@@ -438,7 +453,11 @@ jobs:
           # catches a new result, finding, comment, head, or base change that
           # arrived while the first snapshot was being evaluated.
           final_pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r final_head_sha final_base_sha final_is_draft final_pr_node_id final_auto_merge_enabled <<< "$final_pr_snapshot"
+          IFS=$'\t' read -r final_head_sha final_base_sha final_is_draft final_pr_node_id final_auto_merge_enabled final_pr_state <<< "$final_pr_snapshot"
+          if [[ "$final_pr_state" != "OPEN" ]]; then
+            echo "The PR was closed during evaluation; it was not marked successful."
+            exit 0
+          fi
           if [[ "$final_head_sha" != "$head_sha" ]]; then
             echo "The PR head changed during evaluation; its synchronize event will re-evaluate it."
             exit 0
@@ -467,8 +486,8 @@ jobs:
           require_clean_regular_snapshot "$final_gate_snapshot"
 
           last_pr_snapshot="$(read_pr_snapshot)"
-          IFS=$'\t' read -r last_head_sha last_base_sha last_is_draft last_pr_node_id last_auto_merge_enabled <<< "$last_pr_snapshot"
-          if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" ]]; then
+          IFS=$'\t' read -r last_head_sha last_base_sha last_is_draft last_pr_node_id last_auto_merge_enabled last_pr_state <<< "$last_pr_snapshot"
+          if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" ]]; then
             if [[ "$last_head_sha" == "$head_sha" && "$last_base_sha" != "$base_sha" ]]; then
               stamp_base_change_marker
               stamp_review_gate pending "Base changed; push a new head before @codex review"
@@ -486,9 +505,10 @@ jobs:
             exit 0
           fi
           final_shared_head_count="$(shared_open_head_count)"
-          if [[ "$final_shared_head_count" != "1" ]]; then
+          final_shared_head_owner="$(shared_open_head_owner)"
+          if [[ "$final_shared_head_count" != "1" || "$final_shared_head_owner" != "$pr_number" ]]; then
             stamp_review_gate pending "Current head is shared by multiple open pull requests"
-            echo "A second open PR shares this head; the gate was not marked successful."
+            echo "The current open PR head is ambiguous or no longer belongs to this PR."
             exit 0
           fi
 

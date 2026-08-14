@@ -79,6 +79,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Exact-head regular PR reviews and explicit clean regular issue" in review_gate
     assert "updatedAt" in review_gate
     assert "stock_clean_envelope" in review_gate
+    assert "stock_clean_issue_comment_envelope" in review_gate
     assert "didn.t find any major issues" in review_gate
     assert "codex[[:space:]]+in[[:space:]]+github" in review_gate
     assert "def availability_notice:" in review_gate
@@ -89,6 +90,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "latest_regular_review_invalidation_at" in review_gate
     assert "latest_finding_at" in review_gate
     assert "shared_open_head_count" in review_gate
+    assert "shared_open_head_owner" in review_gate
+    assert "$pr.state" in review_gate
+    assert '"$pr_state" != "OPEN"' in review_gate
     assert "final_gate_snapshot" in review_gate
     assert "Disarming automatic merge on" in review_gate
     assert "gh pr merge" not in review_gate
@@ -109,6 +113,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Ignoring a review attached to an older pull request head" in regular_review
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in regular_review
     assert "Regular review invalidated; require a newer normal review" in regular_review
+    assert "needs: route" in regular_review
+    assert "if: needs.route.outputs.regular == 'true'" in regular_review
+    assert "group: review-gate-${{ github.event.pull_request.number }}" in regular_review
+    assert '--ref "$WORKFLOW_REF"' in regular_review
     assert "gh workflow run review-gate.yml" in regular_review
 
     assert "name: Invalidate Review Gate on Regular Comment" in regular_comment
@@ -124,6 +132,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def availability_notice:" in regular_comment
     assert "availability_notice | not" in regular_comment
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
+    assert "name: classify-regular-comment" in regular_comment
+    assert "needs: classify" in regular_comment
+    assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
+    assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
+    assert "stock_clean_issue_comment_envelope" in regular_comment
+    assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "gh pr merge" not in regular_review + regular_comment
     assert "--auto" not in regular_review + regular_comment
@@ -131,7 +145,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "EVENT_BASE_SHA" in base_change
     assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
-    assert "group: review-gate-base-change-" in base_change
+    assert "group: review-gate-${{ github.event.pull_request.number }}" in base_change
     assert "Base changed; push a new head before @codex review" in base_change
     assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
@@ -139,9 +153,13 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel-in-progress: true" in base_change
     assert "cancel_active_gate_runs" in base_change
     assert "gh workflow run review-gate.yml" in base_change
+    assert '--ref "$WORKFLOW_REF"' in base_change
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
+    assert "BASE_PUSHED_AT" in base_advance
+    assert "snapshot_before_base_push" in base_advance
+    assert "pull_requests" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
     assert "gained a new head after the base advance" in base_advance
@@ -152,15 +170,17 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "((.auto_merge != null) | tostring)" in base_advance
     assert "cancel_active_gate_runs" in base_advance
     assert "gh workflow run review-gate.yml" in base_advance
+    assert '--ref "$current_base"' in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
     assert "actions: write" in audit
     assert "statuses: read" in audit
-    assert "group: review-gate-audit-${{ matrix.pr_number }}" in audit
+    assert "group: review-gate-${{ matrix.pr_number }}" in audit
     assert "reviewThreads" in audit
     assert "review result" in audit
     assert "gh workflow run review-gate.yml" in audit
+    assert '--ref "$workflow_ref"' in audit
     assert "def security_heading:" in audit
     assert "security_heading) | not" in audit
     assert "def availability_notice:" in audit
@@ -172,6 +192,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "disablePullRequestAutoMerge" in rollout
     assert "((.auto_merge != null) | tostring)" in rollout
     assert "cancel-legacy-auto-merge-runs" in rollout
+    assert 'gh run cancel "$run_id" --repo "$REPO" || true' in rollout
     assert "active_gate_runs" in rollout
     assert '.event == "workflow_dispatch"' in rollout
     assert '.event == "issue_comment"' in rollout

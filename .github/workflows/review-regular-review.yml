@@ -18,9 +18,13 @@ jobs:
   route:
     name: route-regular-review
     if: github.event.pull_request.number != null
+    outputs:
+      regular: ${{ steps.classify.outputs.regular }}
+      review_invalidated: ${{ steps.classify.outputs.review_invalidated }}
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
-      - name: Dispatch only regular Codex review events
+      - id: classify
+        name: Classify regular Codex review events
         env:
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
@@ -45,6 +49,10 @@ jobs:
             echo "jq is required to classify review events."
             exit 1
           }
+          {
+            echo "regular=false"
+            echo "review_invalidated=false"
+          } >> "$GITHUB_OUTPUT"
           if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_REVIEW_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The review event did not provide a valid pull request state."
             exit 1
@@ -88,7 +96,38 @@ jobs:
             echo "Ignoring a non-regular pull request review."
             exit 0
           fi
+          echo "regular=true" >> "$GITHUB_OUTPUT"
+          if [[ "$EVENT_ACTION" == "dismissed" \
+            || ( "$previous_is_regular" == "true" && "$current_is_regular" != "true" ) ]]; then
+            echo "review_invalidated=true" >> "$GITHUB_OUTPUT"
+          fi
 
+  invalidate:
+    name: invalidate-regular-review
+    needs: route
+    if: needs.route.outputs.regular == 'true'
+    concurrency:
+      group: review-gate-${{ github.event.pull_request.number }}
+      cancel-in-progress: true
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Revoke the regular gate under its per-PR lock
+        env:
+          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+          REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_INVALIDATED: ${{ needs.route.outputs.review_invalidated }}
+          REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          WORKFLOW_REF: ${{ github.event.pull_request.base.ref }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" ]]; then
+            echo "The regular-review event did not provide a dispatchable pull request state." >&2
+            exit 1
+          fi
           stamp_pending() {
             local context="$1"
             local description="$2"
@@ -98,16 +137,12 @@ jobs:
               -f description="$description" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
-
-          # Security-only reviews never reach this point. A normal review that
-          # is dismissed or reclassified is itself a normal-gate invalidation,
-          # not a security-review blocker; a newer normal verdict is required.
           stamp_pending "$REVIEW_GATE_CONTEXT" \
             "Review state changed; evaluating regular Codex review"
-          if [[ "$EVENT_ACTION" == "dismissed" \
-            || ( "$previous_is_regular" == "true" && "$current_is_regular" != "true" ) ]]; then
+          if [[ "$REVIEW_INVALIDATED" == "true" ]]; then
             stamp_pending "$REVIEW_REVIEW_CONTEXT" \
               "Regular review invalidated; require a newer normal review"
           fi
-          gh workflow run review-gate.yml --repo "$REPO" -f pull_request="$PR_NUMBER"
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
+            -f pull_request="$PR_NUMBER"
           echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."
