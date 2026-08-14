@@ -241,6 +241,33 @@ async def test_cues_watcher_retries_transport_failures(hass) -> None:
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
 
 
+async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
+    client = _client()
+    attempts = 0
+
+    async def short_lived_subscription():
+        nonlocal attempts
+        attempts += 1
+        yield client.async_get_state.return_value
+        if attempts == 3:
+            yield client.async_get_state.return_value
+        raise MaticError("stream closed")
+
+    client.async_subscribe_state = short_lived_subscription
+    coordinator = _coordinator(hass, client)
+
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.asyncio.sleep",
+            AsyncMock(side_effect=[None, None, asyncio.CancelledError]),
+        ) as sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator.async_watch_cues()
+
+    assert [args.args for args in sleep.await_args_list] == [(1,), (2,), (1,)]
+
+
 async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
@@ -264,6 +291,38 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
         coordinator.data.operational.cues_voice_status
         is CuesVoiceStatus.LISTENING_FOR_INTENT
     )
+
+
+async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    state_read_started = asyncio.Event()
+    release_state_read = asyncio.Event()
+
+    async def slow_state_read() -> RobotOperationalState:
+        state_read_started.set()
+        await release_state_read.wait()
+        return initial.operational
+
+    client.async_get_state.side_effect = slow_state_read
+    poll = hass.async_create_task(coordinator._async_update_data())
+    await state_read_started.wait()
+    pushed = replace(
+        initial.operational,
+        cues_voice_status=CuesVoiceStatus.CLASSIFIED,
+        cues_voice_intent=CuesIntent.CLEAN_ALL,
+        following_person=True,
+    )
+    coordinator.async_process_cues_state(pushed)
+    release_state_read.set()
+
+    state = await poll
+
+    assert state.operational.cues_voice_status is CuesVoiceStatus.CLASSIFIED
+    assert state.operational.cues_voice_intent is CuesIntent.CLEAN_ALL
+    assert state.operational.following_person is True
 
 
 async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:

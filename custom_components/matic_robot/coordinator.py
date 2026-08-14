@@ -111,14 +111,19 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._pending_error_polls = 0
         self._identity_issue_active = False
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
+        self._latest_cues_state: RobotOperationalState | None = None
+        self._cues_push_sequence = 0
 
     async def async_watch_cues(self) -> None:
         """Keep Cues lifecycle state current between coordinator polls."""
         retry_delay = 1
         while True:
             try:
+                states_received = 0
                 async for state in self.client.async_subscribe_state():
-                    retry_delay = 1
+                    states_received += 1
+                    if states_received > 1:
+                        retry_delay = 1
                     self.async_process_cues_state(state)
             except asyncio.CancelledError:
                 raise
@@ -130,6 +135,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     @callback
     def async_process_cues_state(self, state: RobotOperationalState) -> None:
         """Merge a live Cues snapshot and emit meaningful transitions."""
+        self._latest_cues_state = state
+        self._cues_push_sequence += 1
         if self.data is None:
             return
         previous = self.data.operational
@@ -175,6 +182,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             listener(event)
 
     async def _async_update_data(self) -> RobotState:
+        cues_push_sequence = self._cues_push_sequence
         try:
             info, operational, floor_plan, pose, telemetry = await asyncio.gather(
                 self._async_info(),
@@ -222,6 +230,19 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         ),
                         f"{DOMAIN} firmware snapshot",
                     )
+            if self._cues_push_sequence != cues_push_sequence:
+                latest_cues_state = self._latest_cues_state
+                assert latest_cues_state is not None
+                state = replace(
+                    state,
+                    operational=replace(
+                        state.operational,
+                        cues_voice_status=latest_cues_state.cues_voice_status,
+                        cues_voice_intent=latest_cues_state.cues_voice_intent,
+                        cues_gesture_status=latest_cues_state.cues_gesture_status,
+                        following_person=latest_cues_state.following_person,
+                    ),
+                )
             return state
         except AuthenticationRequiredError as err:
             raise ConfigEntryAuthFailed(
