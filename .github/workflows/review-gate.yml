@@ -512,7 +512,24 @@ jobs:
             exit 0
           fi
 
-          stamp_review_gate success "Clean regular Codex review for $head_prefix"
+          evidence_source="$(jq -r '.verdict.source // empty' <<< "$final_gate_snapshot")"
+          evidence_id="$(jq -r '.verdict.id // empty' <<< "$final_gate_snapshot")"
+          case "$evidence_source" in
+            review)
+              [[ "$evidence_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+              evidence_marker="review:$evidence_id"
+              ;;
+            issue_comment)
+              evidence_comment_id="${evidence_id#issue-comment-}"
+              [[ "$evidence_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+              evidence_marker="issue-comment:$evidence_comment_id"
+              ;;
+            *)
+              echo "Could not persist the current clean regular-review evidence." >&2
+              exit 1
+              ;;
+          esac
+          stamp_review_gate success "Clean regular Codex review for $head_prefix; evidence $evidence_marker"
           echo "The exact pull request head has an affirmative clean regular Codex review."
           echo "Security-review messages are intentionally not review-gate evidence."
           echo "This workflow never enables or performs a merge."

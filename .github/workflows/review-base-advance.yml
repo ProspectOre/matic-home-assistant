@@ -2,6 +2,7 @@ name: Invalidate Review Gates on Base Advance
 
 on:
   push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       base_branch:

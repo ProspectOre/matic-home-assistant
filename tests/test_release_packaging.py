@@ -96,6 +96,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "$pr.state" in review_gate
     assert '"$pr_state" != "OPEN"' in review_gate
     assert "final_gate_snapshot" in review_gate
+    assert "evidence_marker" in review_gate
+    assert "; evidence $evidence_marker" in review_gate
     assert "Disarming automatic merge on" in review_gate
     assert "gh pr merge" not in review_gate
     assert "--auto" not in review_gate
@@ -203,6 +205,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '--ref "$WORKFLOW_REF"' in base_advance
     assert "contents: read" in base_advance
     assert "Trusted review-gate evaluator is not installed" in base_advance
+    assert "push:\n    branches: [main]" in base_advance
     assert "schedule:" in audit
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
@@ -221,11 +224,14 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "security_heading) | not" in audit
     assert "def availability_notice:" in audit
     assert "availability_notice) | not" in audit
-    assert "latest_regular_comment_at" in audit
-    assert "latest_regular_review_at" in audit
-    assert "Keep dismissed normal reviews in the timestamp" in audit
-    assert "head.repo.full_name" in audit
-    assert "Fork review routers cannot write at all" in audit
+    assert "current_regular_comment_records" in audit
+    assert "current_regular_review_records" in audit
+    assert "databaseId state submittedAt updatedAt" in audit
+    assert 'select((.state // "") != "DISMISSED")' in audit
+    assert 'select((.pullRequestReview.state // "") != "DISMISSED")' in audit
+    assert "evidence_marker" in audit
+    assert "is_reconciliation_pending" in audit
+    assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "actions: write" in rollout
