@@ -24,6 +24,7 @@ jobs:
         env:
           EVENT_ACTION: ${{ github.event.action }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_REVIEW_COMMIT_SHA: ${{ github.event.review.commit_id }}
           EVENT_REVIEW_AUTHOR: ${{ github.event.review.user.login }}
           EVENT_REVIEW_BODY: ${{ github.event.review.body }}
           EVENT_PREVIOUS_REVIEW_BODY: ${{ github.event.changes.body.from }}
@@ -44,7 +45,7 @@ jobs:
             echo "jq is required to classify review events."
             exit 1
           }
-          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ || ! "$EVENT_REVIEW_COMMIT_SHA" =~ ^[0-9a-f]{40}$ ]]; then
             echo "The review event did not provide a valid pull request state."
             exit 1
           fi
@@ -59,12 +60,20 @@ jobs:
                   def security_heading:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
+                  def availability_notice:
+                    ascii_downcase
+                    | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
                   select(regular_heading)
-                  | select(security_heading | not)' >/dev/null
+                  | select(security_heading | not)
+                  | select(availability_notice | not)' >/dev/null
           }
 
           if [[ "$EVENT_REVIEW_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
             echo "Ignoring a review from another author."
+            exit 0
+          fi
+          if [[ "$EVENT_REVIEW_COMMIT_SHA" != "$EVENT_HEAD_SHA" ]]; then
+            echo "Ignoring a review attached to an older pull request head."
             exit 0
           fi
           current_is_regular=false

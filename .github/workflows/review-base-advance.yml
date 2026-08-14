@@ -42,7 +42,9 @@ jobs:
           matrix="$(
             gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
               | jq -c --arg base "$BASE_BRANCH" \
-                  '{include: [.[][] | select(.base.ref == $base) | {pr_number: .number}]}'
+                  '{include: [.[][]
+                    | select(.base.ref == $base)
+                    | {pr_number: .number, event_head_sha: .head.sha}]}'
           )"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
@@ -65,6 +67,7 @@ jobs:
       - name: Persist a base-change marker and revoke the required gate
         env:
           BASE_BRANCH: ${{ inputs.base_branch || github.ref_name }}
+          EVENT_HEAD_SHA: ${{ matrix.event_head_sha }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
@@ -77,6 +80,10 @@ jobs:
             echo "GitHub CLI (gh) is required."
             exit 1
           }
+          if [[ ! "$EVENT_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Could not resolve the PR head at the base-advance event." >&2
+            exit 1
+          fi
           pr_state="$(
             gh api "repos/$REPO/pulls/$PR_NUMBER" \
               | jq -er '[.node_id, .base.ref, .base.sha, .head.sha, ((.auto_merge != null) | tostring)] | @tsv'
@@ -84,6 +91,10 @@ jobs:
           IFS=$'\t' read -r pr_node_id current_base base_sha head_sha auto_merge_enabled <<< "$pr_state"
           if [[ "$current_base" != "$BASE_BRANCH" ]]; then
             echo "PR #$PR_NUMBER no longer targets $BASE_BRANCH; skipping it."
+            exit 0
+          fi
+          if [[ "$head_sha" != "$EVENT_HEAD_SHA" ]]; then
+            echo "PR #$PR_NUMBER gained a new head after the base advance; leaving it reviewable."
             exit 0
           fi
           if [[ ! "$pr_node_id" =~ ^PR_ || ! "$base_sha" =~ ^[0-9a-f]{40}$ || ! "$head_sha" =~ ^[0-9a-f]{40}$ || ! "$auto_merge_enabled" =~ ^(true|false)$ ]]; then

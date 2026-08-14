@@ -81,6 +81,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "stock_clean_envelope" in review_gate
     assert "didn.t find any major issues" in review_gate
     assert "codex[[:space:]]+in[[:space:]]+github" in review_gate
+    assert "def availability_notice:" in review_gate
+    assert "availability_notice) | not" in review_gate
     assert 'source == "issue_comment"' in review_gate
     assert "total_count" in review_gate
     assert "latest_regular_issue_comment_at" in review_gate
@@ -101,6 +103,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "body_is_regular_review" in regular_review
     assert "def security_heading:" in regular_review
     assert "security_heading | not" in regular_review
+    assert "EVENT_REVIEW_COMMIT_SHA" in regular_review
+    assert "def availability_notice:" in regular_review
+    assert "availability_notice | not" in regular_review
+    assert "Ignoring a review attached to an older pull request head" in regular_review
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in regular_review
     assert "Regular review invalidated; require a newer normal review" in regular_review
     assert "gh workflow run review-gate.yml" in regular_review
@@ -115,6 +121,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "body_is_clean_comment" in regular_comment
     assert "def security_heading:" in regular_comment
     assert "security_heading | not" in regular_comment
+    assert "def availability_notice:" in regular_comment
+    assert "availability_notice | not" in regular_comment
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "gh pr merge" not in regular_review + regular_comment
@@ -134,6 +142,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
     assert "pulls?state=open" in base_advance
+    assert "event_head_sha" in base_advance
+    assert "EVENT_HEAD_SHA" in base_advance
+    assert "gained a new head after the base advance" in base_advance
     assert "group: review-gate-base-advance-" in base_advance
     assert "cancel-in-progress: true" in base_advance
     assert "review-gate-base-change" in base_advance
@@ -145,12 +156,15 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "*/5 * * * *" in audit
     assert "matrix.pr_number" in audit
     assert "actions: write" in audit
+    assert "statuses: read" in audit
     assert "group: review-gate-audit-${{ matrix.pr_number }}" in audit
     assert "reviewThreads" in audit
     assert "review result" in audit
     assert "gh workflow run review-gate.yml" in audit
     assert "def security_heading:" in audit
     assert "security_heading) | not" in audit
+    assert "def availability_notice:" in audit
+    assert "availability_notice) | not" in audit
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "actions: write" in rollout
