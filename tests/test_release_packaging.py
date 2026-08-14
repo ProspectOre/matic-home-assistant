@@ -76,7 +76,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in review_gate
     assert "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]" in review_gate
     assert "Dedicated routers classify review and" in review_gate
-    assert "Exact-head regular PR reviews and explicit clean regular issue" in review_gate
+    assert (
+        "Exact-head regular PR reviews and explicit clean regular issue" in review_gate
+    )
     assert "updatedAt" in review_gate
     assert "stock_clean_envelope" in review_gate
     assert "stock_clean_issue_comment_envelope" in review_gate
@@ -115,7 +117,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Regular review invalidated; require a newer normal review" in regular_review
     assert "needs: route" in regular_review
     assert "if: needs.route.outputs.regular == 'true'" in regular_review
-    assert "group: review-gate-${{ github.event.pull_request.number }}" in regular_review
+    assert (
+        "group: review-gate-${{ github.event.pull_request.number }}"
+        in regular_review
+    )
     assert '--ref "$WORKFLOW_REF"' in regular_review
     assert "gh workflow run review-gate.yml" in regular_review
 
