@@ -138,6 +138,9 @@ jobs:
               echo "Could not resolve a pull request node ID to disable automatic merge."
               exit 1
             fi
+            # Revoke any old green gate before a transient GraphQL/API failure
+            # can leave an already-armed PR eligible to merge automatically.
+            stamp_review_gate pending "Disarming automatic merge on $head_prefix"
             # shellcheck disable=SC2016 # GraphQL expands this variable, not the shell.
             gh api graphql \
               -f query='mutation($pullRequestId: ID!) { disablePullRequestAutoMerge(input: {pullRequestId: $pullRequestId}) { pullRequest { id } } }' \

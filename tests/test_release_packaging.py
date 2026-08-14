@@ -55,6 +55,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     base_change = (
         ROOT / ".github" / "workflows" / "review-base-change.yml"
     ).read_text()
+    rollout = (ROOT / ".github" / "workflows" / "review-gate-rollout.yml").read_text()
 
     assert "cancel-in-progress: true" in review_gate
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
@@ -64,13 +65,21 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     )
     assert "updatedAt" in review_gate
     assert "final_gate_snapshot" in review_gate
+    assert "Disarming automatic merge on" in review_gate
     assert "gh pr merge" not in review_gate
     assert "--auto" not in review_gate
     assert "github.event.changes.base != null" in base_change
+    assert "REVIEW_GATE_CONTEXT: review-gate" in base_change
     assert "review-gate-base-change" in base_change
     assert "Base changed; push a new head before @codex review" in base_change
+    assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert "gh pr merge" not in base_change
     assert "--auto" not in base_change
+    assert "pulls?state=open" in rollout
+    assert "Disarming automatic merge; waiting for @codex review" in rollout
+    assert "disablePullRequestAutoMerge" in rollout
+    assert "gh pr merge" not in rollout
+    assert "--auto" not in rollout
 
 
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:

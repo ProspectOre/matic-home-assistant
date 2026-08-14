@@ -15,11 +15,12 @@ jobs:
     if: github.event.changes.base != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
-      - name: Persist base-change marker on the retargeted head
+      - name: Revoke the required gate and persist a base-change marker
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
         run: |
           set -euo pipefail
@@ -32,9 +33,18 @@ jobs:
             echo "The base-change event did not provide a valid head SHA."
             exit 1
           fi
-          gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
-            -f state=pending \
-            -f context="$REVIEW_BASE_CONTEXT" \
-            -f description="Base changed; push a new head before @codex review" \
-            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+
+          stamp_status() {
+            local context="$1"
+            gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent \
+              -f state=pending \
+              -f context="$context" \
+              -f description="Base changed; push a new head before @codex review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          }
+
+          # Revoke the required context first. Even if the durable marker write
+          # later fails, a retarget cannot retain a stale green review gate.
+          stamp_status "$REVIEW_GATE_CONTEXT"
+          stamp_status "$REVIEW_BASE_CONTEXT"
           echo "A base change invalidated ordinary review for ${EVENT_HEAD_SHA:0:10}."
