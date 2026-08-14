@@ -40,6 +40,8 @@ the integration so instructions and behavior stay aligned with each release.
 
 - [Entities, controls, and actions](automation.md#entity-contract) — Use the
   complete Home Assistant surface exposed by one robot.
+- [Matic Cues](automation.md#matic-cues) — Automate privacy-safe voice, intent,
+  gesture, and following lifecycle state and review the enablement boundary.
 - [Saved cleaning plans](automation.md#saved-plans) — Choose rooms, customize
   per-room cleaning, and save the top-to-bottom order.
 - [Intelligent rotation](automation.md#intelligent-rotation) — Rotate fairly

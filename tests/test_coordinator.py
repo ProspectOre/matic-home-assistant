@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -18,13 +19,16 @@ from custom_components.matic_robot.client.exceptions import (
 )
 from custom_components.matic_robot.client.models import (
     CleaningSession,
+    CuesGestureStatus,
+    CuesIntent,
+    CuesVoiceStatus,
     FloorPlan,
     RobotInfo,
     RobotOperationalState,
     RobotTelemetry,
     Room,
 )
-from custom_components.matic_robot.coordinator import MaticCoordinator
+from custom_components.matic_robot.coordinator import MaticCoordinator, MaticCuesEvent
 
 
 def _client() -> AsyncMock:
@@ -102,6 +106,164 @@ async def test_update_combines_required_and_optional_local_state(hass) -> None:
     assert state.floor_plan is None
     assert state.pose is None
     assert state.telemetry.protocol_version == 25
+
+
+async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CUES
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    entity_events: list[MaticCuesEvent] = []
+    remove_listener = coordinator.async_add_cues_listener(entity_events.append)
+    bus_events = async_capture_events(hass, EVENT_CUES)
+
+    ready = replace(
+        initial.operational,
+        cues_voice_status=CuesVoiceStatus.LISTENING_FOR_WAKE_WORD,
+    )
+    coordinator.async_process_cues_state(ready)
+    listening = replace(
+        ready,
+        cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT,
+    )
+    coordinator.async_process_cues_state(listening)
+    classified = replace(
+        listening,
+        cues_voice_status=CuesVoiceStatus.CLASSIFIED,
+        cues_voice_intent=CuesIntent.POINT_TO_CLEAN,
+        cues_gesture_status=CuesGestureStatus.POINTED_TARGET_ACCEPTED,
+        following_person=True,
+    )
+    coordinator.async_process_cues_state(classified)
+    coordinator.async_process_cues_state(classified)
+    await hass.async_block_till_done()
+
+    assert [event.event_type for event in entity_events] == [
+        "ready",
+        "wake_word_detected",
+        "intent_classified",
+        "gesture_pointed_target_accepted",
+        "following_started",
+    ]
+    assert entity_events[2].attributes == {"intent": "point_to_clean"}
+    assert [event.data["event_type"] for event in bus_events] == [
+        event.event_type for event in entity_events
+    ]
+    assert bus_events[2].data["intent"] == "point_to_clean"
+    assert bus_events[2].data["entry_id"] == "entry"
+    assert bus_events[2].data["device_id"] is None
+    assert coordinator.data.operational.following_person is True
+
+    remove_listener()
+    coordinator.async_process_cues_state(replace(classified, following_person=False))
+    assert entity_events[-1].event_type == "following_started"
+
+
+@pytest.mark.parametrize(
+    ("voice_status", "event_type"),
+    [
+        (CuesVoiceStatus.DISABLED, "disabled"),
+        (CuesVoiceStatus.THINKING_FOR_INTENT, "intent_processing"),
+        (CuesVoiceStatus.REJECTED, "intent_rejected"),
+    ],
+)
+async def test_live_cues_remaining_voice_transitions(
+    hass, voice_status: CuesVoiceStatus, event_type: str
+) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    events: list[MaticCuesEvent] = []
+    coordinator.async_add_cues_listener(events.append)
+
+    coordinator.async_process_cues_state(
+        replace(initial.operational, cues_voice_status=voice_status)
+    )
+
+    assert [event.event_type for event in events] == [event_type]
+
+
+async def test_live_cues_classified_intent_can_change_in_place(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    classified = replace(
+        initial.operational,
+        cues_voice_status=CuesVoiceStatus.CLASSIFIED,
+        cues_voice_intent=CuesIntent.CLEAN,
+    )
+    coordinator.async_set_updated_data(replace(initial, operational=classified))
+    events: list[MaticCuesEvent] = []
+    coordinator.async_add_cues_listener(events.append)
+
+    coordinator.async_process_cues_state(
+        replace(classified, cues_voice_intent=CuesIntent.CLEAN_ALL)
+    )
+
+    assert events == [MaticCuesEvent("intent_classified", {"intent": "clean_all"})]
+
+
+async def test_live_cues_ignores_updates_before_initial_refresh(hass) -> None:
+    coordinator = _coordinator(hass, _client())
+
+    coordinator.async_process_cues_state(
+        RobotOperationalState(50, (), (), False, False, False, False, False, False)
+    )
+
+    assert coordinator.data is None
+
+
+async def test_cues_watcher_retries_transport_failures(hass) -> None:
+    client = _client()
+
+    async def failed_subscription():
+        if False:
+            yield client.async_get_state.return_value
+        raise MaticError("offline")
+
+    client.async_subscribe_state = failed_subscription
+    coordinator = _coordinator(hass, client)
+
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.asyncio.sleep",
+            AsyncMock(side_effect=[None, asyncio.CancelledError]),
+        ) as sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator.async_watch_cues()
+
+    assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
+
+
+async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+    updated = replace(
+        initial.operational,
+        cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT,
+    )
+
+    async def subscription():
+        yield updated
+        raise asyncio.CancelledError
+
+    client.async_subscribe_state = subscription
+
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_cues()
+
+    assert (
+        coordinator.data.operational.cues_voice_status
+        is CuesVoiceStatus.LISTENING_FOR_INTENT
+    )
 
 
 async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:

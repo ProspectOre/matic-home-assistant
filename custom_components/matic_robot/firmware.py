@@ -17,11 +17,23 @@ from .client.api import MaticHermesClient
 from .client.endpoints import HERMES_ENDPOINTS, HermesEndpoint
 from .client.exceptions import MaticError
 from .client.models import HermesCollectionEntry, RobotState
-from .const import DOMAIN, EVENT_FIRMWARE_CHANGED
+from .client.wire import wire_shape
+from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
 
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.firmware"
 MAX_HISTORY = 52
+ANALYSIS_VERSION = 1
+
+# Length-delimited values are opaque unless their message nesting has direct
+# protocol evidence. Root fields are safe to fingerprint on every bounded
+# value; these are the only approved recursive paths. They cover Kabuki's
+# repeated state envelopes plus the privacy-safe Cues voice and gesture
+# lifecycle. It deliberately stops before classified intent, rejection detail,
+# target data, coordinates, media, and every other nested opaque value.
+WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
+    "kabuki_state": ((18,), (18, 17), (18, 21)),
+}
 
 
 class FirmwareTracker:
@@ -131,6 +143,16 @@ class FirmwareTracker:
                 "content_changed_endpoints": len(
                     release_comparison["content_changed_endpoints"]
                 ),
+                "wire_shape_changed_endpoints": len(
+                    release_comparison["wire_shape_changed_endpoints"]
+                ),
+                "new_wire_shape_count": sum(
+                    len(shapes)
+                    for shapes in release_comparison["new_wire_shapes"].values()
+                ),
+                "wire_shape_candidate_endpoints": release_comparison[
+                    "wire_shape_changed_endpoints"
+                ],
             }
             history.append(current)
             del history[:-MAX_HISTORY]
@@ -169,6 +191,36 @@ class FirmwareTracker:
             )
         elif release_comparison["baseline"] or release_changed:
             ir.async_delete_issue(self.hass, DOMAIN, self.issue_id(robot_id))
+        snapshot_release_changed = bool(
+            comparison["firmware_changed"] or comparison["protocol_changed"]
+        )
+        if snapshot_release_changed:
+            self.hass.bus.async_fire(
+                EVENT_FIRMWARE_ANALYZED,
+                {
+                    "entry_id": robot_id,
+                    "firmware_version": current.get("firmware_version"),
+                    "protocol_version": current.get("protocol_version"),
+                    "compatibility_status": robot["compatibility_status"],
+                    "analysis_version": current.get("analysis_version"),
+                    "structural_endpoints": current.get("structural_endpoints"),
+                    "wire_shape_count": current.get("wire_shape_count"),
+                    "availability_changed_endpoints": len(
+                        release_comparison["changed_endpoints"]
+                    ),
+                    "content_changed_endpoints": len(
+                        release_comparison["content_changed_endpoints"]
+                    ),
+                    "wire_shape_changed_endpoints": release_comparison[
+                        "wire_shape_changed_endpoints"
+                    ],
+                    "new_wire_shape_count": sum(
+                        len(shapes)
+                        for shapes in release_comparison["new_wire_shapes"].values()
+                    ),
+                    "new_wire_shapes": release_comparison["new_wire_shapes"],
+                },
+            )
         return comparison
 
     def summary(self, robot_id: str) -> dict[str, Any]:
@@ -180,14 +232,24 @@ class FirmwareTracker:
             "observed_version": robot.get("observed_version"),
             "observed_protocol": robot.get("observed_protocol"),
             "compatibility_status": robot.get("compatibility_status", "pending"),
+            "analysis_version": snapshot.get("analysis_version"),
             "last_snapshot_at": snapshot.get("captured_at"),
             "snapshot_count": len(robot.get("history", [])),
             "endpoint_count": snapshot.get("endpoint_count"),
             "populated_endpoints": snapshot.get("populated_endpoints"),
             "empty_endpoints": snapshot.get("empty_endpoints"),
             "failed_endpoints": snapshot.get("failed_endpoints"),
+            "structural_endpoints": snapshot.get("structural_endpoints"),
+            "wire_shape_count": snapshot.get("wire_shape_count"),
             "changed_endpoints": comparison.get("changed_endpoints"),
             "content_changed_endpoints": comparison.get("content_changed_endpoints"),
+            "wire_shape_changed_endpoints": comparison.get(
+                "wire_shape_changed_endpoints"
+            ),
+            "new_wire_shape_count": comparison.get("new_wire_shape_count"),
+            "wire_shape_candidate_endpoints": comparison.get(
+                "wire_shape_candidate_endpoints", []
+            ),
         }
 
     def needs_snapshot(self, robot_id: str, version: str, protocol: int | None) -> bool:
@@ -196,6 +258,7 @@ class FirmwareTracker:
         return bool(
             snapshot.get("firmware_version") != version
             or snapshot.get("protocol_version") != protocol
+            or snapshot.get("analysis_version") != ANALYSIS_VERSION
         )
 
     @callback
@@ -241,6 +304,8 @@ def _compare_snapshots(
             "protocol_changed": False,
             "changed_endpoints": [],
             "content_changed_endpoints": [],
+            "wire_shape_changed_endpoints": [],
+            "new_wire_shapes": {},
         }
     previous_endpoints = {item["name"]: item for item in previous.get("endpoints", [])}
     current_endpoints = {item["name"]: item for item in current.get("endpoints", [])}
@@ -256,6 +321,17 @@ def _compare_snapshots(
         for name in names
         if previous_endpoints.get(name) != current_endpoints.get(name)
     )
+    new_wire_shapes: dict[str, list[str]] = {}
+    for name in sorted(previous_endpoints.keys() & current_endpoints.keys()):
+        previous_shapes = _endpoint_wire_shapes(previous_endpoints[name])
+        current_shapes = _endpoint_wire_shapes(current_endpoints[name])
+        # An old snapshot or an opaque/non-protobuf payload establishes no
+        # structural baseline. Never turn a checker upgrade into a candidate.
+        if previous_shapes is None or current_shapes is None:
+            continue
+        added = sorted(current_shapes - previous_shapes)
+        if added:
+            new_wire_shapes[name] = added
     return {
         "baseline": False,
         "firmware_changed": previous.get("firmware_version")
@@ -264,7 +340,28 @@ def _compare_snapshots(
         != current.get("protocol_version"),
         "changed_endpoints": availability_changed,
         "content_changed_endpoints": content_changed,
+        "wire_shape_changed_endpoints": sorted(new_wire_shapes),
+        "new_wire_shapes": new_wire_shapes,
     }
+
+
+def _endpoint_wire_shapes(endpoint: Mapping[str, Any]) -> frozenset[str] | None:
+    """Return one endpoint's value-free shapes, or no comparable baseline."""
+    shapes: set[str] = set()
+    observed = False
+    for entry in endpoint.get("entries", []):
+        if not isinstance(entry, Mapping) or "wire_shape" not in entry:
+            continue
+        wire_shape_value = entry.get("wire_shape")
+        if wire_shape_value is None:
+            continue
+        if not isinstance(wire_shape_value, list) or not all(
+            isinstance(item, str) for item in wire_shape_value
+        ):
+            continue
+        observed = True
+        shapes.update(wire_shape_value)
+    return frozenset(shapes) if observed else None
 
 
 def _compatibility_signature(endpoint: Mapping[str, Any] | None) -> tuple[Any, ...]:
@@ -304,13 +401,20 @@ def snapshot_timestamp() -> str:
     return dt_util.utcnow().isoformat()
 
 
-def fingerprint_entry(value: HermesCollectionEntry) -> dict[str, Any]:
+def fingerprint_entry(
+    value: HermesCollectionEntry, *, endpoint_name: str | None = None
+) -> dict[str, Any]:
     """Return irreversible metadata for one Hermes value."""
+    shape = wire_shape(
+        value.value,
+        nested_message_paths=WIRE_SHAPE_NESTED_PATHS.get(endpoint_name or "", ()),
+    )
     return {
         "key_size": len(value.key),
         "value_size": len(value.value),
         "key_sha256": hashlib.sha256(value.key).hexdigest(),
         "value_sha256": hashlib.sha256(value.value).hexdigest(),
+        "wire_shape": list(shape) if shape is not None else None,
     }
 
 
@@ -337,7 +441,9 @@ async def _async_snapshot_endpoint(
         "kind": endpoint.kind,
         "sensitivity": endpoint.sensitivity,
         "status": "populated" if values else "empty",
-        "entries": [fingerprint_entry(value) for value in values],
+        "entries": [
+            fingerprint_entry(value, endpoint_name=endpoint.name) for value in values
+        ],
     }
 
 
@@ -355,7 +461,18 @@ async def async_build_firmware_snapshot(
     firmware_version = (
         state.telemetry.software_version or state.operational.software_version
     )
+    structural_endpoints = sum(
+        any(entry.get("wire_shape") is not None for entry in endpoint["entries"])
+        for endpoint in endpoints
+    )
+    wire_shape_count = sum(
+        len(entry["wire_shape"])
+        for endpoint in endpoints
+        for entry in endpoint["entries"]
+        if entry.get("wire_shape") is not None
+    )
     return {
+        "analysis_version": ANALYSIS_VERSION,
         "captured_at": snapshot_timestamp(),
         "firmware_version": firmware_version,
         "protocol_version": state.telemetry.protocol_version,
@@ -367,5 +484,7 @@ async def async_build_firmware_snapshot(
         "failed_endpoints": sum(
             endpoint["status"] == "error" for endpoint in endpoints
         ),
+        "structural_endpoints": structural_endpoints,
+        "wire_shape_count": wire_shape_count,
         "endpoints": endpoints,
     }

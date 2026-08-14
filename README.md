@@ -21,10 +21,11 @@ plans, automation, privacy, and troubleshooting.
 Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
 HACS. Compatibility with other Home Assistant releases has not been validated.
 
-The integration has been tested on a real robot and a stock Home Assistant
-Yellow. One robot creates 51 fixed entities — 21 sensors, 12 binary sensors,
-5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 update, and 1 vacuum —
-plus two opt-in room statistics sensors per mapped room.
+The integration has been tested on real robots and Home Assistant Yellow and
+Container installations. One robot creates 55 fixed entities — 23 sensors,
+13 binary sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras,
+1 event, 1 update, and 1 vacuum — plus two opt-in room statistics sensors per
+mapped room.
 Setup, state, map, cleaning, and settings paths have been exercised on the robot,
 and the integration is covered by automated tests.
 
@@ -38,12 +39,13 @@ and the integration is covered by automated tests.
   photographic SLAM camera and admin-only 3D Map Studio.
 - Activity, battery, rooms, hardware/software/protocol, current area, update,
   Wi-Fi, schedule, local cleaning history, dock/sink, Matter-pairing,
-  robot SSH-tunnel permission, diagnostic-upload state, and persistent firmware
-  compatibility health.
-- Controls for child lock, pet-waste avoidance, Hey Matic, double-pass mopping,
+  robot SSH-tunnel permission, diagnostic-upload state, Cues voice/gesture
+  lifecycle and following state, and persistent firmware compatibility health.
+- Controls for child lock, pet-waste avoidance, Matic Cues, double-pass mopping,
   and water flow.
-- Payload-free endpoint inspection and persistent weekly firmware compatibility
-  snapshots for every known non-credential Hermes read surface.
+- Payload-free endpoint inspection and automatic firmware compatibility
+  snapshots for every known non-credential Hermes read surface, including
+  bounded value-free wire-shape candidates for newly added protocol fields.
 
 ## Home Assistant capabilities
 
@@ -72,8 +74,11 @@ The integration adds Home Assistant-native planning and automation:
 - **Plan operations as actions.** Preview, run, stop-and-dock, history
   reset, and plan management are Home Assistant actions, so schedules,
   presence, and scripts can drive them unattended.
-- **Hey Matic control.** Enable or disable the robot's voice activation
-  from a switch — and therefore from any automation, scene, or schedule.
+- **Matic Cues.** Enable or disable Cues from a switch, observe its live voice
+  and gesture lifecycle, react to classified cleaning/navigation/following
+  intents, and use following-person state in automations. The integration
+  exposes only classifications and lifecycle state: no transcript, audio,
+  image, video, person identity, or pointing coordinate enters Home Assistant.
 - **Room-level automation events.** `room_started`, `room_completed`,
   `room_failed`, `room_interrupted`, `room_cancelled`, and
   `room_ended_unverified` events per run, with Home Assistant Area-to-room
@@ -103,6 +108,14 @@ Camera and microphone recording, clip retrieval and caching, recording metadata,
 and vendor share or discard decisions are not included because these
 privacy-sensitive support operations can have external or irreversible effects.
 See [Recording-related protocol notes](docs/recording-protocol.md).
+
+The Cues switch changes a local robot setting, but enabling it opts the robot
+into Matic's documented Cues processing. Matic says wake-word, direction, and
+gesture processing happen on-device, while audio after the chime is sent to
+Google Gemini; video is not sent. Review Matic's
+[Cues overview](https://maticrobots.com/hey-matic) and
+[voice-data explanation](https://maticrobots.com/blog/how-your-voice-data-is-handled)
+before enabling it.
 
 ## Install
 
@@ -216,9 +229,12 @@ uses the LAN.
   unofficial local protocol integration. Check the
   [firmware compatibility ledger](docs/firmware-compatibility.md) for observed
   versions and validation status. A newly observed version emits the
-  `matic_robot_firmware_changed` event; run the **Firmware snapshot** action to
-  compare all known read endpoints with the prior snapshot. A Repair is created
-  only when that comparison finds compatibility drift.
+  `matic_robot_firmware_changed` event and automatically compares all known read
+  endpoints with the prior snapshot. `matic_robot_firmware_analyzed` carries a
+  silent, payload-free result for advanced automations; the **Firmware
+  snapshot** action remains available for a deliberate repeat. A Repair is
+  created only when the comparison finds endpoint availability or transport
+  drift, never merely because a new structural candidate appeared.
 - Rooms without an exact Area name or unique alias require one manual mapping.
 - Managed plans require unique mapped room names because the robot's completion
   ledger identifies rooms by name. Duplicate names are blocked before motion

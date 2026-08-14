@@ -1375,9 +1375,12 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
         response = await _registered_handler(services, "firmware_snapshot")(call)
 
     assert response["endpoint_count"] == len(HERMES_ENDPOINTS)
+    assert response["analysis_version"] == 1
     assert response["populated_endpoints"] == len(HERMES_ENDPOINTS) - 2
     assert response["empty_endpoints"] == 1
     assert response["failed_endpoints"] == 1
+    assert response["structural_endpoints"] == 0
+    assert response["wire_shape_count"] == 0
     failed = next(item for item in response["endpoints"] if item["status"] == "error")
     assert failed["error_type"] == "CannotConnectError"
     assert "synthetic failure" not in repr(response)

@@ -55,6 +55,9 @@ from .models import (
     CleaningSchedule,
     CleaningSession,
     CleaningSessionRecord,
+    CuesGestureStatus,
+    CuesIntent,
+    CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
     RobotInfo,
@@ -468,6 +471,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return _decode_operational_state(payload)
         except DecodeError as err:
             raise CannotConnectError("Hermes returned malformed robot state") from err
+
+    async def async_subscribe_state(self) -> AsyncIterator[RobotOperationalState]:
+        """Yield live snapshots from the local ``kabuki_state`` property."""
+        async for entry in self.async_subscribe_collection_entries("kabuki_state"):
+            try:
+                yield _decode_operational_state(entry.value)
+            except DecodeError as err:
+                raise CannotConnectError(
+                    "Hermes returned malformed subscribed robot state"
+                ) from err
 
     async def async_get_floor_plan(self) -> FloorPlan:
         """Read and decode the active local coverage plan."""
@@ -1088,6 +1101,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 def _decode_operational_state(payload: bytes) -> RobotOperationalState:
     """Decode the verified subset of Matic's internal Kabuki output."""
     wire = KabukiOutputWire.FromString(payload)
+    voice_status, voice_intent, gesture_status, following_person = _decode_cues_state(
+        payload
+    )
     percentage = None
     if wire.HasField("battery_fraction") and math.isfinite(wire.battery_fraction):
         percentage = max(0, min(100, round(wire.battery_fraction * 100)))
@@ -1107,7 +1123,133 @@ def _decode_operational_state(payload: bytes) -> RobotOperationalState:
         current_area=_decode_text_field(payload, 16),
         previous_area=_decode_text_field(payload, 14),
         robot_profile=_decode_text_field(payload, 17),
+        cues_voice_status=voice_status,
+        cues_voice_intent=voice_intent,
+        cues_gesture_status=gesture_status,
+        following_person=following_person,
     )
+
+
+_CUES_INTENTS_BY_FIELD = {
+    1: CuesIntent.CLEAN,
+    2: CuesIntent.DOCK,
+    3: CuesIntent.PAUSE,
+    4: CuesIntent.RESUME,
+    5: CuesIntent.STOP,
+    6: CuesIntent.FOLLOW_PERSON,
+    7: CuesIntent.SINK_SUMMON,
+    8: CuesIntent.NAVIGATE,
+    # Fields 9, 10, and 17 are recording-only intents. Deliberately collapse
+    # those classifications to UNKNOWN: this client does not expose Matic's
+    # recording features or create an automation signal around them.
+    9: CuesIntent.UNKNOWN,
+    10: CuesIntent.UNKNOWN,
+    11: CuesIntent.REDO_LAST_CLEAN,
+    12: CuesIntent.CLEAN_ALL,
+    13: CuesIntent.POINT_TO_CLEAN,
+    14: CuesIntent.POINT_TO_CLEAN,
+    15: CuesIntent.GO_AWAY,
+    16: CuesIntent.UNKNOWN,
+    17: CuesIntent.UNKNOWN,
+    # Firmware retains both legacy and current CleaningIntent tags.
+    18: CuesIntent.CLEAN,
+}
+
+_CUES_GESTURES_BY_FIELD = {
+    1: CuesGestureStatus.AWAITING_POINTED_TARGET,
+    2: CuesGestureStatus.POINTED_TARGET_ACCEPTED,
+    3: CuesGestureStatus.NO_TARGET_FOUND,
+    4: CuesGestureStatus.FACING_USER,
+    5: CuesGestureStatus.PERSON_NOT_FOUND,
+    6: CuesGestureStatus.FOLLOWING,
+}
+
+
+def _decode_cues_state(
+    payload: bytes,
+) -> tuple[
+    CuesVoiceStatus | None,
+    CuesIntent | None,
+    CuesGestureStatus | None,
+    bool | None,
+]:
+    """Decode the non-media Cues subset of Kabuki's repeated payloads."""
+    voice_status: CuesVoiceStatus | None = None
+    voice_intent: CuesIntent | None = None
+    gesture_status: CuesGestureStatus | None = None
+    following_person: bool | None = None
+    for output_field in decode_fields(payload):
+        if (
+            output_field.number != 18
+            or output_field.wire_type != 2
+            or not isinstance(output_field.value, bytes)
+        ):
+            continue
+        for cues_field in decode_fields(output_field.value):
+            if cues_field.number == 17 and cues_field.wire_type == 2:
+                assert isinstance(cues_field.value, bytes)
+                voice_status, voice_intent = _decode_cues_voice_status(cues_field.value)
+                if following_person is None:
+                    following_person = False
+            elif cues_field.number == 20 and cues_field.wire_type == 2:
+                # Following is represented by presence of a unit payload.
+                following_person = True
+            elif cues_field.number == 21 and cues_field.wire_type == 2:
+                assert isinstance(cues_field.value, bytes)
+                gesture_status = _decode_cues_gesture_status(cues_field.value)
+                if following_person is None:
+                    following_person = False
+    return voice_status, voice_intent, gesture_status, following_person
+
+
+def _decode_cues_voice_status(
+    payload: bytes,
+) -> tuple[CuesVoiceStatus | None, CuesIntent | None]:
+    """Decode Matic's VoiceStatus oneof without retaining voice content."""
+    status: CuesVoiceStatus | None = None
+    intent: CuesIntent | None = None
+    for field in decode_fields(payload):
+        if field.wire_type != 2 or not isinstance(field.value, bytes):
+            continue
+        if field.number == 1:
+            status = CuesVoiceStatus.DISABLED
+            intent = None
+        elif field.number == 2:
+            status = CuesVoiceStatus.LISTENING_FOR_WAKE_WORD
+            intent = None
+        elif field.number == 3:
+            status = CuesVoiceStatus.CLASSIFIED
+            intent = _decode_cues_intent(field.value)
+        elif field.number == 4:
+            # Rejection details can contain user-derived context. Only expose
+            # the lifecycle result needed for an automation trigger.
+            status = CuesVoiceStatus.REJECTED
+            intent = None
+        elif field.number == 5:
+            status = CuesVoiceStatus.LISTENING_FOR_INTENT
+            intent = None
+        elif field.number == 6:
+            status = CuesVoiceStatus.THINKING_FOR_INTENT
+            intent = None
+    return status, intent
+
+
+def _decode_cues_intent(payload: bytes) -> CuesIntent:
+    """Decode the classified intent kind, excluding recording-only variants."""
+    intent = CuesIntent.UNKNOWN
+    for field in decode_fields(payload):
+        if field.wire_type == 2 and isinstance(field.value, bytes):
+            intent = _CUES_INTENTS_BY_FIELD.get(field.number, CuesIntent.UNKNOWN)
+    return intent
+
+
+def _decode_cues_gesture_status(payload: bytes) -> CuesGestureStatus | None:
+    """Decode Matic's gesture lifecycle oneof without coordinates or imagery."""
+    status = None
+    for field in decode_fields(payload):
+        if field.wire_type == 2 and isinstance(field.value, bytes):
+            status = _CUES_GESTURES_BY_FIELD.get(field.number, status)
+    return status
 
 
 def _decode_current_version(

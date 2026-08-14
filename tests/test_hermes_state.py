@@ -9,7 +9,13 @@ from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.message import DecodeError
 
 from custom_components.matic_robot.client.api import _decode_operational_state
-from custom_components.matic_robot.client.models import CleaningSchedule, RobotActivity
+from custom_components.matic_robot.client.models import (
+    CleaningSchedule,
+    CuesGestureStatus,
+    CuesIntent,
+    CuesVoiceStatus,
+    RobotActivity,
+)
 from custom_components.matic_robot.client.proto.hermes_pb2 import (
     CollectionRequest,
     InitialRequest,
@@ -71,6 +77,7 @@ def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
 
     assert absent.battery_percentage is None
     assert absent.activity is RobotActivity.CHARGING
+    assert absent.following_person is None
     assert non_finite.battery_percentage is None
 
 
@@ -130,6 +137,129 @@ def test_live_and_future_error_codes_remain_truthful_and_automation_safe() -> No
         "error_code_304",
         "error_code_999",
     )
+
+
+def _varint(value: int) -> bytes:
+    encoded = bytearray()
+    while value > 0x7F:
+        encoded.append((value & 0x7F) | 0x80)
+        value >>= 7
+    encoded.append(value)
+    return bytes(encoded)
+
+
+def _message_field(number: int, value: bytes = b"") -> bytes:
+    return _varint(number << 3 | 2) + _varint(len(value)) + value
+
+
+def _varint_field(number: int, value: int) -> bytes:
+    return _varint(number << 3) + _varint(value)
+
+
+def _cues_output(*payloads: bytes) -> bytes:
+    return b"".join(_message_field(18, payload) for payload in payloads)
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        (1, CuesVoiceStatus.DISABLED),
+        (2, CuesVoiceStatus.LISTENING_FOR_WAKE_WORD),
+        (4, CuesVoiceStatus.REJECTED),
+        (5, CuesVoiceStatus.LISTENING_FOR_INTENT),
+        (6, CuesVoiceStatus.THINKING_FOR_INTENT),
+    ],
+)
+def test_decode_cues_voice_lifecycle(field: int, expected: CuesVoiceStatus) -> None:
+    payload = _cues_output(_message_field(17, _message_field(field)))
+
+    state = _decode_operational_state(payload)
+
+    assert state.cues_voice_status is expected
+    assert state.cues_voice_intent is None
+    assert state.following_person is False
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    [
+        (1, CuesIntent.CLEAN),
+        (18, CuesIntent.CLEAN),
+        (2, CuesIntent.DOCK),
+        (3, CuesIntent.PAUSE),
+        (4, CuesIntent.RESUME),
+        (5, CuesIntent.STOP),
+        (6, CuesIntent.FOLLOW_PERSON),
+        (7, CuesIntent.SINK_SUMMON),
+        (8, CuesIntent.NAVIGATE),
+        (11, CuesIntent.REDO_LAST_CLEAN),
+        (12, CuesIntent.CLEAN_ALL),
+        (13, CuesIntent.POINT_TO_CLEAN),
+        (14, CuesIntent.POINT_TO_CLEAN),
+        (15, CuesIntent.GO_AWAY),
+        (16, CuesIntent.UNKNOWN),
+        (99, CuesIntent.UNKNOWN),
+    ],
+)
+def test_decode_cues_classified_intents(field: int, expected: CuesIntent) -> None:
+    voice_intent = _message_field(field)
+    voice_status = _message_field(3, voice_intent)
+    payload = _cues_output(_message_field(17, voice_status))
+
+    state = _decode_operational_state(payload)
+
+    assert state.cues_voice_status is CuesVoiceStatus.CLASSIFIED
+    assert state.cues_voice_intent is expected
+
+
+@pytest.mark.parametrize("field", [9, 10, 17])
+def test_decode_cues_withholds_recording_only_intents(field: int) -> None:
+    voice_status = _message_field(3, _message_field(field))
+
+    state = _decode_operational_state(_cues_output(_message_field(17, voice_status)))
+
+    assert state.cues_voice_intent is CuesIntent.UNKNOWN
+
+
+@pytest.mark.parametrize(
+    ("field", "expected"),
+    list(enumerate(CuesGestureStatus, start=1)),
+)
+def test_decode_cues_gesture_lifecycle(field: int, expected: CuesGestureStatus) -> None:
+    payload = _cues_output(_message_field(21, _message_field(field)))
+
+    state = _decode_operational_state(payload)
+
+    assert state.cues_gesture_status is expected
+
+
+def test_decode_cues_synthetic_ready_fixture_and_following_presence() -> None:
+    ready_voice = _message_field(17, _message_field(2))
+    unrelated_payload = _varint_field(15, 1)
+    following = _message_field(20)
+
+    state = _decode_operational_state(
+        _cues_output(ready_voice, unrelated_payload, following)
+    )
+
+    assert state.cues_voice_status is CuesVoiceStatus.LISTENING_FOR_WAKE_WORD
+    assert state.cues_gesture_status is None
+    assert state.following_person is True
+
+
+def test_decode_cues_voice_status_ignores_unrelated_wire_fields() -> None:
+    voice_status = b"\x08\x01" + _message_field(2)
+
+    state = _decode_operational_state(_cues_output(_message_field(17, voice_status)))
+
+    assert state.cues_voice_status is CuesVoiceStatus.LISTENING_FOR_WAKE_WORD
+
+
+def test_decode_cues_rejects_malformed_targeted_payload() -> None:
+    malformed_voice_status = _message_field(17, b"\x80")
+
+    with pytest.raises(DecodeError):
+        _decode_operational_state(_cues_output(malformed_voice_status))
 
 
 def test_schedule_without_minute_of_day_has_no_wall_clock_time() -> None:

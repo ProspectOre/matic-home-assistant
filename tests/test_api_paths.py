@@ -461,6 +461,22 @@ async def test_state_read_reconnects_and_retries_stale_channel() -> None:
     failed_channel.close.assert_called_once_with()
 
 
+async def test_state_subscription_decodes_updates_and_rejects_malformed() -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    valid = KabukiOutputWire(states=[106]).SerializeToString()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", valid)
+        yield HermesCollectionEntry(b"", b"\x0a\xff")
+
+    client.async_subscribe_collection_entries = entries
+    updates = client.async_subscribe_state()
+
+    assert (await anext(updates)).activity is RobotActivity.DOCKED
+    with pytest.raises(CannotConnectError, match="malformed subscribed"):
+        await anext(updates)
+
+
 async def test_stale_reader_reuses_channel_replaced_by_concurrent_reader() -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     failed_channel = SimpleNamespace(close=MagicMock())

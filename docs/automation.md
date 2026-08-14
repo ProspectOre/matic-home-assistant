@@ -8,8 +8,8 @@ settings, cleaning, and saved plans.
 
 ## Entity contract
 
-One configured robot creates 51 fixed entities — 21 sensors, 12 binary
-sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 update, and
+One configured robot creates 55 fixed entities — 23 sensors, 13 binary sensors,
+5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and
 1 vacuum — plus two opt-in statistics sensors per mapped room.
 
 - `vacuum`: primary robot state plus start/resume, pause, stop, dock, Area
@@ -25,16 +25,19 @@ sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras, 1 update, and
 - `sensor`: activity, battery, rooms, cleaning history, active plan, next room,
   firmware/protocol/update/compatibility state, current area, Wi-Fi state and
   signal, schedules, local sessions, last run duration, dock/sink, coverage,
-  and two opt-in statistics sensors per mapped room (see
-  [Room statistics](#room-statistics-and-the-recorder)).
+  Cues voice status, Cues gesture status, and two opt-in statistics sensors per
+  mapped room (see [Room statistics](#room-statistics-and-the-recorder)).
 - `update`: a read-only firmware surface in Home Assistant's update UI. The
   robot manages its own OTA installs and never reports the target version, so
   a pending update shows with an unknown latest version.
 - `binary_sensor`: cleaning, paused, returning, charging, low charge, fully
   charged, problem, update available, Matter pairing mode, active cleaning
-  session, robot SSH tunnel permission, and robot diagnostic upload.
+  session, robot SSH tunnel permission, robot diagnostic upload, and whether
+  Cues is following a person.
 - `switch` and `number`: robot settings such as child lock,
-  pet-waste avoidance, Hey Matic, double-pass mopping, and water flow.
+  pet-waste avoidance, Matic Cues, double-pass mopping, and water flow.
+- `event`: live Cues voice, intent, gesture, and following transitions. Intent
+  attributes are available to automations but excluded from Recorder history.
 
 Camera and microphone recording, clip retrieval and caching, recording
 metadata, and vendor share or discard decisions are not included in the entity
@@ -51,6 +54,57 @@ continue to anchor every registry entity.
 charged` states and a battery-check icon. It intentionally does not use Home
 Assistant's battery binary-sensor device class, whose generic on/off labels
 would invert the meaning and display a fully charged robot as `Low`.
+
+## Matic Cues
+
+The **Matic Cues** switch controls the robot's verified local
+`voice_enabled_command` setting. Enabling it is also consent to the robot's
+separate Cues data handling: Matic documents wake-word, direction, and gesture
+processing as on-device, audio after the chime as sent to Google Gemini, and
+video as never sent. Read Matic's [Cues overview](https://maticrobots.com/hey-matic)
+and [voice-data explanation](https://maticrobots.com/blog/how-your-voice-data-is-handled)
+before automating the switch.
+
+The integration subscribes to `kabuki_state` over the authenticated LAN session
+and exposes only these bounded values:
+
+- `sensor.matic_cues_voice_status`: disabled, ready for the wake word,
+  listening, processing, classified, or rejected;
+- `sensor.matic_cues_gesture_status`: target selection, target acceptance,
+  no-target, facing-user, person-not-found, or following lifecycle;
+- `binary_sensor.matic_following_person`: whether the robot reports active
+  following;
+- `event.matic_cues`: the most recent lifecycle transition.
+
+The `matic_robot_cues` bus event carries `device_id`, `entry_id`, `event_type`,
+and, only for `intent_classified`, an `intent`. Event types are `disabled`,
+`ready`, `wake_word_detected`, `intent_processing`, `intent_classified`,
+`intent_rejected`, `gesture_awaiting_pointed_target`,
+`gesture_pointed_target_accepted`, `gesture_no_target_found`,
+`gesture_facing_user`, `gesture_person_not_found`, `gesture_following`,
+`following_started`, and `following_stopped`. Automation-safe intents are
+`clean`, `clean_all`, `dock`, `go_away`, `navigate`, `pause`,
+`redo_last_clean`, `resume`, `sink_summon`, `stop`, `follow_person`,
+`point_to_clean`, and `unknown`.
+
+For example, turn on a light while Matic is following someone:
+
+```yaml
+triggers:
+  - trigger: event
+    event_type: matic_robot_cues
+    event_data:
+      event_type: following_started
+actions:
+  - action: light.turn_on
+    target:
+      entity_id: light.hallway
+```
+
+Home Assistant never receives a transcript, audio, image, video, person
+identity, pointing coordinate, or rejection detail. Recording-only intent
+variants are withheld as `unknown`; recording and clip features remain outside
+the integration.
 
 ## Complete cleaning action
 
@@ -283,8 +337,12 @@ exactly one Matic robot. Fields:
   `map_semantics`).
 - `limit` (default `32`, range 1–256): maximum entries to return.
 
-The response contains endpoint kind/sensitivity plus key/value sizes and SHA-256
-hashes. Raw bytes are never returned through the public Home Assistant action.
+The response contains endpoint kind/sensitivity plus key/value sizes, SHA-256
+hashes, and an optional value-free protobuf wire shape. A wire shape contains
+only unique field-number/wire-type paths; repeated occurrences collapse, and
+raw bytes are never returned through the public Home Assistant action. Nested
+inspection is restricted to audited Kabuki lifecycle message paths and stops
+before classified intent, rejection details, targets, coordinates, and media.
 The typed registry routes single-value properties correctly instead of treating
 every name as a collection stream.
 
@@ -297,14 +355,26 @@ Home Assistant and returns:
 - firmware and protocol versions;
 - populated, empty, and failed endpoint counts;
 - endpoint kind, sensitivity, status, sizes, and hashes;
-- availability/transport changes separately from ordinary content changes.
+- availability/transport changes separately from ordinary content changes;
+- newly added, bounded protobuf wire shapes as capability candidates.
 
 When the coordinator observes a new firmware version, the integration fires
 `matic_robot_firmware_changed` with previous and current firmware/protocol
-values. A Home Assistant Repair is created only when the subsequent snapshot
-finds endpoint availability or transport drift; normal weekly OTAs remain
-silent. Snapshotting never promotes a firmware to control-verified; physical
-write validation remains deliberate.
+values and starts the snapshot in the background. After comparison it fires the
+silent `matic_robot_firmware_analyzed` event with compatibility counts, safe
+candidate endpoint names, and their new wire paths. The Firmware compatibility
+diagnostic sensor exposes the analysis version, structural totals, and candidate
+counts. A checker-format upgrade causes one silent re-baseline snapshot on the
+current firmware.
+
+Structural candidates do not change the sensor from `compatible`, create a
+Repair, send a persistent notification, or log a warning. A Home Assistant
+Repair is created only when the snapshot finds endpoint availability or
+transport drift, so ordinary weekly OTAs remain quiet. A structural candidate
+means only that a field shape is new; it still requires synthetic fixtures and
+human protocol evidence before becoming a decoded entity or command.
+Snapshotting never promotes firmware to control-verified; physical write
+validation remains deliberate.
 
 ## Room statistics and the recorder
 
@@ -358,6 +428,10 @@ durations, the firmware version that produced the run, and the
 or custom logging.
 `matic_robot_firmware_changed` likewise carries `device_id`/`entry_id` so
 multi-robot homes can tell which robot updated.
+`matic_robot_firmware_analyzed` is the silent post-snapshot result with safe
+compatibility counts plus structural-candidate endpoint names and wire paths.
+`matic_robot_cues` carries the same identifiers for safe voice/gesture lifecycle
+and classified-intent automations; see [Matic Cues](#matic-cues).
 
 Use ordinary state triggers and conditions on any telemetry, setting, Activity,
 or binary sensor. This keeps automations composable with schedules, presence,

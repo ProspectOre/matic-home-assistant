@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import replace
+from collections.abc import Callable
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from functools import partial
 from time import monotonic
@@ -28,6 +29,7 @@ from .client.exceptions import (
     MaticError,
 )
 from .client.models import (
+    CuesVoiceStatus,
     FloorPlan,
     RobotInfo,
     RobotOperationalState,
@@ -36,8 +38,10 @@ from .client.models import (
     RobotTelemetry,
 )
 from .const import (
+    CUES_EVENT_TYPES,
     DOMAIN,
     EVENT_CLEANING_FINISHED,
+    EVENT_CUES,
     MAP_UPDATE_INTERVAL_SECONDS,
     SLOW_UPDATE_INTERVAL_SECONDS,
     UPDATE_INTERVAL_SECONDS,
@@ -55,8 +59,16 @@ SNAPSHOT_MAX_ATTEMPTS = 3
 ERROR_CONFIRMATION_POLLS = 2
 
 
+@dataclass(frozen=True, slots=True)
+class MaticCuesEvent:
+    """One privacy-safe Cues lifecycle event."""
+
+    event_type: str
+    attributes: dict[str, str]
+
+
 class MaticCoordinator(DataUpdateCoordinator[RobotState]):
-    """Coordinate local robot metadata and, later, push subscriptions."""
+    """Coordinate local robot snapshots and Cues push updates."""
 
     config_entry: ConfigEntry
 
@@ -98,6 +110,69 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._pending_error_codes: tuple[int, ...] = ()
         self._pending_error_polls = 0
         self._identity_issue_active = False
+        self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
+
+    async def async_watch_cues(self) -> None:
+        """Keep Cues lifecycle state current between coordinator polls."""
+        retry_delay = 1
+        while True:
+            try:
+                async for state in self.client.async_subscribe_state():
+                    retry_delay = 1
+                    self.async_process_cues_state(state)
+            except asyncio.CancelledError:
+                raise
+            except MaticError as err:
+                _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+
+    @callback
+    def async_process_cues_state(self, state: RobotOperationalState) -> None:
+        """Merge a live Cues snapshot and emit meaningful transitions."""
+        if self.data is None:
+            return
+        previous = self.data.operational
+        current = replace(
+            previous,
+            cues_voice_status=state.cues_voice_status,
+            cues_voice_intent=state.cues_voice_intent,
+            cues_gesture_status=state.cues_gesture_status,
+            following_person=state.following_person,
+        )
+        if current == previous:
+            return
+        self.async_set_updated_data(replace(self.data, operational=current))
+        for event in _cues_events(previous, current):
+            self._async_fire_cues_event(event)
+
+    @callback
+    def async_add_cues_listener(
+        self, listener: Callable[[MaticCuesEvent], None]
+    ) -> Callable[[], None]:
+        """Subscribe an entity to privacy-safe Cues events."""
+        self._cues_listeners.add(listener)
+
+        def _remove_listener() -> None:
+            self._cues_listeners.discard(listener)
+
+        return _remove_listener
+
+    @callback
+    def _async_fire_cues_event(self, event: MaticCuesEvent) -> None:
+        """Publish one Cues transition to HA and the Cues event entity."""
+        assert event.event_type in CUES_EVENT_TYPES
+        self.hass.bus.async_fire(
+            EVENT_CUES,
+            {
+                "entry_id": self.config_entry.entry_id,
+                "device_id": self._device_id(self.data.info.serial_number),
+                "event_type": event.event_type,
+                **event.attributes,
+            },
+        )
+        for listener in tuple(self._cues_listeners):
+            listener(event)
 
     async def _async_update_data(self) -> RobotState:
         try:
@@ -443,3 +518,59 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return
         registry.async_update_device(device.id, sw_version=version)
         self._device_software_version = version
+
+
+def _cues_events(
+    previous: RobotOperationalState, current: RobotOperationalState
+) -> tuple[MaticCuesEvent, ...]:
+    """Return safe automation events represented by one Cues transition."""
+    events: list[MaticCuesEvent] = []
+    if previous.cues_voice_status != current.cues_voice_status:
+        voice_event = None
+        if current.cues_voice_status is not None:
+            voice_event = {
+                CuesVoiceStatus.DISABLED: "disabled",
+                CuesVoiceStatus.LISTENING_FOR_WAKE_WORD: "ready",
+                CuesVoiceStatus.LISTENING_FOR_INTENT: "wake_word_detected",
+                CuesVoiceStatus.THINKING_FOR_INTENT: "intent_processing",
+                CuesVoiceStatus.CLASSIFIED: "intent_classified",
+                CuesVoiceStatus.REJECTED: "intent_rejected",
+            }.get(current.cues_voice_status)
+        if voice_event is not None:
+            attributes = {}
+            if (
+                current.cues_voice_status is CuesVoiceStatus.CLASSIFIED
+                and current.cues_voice_intent is not None
+            ):
+                attributes["intent"] = current.cues_voice_intent.value
+            events.append(MaticCuesEvent(voice_event, attributes))
+    elif (
+        current.cues_voice_status is CuesVoiceStatus.CLASSIFIED
+        and previous.cues_voice_intent != current.cues_voice_intent
+    ):
+        attributes = (
+            {"intent": current.cues_voice_intent.value}
+            if current.cues_voice_intent is not None
+            else {}
+        )
+        events.append(MaticCuesEvent("intent_classified", attributes))
+
+    if previous.cues_gesture_status != current.cues_gesture_status:
+        if current.cues_gesture_status is not None:
+            events.append(
+                MaticCuesEvent(
+                    f"gesture_{current.cues_gesture_status.value}",
+                    {},
+                )
+            )
+    if previous.following_person != current.following_person:
+        if current.following_person is True:
+            events.append(MaticCuesEvent("following_started", {}))
+        elif previous.following_person is True and current.following_person is False:
+            events.append(
+                MaticCuesEvent(
+                    "following_stopped",
+                    {},
+                )
+            )
+    return tuple(events)
