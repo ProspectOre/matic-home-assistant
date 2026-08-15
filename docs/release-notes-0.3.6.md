@@ -28,9 +28,11 @@ protocol version.
   integration automatically compares its allowlisted local Hermes endpoints
   with the prior snapshot. The **Firmware snapshot** action remains available
   for a deliberate repeat.
-- The analyzer records only bounded protobuf field-number and wire-type shapes
-  from explicitly approved message paths. It never stores payload values,
-  transcripts, media, coordinates, or raw protobuf data.
+- Each snapshot retains endpoint reachability/status plus each key and value's
+  byte length and SHA-256 fingerprint. For explicitly approved message paths,
+  it additionally records bounded protobuf field-number and wire-type shapes.
+  It never stores payload values, transcripts, media, coordinates, or raw
+  protobuf data.
 - A new structural shape emits a quiet diagnostic result for advanced
   automations and does not create a Repair or a persistent notification.
   Repairs remain limited to endpoint availability or transport regressions.
