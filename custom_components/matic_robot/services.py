@@ -917,6 +917,38 @@ async def _async_run_room(
                         hass, entity_id, room, cancel_event
                     )
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
+                        next_dispatch = (
+                            await prefetch_next() if prefetch_next is not None else None
+                        )
+                        if next_dispatch is not None:
+                            # Eager handoff: the next room is commanded during
+                            # the observed return so the robot can pivot
+                            # without docking.  Prefetch refuses ownership
+                            # while an OEM stop settles or the run is being
+                            # cancelled, and the current room still needs
+                            # native verification; an unverified room stops
+                            # the started next room without history credit.
+                            await manager.async_mark_verifying(
+                                serial_number, call.data["plan_id"], room
+                            )
+                            completion_verified = await _async_verify_room_completion(
+                                session_history,
+                                history_baseline,
+                                room,
+                                dispatched_at,
+                                hass=hass,
+                                entity_id=entity_id,
+                                cancel_event=cancel_event,
+                                attempts=HANDOFF_HISTORY_ATTEMPTS,
+                                allow_active_cleaning=True,
+                            )
+                            if not completion_verified:
+                                await _async_cleanup_managed_motion(
+                                    managed_user_command,
+                                    motion_token,
+                                    dispatch_attempted=True,
+                                )
+                            break
                         session_active = await _async_active_session_state(
                             active_session
                         )
@@ -934,11 +966,10 @@ async def _async_run_room(
                                 cancel_event=cancel_event,
                             )
                             if completion_verified and prefetch_next is not None:
-                                # Handoff is intentionally sequential.  The
-                                # next room may be prepared only after the
-                                # current native session is verified, avoiding
-                                # duplicate/queued rooms when OEM STOP or
-                                # return transitions are still settling.
+                                # The eager dispatch above was unavailable;
+                                # retry once the session is verified so a
+                                # cleared stop fence or transient dispatch
+                                # error does not end the run early.
                                 await prefetch_next()
                             break
                         if session_active is None:
@@ -1902,6 +1933,7 @@ async def _async_execute_rooms(
                         or not manager.managed_motion_is_current(
                             serial_number, motion_token
                         )
+                        or _stop_is_pending(manager, serial_number)
                     ):
                         return None
                     if existing := prepared_dispatches.get(candidate.room_id):

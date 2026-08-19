@@ -2653,10 +2653,10 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
 
 
 @pytest.mark.parametrize("use_session_reader", [False, True])
-async def test_room_prefetch_verifies_current_history_while_next_room_starts(
+async def test_room_handoff_retries_prefetch_once_completion_is_verified(
     hass, use_session_reader: bool
 ) -> None:
-    """A return dispatches the next room before current history settles."""
+    """An unavailable eager dispatch is retried after verified completion."""
     room = _room("Kitchen", "room-kitchen")
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
@@ -2706,7 +2706,14 @@ async def test_room_prefetch_verifies_current_history_while_next_room_starts(
             ),
         )
 
-    async def prefetch() -> _PreparedRoomDispatch:
+    prefetch_calls = 0
+
+    async def prefetch() -> _PreparedRoomDispatch | None:
+        # The eager dispatch at the observed return is unavailable once.
+        nonlocal prefetch_calls
+        prefetch_calls += 1
+        if prefetch_calls == 1:
+            return None
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
         return _PreparedRoomDispatch(next_room, frozenset(), dt_util.utcnow())
 
@@ -2727,14 +2734,91 @@ async def test_room_prefetch_verifies_current_history_while_next_room_starts(
     )
 
     assert completed is True
+    assert prefetch_calls == 2
     manager.async_mark_verifying.assert_awaited_once()
     manager.async_mark_completed.assert_awaited_once()
     sender.assert_not_awaited()
 
 
-async def test_room_prefetch_does_not_start_next_task_when_completion_is_unverified(
+async def test_room_handoff_dispatches_next_room_before_history_settles(hass) -> None:
+    """The next room is commanded at the observed return, before verification."""
+    room = _room("Kitchen", "room-kitchen")
+    next_room = _room("Study", "room-study")
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_ended_unverified=AsyncMock(),
+        async_mark_verifying=AsyncMock(),
+        async_mark_failed=AsyncMock(),
+        async_mark_interrupted=AsyncMock(),
+        async_mark_suspended=AsyncMock(),
+        async_mark_resumed=AsyncMock(),
+    )
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def finish_room() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(finish_room(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    prefetched = False
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        # The native record settles only after the next room is underway.
+        if not prefetched:
+            return ()
+        ended = dt_util.utcnow()
+        return (
+            CleaningSessionRecord(
+                b"kitchen",
+                CleaningSession(
+                    (ended - timedelta(seconds=5)).isoformat(),
+                    ended.isoformat(),
+                    5,
+                    ("Kitchen",),
+                    (("Kitchen", 5),),
+                    True,
+                ),
+            ),
+        )
+
+    async def prefetch() -> _PreparedRoomDispatch:
+        nonlocal prefetched
+        prefetched = True
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
+        return _PreparedRoomDispatch(next_room, frozenset(), dt_util.utcnow())
+
+    sender = AsyncMock()
+    completed = await _async_run_room(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        room,
+        session_history=history,
+        managed_user_command=sender,
+        prefetch_next=prefetch,
+    )
+
+    assert completed is True
+    assert prefetched is True
+    manager.async_mark_completed.assert_awaited_once()
+    sender.assert_not_awaited()
+
+
+async def test_room_unverified_eager_handoff_stops_the_started_next_room(
     hass,
 ) -> None:
+    """An unverified current room stops its eagerly dispatched next room."""
     room = _room("Kitchen", "room-kitchen")
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
@@ -2783,7 +2867,7 @@ async def test_room_prefetch_does_not_start_next_task_when_completion_is_unverif
         )
 
     assert completed is False
-    sender.assert_not_awaited()
+    sender.assert_awaited_once_with(7, UserCommand.STOP)
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
 
@@ -3521,6 +3605,44 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
         )
 
     managed_command.assert_not_awaited()
+
+
+async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> None:
+    """No next room may be prepared while an OEM stop countdown settles."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        _room("Kitchen", "room-kitchen"),
+        _room("Study", "room-study"),
+    ]
+    fake_hass = SimpleNamespace(
+        services=SimpleNamespace(async_call=AsyncMock()),
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        ),
+    )
+
+    async def run_room(*_args, **kwargs) -> bool:
+        manager.mark_stop_pending("serial")
+        assert await kwargs["prefetch_next"]() is None
+        return False
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_room",
+        side_effect=run_room,
+    ) as run:
+        await _async_execute_rooms(
+            fake_hass,
+            _call(fake_hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+        )
+
+    run.assert_awaited_once()
+    fake_hass.services.async_call.assert_not_awaited()
 
 
 async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
