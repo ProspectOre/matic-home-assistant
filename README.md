@@ -16,6 +16,12 @@ relays.
 **[Documentation](docs/README.md)** — Installation, local pairing, cleaning
 plans, automation, privacy, and troubleshooting.
 
+> **Buying a Matic?** If you are already planning to buy one, you can use the
+> [maintainer's Matic referral link](https://referrals.maticrobots.com/maticrobots/u/dbaef97f?sub=maticrobots).
+> Under Matic's current referral program, you receive an Annual Bag Pass and the
+> maintainer receives $100 in Matic store credit. Using the link is optional and
+> does not affect this independent integration. Referral benefits may change.
+
 ## Status
 
 Home Assistant 2026.7 is the tested baseline and the minimum version accepted by
