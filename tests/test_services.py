@@ -1640,7 +1640,7 @@ async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> 
 
 
 async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> None:
-    """A direct idle transition ends unverified and receives no credit."""
+    """A direct idle transition is an interruption and receives no credit."""
 
     async def send_command(*_args, **_kwargs) -> None:
         hass.states.async_set("vacuum.test", "cleaning", {"current_area": "Study"})
@@ -1665,23 +1665,22 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
     session_reader = AsyncMock(return_value=False)
     sender = AsyncMock()
 
-    completed = await _async_run_room(
-        hass,
-        _execution_call(hass),
-        manager,
-        "vacuum.test",
-        "serial",
-        CleaningRoom("room-study", "Study", "vacuum", "quick"),
-        motion_token=17,
-        active_session=session_reader,
-        managed_user_command=sender,
-    )
+    with pytest.raises(ServiceValidationError):
+        await _async_run_room(
+            hass,
+            _execution_call(hass),
+            manager,
+            "vacuum.test",
+            "serial",
+            CleaningRoom("room-study", "Study", "vacuum", "quick"),
+            motion_token=17,
+            active_session=session_reader,
+            managed_user_command=sender,
+        )
 
-    assert completed is False
-    session_reader.assert_awaited_once()
-    sender.assert_not_awaited()
-    manager.async_mark_interrupted.assert_not_awaited()
-    manager.async_mark_ended_unverified.assert_awaited_once()
+    session_reader.assert_not_awaited()
+    manager.async_mark_interrupted.assert_awaited_once()
+    manager.async_mark_ended_unverified.assert_not_awaited()
     manager.async_mark_completed.assert_not_awaited()
 
 

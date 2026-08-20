@@ -285,6 +285,11 @@ runs, while **last cleaned**, per-room durations, and completion counts still
 come only from runs whose end was verified. A room worked on but not verified
 stays due.
 
+A task that ends where the robot stood was stopped, not finished, and is
+recorded as interrupted: the robot reports a room it was stopped in exactly the
+way it reports a finished one, so the return to the dock is what separates
+them. Late reconciliation is never scheduled for such a run.
+
 Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:
 a low-charge return is suspended and waits for the robot's automatic resume;
