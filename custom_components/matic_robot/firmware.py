@@ -257,7 +257,7 @@ class FirmwareTracker:
         snapshot = self._data.get("robots", {}).get(robot_id, {}).get("snapshot", {})
         return bool(
             snapshot.get("firmware_version") != version
-            or snapshot.get("protocol_version") != protocol
+            or (protocol is not None and snapshot.get("protocol_version") != protocol)
             or snapshot.get("analysis_version") != ANALYSIS_VERSION
         )
 
@@ -334,15 +334,30 @@ def _compare_snapshots(
             new_wire_shapes[name] = added
     return {
         "baseline": False,
-        "firmware_changed": previous.get("firmware_version")
-        != current.get("firmware_version"),
-        "protocol_changed": previous.get("protocol_version")
-        != current.get("protocol_version"),
+        "firmware_changed": _release_changed(
+            previous.get("firmware_version"), current.get("firmware_version")
+        ),
+        "protocol_changed": _release_changed(
+            previous.get("protocol_version"), current.get("protocol_version")
+        ),
         "changed_endpoints": availability_changed,
         "content_changed_endpoints": content_changed,
         "wire_shape_changed_endpoints": sorted(new_wire_shapes),
         "new_wire_shapes": new_wire_shapes,
     }
+
+
+def _release_changed(previous: object, current: object) -> bool:
+    """Report a release change only when both readings are known.
+
+    A version the robot could not report is missing information, not a new
+    release.  Comparing it directly made a transient connection failure look
+    like an OTA in both directions - once when the reading was lost and again
+    when it returned - so an unknown reading never counts as a change.
+    """
+    if previous is None or current is None:
+        return False
+    return previous != current
 
 
 def _endpoint_wire_shapes(endpoint: Mapping[str, Any]) -> frozenset[str] | None:

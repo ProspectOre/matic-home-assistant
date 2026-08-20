@@ -39,5 +39,29 @@ surfaces a Home Assistant-native exception.
 - Explain the user-visible behavior and security impact.
 - Add or update tests and documentation.
 - Keep protocol captures and live-device evidence private; describe the result
-  without attaching the underlying data.
+  without attaching the underlying data. That includes pull request and issue
+  text: no real room names, household names, addresses, serials, or raw
+  timings from a real home.
 - Confirm that tests, Ruff, the privacy check, Hassfest, and HACS validation pass.
+
+## Releasing
+
+A green test suite proves the code does what its tests say. It does not prove
+the robot behaves as expected, and several defects here were only visible on
+real hardware. Every release therefore goes out as a candidate first.
+
+1. Merge the change and tag a candidate from the merge commit as a GitHub
+   **pre-release**: `vX.Y.Z-rcN`. HACS does not offer a pre-release as an
+   update unless a user opts in, so publishing one is safe.
+2. Install it on a real robot: HACS -> the integration -> Redownload ->
+   enable **Show beta versions** -> pick the candidate -> restart Home
+   Assistant.
+3. Verify against the robot, not the test suite. Confirm the loaded version,
+   exercise the behavior the change claims to fix, and confirm the failure it
+   guards against still fails closed.
+4. Promote only after that passes: publish `vX.Y.Z` as a normal release from
+   the same commit. If the candidate misbehaves, nothing was ever offered to
+   users; fix it and cut `-rc2`.
+
+Fold related fixes into one candidate rather than publishing a string of
+point releases.

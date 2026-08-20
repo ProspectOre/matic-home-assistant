@@ -122,7 +122,10 @@ async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> N
     }
     assert tracker.summary("missing")["snapshot_count"] == 0
     assert tracker.needs_snapshot("entry", "v169.0", 25) is False
-    assert tracker.needs_snapshot("entry", "v169.0", None) is True
+    # An unreadable protocol version is missing information, not a new
+    # release: re-snapshotting on it turned a connection blip into a
+    # firmware-change event.
+    assert tracker.needs_snapshot("entry", "v169.0", None) is False
     assert tracker.needs_snapshot("entry", "v170", 25) is True
     legacy_snapshot = _snapshot("v169.0")
     legacy_snapshot.pop("analysis_version")
@@ -420,3 +423,28 @@ def test_fingerprint_entry_keeps_only_hashes_sizes_and_wire_shape() -> None:
     rendered = repr(fingerprint)
     assert "private-key" not in rendered
     assert repr(payload) not in rendered
+
+
+def test_unreadable_version_is_not_reported_as_a_release_change() -> None:
+    """A version that could not be read is not an OTA."""
+    known = _snapshot("v172.12")
+    unreadable = _snapshot("v172.12")
+    unreadable["protocol_version"] = None
+
+    lost = _compare_snapshots(known, unreadable)
+    assert lost["protocol_changed"] is False
+    assert lost["firmware_changed"] is False
+
+    regained = _compare_snapshots(unreadable, known)
+    assert regained["protocol_changed"] is False
+    assert regained["firmware_changed"] is False
+
+    missing_firmware = _snapshot("v172.12")
+    missing_firmware["firmware_version"] = None
+    assert _compare_snapshots(known, missing_firmware)["firmware_changed"] is False
+
+    upgraded = _snapshot("v173.0")
+    assert _compare_snapshots(known, upgraded)["firmware_changed"] is True
+    protocol_bump = _snapshot("v172.12")
+    protocol_bump["protocol_version"] = 26
+    assert _compare_snapshots(known, protocol_bump)["protocol_changed"] is True

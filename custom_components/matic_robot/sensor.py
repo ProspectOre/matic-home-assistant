@@ -725,16 +725,12 @@ class _MaticRoomStatisticsSensor(MaticEntity, RestoreSensor):
         )
         if managed:
             return True, _latest_room_statistics_value(managed_value, historical)
-        completed_rooms = session.completed_rooms
-        if not completed_rooms and session.completed is True:
-            completed_rooms = session.rooms
-        if room.name not in completed_rooms:
-            return historical is not None, historical
-        durations = dict(session.room_durations)
-        if room.name not in durations:
-            return historical is not None, historical
-        native = (session.ended_at, durations[room.name])
-        return historical is not None, _latest_room_statistics_value(native, historical)
+        # A robot-reported session cannot establish that a room was finished:
+        # the robot marks the room it occupied when a session ended, and
+        # reports a stopped session as completed, so trusting it here credited
+        # a room that was interrupted after a minute.  Room statistics
+        # therefore keep the last verified value instead.
+        return historical is not None, historical
 
     @callback
     def _async_apply_session(self) -> None:

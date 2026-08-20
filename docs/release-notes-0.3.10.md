@@ -46,6 +46,23 @@ duration.
 This release adds no robot protocol commands and keeps all robot traffic,
 cleaning history, maps, and reconciliation data local to Home Assistant.
 
+## Room statistics need the same proof
+
+The per-room **last cleaned** and **clean duration** sensors trusted the same
+robot-reported session, including a fallback that accepted every room in a
+session the robot called completed. A clean stopped after a minute therefore
+recorded that room as cleaned. They now report only verified managed runs and
+otherwise keep their last trusted value.
+
+## An unreadable version is not an update
+
+Firmware analysis compared version readings directly, so a version the robot
+could not report counted as a change - once when the reading was lost and again
+when it returned. A brief connection interruption produced two firmware-change
+events, and any automation listening for them announced an update that never
+happened. A release change is now reported only when both readings are known,
+and an unreadable protocol version no longer requests a fresh snapshot.
+
 ## Verification
 
 The release candidate is gated by the full Python suite at 100% coverage,
