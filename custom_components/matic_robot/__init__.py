@@ -251,13 +251,13 @@ def _register_native_history_sync(
     plans: CleaningPlanManager,
     serial_number: str,
 ) -> None:
-    """Credit rooms the robot finished, whoever started the clean.
+    """Record where the robot worked, whoever started the clean.
 
     A managed plan verifies its own rooms, but firmware also cleans on its
     own: it resumes a task after an error and the vendor app can start one.
-    Those runs still record per-room completion evidence, so importing it as
-    each session finishes keeps room history and rotation fairness aligned
-    with the robot instead of waiting for the next restart.
+    The robot's record cannot prove those rooms were finished, so importing
+    it as each session ends keeps rotation fairness current without ever
+    claiming a completion; see ``_import_native_room_activity``.
     """
 
     async def _async_sync(event: Event) -> None:

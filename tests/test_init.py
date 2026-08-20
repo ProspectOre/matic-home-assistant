@@ -827,8 +827,8 @@ async def test_remove_entry_erases_firmware_history() -> None:
     delete_bare_area_issue.assert_called_once_with(bare, "entry")
 
 
-async def test_finished_session_credits_rooms_the_robot_completed(hass) -> None:
-    """Any finished clean syncs room history, not just managed plan runs."""
+async def test_finished_session_records_where_the_robot_worked(hass) -> None:
+    """Any finished clean updates rotation fairness, claiming no completion."""
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
 
     entry = MagicMock()
