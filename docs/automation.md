@@ -277,9 +277,12 @@ Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:
 a low-charge return is suspended and waits for the robot's automatic resume;
 an unexplained stop receives no credit. The private protocol does not yet expose
-a verified refill-specific signal. After a verified room completion, the
-runner can send the next room before the robot reaches the dock; only the final
-room returns all the way to the dock.
+a verified refill-specific signal. When the runner observes a commanded room's
+normal return, it sends the next room immediately so the robot can pivot without
+docking, then verifies the finished room against native history while the next
+room runs. An unverified room stops that started next room and receives no
+credit, and no next room is prepared while a native stop countdown settles; only
+the final room returns all the way to the dock.
 
 Motion commands are serialized per robot. An independent Home Assistant clean,
 custom-area clean, stop, or dock revokes the managed plan before that command is
