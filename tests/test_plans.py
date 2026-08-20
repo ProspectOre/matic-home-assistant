@@ -3283,6 +3283,43 @@ async def test_leg_without_history_reader_credits_nothing(hass) -> None:
     manager.async_mark_completed.assert_not_awaited()
 
 
+async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> None:
+    """A leg stopped mid-mission never credits the room it stood in."""
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def stop_in_place() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set("vacuum.matic", "idle", {"current_area": "Kitchen"})
+
+        hass.async_create_task(stop_in_place(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    record = _leg_record(("Kitchen",), ("Kitchen",))
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            session_history=AsyncMock(return_value=(record,)),
+            motion_token=7,
+        )
+
+    manager.async_mark_completed.assert_not_awaited()
+    assert (
+        manager.async_mark_interrupted.await_count
+        + manager.async_mark_failed.await_count
+        == 1
+    )
+
+
 async def test_leg_partial_verification_stops_started_next_leg(hass) -> None:
     rooms = _leg_rooms()
     manager = _leg_manager()
@@ -3510,6 +3547,42 @@ async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
             cancel_event=late_cancel,
             attempts=2,
         )
+
+
+async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> None:
+    """Ending in place is a stop; only a return can end a room normally.
+
+    Live traces on firmware v172.12: a stopped task goes straight to ``idle``
+    where it stood, while a finished one goes ``returning`` first.  The robot's
+    own record calls both completed, so this transition is the only thing that
+    distinguishes them.
+    """
+    room = _room("Kitchen", "room-kitchen")
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    async def settle(state: str) -> None:
+        await asyncio.sleep(0)
+        hass.states.async_set("vacuum.matic", state, {"current_area": "Kitchen"})
+
+    hass.async_create_task(settle("idle"), eager_start=True)
+    assert (
+        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
+        is RoomRunOutcome.STOPPED_IN_PLACE
+    )
+
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    hass.async_create_task(settle("returning"), eager_start=True)
+    assert (
+        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
+        is RoomRunOutcome.HANDOFF_CANDIDATE
+    )
+
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+    hass.async_create_task(settle("docked"), eager_start=True)
+    assert (
+        await _async_wait_for_room_outcome(hass, "vacuum.matic", room)
+        is RoomRunOutcome.HANDOFF_CANDIDATE
+    )
 
 
 async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(hass) -> None:
@@ -4198,7 +4271,7 @@ async def test_room_outcome_requires_target_evidence_and_classifies_recharge(
     )
     await asyncio.sleep(0)
     hass.states.async_set("vacuum.matic", "idle")
-    assert await waiting is RoomRunOutcome.INTERRUPTED
+    assert await waiting is RoomRunOutcome.STOPPED_IN_PLACE
 
     hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "room-study"})
     waiting = asyncio.create_task(
@@ -4245,7 +4318,8 @@ async def test_room_outcome_propagates_errors_and_cancellation(hass) -> None:
     )
     await asyncio.sleep(0)
     hass.states.async_set("vacuum.matic", "idle", {"current_area": "Study"})
-    assert await stopped is RoomRunOutcome.HANDOFF_CANDIDATE
+    # Ending in place is a stop, never a finished room.
+    assert await stopped is RoomRunOutcome.STOPPED_IN_PLACE
 
 
 async def test_room_outcome_ignores_transit_through_other_mapped_rooms(hass) -> None:

@@ -110,6 +110,7 @@ class RoomRunOutcome(StrEnum):
     SUSPENDED = "suspended"
     PAUSED = "paused"
     INTERRUPTED = "interrupted"
+    STOPPED_IN_PLACE = "stopped_in_place"
     ROOM_CHANGED = "room_changed"
 
 
@@ -1041,6 +1042,10 @@ async def _async_run_room(
                             serial_number, call.data["plan_id"], room
                         )
                         continue
+                    if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
+                        raise RoomStoppedInPlaceError(
+                            f"{room.name} ended in place without returning"
+                        )
                     if outcome is RoomRunOutcome.INTERRUPTED:
                         raise RoomInterruptedError(
                             f"{room.name} stopped without verified completion"
@@ -1129,8 +1134,12 @@ async def _async_run_room(
             motion_token,
             dispatch_attempted,
         )
-        reconciliation = _build_native_reconciliation(
-            call.data["plan_id"], room, dispatched_at, room_started
+        reconciliation = (
+            None
+            if isinstance(err, RoomStoppedInPlaceError)
+            else _build_native_reconciliation(
+                call.data["plan_id"], room, dispatched_at, room_started
+            )
         )
         async with _managed_reconciliation_guard(
             manager, serial_number, motion_token
@@ -1446,6 +1455,10 @@ async def _async_run_leg(
                             allow_active_cleaning=next_dispatch is not None,
                         )
                         break
+                    if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
+                        raise RoomStoppedInPlaceError(
+                            f"{active_room.name} ended in place without returning"
+                        )
                     # INTERRUPTED cannot occur here: the leg loop starts only
                     # after a confirmed in-room start, so the waiter is seeded
                     # with that observation.
@@ -1509,6 +1522,23 @@ async def _async_run_leg(
                 context=call.context,
             )
         raise
+    except RoomInterruptedError as err:
+        await _async_cleanup_managed_motion(
+            managed_user_command,
+            motion_token,
+            dispatch_attempted,
+        )
+        await manager.async_mark_interrupted(
+            serial_number, call.data["plan_id"], active_room, str(err)
+        )
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_interrupted",
+            {**event_data(active_room), "error": str(err)},
+            context=call.context,
+        )
+        raise _validation_error(
+            str(err), "room_interrupted", {"room": active_room.name}
+        ) from err
     except RoomTakenOverError as err:
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], active_room, str(err)
@@ -1782,7 +1812,13 @@ async def _async_wait_for_leg_outcome(
                 future.set_result((RoomRunOutcome.HANDOFF_CANDIDATE, None))
             else:
                 future.set_result((RoomRunOutcome.INTERRUPTED, None))
-        elif state.state in {"docked", "idle"}:
+        elif state.state == "idle":
+            # Ending in place is a stop, not a finished room.  A task that
+            # completes normally goes through `returning` first and is
+            # resolved above; the robot's own record calls both completed, so
+            # this transition is the only thing that separates them.
+            future.set_result((RoomRunOutcome.STOPPED_IN_PLACE, None))
+        elif state.state == "docked":
             future.set_result(
                 (RoomRunOutcome.HANDOFF_CANDIDATE, None)
                 if observed_any
@@ -2391,6 +2427,17 @@ class RoomStartTimeoutError(TimeoutError):
 
 class RoomInterruptedError(HomeAssistantError):
     """A room command ended without positive completion evidence."""
+
+
+class RoomStoppedInPlaceError(RoomInterruptedError):
+    """The robot's task ended where it stood, so the room was not finished.
+
+    Home Assistant saw the task end in place rather than return, which is
+    positive evidence that the room was stopped.  Late native reconciliation
+    is deliberately not scheduled for it: the robot reports a stopped room the
+    same way it reports a finished one, so a marker would credit exactly the
+    room this transition proves was interrupted.
+    """
 
 
 class RoomTakenOverError(HomeAssistantError):
