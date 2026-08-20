@@ -93,7 +93,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ needs.route.outputs.pr_number }}
           REPO: ${{ github.repository }}
-          REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
+          REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'claude[bot]' || 'chatgpt-codex-connector[bot]' }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_ID: ${{ needs.route.outputs.review_id }}
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
