@@ -292,6 +292,15 @@ the dock.
 Motion commands are serialized per robot. An independent Home Assistant clean,
 custom-area clean, stop, or dock revokes the managed plan before that command is
 sent; pause and resume are serialized without revoking the resumable plan.
+
+Stopping ends the robot's task with the OEM STOP command, because a DOCK sent
+while a task is still running is reinterpreted as recharge-and-resume. Firmware
+would then hold the robot in place for a ten-minute graceful countdown before
+returning, so the integration watches that stop and sends DOCK as soon as the
+task actually settles: the robot heads home in seconds instead. Docking is
+withheld unless the robot is idle, its own session reports no active task, and
+that stop still owns the robot, so a replacement clean, an unreadable robot, or
+a return already under way all leave the firmware countdown in charge.
 Commands sent by another client cannot be arbitrated before they reach the
 robot, so an unexplained terminal transition is treated as interrupted rather
 than completed.

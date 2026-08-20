@@ -66,6 +66,7 @@ from .plans import (
     resolve_room_reference,
     resolve_rooms,
 )
+from .stop_return import schedule_dock_after_stop
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_AREA = "clean_area"
@@ -409,6 +410,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 if command is UserCommand.STOP:
                     await manager.async_mark_stop_pending(serial_number)
                 await entry.runtime_data.coordinator.async_request_refresh()
+            if command is UserCommand.STOP:
+                schedule_dock_after_stop(
+                    hass,
+                    client=entry.runtime_data.client,
+                    refresh=entry.runtime_data.coordinator.async_request_refresh,
+                    manager=manager,
+                    serial_number=serial_number,
+                    entity_id=entity_id,
+                )
 
         await _async_execute_rooms(
             hass,

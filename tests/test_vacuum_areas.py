@@ -222,3 +222,27 @@ async def test_lifecycle_runs_area_mapping_and_change_checks() -> None:
     entity._async_auto_map_rooms.assert_called_once()
     entity._async_check_segment_changes.assert_called_once()
     parent_update.assert_called_once()
+
+
+def test_dock_after_stop_is_skipped_before_the_entity_is_registered() -> None:
+    """An entity without an entity ID has no state for the watcher to read."""
+    entity = _vacuum()
+    entity.entity_id = None
+
+    with patch(
+        "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
+    ) as schedule:
+        entity._schedule_dock_after_stop("serial")
+
+    schedule.assert_not_called()
+
+    entity.entity_id = "vacuum.test"
+    entity.coordinator.client = MagicMock()
+    entity.coordinator.async_request_refresh = AsyncMock()
+    with patch(
+        "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
+    ) as schedule:
+        entity._schedule_dock_after_stop("serial")
+
+    schedule.assert_called_once()
+    assert schedule.call_args.kwargs["entity_id"] == "vacuum.test"
