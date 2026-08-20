@@ -19,6 +19,7 @@ from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
 from .plans import PLAN_MOTION_TOKEN, resolve_room_reference
+from .stop_return import schedule_dock_after_stop
 
 PARALLEL_UPDATES = 1
 
@@ -124,6 +125,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             if command is UserCommand.STOP:
                 await self._plans.async_mark_stop_pending(serial_number)
             await self.coordinator.async_request_refresh()
+        if command is UserCommand.STOP:
+            self._schedule_dock_after_stop(serial_number)
 
     async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
@@ -211,17 +214,35 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with self._plans.external_motion(serial_number):
             if stop_before_dock:
-                # STOP is the OEM final-return command: firmware counts down
-                # for roughly ten minutes and then docks.  Sending DOCK here
-                # can interrupt that graceful stop and turn it into a
-                # recharge-and-resume cycle, so let STOP own the return.
+                # STOP is the OEM final-return command, and DOCK sent while the
+                # task still runs is reinterpreted as recharge-and-resume, so
+                # STOP owns the end of the task.  A watcher then docks the robot
+                # as soon as that task actually settles instead of waiting out
+                # firmware's ten-minute countdown.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
                 await self._plans.async_mark_stop_pending(serial_number)
                 await self.coordinator.async_request_refresh()
-                return
-            await self.coordinator.client.async_send_user_command(UserCommand.DOCK)
-            await self.coordinator.async_request_refresh()
+                stopped = True
+            else:
+                await self.coordinator.client.async_send_user_command(UserCommand.DOCK)
+                await self.coordinator.async_request_refresh()
+                stopped = False
+        if stopped:
+            self._schedule_dock_after_stop(serial_number)
+
+    def _schedule_dock_after_stop(self, serial_number: str) -> None:
+        """Dock the robot as soon as its accepted stop settles."""
+        if self.entity_id is None:
+            return
+        schedule_dock_after_stop(
+            self.hass,
+            client=self.coordinator.client,
+            refresh=self.coordinator.async_request_refresh,
+            manager=self._plans,
+            serial_number=serial_number,
+            entity_id=self.entity_id,
+        )
 
     async def async_get_segments(self) -> list[Segment]:
         """Return native Home Assistant cleaning areas for every named room."""
