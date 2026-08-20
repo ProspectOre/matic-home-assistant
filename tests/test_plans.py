@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
     OEM_STOP_RECONCILIATION_SECONDS,
+    PLAN_MOTION_TOKEN,
     AreaBindingUpgradeResult,
     CleaningPlanManager,
     CleaningRoom,
@@ -55,16 +56,29 @@ from custom_components.matic_robot.services import (
     RoomRunOutcome,
     RoomTakenOverError,
     _async_active_session_state,
+    _async_dispatch_leg_command,
     _async_execute_rooms,
+    _async_run_leg,
     _async_run_room,
     _async_session_history_baseline,
+    _async_verify_leg_completion,
     _async_verify_room_completion,
     _async_wait_for_active_session_resolution,
     _async_wait_for_room_outcome,
     _async_wait_for_vacuum_state,
     _entry_for_entity,
+    _leg_groups,
     _PreparedRoomDispatch,
 )
+
+
+def _heavy_room(name: str, room_id: str) -> CleaningRoom:
+    return CleaningRoom(
+        room_id=room_id,
+        name=name,
+        cleaning_mode="vacuum_and_mop",
+        coverage_setting="heavy_duty",
+    )
 
 
 def _room(name: str, room_id: str) -> CleaningRoom:
@@ -88,6 +102,97 @@ def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
             "return_to_base": return_to_base,
         },
     )
+
+
+def test_leg_groups_split_only_on_settings_changes() -> None:
+    quick_a = _room("Living Room", "room-a")
+    quick_b = _room("Dining Room", "room-b")
+    standard = CleaningRoom(
+        room_id="room-c",
+        name="Master Bedroom",
+        cleaning_mode="vacuum",
+        coverage_setting="standard",
+    )
+    quick_c = _room("Quinns Room", "room-d")
+
+    assert _leg_groups([quick_a, quick_b, standard, quick_c]) == [
+        [quick_a, quick_b],
+        [standard],
+        [quick_c],
+    ]
+    assert _leg_groups([quick_a]) == [[quick_a]]
+    assert _leg_groups([]) == []
+
+
+async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
+    captured = []
+
+    async def send_command(call) -> None:
+        captured.append(call.data)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+
+    dispatch = await _async_dispatch_leg_command(
+        hass, _call(hass), "vacuum.matic", rooms, 7, None
+    )
+
+    assert dispatch.rooms == tuple(rooms)
+    assert captured[0]["command"] == "clean_rooms"
+    params = captured[0]["params"]
+    assert params["rooms"] == ["room-kitchen", "room-office"]
+    assert params["ordered"] is True
+    assert params["cleaning_mode"] == "vacuum_and_mop"
+    assert params["coverage"] == "standard"
+    assert params[PLAN_MOTION_TOKEN] == 7
+
+
+async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
+    captured = []
+
+    async def send_command(call) -> None:
+        captured.append(call.data)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    dispatch = await _async_dispatch_leg_command(
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        [_room("Kitchen", "room-kitchen")],
+        None,
+        None,
+    )
+
+    assert dispatch.rooms == (_room("Kitchen", "room-kitchen"),)
+    params = captured[0]["params"]
+    assert params["rooms"] == ["room-kitchen"]
+    assert params["ordered"] is False
+    assert PLAN_MOTION_TOKEN not in params
+
+
+async def test_mark_completed_accepts_native_evidence(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    await manager.async_mark_started("serial", "plan", room)
+
+    await manager.async_mark_completed(
+        "serial",
+        "plan",
+        room,
+        completed_at="2026-08-20T04:16:13+00:00",
+        duration_seconds=57,
+    )
+
+    snapshot = manager.snapshot("serial")
+    record = snapshot["plan_history"]["plan"]["rooms"]["room-kitchen"]
+    assert record["last_completed"] == "2026-08-20T04:16:13+00:00"
+    assert record["last_duration_seconds"] == 57
+    assert record["average_duration_seconds"] == 57
+    by_room = snapshot["last_completed_by_room"]["room-kitchen"]
+    assert by_room["at"] == "2026-08-20T04:16:13+00:00"
+    assert snapshot["active_plan"] is None
 
 
 def test_rooms_resolve_live_names_ids_and_individual_settings() -> None:
@@ -1187,7 +1292,9 @@ async def test_replaced_cleanup_cannot_recreate_native_reconciliation(
             motion_token=token,
             session_history=AsyncMock(return_value=()),
             managed_user_command=replace_during_cleanup,
-            prepared_dispatch=_PreparedRoomDispatch(room, frozenset(), dispatched_at),
+            prepared_dispatch=_PreparedRoomDispatch(
+                (room,), frozenset(), dispatched_at
+            ),
         )
 
     assert failure.value.translation_key == translation_key
@@ -2715,7 +2822,7 @@ async def test_room_handoff_retries_prefetch_once_completion_is_verified(
         if prefetch_calls == 1:
             return None
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-        return _PreparedRoomDispatch(next_room, frozenset(), dt_util.utcnow())
+        return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
 
     sender = AsyncMock()
     completed = await _async_run_room(
@@ -2738,6 +2845,849 @@ async def test_room_handoff_retries_prefetch_once_completion_is_verified(
     manager.async_mark_verifying.assert_awaited_once()
     manager.async_mark_completed.assert_awaited_once()
     sender.assert_not_awaited()
+
+
+def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_ended_unverified=AsyncMock(),
+        async_mark_verifying=AsyncMock(),
+        async_mark_failed=AsyncMock(),
+        async_mark_interrupted=AsyncMock(),
+        async_mark_suspended=AsyncMock(),
+        async_mark_resumed=AsyncMock(),
+        async_mark_cancelled=AsyncMock(),
+        cancellation_reason=MagicMock(return_value=cancellation_reason),
+    )
+
+
+def _leg_record(
+    rooms: tuple[str, ...],
+    completed_rooms: tuple[str, ...],
+    *,
+    completed: bool | None = True,
+) -> CleaningSessionRecord:
+    ended = dt_util.utcnow()
+    return CleaningSessionRecord(
+        b"leg-evidence",
+        CleaningSession(
+            (ended - timedelta(seconds=120)).isoformat(),
+            ended.isoformat(),
+            120,
+            rooms,
+            tuple((name, 57) for name in rooms),
+            completed,
+            completed_rooms,
+        ),
+    )
+
+
+def _leg_call(hass, *, start_timeout: int = 120, completion_timeout: int = 21600):
+    return ServiceCall(
+        hass,
+        DOMAIN,
+        "intelligent_clean",
+        {
+            "plan_id": "away",
+            "start_timeout": start_timeout,
+            "completion_timeout": completion_timeout,
+            "return_to_base": False,
+        },
+    )
+
+
+def _leg_rooms() -> list[CleaningRoom]:
+    return [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+
+
+async def test_leg_rejects_duplicate_room_names(hass) -> None:
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            _leg_manager(),
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+            room_name_is_unique=False,
+        )
+
+
+async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) -> None:
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    async def end_leg() -> None:
+        await asyncio.sleep(0)
+        hass.states.async_set(
+            "vacuum.matic",
+            "returning",
+            {"current_area": "Kitchen", "low_charge": False},
+        )
+
+    hass.async_create_task(end_leg(), eager_start=True)
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    confirmed: list[str] = []
+    prepared = _PreparedRoomDispatch(
+        tuple(rooms), frozenset(), dt_util.utcnow() - timedelta(seconds=1)
+    )
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        confirm_room_completed=confirmed.append,
+        prepared_dispatch=prepared,
+    )
+    assert completed is True
+    assert confirmed == ["Kitchen", "Office"]
+
+    with pytest.raises(ValueError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            _leg_manager(),
+            "vacuum.matic",
+            "serial",
+            rooms,
+            prepared_dispatch=_PreparedRoomDispatch(
+                (rooms[0],), frozenset(), dt_util.utcnow()
+            ),
+        )
+
+
+async def test_leg_start_timeout_marks_failure_and_stops(hass) -> None:
+    manager = _leg_manager()
+    hass.states.async_set("vacuum.matic", "docked", {})
+    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    sender = AsyncMock()
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _leg_call(hass, start_timeout=0),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+            managed_user_command=sender,
+            motion_token=7,
+        )
+
+    manager.async_mark_failed.assert_awaited_once()
+    sender.assert_awaited_once_with(7, UserCommand.STOP)
+
+
+async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "paused", {"current_area": "Kitchen"})
+
+        async def resume() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Kitchen"}
+            )
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(resume(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+    )
+
+    assert completed is True
+    manager.async_mark_suspended.assert_awaited_once()
+    assert manager.async_mark_suspended.await_args.args[3] == "paused"
+
+
+async def test_leg_suspension_mid_leg_resumes(hass) -> None:
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def recharge() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": True},
+            )
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Office"}
+            )
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Office", "low_charge": False},
+            )
+
+        hass.async_create_task(recharge(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+    )
+
+    assert completed is True
+    manager.async_mark_suspended.assert_awaited_once()
+    assert manager.async_mark_suspended.await_args.args[3] == "low_charge"
+
+
+async def test_leg_completion_timeout_fails(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _leg_call(hass, completion_timeout=0),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+        )
+
+    manager.async_mark_failed.assert_awaited_once()
+    assert "completion timeout" in manager.async_mark_failed.await_args.args[3]
+
+
+async def test_leg_matic_error_dispatch_fails(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        raise MaticError("synthetic")
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+        )
+
+    manager.async_mark_failed.assert_awaited_once()
+
+
+async def test_leg_replaced_dispatch_cancels(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        raise ManagedMotionReplacedError("replaced")
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(PlanCancelledError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+        )
+
+    manager.async_mark_cancelled.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reason", [None, "config_entry_unload"])
+async def test_leg_cancellation_records_history(hass, reason: str | None) -> None:
+    manager = _leg_manager(reason)
+    cancel_event = asyncio.Event()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def cancel() -> None:
+            await asyncio.sleep(0)
+            cancel_event.set()
+
+        hass.async_create_task(cancel(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(PlanCancelledError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+            cancel_event=cancel_event,
+        )
+
+    if reason is None:
+        manager.async_mark_cancelled.assert_awaited_once()
+    else:
+        manager.async_mark_interrupted.assert_awaited_once()
+
+
+async def test_leg_error_state_raises_robot_error(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def fail() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set("vacuum.matic", "error", {})
+
+        hass.async_create_task(fail(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+        )
+
+    manager.async_mark_failed.assert_awaited_once()
+
+
+async def test_leg_takeover_during_verification_interrupts(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def end_leg() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(end_leg(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    async def takeover(*_args, **_kwargs) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Den"})
+
+    manager.async_mark_verifying = AsyncMock(side_effect=takeover)
+
+    with pytest.raises(ServiceValidationError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+            session_history=AsyncMock(return_value=()),
+        )
+
+    manager.async_mark_interrupted.assert_awaited_once()
+
+
+async def test_leg_without_history_reader_credits_nothing(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def end_leg() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(end_leg(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        _leg_rooms(),
+    )
+
+    assert completed is False
+    assert manager.async_mark_ended_unverified.await_count == 2
+    manager.async_mark_completed.assert_not_awaited()
+
+
+async def test_leg_partial_verification_stops_started_next_leg(hass) -> None:
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def end_leg() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(end_leg(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen",), ("Kitchen",), completed=False),)
+
+    async def prefetch() -> _PreparedRoomDispatch:
+        return _PreparedRoomDispatch(
+            (_heavy_room("Den", "room-den"),), frozenset(), dt_util.utcnow()
+        )
+
+    sender = AsyncMock()
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        managed_user_command=sender,
+        motion_token=7,
+        prefetch_next=prefetch,
+    )
+
+    assert completed is False
+    sender.assert_awaited_once_with(7, UserCommand.STOP)
+
+
+async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
+    rooms = _leg_rooms()
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=60)
+
+    def session(
+        rooms_value: tuple[str, ...],
+        *,
+        started: str | None = None,
+        ended: str | None = None,
+        durations: tuple[tuple[str, int], ...] | None = None,
+    ) -> CleaningSession:
+        return CleaningSession(
+            started
+            if started is not None
+            else (now - timedelta(seconds=30)).isoformat(),
+            ended if ended is not None else (now - timedelta(seconds=5)).isoformat(),
+            25,
+            rooms_value,
+            durations if durations is not None else tuple((n, 20) for n in rooms_value),
+            True,
+            rooms_value,
+        )
+
+    baseline_key = b"old"
+    records = (
+        CleaningSessionRecord(baseline_key, session(("Kitchen",))),
+        CleaningSessionRecord(b"foreign", session(("Garage",))),
+        CleaningSessionRecord(
+            b"unparsable", session(("Kitchen",), started="", ended="")
+        ),
+        CleaningSessionRecord(
+            b"inverted",
+            session(
+                ("Kitchen",),
+                started=now.isoformat(),
+                ended=(now - timedelta(seconds=90)).isoformat(),
+            ),
+        ),
+        CleaningSessionRecord(
+            b"stale",
+            session(
+                ("Kitchen",),
+                started=(now - timedelta(seconds=300)).isoformat(),
+                ended=(now - timedelta(seconds=200)).isoformat(),
+            ),
+        ),
+        CleaningSessionRecord(
+            b"good",
+            session(
+                ("Kitchen", "Office"),
+                durations=(("Kitchen", 20), ("Office", 0)),
+            ),
+        ),
+    )
+
+    evidence = await _async_verify_leg_completion(
+        AsyncMock(return_value=records),
+        frozenset({baseline_key}),
+        rooms,
+        dispatched_at,
+        attempts=1,
+    )
+    assert evidence == {"room-kitchen": (records[-1].session.ended_at, 20)}
+
+    ambiguous = (*records, CleaningSessionRecord(b"twin", session(("Office",))))
+    assert (
+        await _async_verify_leg_completion(
+            AsyncMock(return_value=ambiguous),
+            frozenset({baseline_key}),
+            rooms,
+            dispatched_at,
+            attempts=1,
+        )
+        is None
+    )
+
+    assert (
+        await _async_verify_leg_completion(
+            AsyncMock(side_effect=MaticError("gone")),
+            frozenset(),
+            rooms,
+            dispatched_at,
+            attempts=1,
+        )
+        is None
+    )
+    assert (
+        await _async_verify_leg_completion(
+            None, frozenset(), rooms, dispatched_at, attempts=1
+        )
+        is None
+    )
+
+
+async def test_leg_unclassified_error_reraises_after_failure_mark(hass) -> None:
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        raise HomeAssistantError("boom")
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    with pytest.raises(HomeAssistantError):
+        await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            _leg_rooms(),
+        )
+
+    manager.async_mark_failed.assert_awaited_once()
+    assert manager.async_mark_failed.await_args.args[3] == "boom"
+
+
+async def test_leg_verifier_retries_and_honors_cancellation(hass) -> None:
+    rooms = _leg_rooms()
+    dispatched_at = dt_util.utcnow()
+
+    with patch(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    ):
+        assert (
+            await _async_verify_leg_completion(
+                AsyncMock(return_value=()),
+                frozenset(),
+                rooms,
+                dispatched_at,
+                attempts=2,
+            )
+            is None
+        )
+
+        cancel_event = asyncio.Event()
+        cancel_event.set()
+        reader = AsyncMock(return_value=())
+        with pytest.raises(PlanCancelledError):
+            await _async_verify_leg_completion(
+                reader,
+                frozenset(),
+                rooms,
+                dispatched_at,
+                cancel_event=cancel_event,
+                attempts=2,
+            )
+
+        quiet_cancel = asyncio.Event()
+        assert (
+            await _async_verify_leg_completion(
+                AsyncMock(return_value=()),
+                frozenset(),
+                rooms,
+                dispatched_at,
+                cancel_event=quiet_cancel,
+                attempts=2,
+            )
+            is None
+        )
+
+    late_cancel = asyncio.Event()
+    hass.loop.call_later(0.05, late_cancel.set)
+    with (
+        patch(
+            "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 1
+        ),
+        pytest.raises(PlanCancelledError),
+    ):
+        await _async_verify_leg_completion(
+            AsyncMock(return_value=()),
+            frozenset(),
+            rooms,
+            dispatched_at,
+            cancel_event=late_cancel,
+            attempts=2,
+        )
+
+
+async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(hass) -> None:
+    """One leg mission glides room to room; credit comes from one record."""
+    rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+    manager = _leg_manager()
+    commands = []
+
+    async def send_command(call) -> None:
+        commands.append(call.data)
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def glide() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Office"}
+            )
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Office", "low_charge": False},
+            )
+
+        hass.async_create_task(glide(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    record: CleaningSessionRecord | None = None
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads, record
+        reads += 1
+        if reads == 1:
+            return ()
+        if record is None:
+            record = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
+        return (record,)
+
+    started_events = []
+    completed_events = []
+    hass.bus.async_listen(
+        f"{DOMAIN}_room_started", lambda e: started_events.append(e.data["room"])
+    )
+    hass.bus.async_listen(
+        f"{DOMAIN}_room_completed", lambda e: completed_events.append(e.data["room"])
+    )
+    sender = AsyncMock()
+
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        refresh=AsyncMock(),
+        session_history=history,
+        managed_user_command=sender,
+        motion_token=7,
+    )
+    await hass.async_block_till_done()
+
+    assert completed is True
+    assert len(commands) == 1
+    assert commands[0]["params"]["rooms"] == ["room-kitchen", "room-office"]
+    assert started_events == ["Kitchen", "Office"]
+    assert sorted(completed_events) == ["Kitchen", "Office"]
+    assert manager.async_mark_completed.await_count == 2
+    assert record is not None
+    for call_args in manager.async_mark_completed.await_args_list:
+        assert call_args.kwargs["duration_seconds"] == 57
+        assert call_args.kwargs["completed_at"] == record.session.ended_at
+    sender.assert_not_awaited()
+
+
+async def test_leg_partial_record_credits_only_verified_subset(hass) -> None:
+    rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+    manager = _leg_manager()
+
+    async def send_command(_call) -> None:
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def end_leg() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Kitchen", "low_charge": False},
+            )
+
+        hass.async_create_task(end_leg(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen",), ("Kitchen",), completed=False),)
+
+    sender = AsyncMock()
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        managed_user_command=sender,
+        motion_token=7,
+    )
+
+    assert completed is False
+    manager.async_mark_completed.assert_awaited_once()
+    assert manager.async_mark_completed.await_args.args[2].name == "Kitchen"
+    manager.async_mark_ended_unverified.assert_awaited_once()
+    assert manager.async_mark_ended_unverified.await_args.args[2].name == "Office"
+
+
+async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
+    """A finish-current-room stop sends STOP at the observed room boundary."""
+    rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+    manager = _leg_manager()
+    finish_room_event = asyncio.Event()
+
+    async def send_command(call) -> None:
+        if call.data.get("command") != "clean_rooms":
+            return
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def cross_boundary() -> None:
+            await asyncio.sleep(0)
+            finish_room_event.set()
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Office"}
+            )
+
+        hass.async_create_task(cross_boundary(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reads = 0
+
+    async def history() -> tuple[CleaningSessionRecord, ...]:
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen",), ("Kitchen",), completed=False),)
+
+    sender = AsyncMock()
+
+    async def stop_then_return(token, command) -> None:
+        assert command is UserCommand.STOP
+        hass.states.async_set(
+            "vacuum.matic",
+            "returning",
+            {"current_area": "Office", "low_charge": False},
+        )
+
+    sender.side_effect = stop_then_return
+
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        managed_user_command=sender,
+        motion_token=7,
+        finish_room_event=finish_room_event,
+    )
+
+    assert completed is False
+    sender.assert_awaited_once_with(7, UserCommand.STOP)
+    manager.async_mark_completed.assert_awaited_once()
+    assert manager.async_mark_completed.await_args.args[2].name == "Kitchen"
+    manager.async_mark_cancelled.assert_awaited_once()
+    assert manager.async_mark_cancelled.await_args.args[2].name == "Office"
 
 
 async def test_room_handoff_dispatches_next_room_before_history_settles(hass) -> None:
@@ -2794,7 +3744,7 @@ async def test_room_handoff_dispatches_next_room_before_history_settles(hass) ->
         nonlocal prefetched
         prefetched = True
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-        return _PreparedRoomDispatch(next_room, frozenset(), dt_util.utcnow())
+        return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
 
     sender = AsyncMock()
     completed = await _async_run_room(
@@ -2849,7 +3799,7 @@ async def test_room_unverified_eager_handoff_stops_the_started_next_room(
 
     async def prefetch() -> _PreparedRoomDispatch:
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-        return _PreparedRoomDispatch(next_room, frozenset(), dt_util.utcnow())
+        return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
 
     sender = AsyncMock()
     with patch("custom_components.matic_robot.services.HANDOFF_HISTORY_ATTEMPTS", 1):
@@ -2889,7 +3839,7 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
         bus=SimpleNamespace(async_fire=MagicMock()),
         states=SimpleNamespace(get=MagicMock(return_value=None)),
     )
-    prepared = _PreparedRoomDispatch(room, None, dt_util.utcnow())
+    prepared = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
     with (
         patch(
             "custom_components.matic_robot.services._async_wait_for_vacuum_state",
@@ -2911,7 +3861,9 @@ async def test_room_accepts_only_matching_prepared_dispatch() -> None:
             prepared_dispatch=prepared,
         )
 
-    wrong = _PreparedRoomDispatch(_room("Study", "room-study"), None, dt_util.utcnow())
+    wrong = _PreparedRoomDispatch(
+        (_room("Study", "room-study"),), None, dt_util.utcnow()
+    )
     with pytest.raises(ValueError, match="does not match"):
         await _async_run_room(
             hass,
@@ -3415,7 +4367,7 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
+        "custom_components.matic_robot.services._async_run_leg",
         AsyncMock(side_effect=finish_then_stop),
     ) as run:
         await _async_execute_rooms(
@@ -3424,7 +4376,7 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
             manager,
             "vacuum.matic",
             "serial",
-            [_room("Kitchen", "one"), _room("Study", "two")],
+            [_room("Kitchen", "one"), _heavy_room("Study", "two")],
             intelligent=False,
             managed_user_command=managed_command,
         )
@@ -3434,12 +4386,55 @@ async def test_execute_rooms_finishes_current_room_then_stops_and_docks(hass) ->
     assert managed_command.await_args.args[1] is UserCommand.DOCK
 
 
+async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> None:
+    """Consecutive same-settings rooms run as one native mission leg."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        _room("Kitchen", "room-kitchen"),
+        _room("Office", "room-office"),
+        CleaningRoom(
+            room_id="room-master",
+            name="Master Bedroom",
+            cleaning_mode="vacuum",
+            coverage_setting="standard",
+        ),
+    ]
+    fake_hass = SimpleNamespace(
+        services=SimpleNamespace(async_call=AsyncMock()),
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="docked"))
+        ),
+    )
+    legs_seen = []
+
+    async def run_leg(*args, **kwargs) -> bool:
+        legs_seen.append(args[5])
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        side_effect=run_leg,
+    ):
+        await _async_execute_rooms(
+            fake_hass,
+            _call(fake_hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+        )
+
+    assert legs_seen == [[rooms[0], rooms[1]], [rooms[2]]]
+
+
 async def test_execute_rooms_prepares_next_command_during_current_return(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     service_call = AsyncMock()
     managed_command = AsyncMock()
@@ -3451,23 +4446,24 @@ async def test_execute_rooms_prepares_next_command_during_current_return(hass) -
     )
     prepared: _PreparedRoomDispatch | None = None
 
-    async def run_room(*args, **kwargs) -> bool:
+    async def run_leg(*args, **kwargs) -> bool:
         nonlocal prepared
-        room = args[5]
-        if room == rooms[0]:
+        leg = args[5]
+        if leg == [rooms[0]]:
             assert kwargs["prepared_dispatch"] is None
             prepared = await kwargs["prefetch_next"]()
             assert prepared is not None
-            assert prepared.room == rooms[1]
+            assert prepared.rooms == (rooms[1],)
             assert await kwargs["prefetch_next"]() == prepared
         else:
+            assert leg == [rooms[1]]
             assert kwargs["prepared_dispatch"] == prepared
             assert kwargs["prefetch_next"] is None
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
-        side_effect=run_room,
+        "custom_components.matic_robot.services._async_run_leg",
+        side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
             fake_hass,
@@ -3495,7 +4491,7 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     fake_hass = SimpleNamespace(
         services=SimpleNamespace(async_call=AsyncMock()),
@@ -3505,14 +4501,14 @@ async def test_execute_rooms_cleans_up_prefetch_when_graceful_stop_arrives(
     )
     managed_command = AsyncMock()
 
-    async def run_room(*_args, **kwargs) -> bool:
+    async def run_leg(*_args, **kwargs) -> bool:
         assert await kwargs["prefetch_next"]() is not None
         manager.finish_room_event("serial").set()
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
-        side_effect=run_room,
+        "custom_components.matic_robot.services._async_run_leg",
+        side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
             fake_hass,
@@ -3535,7 +4531,7 @@ async def test_execute_rooms_falls_back_when_prefetch_is_unavailable(hass) -> No
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     fake_hass = SimpleNamespace(
         states=SimpleNamespace(
@@ -3543,17 +4539,17 @@ async def test_execute_rooms_falls_back_when_prefetch_is_unavailable(hass) -> No
         )
     )
 
-    async def run_room(*_args, **kwargs) -> bool:
+    async def run_leg(*_args, **kwargs) -> bool:
         assert await kwargs["prefetch_next"]() is None
         return False
 
     with (
         patch(
-            "custom_components.matic_robot.services._async_run_room",
-            side_effect=run_room,
+            "custom_components.matic_robot.services._async_run_leg",
+            side_effect=run_leg,
         ) as run,
         patch(
-            "custom_components.matic_robot.services._async_dispatch_room_command",
+            "custom_components.matic_robot.services._async_dispatch_leg_command",
             AsyncMock(side_effect=HomeAssistantError("synthetic failure")),
         ),
     ):
@@ -3575,7 +4571,7 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     managed_command = AsyncMock()
     fake_hass = SimpleNamespace(
@@ -3584,14 +4580,14 @@ async def test_execute_rooms_skips_prefetch_after_stop_request(hass) -> None:
         )
     )
 
-    async def run_room(*_args, **kwargs) -> bool:
+    async def run_leg(*_args, **kwargs) -> bool:
         manager.finish_room_event("serial").set()
         assert await kwargs["prefetch_next"]() is None
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
-        side_effect=run_room,
+        "custom_components.matic_robot.services._async_run_leg",
+        side_effect=run_leg,
     ):
         await _async_execute_rooms(
             fake_hass,
@@ -3613,7 +4609,7 @@ async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> No
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     fake_hass = SimpleNamespace(
         services=SimpleNamespace(async_call=AsyncMock()),
@@ -3622,14 +4618,14 @@ async def test_execute_rooms_skips_prefetch_while_stop_fence_pending(hass) -> No
         ),
     )
 
-    async def run_room(*_args, **kwargs) -> bool:
+    async def run_leg(*_args, **kwargs) -> bool:
         manager.mark_stop_pending("serial")
         assert await kwargs["prefetch_next"]() is None
         return False
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
-        side_effect=run_room,
+        "custom_components.matic_robot.services._async_run_leg",
+        side_effect=run_leg,
     ) as run:
         await _async_execute_rooms(
             fake_hass,
@@ -3651,13 +4647,13 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [
         _room("Kitchen", "room-kitchen"),
-        _room("Study", "room-study"),
+        _heavy_room("Study", "room-study"),
     ]
     managed_command = AsyncMock()
     hass.states.async_set("vacuum.matic", "idle")
 
     with patch(
-        "custom_components.matic_robot.services._async_run_room",
+        "custom_components.matic_robot.services._async_run_leg",
         AsyncMock(return_value=False),
     ) as run:
         await _async_execute_rooms(
@@ -3672,7 +4668,7 @@ async def test_execute_rooms_stops_after_unverified_room(hass) -> None:
         )
 
     run.assert_awaited_once()
-    assert run.await_args.args[5] == rooms[0]
+    assert run.await_args.args[5] == [rooms[0]]
     managed_command.assert_awaited_once()
     assert managed_command.await_args.args[1] is UserCommand.DOCK
 

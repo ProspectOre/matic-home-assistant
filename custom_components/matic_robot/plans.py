@@ -813,20 +813,44 @@ class CleaningPlanManager:
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_completed(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        completed_at: str | None = None,
+        duration_seconds: int | None = None,
     ) -> None:
-        """Advance room history only after the room finishes."""
+        """Advance room history only after the room finishes.
+
+        Native record evidence (``completed_at``/``duration_seconds``) takes
+        precedence over wall-clock tracking so one multi-room leg mission can
+        credit each verified room with the robot's own per-room timing.
+        """
         now_value = dt_util.utcnow()
-        now = now_value.isoformat()
+        now = (
+            completed_at
+            if completed_at is not None
+            and _latest_timestamp(completed_at, now=now_value) is not None
+            else now_value.isoformat()
+        )
         record = self._room(serial_number, plan_id, room)
         active = self._robot(serial_number).get("active_plan")
-        duration = (
-            _active_elapsed_seconds(active, now_value)
-            if active is not None
-            and active.get("plan_id") == plan_id
-            and active.get("room_id") == room.room_id
-            else None
-        )
+        duration: int | None
+        if (
+            isinstance(duration_seconds, int)
+            and not isinstance(duration_seconds, bool)
+            and duration_seconds > 0
+        ):
+            duration = duration_seconds
+        else:
+            duration = (
+                _active_elapsed_seconds(active, now_value)
+                if active is not None
+                and active.get("plan_id") == plan_id
+                and active.get("room_id") == room.room_id
+                else None
+            )
         if duration is not None and duration > 0:
             samples = _stored_count(record, "duration_samples") + 1
             history = _duration_history(record)

@@ -1,0 +1,68 @@
+name: Claude Review
+
+# Runs only when the repository variable REVIEW_PROVIDER is "claude"; the
+# review-gate workflows read the same variable to decide which bot identity
+# satisfies the gate, so switching providers is one variable flip with the
+# Codex flow as the unset default.
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, ready_for_review]
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  pull-requests: write
+  id-token: write
+
+jobs:
+  review:
+    name: claude-review
+    if: >-
+      vars.REVIEW_PROVIDER == 'claude'
+      && github.event.pull_request.draft == false
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: >-
+            --allowedTools "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr
+            view:*),Bash(gh api:*)"
+          prompt: |
+            You are this repository's regular review gate. Review pull request
+            #${{ github.event.pull_request.number }} of
+            ${{ github.repository }} at exactly head commit
+            ${{ github.event.pull_request.head.sha }}.
+
+            Read the full diff with `gh pr diff`, open any file you need, and
+            hold the change to this repository's bar (CLAUDE.md and
+            CONTRIBUTING.md): correctness bugs first; privacy (no credentials,
+            serials, addresses, captures, maps, or Home Assistant storage
+            contents); protocol safety (no command from a guessed enum or
+            payload); rotation and completion-evidence invariants; and test
+            adequacy for changed behavior. Review only — never edit files,
+            push commits, approve, or request changes.
+
+            When done, post exactly one pull request review by running:
+
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body="$BODY"
+
+            If the change has no blocking findings, $BODY must be exactly the
+            following two lines and nothing else before or after:
+
+            ## Review result: No issues found.
+
+            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
+
+            If there are blocking findings, $BODY must start with the heading
+            `## Review result: findings`, followed by the line
+            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
+            and then a numbered list giving file:line, the defect, and a
+            concrete failure scenario for every finding. If you cannot
+            complete the review, post nothing.
