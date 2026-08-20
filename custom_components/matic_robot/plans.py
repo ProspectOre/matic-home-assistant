@@ -520,12 +520,12 @@ class CleaningPlanManager:
         floor_plan: FloorPlan | None,
         records: Iterable[CleaningSessionRecord],
     ) -> bool:
-        """Recover latest room statistics from retained native completions."""
+        """Record robot-side cleaning activity without claiming completions."""
         if floor_plan is None:
             return False
         robot = self._robot(serial_number)
         records = tuple(records)
-        changed = _import_native_room_history(robot, floor_plan, records)
+        changed = _import_native_room_activity(robot, floor_plan, records)
         changed = (
             _reconcile_pending_native_history(robot, floor_plan, records) or changed
         )
@@ -1578,56 +1578,55 @@ def _record_native_completion(
     global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
 
 
-def _import_native_room_history(
+def _import_native_room_activity(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
 ) -> bool:
-    """Import only native room records carrying explicit completion evidence."""
+    """Record where the robot worked, which is not proof that it finished.
+
+    The robot marks the room it occupied when a session ended exactly the way
+    it marks a room it cleaned to the end, and it reports a stopped session as
+    completed, so its record cannot establish completion by itself.  Observed
+    live on firmware v172.12: a room entered sixty seconds before a stop and a
+    room cleaned for thirty-one minutes were recorded identically, and a clean
+    stopped after forty-five seconds still reported its room as completed.
+
+    Native evidence is therefore imported as a cleaning opportunity.  Rotation
+    fairness stays current for cleaning this integration did not manage - a
+    room the robot has just worked in does not keep monopolising short runs -
+    while "last cleaned" and completion counts continue to come only from runs
+    whose end was actually verified.
+    """
     room_lookup: dict[str, tuple[str, str] | None] = {}
     for room in floor_plan.rooms:
         key = _native_room_key(room.name)
         room_lookup[key] = None if key in room_lookup else (room.id, room.name)
 
-    candidates: dict[str, tuple[float, str, str, int]] = {}
+    candidates: dict[str, tuple[float, str, str]] = {}
     for record in records:
         session = record.session
         timestamp = _latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
-        durations = dict(session.room_durations)
-        for completed_name in session.completed_rooms:
-            mapped_room = room_lookup.get(_native_room_key(completed_name))
-            duration = durations.get(completed_name)
-            if (
-                mapped_room is None
-                or not isinstance(duration, int | float)
-                or isinstance(duration, bool)
-                or not math.isfinite(duration)
-                or duration <= 0
-            ):
+        for worked_name in session.completed_rooms:
+            mapped_room = room_lookup.get(_native_room_key(worked_name))
+            if mapped_room is None:
                 continue
             room_id, room_name = mapped_room
             current = candidates.get(room_id)
             if current is None or timestamp >= current[0]:
-                candidates[room_id] = (
-                    timestamp,
-                    session.ended_at,
-                    room_name,
-                    round(duration),
-                )
+                candidates[room_id] = (timestamp, session.ended_at, room_name)
 
     changed = False
-    for room_id, (timestamp, completed, name, duration) in candidates.items():
+    for room_id, (timestamp, ended_at, name) in candidates.items():
         global_room = robot["rooms"].setdefault(room_id, {})
-        current_timestamp = _latest_timestamp(global_room.get("last_completed"))
-        if current_timestamp is not None and current_timestamp > timestamp:
+        known = _latest_timestamp(
+            global_room.get("last_opportunity"), global_room.get("last_completed")
+        )
+        if known is not None and known > timestamp:
             continue
-        updates = {
-            "name": name,
-            "last_completed": completed,
-            "last_duration_seconds": duration,
-        }
+        updates = {"name": name, "last_opportunity": ended_at}
         if any(global_room.get(key) != value for key, value in updates.items()):
             global_room.update(updates)
             changed = True

@@ -503,7 +503,7 @@ async def test_area_binding_upgrade_ignores_malformed_area_record(hass) -> None:
     manager._store.async_save.assert_not_awaited()
 
 
-async def test_native_history_import_recovers_only_explicit_room_completions(
+async def test_native_history_import_records_activity_not_completion(
     hass,
 ) -> None:
     manager = CleaningPlanManager(hass)
@@ -618,14 +618,20 @@ async def test_native_history_import_recovers_only_explicit_room_completions(
         await manager.async_import_native_history("serial", floor_plan, records) is True
     )
     history = manager.snapshot("serial")["last_completed_by_room"]
-    assert history["living"] == {
-        "name": "Living Room",
-        "at": "2026-07-28T19:00:00+00:00",
-        "duration_seconds": 121,
-        "runs": 0,
-    }
+    # The robot's record cannot prove a room was finished, so importing it
+    # never claims a completion: it only keeps rotation fairness current.
+    assert history["living"]["at"] is None
+    assert history["living"]["runs"] == 0
+    assert history["living"]["name"] == "Living Room"
     assert history["hall"]["at"] == "2026-07-28T23:30:00+00:00"
     assert "office-a" not in history
+    rooms = manager._robot("serial")["rooms"]
+    # A record with no usable duration still proves the robot worked there,
+    # so the newest such session is the room's latest opportunity.
+    assert rooms["living"]["last_opportunity"] == "2026-07-28T22:00:00+00:00"
+    assert "last_duration_seconds" not in rooms["living"]
+    # A verified completion that is newer than the native evidence stands.
+    assert "last_opportunity" not in rooms["hall"]
     manager._store.async_save.assert_awaited_once()
     listener.assert_called_once()
 

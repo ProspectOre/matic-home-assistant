@@ -273,13 +273,17 @@ cancelled, timed-out, or restart-interrupted rooms remain due, but a confirmed
 start moves them behind rooms that waited longer so one problem room cannot
 monopolize short runs. Saved room order breaks ties.
 
-Room history also follows the robot itself. Firmware cleans without Home
+Rotation fairness also follows the robot itself. Firmware cleans without Home
 Assistant in two ordinary cases — it resumes its own task after an error, and
-the vendor app can start one — and those runs still record which rooms were
-completed. Every time a cleaning session finishes, the integration imports that
-evidence, so a room the robot genuinely finished stops reading as due even
-though no managed plan verified it. Only rooms the robot's own record marks
-completed with a positive duration are credited; interrupted rooms stay due.
+the vendor app can start one. The robot records which rooms such a run touched,
+but that record cannot prove a room was finished: the robot marks the room it
+occupied when a session ended exactly the way it marks a room cleaned to the
+end, and it reports a stopped session as completed. Each time a session
+finishes, the integration therefore imports that evidence as a cleaning
+*opportunity*: a room the robot has just worked in stops monopolising short
+runs, while **last cleaned**, per-room durations, and completion counts still
+come only from runs whose end was verified. A room worked on but not verified
+stays due.
 
 Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:

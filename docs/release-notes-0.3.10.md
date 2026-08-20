@@ -4,26 +4,44 @@ Released: 2026-08-20
 
 ## Summary
 
-0.3.10 keeps room history in step with the robot. Firmware cleans without Home
-Assistant in ordinary situations — it resumes its own task after an error, and
-the vendor app can start one — and until now those rooms kept reading as due
-until the next Home Assistant restart, which also pushed them to the front of
-the intelligent rotation.
+0.3.10 corrects what the robot's own cleaning record is allowed to prove. That
+record cannot establish that a room was finished, so it no longer produces
+completions — it now keeps rotation fairness current instead. This fixes rooms
+being marked cleaned after the robot was stopped in them, and it lets cleaning
+the integration did not manage inform the rotation for the first time.
 
-## Room history follows the robot
+## The robot's record proves activity, not completion
 
-- Every time a cleaning session finishes, the integration imports the robot's
-  own per-room completion evidence, instead of doing that only at startup.
-- The evidence standard is unchanged: a room is credited only when the robot's
-  record marks it completed with a positive duration. Interrupted, stopped, and
-  unfinished rooms stay due, and a record that is missing, ambiguous, or
-  unreadable credits nothing.
-- This covers the case observed live on 2026-08-20: a managed plan ended early
-  on a robot error at 11:59, firmware resumed the same task on its own at 12:07
-  and cleaned four rooms over the next 32 minutes, and none of that work was
-  reflected in room history or rotation order.
-- The listener is bound to the config entry, so unloading Home Assistant
-  removes it, and a robot that cannot be read is logged and skipped.
+Firmware cleans without Home Assistant in ordinary situations: it resumes its
+own task after an error, and the vendor app can start one. Earlier versions
+imported the robot's per-room record as a verified completion at startup.
+
+Live observation on firmware v172.12 shows that reading was wrong:
+
+- a room the robot entered sixty seconds before being stopped, and a room it
+  cleaned for thirty-one minutes, are recorded identically;
+- a clean stopped after forty-five seconds still reported its room as
+  completed, and reported the session as completed too.
+
+The result was a room that received one minute of cleaning being recorded as
+cleaned — taking its **last cleaned** timestamp, a duration, and a place at the
+back of the intelligent rotation, so it would be skipped for a full cycle.
+
+From 0.3.10 the robot's record is imported as a cleaning **opportunity**:
+
+- rooms the robot has just worked in stop monopolising short runs, which is the
+  same fairness rule already applied to a room whose managed run was
+  interrupted;
+- **last cleaned**, per-room durations, and completion counts continue to come
+  only from runs whose end was verified, so an unverified room stays due;
+- the import now also runs whenever a cleaning session finishes rather than
+  only at startup, so unmanaged cleaning is reflected while it is still
+  relevant. The listener is bound to the config entry, and an unreadable robot
+  is logged and skipped.
+
+Nothing about verified completion changed: managed plans still credit a room
+only against a native record that matches the commanded room with a positive
+duration.
 
 This release adds no robot protocol commands and keeps all robot traffic,
 cleaning history, maps, and reconciliation data local to Home Assistant.
@@ -38,6 +56,9 @@ tests, HACS validation, and Hassfest.
 
 Install 0.3.10 through HACS and restart Home Assistant. Existing entries,
 credentials, plans, custom areas, maps, cleaning history, and firmware
-snapshots are preserved. The restart also imports any retained robot-side
-completions that earlier versions missed, so rotation order may shift once to
-reflect cleaning the robot had already done.
+snapshots are preserved.
+
+A room that an earlier version credited from the robot's record keeps that
+recorded timestamp; the value cannot be distinguished after the fact from a
+verified completion, so it is left alone rather than guessed at. It is
+corrected the next time that room is genuinely cleaned and verified.
