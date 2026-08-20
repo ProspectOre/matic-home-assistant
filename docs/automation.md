@@ -419,6 +419,25 @@ human protocol evidence before becoming a decoded entity or command.
 Snapshotting never promotes firmware to control-verified; physical write
 validation remains deliberate.
 
+## Diagnosing a robot error
+
+When the robot reports a fault, `binary_sensor.matic_problem` turns on and the
+vacuum enters `error`. The reason is on `sensor.matic_activity`:
+
+- `errors`: every reported condition, named where the protocol names it and
+  reported as `error_code_<n>` where it does not;
+- `primary_error`: the first of them;
+- `hermes_error_codes`: the raw codes.
+
+These attributes are recorded, so a fault that has already cleared can still be
+read back from history for the moment the sensor entered `error` — which is
+usually the only chance to see it, since the robot clears the codes as soon as
+it recovers. A downloaded diagnostics file carries the same codes.
+
+Codes the protocol does not name are reported verbatim rather than guessed at.
+Reporting one, with what the robot was doing at the time, is useful: it is how
+the named set grows.
+
 ## Room statistics and the recorder
 
 Template-visible attributes and recorded history follow one deliberate model:
