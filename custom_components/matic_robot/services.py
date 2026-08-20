@@ -2205,9 +2205,22 @@ async def _async_reconcile_native_stop(
     confirm_room_completed: Callable[[str], None] | None,
     context: Context | None,
 ) -> None:
-    """Reconcile one late native completion without issuing another motion command."""
+    """Reconcile one late native completion without issuing another motion command.
+
+    Reconciliation exists for a room Home Assistant lost sight of, so it leans
+    on the robot's own record.  That record reports a room the robot was
+    stopped in exactly like a finished one, so watching the task end in place
+    is positive evidence against it: the watcher abandons the marker instead of
+    crediting the room its own observation disproves.
+    """
     deadline = monotonic() + OEM_STOP_RECONCILIATION_SECONDS
     while monotonic() < deadline:
+        state = hass.states.get(entity_id)
+        if state is not None and state.state == "idle":
+            _LOGGER.debug(
+                "Native Matic reconciliation abandoned: the task ended in place"
+            )
+            break
         try:
             records = await session_history()
         except MaticError as err:
