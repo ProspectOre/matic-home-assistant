@@ -275,7 +275,7 @@ def test_room_labels_wrap_and_scale_to_stay_inside_tight_rooms() -> None:
     rooms = (
         ("Bathroom", ((20.0, 20.0), (92.0, 20.0), (92.0, 145.0), (20.0, 145.0))),
         (
-            "Quinns Room",
+            "Guest Room",
             ((92.0, 20.0), (260.0, 20.0), (260.0, 180.0), (92.0, 180.0)),
         ),
         (
@@ -316,7 +316,7 @@ def test_room_label_layout_avoids_collisions_between_overlapping_regions() -> No
     polygon = ((20.0, 20.0), (240.0, 20.0), (240.0, 160.0), (20.0, 160.0))
 
     layouts = _layout_room_labels(
-        (("Bathroom", polygon), ("Quinns Room", polygon)),
+        (("Bathroom", polygon), ("Guest Room", polygon)),
         width=260,
         height=180,
         font_size=24,
