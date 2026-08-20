@@ -14,6 +14,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from custom_components.matic_robot import (
     _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
+    _register_native_history_sync,
     _schedule_native_reconciliation_recovery,
     async_remove_entry,
     async_setup,
@@ -378,6 +379,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
+        bus=SimpleNamespace(async_listen=MagicMock(return_value=MagicMock())),
         data={
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
@@ -513,10 +515,12 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator.async_add_listener.assert_called_once()
     sync_callback = coordinator.async_add_listener.call_args.args[0]
     plans.async_add_listener.assert_called_once_with("synthetic-serial", sync_callback)
-    assert entry.async_on_unload.call_args_list == [
+    assert entry.async_on_unload.call_args_list[-2:] == [
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),
     ]
+    hass.bus.async_listen.assert_called_once()
+    assert hass.bus.async_listen.call_args.args[0] == f"{DOMAIN}_cleaning_finished"
     sync_area_issue.assert_called_once_with(hass, "entry", {}, setup_floor_plan)
 
     with patch(
@@ -821,3 +825,51 @@ async def test_remove_entry_erases_firmware_history() -> None:
         await async_remove_entry(bare, entry)
 
     delete_bare_area_issue.assert_called_once_with(bare, "entry")
+
+
+async def test_finished_session_records_where_the_robot_worked(hass) -> None:
+    """Any finished clean updates rotation fairness, claiming no completion."""
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    unloads: list = []
+    entry.async_on_unload = unloads.append
+    client = SimpleNamespace(
+        async_get_cleaning_session_records=AsyncMock(return_value=("record",))
+    )
+    plans = SimpleNamespace(async_import_native_history=AsyncMock(return_value=True))
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+
+    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
+    assert unloads
+
+    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "other"})
+    await hass.async_block_till_done()
+    plans.async_import_native_history.assert_not_awaited()
+
+    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    await hass.async_block_till_done()
+    plans.async_import_native_history.assert_awaited_once_with(
+        "serial", "floor-plan", ("record",)
+    )
+
+
+async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
+    from custom_components.matic_robot.client.exceptions import MaticError
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    entry.async_on_unload = MagicMock()
+    client = SimpleNamespace(
+        async_get_cleaning_session_records=AsyncMock(side_effect=MaticError("down"))
+    )
+    plans = SimpleNamespace(async_import_native_history=AsyncMock())
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+
+    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
+    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    await hass.async_block_till_done()
+
+    plans.async_import_native_history.assert_not_awaited()

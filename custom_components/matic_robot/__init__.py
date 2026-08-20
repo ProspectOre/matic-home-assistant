@@ -10,7 +10,7 @@ from typing import cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import HomeAssistant
+from homeassistant.core import Event, HomeAssistant
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
@@ -35,6 +35,7 @@ from .const import (
     DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
     DOMAIN,
+    EVENT_CLEANING_FINISHED,
     PLATFORMS,
 )
 from .coordinator import MaticCoordinator
@@ -156,6 +157,14 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             plans,
             serial_number,
         )
+        _register_native_history_sync(
+            hass,
+            entry,
+            client,
+            coordinator,
+            plans,
+            serial_number,
+        )
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
@@ -232,6 +241,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         client.close()
         raise
     return True
+
+
+def _register_native_history_sync(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    client: MaticHermesClient,
+    coordinator: MaticCoordinator,
+    plans: CleaningPlanManager,
+    serial_number: str,
+) -> None:
+    """Record where the robot worked, whoever started the clean.
+
+    A managed plan verifies its own rooms, but firmware also cleans on its
+    own: it resumes a task after an error and the vendor app can start one.
+    The robot's record cannot prove those rooms were finished, so importing
+    it as each session ends keeps rotation fairness current without ever
+    claiming a completion; see ``_import_native_room_activity``.
+    """
+
+    async def _async_sync(event: Event) -> None:
+        if event.data.get("entry_id") != entry.entry_id:
+            return
+        try:
+            records = await client.async_get_cleaning_session_records()
+        except MaticError as err:
+            _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
+            return
+        await plans.async_import_native_history(
+            serial_number,
+            coordinator.data.floor_plan,
+            records,
+        )
+
+    entry.async_on_unload(hass.bus.async_listen(EVENT_CLEANING_FINISHED, _async_sync))
 
 
 def _schedule_native_reconciliation_recovery(
