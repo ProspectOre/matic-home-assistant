@@ -394,10 +394,11 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
         await duration.async_added_to_hass()
         await last_cleaned.async_added_to_hass()
 
-    assert duration.available is True
-    assert duration.native_value == 600
-    assert last_cleaned.native_value is not None
-    assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
+    # The robot's own session cannot prove a room was finished, so an
+    # unverified session leaves room statistics empty rather than claiming a
+    # clean that may have been a stop after one minute.
+    assert duration.native_value is None
+    assert last_cleaned.native_value is None
 
     # A room the latest session did not include keeps its restored value.
     stored = SimpleNamespace(native_value=120)
@@ -444,11 +445,11 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     )
     duration._async_apply_session()
     last_cleaned._async_apply_session()
-    assert duration.native_value == 600
-    assert last_cleaned.native_value is not None
-    assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
+    assert duration.native_value is None
+    assert last_cleaned.native_value is None
 
-    # A partially completed native run updates only its verified rooms.
+    # A partially completed native run proves nothing either: the robot marks
+    # the room it was stopped in the same way it marks a finished one.
     coordinator.data = replace(
         coordinator.data,
         telemetry=replace(
@@ -468,9 +469,8 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     last_cleaned._async_apply_session()
     study_duration._async_apply_session()
     study_last._async_apply_session()
-    assert duration.native_value == 420
-    assert last_cleaned.native_value is not None
-    assert last_cleaned.native_value.isoformat() == "2026-01-03T08:10:00+00:00"
+    assert duration.native_value is None
+    assert last_cleaned.native_value is None
     assert study_duration.native_value == 120
     assert study_last.native_value == stored_when.native_value
 
@@ -492,7 +492,7 @@ async def test_room_statistics_sensors_apply_and_restore_sessions() -> None:
     fresh = sensor.MaticRoomDurationSensor(entry, kitchen)
     fresh.async_write_ha_state = MagicMock()
     fresh._handle_coordinator_update()
-    assert fresh.native_value == 600
+    assert fresh.native_value is None
 
     # A remap retires statistics entities whose stable room id disappeared,
     # without erasing their restored values.
@@ -1484,3 +1484,46 @@ async def test_vacuum_dock_from_idle_sends_no_stop() -> None:
     client = entry.runtime_data.coordinator.client
     commands = [call.args[0] for call in client.async_send_user_command.await_args_list]
     assert commands == [UserCommand.DOCK]
+
+
+async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
+    """A verified managed run still populates room statistics."""
+    entry = _entry()
+    kitchen = entry.runtime_data.coordinator.data.floor_plan.rooms[0]
+    entry.runtime_data.cleaning_plans.snapshot.return_value = {
+        **entry.runtime_data.cleaning_plans.snapshot.return_value,
+        "plan_history": {
+            "whole_home": {
+                "rooms": {
+                    kitchen.id: {
+                        "room_id": kitchen.id,
+                        "last_started": "2026-01-01T08:00:00+00:00",
+                        "last_completed": "2026-01-01T08:10:00+00:00",
+                        "last_duration_seconds": 600,
+                        "last_result": "completed",
+                    }
+                }
+            }
+        },
+    }
+    duration = sensor.MaticRoomDurationSensor(entry, kitchen)
+    last_cleaned = sensor.MaticRoomLastCleanedSensor(entry, kitchen)
+    with (
+        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
+        patch.object(
+            sensor.MaticRoomDurationSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            sensor.MaticRoomLastCleanedSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await duration.async_added_to_hass()
+        await last_cleaned.async_added_to_hass()
+
+    assert duration.native_value == 600
+    assert last_cleaned.native_value is not None
+    assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
