@@ -1785,6 +1785,65 @@ async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None
     confirmed.assert_called_once_with(room.name)
 
 
+async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None:
+    """Watching the robot stop disproves the completion its record claims."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    dispatched_at = dt_util.utcnow() - timedelta(seconds=30)
+    manager._robot("serial")["pending_native_reconciliation"] = {
+        "plan_id": "away",
+        "room_id": room.room_id,
+        "room": room.name,
+        "dispatched_at": dispatched_at.isoformat(),
+        "expires_at": (dt_util.utcnow() + timedelta(minutes=12)).isoformat(),
+    }
+    ended = dt_util.utcnow()
+    record = CleaningSessionRecord(
+        b"late",
+        CleaningSession(
+            (ended - timedelta(seconds=20)).isoformat(),
+            ended.isoformat(),
+            20,
+            ("Study",),
+            (("Study", 20),),
+            True,
+            completed_rooms=("Study",),
+        ),
+    )
+    hass.states.async_set("vacuum.matic", "idle", {"current_area": "Study"})
+    confirmed: list[str] = []
+
+    with (
+        patch(
+            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            0.05,
+        ),
+        patch(
+            "custom_components.matic_robot.services."
+            "OEM_STOP_RECONCILIATION_POLL_SECONDS",
+            0,
+        ),
+    ):
+        await _async_reconcile_native_stop(
+            hass,
+            manager,
+            "serial",
+            "vacuum.matic",
+            room,
+            _NativeReconciliation("away", room.room_id, room.name, dispatched_at),
+            frozenset(),
+            None,
+            AsyncMock(return_value=(record,)),
+            confirmed.append,
+            None,
+        )
+
+    assert confirmed == []
+    snapshot = manager.snapshot("serial")
+    assert snapshot["last_completed_by_room"].get(room.room_id) is None
+
+
 async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()

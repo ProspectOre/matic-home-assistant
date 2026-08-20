@@ -31,6 +31,19 @@ completion, and the room was credited and pushed to the back of the rotation.
 This release adds no robot protocol commands and keeps all robot traffic,
 cleaning history, maps, and reconciliation data local to Home Assistant.
 
+## Reconciliation needs the same evidence
+
+Late native reconciliation recovers a room Home Assistant lost sight of, so it
+leans on the robot's record. When the integration can see the robot stop, that
+record is contradicted: the watcher now abandons its marker instead of
+crediting a room its own observation disproves.
+
+The `matic_robot_cleaning_finished` event and the local-sessions sensor still
+report the robot's own `completed` and `completed_rooms` values unchanged.
+Those are the robot's claims rather than verified results, and the
+documentation now says so; use `matic_robot_room_completed` or a room's **last
+cleaned** sensor when an automation needs proof.
+
 ## Verification
 
 The release candidate is gated by the full Python suite at 100% coverage,
