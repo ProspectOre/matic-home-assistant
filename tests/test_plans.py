@@ -113,7 +113,7 @@ def test_leg_groups_split_only_on_settings_changes() -> None:
         cleaning_mode="vacuum",
         coverage_setting="standard",
     )
-    quick_c = _room("Quinns Room", "room-d")
+    quick_c = _room("Guest Room", "room-d")
 
     assert _leg_groups([quick_a, quick_b, standard, quick_c]) == [
         [quick_a, quick_b],
