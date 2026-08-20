@@ -277,12 +277,17 @@ Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:
 a low-charge return is suspended and waits for the robot's automatic resume;
 an unexplained stop receives no credit. The private protocol does not yet expose
-a verified refill-specific signal. When the runner observes a commanded room's
-normal return, it sends the next room immediately so the robot can pivot without
-docking, then verifies the finished room against native history while the next
-room runs. An unverified room stops that started next room and receives no
-credit, and no next room is prepared while a native stop countdown settles; only
-the final room returns all the way to the dock.
+a verified refill-specific signal. Consecutive rooms that share one cleaning
+mode and coverage run as a single native mission (a leg), so the robot glides
+room to room without docking. Room history still advances per room from the
+leg's one native record: a room is credited only with its own completed status
+and a positive duration, partial legs credit exactly their verified subset, and
+everything else stays due. Between legs — current firmware queues a command
+sent during a return — the runner dispatches the next leg at the observed
+return and the robot briefly touches the dock. An unverified leg stops any
+started next leg and receives no further credit, no next leg is prepared while
+a native stop countdown settles, and only the final leg returns all the way to
+the dock.
 
 Motion commands are serialized per robot. An independent Home Assistant clean,
 custom-area clean, stop, or dock revokes the managed plan before that command is
@@ -297,8 +302,9 @@ coverage. Compatible samples are shared across plans on the same robot, so a new
 plan does not need to relearn an unchanged room. Stored aggregate duration data
 from earlier integration versions remains usable only when it represents at
 least three successful runs. A stop below the configured threshold remains
-immediate; at or above it, the current room completes, the next room is never
-started, and the robot docks. Until a confident compatible duration exists,
+immediate; at or above it, the current room completes and the robot docks: the
+next leg is never dispatched, and inside a leg the managed STOP is sent at the
+observed room boundary so later rooms remain due. Until a confident compatible duration exists,
 enabling the policy means the current room finishes. Set the threshold to `0%`
 to always finish it. This is a time-based estimate, not a measured area
 percentage; pauses, recharge, and other delays can reduce its accuracy.
