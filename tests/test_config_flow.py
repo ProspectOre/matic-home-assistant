@@ -229,6 +229,65 @@ async def test_manual_discovery_discards_incomplete_records(
     assert await _async_discover_robots(hass) == []
 
 
+async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
+    hass, monkeypatch
+) -> None:
+    active = 0
+    max_active = 0
+    created_names: list[str] = []
+
+    class FakeBrowser:
+        def __init__(self, _zeroconf, _service_type, handlers):
+            for index in range(10):
+                handlers[0](
+                    zeroconf=None,
+                    service_type="service",
+                    name=f"robot-{index}.service",
+                    state_change=ServiceStateChange.Added,
+                )
+
+        async def async_cancel(self):
+            return None
+
+    class FakeServiceInfo:
+        def __init__(self, service_type, name):
+            self.type = service_type
+            self.name = name
+            self.port = 16320
+            self.server = "robot.local."
+            self.decoded_properties = {}
+            created_names.append(name)
+
+        async def async_request(self, _zeroconf, _timeout):
+            nonlocal active, max_active
+            active += 1
+            max_active = max(max_active, active)
+            await asyncio.sleep(0)
+            active -= 1
+            return True
+
+        def parsed_scoped_addresses(self, _ip_version):
+            return [f"192.0.2.{index}" for index in range(1, 10)]
+
+    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_SERVICES", 3)
+    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 2)
+    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 2)
+    monkeypatch.setattr(
+        flow_module,
+        "async_get_async_instance",
+        AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
+    )
+    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+
+    discoveries = await _async_discover_robots(hass, discovery_seconds=0)
+
+    assert len(created_names) == 3
+    assert len(discoveries) == 3
+    assert all(len(info.ip_addresses) == 2 for info in discoveries)
+    assert max_active == 2
+
+
 async def test_discovery_opens_single_action_pairing_form(hass, monkeypatch) -> None:
     monkeypatch.setattr(
         "custom_components.matic_robot.config_flow._async_select_discovery_host",
@@ -420,6 +479,45 @@ async def test_discovery_probe_timeout_falls_back_to_advertised_address(
     )
 
     assert await _async_select_discovery_host(info) == "192.0.2.2"
+
+
+async def test_discovery_caps_candidate_address_probe_fanout(monkeypatch) -> None:
+    info = ZeroconfServiceInfo(
+        ip_address=ip_address("192.0.2.1"),
+        ip_addresses=[ip_address(f"192.0.2.{index}") for index in range(1, 10)],
+        port=16320,
+        hostname="robot.local.",
+        type="_grpc._tcp.local.",
+        name="robot._grpc._tcp.local.",
+        properties={},
+    )
+    probed: list[str] = []
+
+    async def fetch_certificate(host: str, _port: int) -> bytes:
+        probed.append(host)
+        raise CannotConnectError("offline")
+
+    monkeypatch.setattr(flow_module, "MAX_DISCOVERY_ADDRESSES", 3)
+    monkeypatch.setattr(flow_module, "async_fetch_peer_certificate", fetch_certificate)
+    monkeypatch.setattr(
+        asyncio.get_running_loop(),
+        "getaddrinfo",
+        AsyncMock(
+            return_value=[
+                (
+                    socket.AF_INET,
+                    socket.SOCK_STREAM,
+                    socket.IPPROTO_TCP,
+                    "",
+                    (f"198.51.100.{index}", 16320),
+                )
+                for index in range(1, 10)
+            ]
+        ),
+    )
+
+    assert await _async_select_discovery_host(info) == "192.0.2.1"
+    assert len(probed) == 3
 
 
 async def test_zeroconf_uses_advertised_serial_for_duplicate_protection(
@@ -1102,6 +1200,27 @@ async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None
         },
     )
     assert result["errors"]["name"] == "duplicate_plan"
+
+
+async def test_options_flow_reports_saved_plan_limit(hass, monkeypatch) -> None:
+    entry, _manager = await _options_entry(hass)
+    monkeypatch.setattr(flow_module, "MAX_SAVED_PLANS_PER_ROBOT", 1)
+    result = await _start_options_step(hass, entry, "add_plan")
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Another plan",
+            "run_behavior": "intelligent",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "return_to_base": True,
+        },
+    )
+
+    assert result["errors"]["base"] == "plan_limit_reached"
 
 
 async def test_options_flow_draws_edits_and_deletes_custom_area(hass) -> None:

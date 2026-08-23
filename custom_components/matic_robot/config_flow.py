@@ -63,6 +63,7 @@ from .const import (
     DOMAIN,
     SERVICE_TYPE,
 )
+from .plans import MAX_SAVED_PLANS_PER_ROBOT
 from .room_plan_selector import MaticRoomPlanSelector
 from .slam_scene import scene_api_url
 
@@ -72,6 +73,9 @@ PAIRING_ATTEMPTS = PAIRING_TIMEOUT_SECONDS // PAIRING_RETRY_SECONDS
 MANUAL_DISCOVERY_SECONDS = 3
 DISCOVERY_PROBE_TIMEOUT_SECONDS = 5
 DISCOVERY_RESOLVE_TIMEOUT_SECONDS = 2
+MAX_DISCOVERY_SERVICES = 64
+MAX_DISCOVERY_ADDRESSES = 32
+DISCOVERY_RESOLVE_CONCURRENCY = 8
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -96,7 +100,8 @@ async def _async_discover_robots(
     ) -> None:
         del zeroconf, service_type
         if state_change in {ServiceStateChange.Added, ServiceStateChange.Updated}:
-            names.add(name)
+            if name in names or len(names) < MAX_DISCOVERY_SERVICES:
+                names.add(name)
 
     async_zeroconf = await async_get_async_instance(hass)
     browser = AsyncServiceBrowser(
@@ -109,25 +114,32 @@ async def _async_discover_robots(
     finally:
         await browser.async_cancel()
 
+    resolver_slots = asyncio.Semaphore(DISCOVERY_RESOLVE_CONCURRENCY)
+
     async def _resolve(name: str) -> ZeroconfServiceInfo | None:
-        info = AsyncServiceInfo(SERVICE_TYPE, name)
-        if not await info.async_request(
-            async_zeroconf.zeroconf, int(discovery_seconds * 1000)
-        ):
-            return None
-        addresses = info.parsed_scoped_addresses(IPVersion.All)
-        if not addresses or info.port is None or info.server is None:
-            return None
-        parsed_addresses = [ip_address(address.split("%")[0]) for address in addresses]
-        return ZeroconfServiceInfo(
-            ip_address=parsed_addresses[0],
-            ip_addresses=parsed_addresses,
-            port=info.port,
-            hostname=info.server,
-            type=info.type,
-            name=info.name,
-            properties=info.decoded_properties,
-        )
+        async with resolver_slots:
+            info = AsyncServiceInfo(SERVICE_TYPE, name)
+            if not await info.async_request(
+                async_zeroconf.zeroconf, int(discovery_seconds * 1000)
+            ):
+                return None
+            addresses = info.parsed_scoped_addresses(IPVersion.All)[
+                :MAX_DISCOVERY_ADDRESSES
+            ]
+            if not addresses or info.port is None or info.server is None:
+                return None
+            parsed_addresses = [
+                ip_address(address.split("%")[0]) for address in addresses
+            ]
+            return ZeroconfServiceInfo(
+                ip_address=parsed_addresses[0],
+                ip_addresses=parsed_addresses,
+                port=info.port,
+                hostname=info.server,
+                type=info.type,
+                name=info.name,
+                properties=info.decoded_properties,
+            )
 
     resolved = await asyncio.gather(*(_resolve(name) for name in sorted(names)))
     return [info for info in resolved if info is not None]
@@ -185,6 +197,7 @@ async def _async_select_discovery_host(
         )
     )
     candidates.sort(key=lambda address: ":" in address)
+    candidates = candidates[:MAX_DISCOVERY_ADDRESSES]
 
     async def _async_probe(address: str) -> str | None:
         try:
@@ -1615,6 +1628,11 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             plan_id = slugify(user_input["name"])
             if not plan_id or plan_id in self._manager.plans(self._serial_number):
                 errors["name"] = "duplicate_plan"
+            elif (
+                len(self._manager.plans(self._serial_number))
+                >= MAX_SAVED_PLANS_PER_ROBOT
+            ):
+                errors["base"] = "plan_limit_reached"
             else:
                 rooms = self._rooms_from_editor(user_input)
                 if not rooms:

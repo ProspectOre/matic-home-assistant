@@ -34,6 +34,7 @@ STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
+MAX_SAVED_PLANS_PER_ROBOT = 256
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
 # roughly ten minutes before returning to the dock.  Keep a small safety
@@ -41,6 +42,10 @@ ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
+
+
+class SavedPlanLimitError(HomeAssistantError):
+    """Raised when a robot already has the maximum saved plans."""
 
 
 @dataclass(frozen=True, slots=True)
@@ -640,7 +645,13 @@ class CleaningPlanManager:
     ) -> None:
         """Create or replace a validated room-native plan definition."""
         robot = self._robot(serial_number)
-        robot["plans"][plan_id] = deepcopy(dict(plan))
+        plans = robot["plans"]
+        if plan_id not in plans and len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
+            raise SavedPlanLimitError(
+                "A Matic robot can have at most "
+                f"{MAX_SAVED_PLANS_PER_ROBOT} saved plans"
+            )
+        plans[plan_id] = deepcopy(dict(plan))
         if select or robot.get("selected_plan") is None:
             robot["selected_plan"] = plan_id
         await self._async_save_and_notify(serial_number)

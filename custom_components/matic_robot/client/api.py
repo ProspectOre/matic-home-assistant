@@ -13,11 +13,11 @@ from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from datetime import UTC, datetime
 from time import monotonic
 from types import TracebackType
-from typing import cast
+from typing import Any, cast
 from uuid import UUID
 
 from google.protobuf.message import DecodeError
-from grpclib.client import Channel
+from grpclib.client import Channel, Stream
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
 from grpclib.protocol import H2Protocol
@@ -86,7 +86,7 @@ from .tls import (
     validate_certificate,
 )
 from .trajectory import decode_approximate_trajectory
-from .wire import decode_fields, first_bytes, first_varint
+from .wire import WireField, decode_fields, first_bytes, first_varint
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -95,10 +95,26 @@ _RPC_TIMEOUT = 10.0
 # Streamed collection reads have per-message timeouts; this caps the whole
 # read so a slow-dripping stream cannot hold a poll cycle open for minutes.
 _COLLECTION_TIMEOUT = 30.0
-_TRACKED_COLLECTION_MAX_BYTES = 64 * 1024 * 1024
+MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
+_COLLECTION_MAX_BYTES = 64 * 1024 * 1024
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_NON_COMPLETION_STATUS = 1
 _ROOM_MODE_COMPLETED_STATUS = 2
+_OPERATIONAL_STATE_MAX_BYTES = 256 * 1024
+_OPERATIONAL_STATE_MAX_FIELDS = 1024
+_OPERATIONAL_STATE_MAX_CODES = 256
+_TELEMETRY_TEXT_MAX_BYTES = 512
+_TELEMETRY_NESTED_MAX_BYTES = 64 * 1024
+_TELEMETRY_NESTED_MAX_FIELDS = 256
+_WIFI_STATUS_MAX_BYTES = 256 * 1024
+_WIFI_NETWORK_MAX_COUNT = 256
+_SCHEDULE_MAX_BYTES = 64 * 1024
+_SCHEDULE_MAX_FIELDS = 1024
+_SCHEDULE_MAX_UUIDS = 256
+_SCHEDULE_MAX_DEPTH = 4
+_CLEANING_SESSION_MAX_BYTES = 256 * 1024
+_CLEANING_SESSION_MAX_FIELDS = 1024
+_CLEANING_SESSION_MAX_ROOMS = 256
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -158,6 +174,48 @@ def _response_value_bytes(response: CollectionResponse) -> bytes:
     return bytes(payload)
 
 
+async def _async_recv_bounded_message(
+    stream: Any,
+    codec: Any,
+    message_type: type[Any],
+) -> Any | None:
+    """Decode one gRPC frame after validating its declared byte length."""
+    metadata = await stream.recv_data(5)
+    if not metadata:
+        return None
+    if len(metadata) != 5:
+        raise ProtocolError("truncated gRPC message header")
+    if struct.unpack("?", metadata[:1])[0]:
+        raise NotImplementedError("Compression not implemented")
+    message_length = struct.unpack(">I", metadata[1:])[0]
+    if message_length > MAX_HERMES_MESSAGE_BYTES:
+        raise CannotConnectError("Hermes response exceeds the message byte limit")
+    message_bytes = await stream.recv_data(message_length)
+    if len(message_bytes) != message_length:
+        raise ProtocolError("truncated gRPC message body")
+    return codec.decode(message_bytes, message_type)
+
+
+class _BoundedStream(Stream[Any, Any]):
+    """grpclib client stream with a preallocation message-size guard."""
+
+    async def recv_message(self) -> Any | None:
+        if not self._recv_initial_metadata_done:
+            await self.recv_initial_metadata()
+
+        with self._wrapper:
+            message = await _async_recv_bounded_message(
+                self._stream, self._codec, self._recv_type
+            )
+            if message is None:
+                return None
+            (message,) = await self._dispatch.recv_message(message)
+            self._messages_received += 1
+            self._stream.connection.messages_received += 1
+            self._stream.connection.last_message_received = monotonic()
+            return message
+
+
 async def _async_connection_candidates(
     host: str, hostname: str | None, port: int
 ) -> list[str]:
@@ -205,6 +263,14 @@ class _PinnedChannel(Channel):
         self._expected_hostname = expected_hostname
         self._expected_serial = expected_serial
         self._expected_fingerprint = expected_fingerprint
+
+    def request(self, *args: Any, **kwargs: Any) -> Stream[Any, Any]:
+        """Create the bounded stream used by every generated Hermes stub."""
+        stream = super().request(*args, **kwargs)
+        # grpclib has no public stream-factory hook. Its Stream has no slots, so
+        # switching to this behavior-only subclass preserves initialized state.
+        cast(Any, stream).__class__ = _BoundedStream
+        return stream
 
     async def _create_connection(self) -> H2Protocol:
         protocol = await super()._create_connection()
@@ -810,6 +876,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             )
         )
         entries: list[HermesCollectionEntry] = []
+        collected_bytes = 0
         async with self._map_stream_errors(f"{collection_name} collection"):
             async with HermesStub(channel).FetchCollection.open(
                 metadata=self._metadata
@@ -833,6 +900,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     if not response.HasField("value"):
                         continue
                     payload = _response_value_bytes(response)
+                    entry_size = len(response.key_bytes) + len(payload)
+                    if collected_bytes + entry_size > _COLLECTION_MAX_BYTES:
+                        await _async_cancel_stream(stream)
+                        raise CannotConnectError(
+                            f"Hermes {collection_name} collection exceeds "
+                            "the byte limit"
+                        )
+                    collected_bytes += entry_size
                     entries.append(
                         HermesCollectionEntry(bytes(response.key_bytes), payload)
                     )
@@ -939,7 +1014,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     break
                 received = True
                 collected_bytes += len(entry.key) + len(entry.value)
-                if collected_bytes > _TRACKED_COLLECTION_MAX_BYTES:
+                if collected_bytes > _COLLECTION_MAX_BYTES:
                     raise CannotConnectError(
                         f"Hermes {collection_name} collection exceeds the byte limit"
                     )
@@ -1115,11 +1190,56 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         return self._credential.metadata()
 
 
+def _bounded_fields(
+    payload: bytes,
+    *,
+    max_bytes: int,
+    max_fields: int,
+) -> tuple[WireField, ...]:
+    """Decode a protobuf message only within semantic byte and field budgets."""
+    if len(payload) > max_bytes:
+        raise DecodeError("telemetry payload exceeds the byte limit")
+    fields = decode_fields(payload)
+    if len(fields) > max_fields:
+        raise DecodeError("telemetry payload has too many fields")
+    return fields
+
+
+def _decode_text_from_fields(fields: tuple[WireField, ...], number: int) -> str | None:
+    """Decode one bounded UTF-8 string from already parsed fields."""
+    value = next(
+        (
+            field.value
+            for field in fields
+            if field.number == number
+            and field.wire_type == 2
+            and isinstance(field.value, bytes)
+        ),
+        None,
+    )
+    if value is None or len(value) > _TELEMETRY_TEXT_MAX_BYTES:
+        return None
+    try:
+        return value.decode("utf-8").strip() or None
+    except UnicodeDecodeError:
+        return None
+
+
 def _decode_operational_state(payload: bytes) -> RobotOperationalState:
     """Decode the verified subset of Matic's internal Kabuki output."""
+    fields = _bounded_fields(
+        payload,
+        max_bytes=_OPERATIONAL_STATE_MAX_BYTES,
+        max_fields=_OPERATIONAL_STATE_MAX_FIELDS,
+    )
     wire = KabukiOutputWire.FromString(payload)
+    if (
+        len(wire.states) > _OPERATIONAL_STATE_MAX_CODES
+        or len(wire.errors) > _OPERATIONAL_STATE_MAX_CODES
+    ):
+        raise DecodeError("operational state has too many status codes")
     voice_status, voice_intent, gesture_status, following_person = _decode_cues_state(
-        payload
+        fields
     )
     percentage = None
     if wire.HasField("battery_fraction") and math.isfinite(wire.battery_fraction):
@@ -1135,11 +1255,11 @@ def _decode_operational_state(payload: bytes) -> RobotOperationalState:
         paused=any(code in states for code in (120, 200, 302)),
         cleaning=119 in states,
         returning=104 in states,
-        software_version=_decode_text_field(payload, 4),
-        release_channel=_decode_text_field(payload, 5),
-        current_area=_decode_text_field(payload, 16),
-        previous_area=_decode_text_field(payload, 14),
-        robot_profile=_decode_text_field(payload, 17),
+        software_version=_decode_text_from_fields(fields, 4),
+        release_channel=_decode_text_from_fields(fields, 5),
+        current_area=_decode_text_from_fields(fields, 16),
+        previous_area=_decode_text_from_fields(fields, 14),
+        robot_profile=_decode_text_from_fields(fields, 17),
         cues_voice_status=voice_status,
         cues_voice_intent=voice_intent,
         cues_gesture_status=gesture_status,
@@ -1183,7 +1303,7 @@ _CUES_GESTURES_BY_FIELD = {
 
 
 def _decode_cues_state(
-    payload: bytes,
+    output_fields: tuple[WireField, ...],
 ) -> tuple[
     CuesVoiceStatus | None,
     CuesIntent | None,
@@ -1195,14 +1315,18 @@ def _decode_cues_state(
     voice_intent: CuesIntent | None = None
     gesture_status: CuesGestureStatus | None = None
     following_person: bool | None = None
-    for output_field in decode_fields(payload):
+    for output_field in output_fields:
         if (
             output_field.number != 18
             or output_field.wire_type != 2
             or not isinstance(output_field.value, bytes)
         ):
             continue
-        for cues_field in decode_fields(output_field.value):
+        for cues_field in _bounded_fields(
+            output_field.value,
+            max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+            max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+        ):
             if cues_field.number == 17 and cues_field.wire_type == 2:
                 assert isinstance(cues_field.value, bytes)
                 voice_status, voice_intent = _decode_cues_voice_status(cues_field.value)
@@ -1225,7 +1349,11 @@ def _decode_cues_voice_status(
     """Decode Matic's VoiceStatus oneof without retaining voice content."""
     status: CuesVoiceStatus | None = None
     intent: CuesIntent | None = None
-    for field in decode_fields(payload):
+    for field in _bounded_fields(
+        payload,
+        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+    ):
         if field.wire_type != 2 or not isinstance(field.value, bytes):
             continue
         if field.number == 1:
@@ -1254,7 +1382,11 @@ def _decode_cues_voice_status(
 def _decode_cues_intent(payload: bytes) -> CuesIntent:
     """Decode the classified intent kind, excluding recording-only variants."""
     intent = CuesIntent.UNKNOWN
-    for field in decode_fields(payload):
+    for field in _bounded_fields(
+        payload,
+        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+    ):
         if field.wire_type == 2 and isinstance(field.value, bytes):
             intent = _CUES_INTENTS_BY_FIELD.get(field.number, CuesIntent.UNKNOWN)
     return intent
@@ -1263,7 +1395,11 @@ def _decode_cues_intent(payload: bytes) -> CuesIntent:
 def _decode_cues_gesture_status(payload: bytes) -> CuesGestureStatus | None:
     """Decode Matic's gesture lifecycle oneof without coordinates or imagery."""
     status = None
-    for field in decode_fields(payload):
+    for field in _bounded_fields(
+        payload,
+        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+    ):
         if field.wire_type == 2 and isinstance(field.value, bytes):
             status = _CUES_GESTURES_BY_FIELD.get(field.number, status)
     return status
@@ -1304,7 +1440,10 @@ def _decode_text_field(payload: object, number: int) -> str | None:
     if not isinstance(payload, bytes):
         return None
     try:
-        return first_bytes(payload, number).decode("utf-8").strip() or None
+        value = first_bytes(payload, number)
+        if len(value) > _TELEMETRY_TEXT_MAX_BYTES:
+            return None
+        return value.decode("utf-8").strip() or None
     except DecodeError, UnicodeDecodeError:
         return None
 
@@ -1401,7 +1540,7 @@ def _decode_wifi_status(
     payload: object,
 ) -> tuple[str | None, str | None, int | None, tuple[WifiNetwork, ...]]:
     """Decode the current Wi-Fi link and full locally visible network scan."""
-    if not isinstance(payload, bytes):
+    if not isinstance(payload, bytes) or len(payload) > _WIFI_STATUS_MAX_BYTES:
         return None, None, None, ()
     names = {
         0: "unknown",
@@ -1421,10 +1560,26 @@ def _decode_wifi_status(
     networks: list[WifiNetwork] = []
     try:
         scan = first_bytes(payload, 7)
-        for field in decode_fields(scan):
+        scan_fields = _bounded_fields(
+            scan,
+            max_bytes=_WIFI_STATUS_MAX_BYTES,
+            max_fields=_WIFI_NETWORK_MAX_COUNT * 2,
+        )
+        network_count = sum(
+            field.number == 1 and isinstance(field.value, bytes)
+            for field in scan_fields
+        )
+        if network_count > _WIFI_NETWORK_MAX_COUNT:
+            return state, ssid, None, ()
+        for field in scan_fields:
             if field.number != 1 or not isinstance(field.value, bytes):
                 continue
             item = field.value
+            _bounded_fields(
+                item,
+                max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+            )
             network_ssid = _decode_text_field(item, 1) or _decode_text_field(item, 7)
             if network_ssid is None:
                 continue
@@ -1501,6 +1656,8 @@ def _decode_coverage_time(payload: object) -> int | None:
 
 def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
     """Decode a robot-native weekly cleaning schedule."""
+    if len(payload) > _SCHEDULE_MAX_BYTES:
+        return None
     try:
         weekly = first_bytes(payload, 1)
         days = first_bytes(weekly, 1)
@@ -1538,6 +1695,10 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
     except DecodeError:
         pass
 
+    try:
+        room_ids = _uuid_candidates(payload)
+    except DecodeError:
+        return None
     return CleaningSchedule(
         name=_decode_text_field(payload, 2),
         weekdays=tuple(weekdays),
@@ -1545,21 +1706,27 @@ def _decode_schedule(payload: bytes) -> CleaningSchedule | None:
         timezone=timezone,
         ordered=ordered,
         enabled=enabled,
-        room_ids=_uuid_candidates(payload),
+        room_ids=room_ids,
     )
 
 
 def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
     """Return stable UUID values nested in a protocol payload."""
     found: list[str] = []
+    seen: set[str] = set()
+    field_count = 0
 
     def walk(data: bytes, depth: int) -> None:
-        if depth > 10:
+        nonlocal field_count
+        if depth > _SCHEDULE_MAX_DEPTH:
             return
         try:
             fields = decode_fields(data)
         except DecodeError:
             return
+        field_count += len(fields)
+        if field_count > _SCHEDULE_MAX_FIELDS:
+            raise DecodeError("schedule has too many nested fields")
         fixed = {
             field.number: field.value
             for field in fields
@@ -1568,7 +1735,10 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
         if set(fixed) >= {1, 2} and len(fixed[1]) == len(fixed[2]) == 8:
             low, high = struct.unpack("<QQ", fixed[1] + fixed[2])
             candidate = str(UUID(int=(low << 64) | high))
-            if candidate not in found:
+            if candidate not in seen:
+                if len(found) >= _SCHEDULE_MAX_UUIDS:
+                    raise DecodeError("schedule has too many room identifiers")
+                seen.add(candidate)
                 found.append(candidate)
         for field in fields:
             if field.wire_type == 2 and isinstance(field.value, bytes):
@@ -1580,6 +1750,8 @@ def _uuid_candidates(payload: bytes) -> tuple[str, ...]:
 
 def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     """Decode native history without treating its global default as room proof."""
+    if len(payload) > _CLEANING_SESSION_MAX_BYTES:
+        return None
     try:
         summary = first_bytes(payload, 5)
     except DecodeError:
@@ -1587,18 +1759,27 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     started_at = _decode_nested_timestamp(summary, 3)
     ended_at = _decode_nested_timestamp(summary, 4)
     rooms: list[str] = []
+    seen_rooms: set[str] = set()
     room_durations: dict[str, int] = {}
     room_mode_statuses: dict[str, set[int]] = {}
     rooms_with_unknown_status: set[str] = set()
     try:
-        fields = decode_fields(summary)
+        fields = _bounded_fields(
+            summary,
+            max_bytes=_CLEANING_SESSION_MAX_BYTES,
+            max_fields=_CLEANING_SESSION_MAX_FIELDS,
+        )
     except DecodeError:
         return None
     for group in fields:
         if group.number not in (6, 7) or not isinstance(group.value, bytes):
             continue
         try:
-            room_fields = decode_fields(group.value)
+            room_fields = _bounded_fields(
+                group.value,
+                max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+                max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+            )
         except DecodeError:
             continue
         for room_field in room_fields:
@@ -1606,13 +1787,20 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                 continue
             try:
                 details = first_bytes(room_field.value, 2)
-                detail_fields = decode_fields(details)
+                detail_fields = _bounded_fields(
+                    details,
+                    max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+                    max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+                )
             except DecodeError:
                 continue
             name = _decode_text_field(details, 3)
             if name is None:
                 continue
-            if name not in rooms:
+            if name not in seen_rooms:
+                if len(rooms) >= _CLEANING_SESSION_MAX_ROOMS:
+                    return None
+                seen_rooms.add(name)
                 rooms.append(name)
             status_fields = [field for field in detail_fields if field.number in (5, 6)]
             statuses = room_mode_statuses.setdefault(name, set())

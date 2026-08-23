@@ -233,23 +233,26 @@ def _room_timeline(
     cursor = started_at
     durations: dict[str, float] = {}
     rooms: list[str] = []
+    seen_rooms: set[str] = set()
+    room_lookup = _room_lookup(room_names)
     events = sorted(area_states, key=lambda item: item.last_updated)
     for state in events:
         if state.last_updated <= started_at:
-            candidate = _canonical_room(state.state, room_names)
+            candidate = _canonical_room_from_lookup(state.state, room_lookup)
             if candidate is not None:
                 current_room = candidate
             continue
         if state.last_updated > ended_at:
             break
-        candidate = _canonical_room(state.state, room_names)
+        candidate = _canonical_room_from_lookup(state.state, room_lookup)
         if candidate is None or candidate == current_room:
             continue
         if current_room is not None:
             durations[current_room] = durations.get(current_room, 0.0) + max(
                 0.0, (state.last_updated - cursor).total_seconds()
             )
-            if current_room not in rooms:
+            if current_room not in seen_rooms:
+                seen_rooms.add(current_room)
                 rooms.append(current_room)
         current_room = candidate
         cursor = state.last_updated
@@ -258,20 +261,31 @@ def _room_timeline(
         durations[current_room] = durations.get(current_room, 0.0) + max(
             0.0, (ended_at - cursor).total_seconds()
         )
-        if current_room not in rooms:
+        if current_room not in seen_rooms:
             rooms.append(current_room)
     return durations, rooms, current_room, cursor
 
 
 def _canonical_room(value: str | None, room_names: tuple[str, ...]) -> str | None:
     """Map firmware phrases such as ``the Living Room`` to plan room names."""
+    return _canonical_room_from_lookup(value, _room_lookup(room_names))
+
+
+def _room_lookup(room_names: tuple[str, ...]) -> dict[str, str]:
+    """Index room names once for constant-time recorder event matching."""
+    lookup: dict[str, str] = {}
+    for name in room_names:
+        lookup.setdefault(_room_key(name), name)
+    return lookup
+
+
+def _canonical_room_from_lookup(
+    value: str | None, room_lookup: dict[str, str]
+) -> str | None:
+    """Map a firmware room phrase through a precomputed normalized index."""
     if value is None or value in {"unknown", "unavailable"}:
         return None
-    normalized = _room_key(value)
-    for name in room_names:
-        if _room_key(name) == normalized:
-            return name
-    return None
+    return room_lookup.get(_room_key(value))
 
 
 def _room_key(value: str) -> str:
