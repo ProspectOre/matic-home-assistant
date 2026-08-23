@@ -229,6 +229,26 @@ async def test_manual_discovery_discards_incomplete_records(
     assert await _async_discover_robots(hass) == []
 
 
+async def test_manual_discovery_returns_empty_when_no_services_are_seen(
+    hass, monkeypatch
+) -> None:
+    class FakeBrowser:
+        def __init__(self, _zeroconf, _service_type, handlers):
+            assert handlers
+
+        async def async_cancel(self):
+            return None
+
+    monkeypatch.setattr(
+        flow_module,
+        "async_get_async_instance",
+        AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
+    )
+    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
+
+    assert await _async_discover_robots(hass, discovery_seconds=0) == []
+
+
 async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
     hass, monkeypatch
 ) -> None:
@@ -286,6 +306,52 @@ async def test_manual_discovery_caps_names_addresses_and_resolution_concurrency(
     assert len(discoveries) == 3
     assert all(len(info.ip_addresses) == 2 for info in discoveries)
     assert max_active == 2
+
+
+async def test_manual_discovery_has_one_global_resolution_deadline(
+    hass, monkeypatch
+) -> None:
+    started_names: list[str] = []
+    cancelled_names: list[str] = []
+    never = asyncio.Event()
+
+    class FakeBrowser:
+        def __init__(self, _zeroconf, _service_type, handlers):
+            for index in range(3):
+                handlers[0](
+                    zeroconf=None,
+                    service_type="service",
+                    name=f"stale-{index}.service",
+                    state_change=ServiceStateChange.Added,
+                )
+
+        async def async_cancel(self):
+            return None
+
+    class FakeServiceInfo:
+        def __init__(self, _service_type, name):
+            self.name = name
+
+        async def async_request(self, _zeroconf, _timeout):
+            started_names.append(self.name)
+            try:
+                await never.wait()
+            finally:
+                cancelled_names.append(self.name)
+
+    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_CONCURRENCY", 1)
+    monkeypatch.setattr(flow_module, "DISCOVERY_RESOLVE_TIMEOUT_SECONDS", 0.01)
+    monkeypatch.setattr(
+        flow_module,
+        "async_get_async_instance",
+        AsyncMock(return_value=SimpleNamespace(zeroconf=object())),
+    )
+    monkeypatch.setattr(flow_module, "AsyncServiceBrowser", FakeBrowser)
+    monkeypatch.setattr(flow_module, "AsyncServiceInfo", FakeServiceInfo)
+
+    assert await _async_discover_robots(hass, discovery_seconds=0) == []
+    assert started_names == ["stale-0.service"]
+    assert cancelled_names == started_names
 
 
 async def test_discovery_opens_single_action_pairing_form(hass, monkeypatch) -> None:

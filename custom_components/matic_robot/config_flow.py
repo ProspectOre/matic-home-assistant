@@ -141,8 +141,23 @@ async def _async_discover_robots(
                 properties=info.decoded_properties,
             )
 
-    resolved = await asyncio.gather(*(_resolve(name) for name in sorted(names)))
-    return [info for info in resolved if info is not None]
+    tasks = [asyncio.create_task(_resolve(name)) for name in sorted(names)]
+    if not tasks:
+        return []
+    try:
+        done, _pending = await asyncio.wait(
+            tasks, timeout=DISCOVERY_RESOLVE_TIMEOUT_SECONDS
+        )
+        resolved = [
+            info
+            for task in tasks
+            if task in done and (info := task.result()) is not None
+        ]
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+    return sorted(resolved, key=lambda info: info.name)
 
 
 def _preferred_discovery_host(discovery_info: ZeroconfServiceInfo) -> str:
