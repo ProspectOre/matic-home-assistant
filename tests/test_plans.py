@@ -29,6 +29,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
+    MAX_SAVED_PLANS_PER_ROBOT,
     OEM_STOP_RECONCILIATION_SECONDS,
     PLAN_MOTION_TOKEN,
     AreaBindingUpgradeResult,
@@ -36,6 +37,7 @@ from custom_components.matic_robot.plans import (
     CleaningRoom,
     ManagedMotionReplacedError,
     PlanStopDecision,
+    SavedPlanLimitError,
     _compatible_duration_history,
     _duration_history,
     _elapsed_seconds,
@@ -2194,6 +2196,33 @@ async def test_plan_validation_rejects_disabled_empty_unknown_and_missing(hass) 
         )
         with pytest.raises(ValueError, match=r"plan (has no|contains an invalid) room"):
             manager.rooms_for_plan("serial", {}, "corrupt")
+
+
+async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    plans = manager._robot("serial")["plans"]
+    plans.update(
+        {
+            f"plan-{index}": {"name": f"Plan {index}", "rooms": []}
+            for index in range(MAX_SAVED_PLANS_PER_ROBOT)
+        }
+    )
+
+    with pytest.raises(SavedPlanLimitError, match="at most"):
+        await manager.async_save_plan(
+            "serial", "new-plan", {"name": "New plan", "rooms": []}
+        )
+
+    assert "new-plan" not in plans
+    manager._store.async_save.assert_not_awaited()
+
+    await manager.async_save_plan(
+        "serial", "plan-0", {"name": "Replacement", "rooms": []}, select=False
+    )
+
+    assert plans["plan-0"]["name"] == "Replacement"
+    manager._store.async_save.assert_awaited_once_with(manager._data)
 
 
 async def test_room_execution_uses_its_individual_settings() -> None:

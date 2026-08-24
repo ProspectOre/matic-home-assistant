@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
+from functools import wraps
 from time import monotonic
 from typing import Any
 
 import voluptuous as vol
+from homeassistant.auth.permissions.const import POLICY_CONTROL
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import (
@@ -33,7 +35,12 @@ from homeassistant.core import (
     SupportsResponse,
     callback,
 )
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+    UnknownUser,
+)
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers import target
@@ -63,6 +70,7 @@ from .plans import (
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
+    SavedPlanLimitError,
     resolve_room_reference,
     resolve_rooms,
 )
@@ -268,6 +276,32 @@ INSPECT_ENDPOINT_SERVICE_SCHEMA = cv.make_entity_service_schema(
 FIRMWARE_SNAPSHOT_SCHEMA = cv.make_entity_service_schema({})
 
 
+def _require_matic_control[ServiceResult](
+    hass: HomeAssistant,
+    handler: Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]],
+) -> Callable[[ServiceCall], Coroutine[Any, Any, ServiceResult]]:
+    """Apply Home Assistant's entity-control policy to a domain service."""
+
+    @wraps(handler)
+    async def async_authorized(call: ServiceCall) -> ServiceResult:
+        user_id = call.context.user_id
+        if user_id is not None:
+            user = await hass.auth.async_get_user(user_id)
+            if user is None:
+                raise UnknownUser(context=call.context)
+            if not user.is_admin:
+                for entity_id in _resolve_loaded_matic_vacuums(hass, call):
+                    if not user.permissions.check_entity(entity_id, POLICY_CONTROL):
+                        raise Unauthorized(
+                            context=call.context,
+                            entity_id=entity_id,
+                            permission=POLICY_CONTROL,
+                        )
+        return await handler(call)
+
+    return async_authorized
+
+
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register actions before any config entry is loaded."""
 
@@ -317,7 +351,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN,
-        async_clean,
+        _require_matic_control(hass, async_clean),
         schema=CLEAN_SERVICE_SCHEMA,
     )
 
@@ -374,7 +408,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_AREA,
-        async_clean_area,
+        _require_matic_control(hass, async_clean_area),
         schema=CLEAN_AREA_SERVICE_SCHEMA,
     )
 
@@ -470,19 +504,19 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_INTELLIGENT_CLEAN,
-        async_intelligent_clean,
+        _require_matic_control(hass, async_intelligent_clean),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_CLEAN_ENTIRE_PLAN,
-        async_clean_entire_plan,
+        _require_matic_control(hass, async_clean_entire_plan),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
     hass.services.async_register(
         DOMAIN,
         SERVICE_RUN_SELECTED_PLAN,
-        async_run_selected_plan,
+        _require_matic_control(hass, async_run_selected_plan),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
     )
 
@@ -510,7 +544,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_PREVIEW_PLAN,
-        async_preview_plan,
+        _require_matic_control(hass, async_preview_plan),
         schema=SAVED_PLAN_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
@@ -535,7 +569,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_STOP_INTELLIGENT_CLEANING,
-        async_stop_intelligent_cleaning,
+        _require_matic_control(hass, async_stop_intelligent_cleaning),
         schema=PLAN_TARGET_SCHEMA,
     )
 
@@ -557,7 +591,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_RESET_PLAN_HISTORY,
-        async_reset_plan_history,
+        _require_matic_control(hass, async_reset_plan_history),
         schema=RESET_PLAN_HISTORY_SCHEMA,
     )
 
@@ -580,7 +614,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_LIST_PLANS,
-        async_list_plans,
+        _require_matic_control(hass, async_list_plans),
         schema=LIST_PLANS_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
@@ -606,15 +640,18 @@ async def async_register_services(hass: HomeAssistant) -> None:
             "start_timeout": call.data["start_timeout"],
             "completion_timeout": call.data["completion_timeout"],
         }
-        await manager.async_save_plan(
-            serial_number, plan_id, plan, select=call.data["select"]
-        )
+        try:
+            await manager.async_save_plan(
+                serial_number, plan_id, plan, select=call.data["select"]
+            )
+        except SavedPlanLimitError as err:
+            raise _validation_error(str(err), "plan_limit_reached") from err
         return {"plan": {"id": plan_id, **deepcopy(plan)}}
 
     hass.services.async_register(
         DOMAIN,
         SERVICE_SAVE_PLAN,
-        async_save_plan,
+        _require_matic_control(hass, async_save_plan),
         schema=SAVE_PLAN_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -631,7 +668,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_DELETE_PLAN,
-        async_delete_plan,
+        _require_matic_control(hass, async_delete_plan),
         schema=PLAN_REFERENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -648,7 +685,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_SELECT_PLAN,
-        async_select_plan,
+        _require_matic_control(hass, async_select_plan),
         schema=PLAN_REFERENCE_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -678,7 +715,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_SAVE_PLAN_ROOM,
-        async_save_plan_room,
+        _require_matic_control(hass, async_save_plan_room),
         schema=SAVE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -707,7 +744,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_DELETE_PLAN_ROOM,
-        async_delete_plan_room,
+        _require_matic_control(hass, async_delete_plan_room),
         schema=DELETE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -749,7 +786,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_MOVE_PLAN_ROOM,
-        async_move_plan_room,
+        _require_matic_control(hass, async_move_plan_room),
         schema=MOVE_PLAN_ROOM_SCHEMA,
         supports_response=SupportsResponse.OPTIONAL,
     )
@@ -790,7 +827,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_INSPECT_HERMES_ENDPOINT,
-        async_inspect_endpoint,
+        _require_matic_control(hass, async_inspect_endpoint),
         schema=INSPECT_ENDPOINT_SERVICE_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
@@ -814,7 +851,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
     hass.services.async_register(
         DOMAIN,
         SERVICE_FIRMWARE_SNAPSHOT,
-        async_firmware_snapshot,
+        _require_matic_control(hass, async_firmware_snapshot),
         schema=FIRMWARE_SNAPSHOT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )

@@ -7,8 +7,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.config_entries import ConfigEntryState
-from homeassistant.core import ServiceCall
-from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
+from homeassistant.core import Context, ServiceCall
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    Unauthorized,
+    UnknownUser,
+)
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.area_binding import (
@@ -33,7 +38,12 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.plans import (
+    MAX_SAVED_PLANS_PER_ROBOT,
+    CleaningPlanManager,
+    CleaningRoom,
+    SavedPlanLimitError,
+)
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
     DELETE_PLAN_ROOM_SCHEMA,
@@ -53,6 +63,7 @@ from custom_components.matic_robot.services import (
     _entry_for_entity,
     _native_completion_match,
     _NativeReconciliation,
+    _require_matic_control,
     _resolve_loaded_matic_vacuums,
     _resolve_room_id,
     _saved_plan_context,
@@ -939,6 +950,48 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
     assert manager.plans("serial") == {}
 
 
+async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"].update(
+        {
+            f"plan-{index}": {"name": f"Plan {index}", "rooms": []}
+            for index in range(MAX_SAVED_PLANS_PER_ROBOT)
+        }
+    )
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "name": "One too many",
+                "rooms": [{"room": "Kitchen"}],
+            }
+        ),
+    )
+    context = (
+        "vacuum.test",
+        SimpleNamespace(),
+        "serial",
+        {"room-kitchen": "Kitchen"},
+    )
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError, match="at most") as raised,
+    ):
+        await _registered_handler(services, "save_plan")(call)
+
+    assert isinstance(raised.value.__cause__, SavedPlanLimitError)
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_room_crud_rejects_unknown_rooms_membership_and_positions(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -1153,6 +1206,97 @@ def test_action_target_resolution_accepts_loaded_matic_vacuum() -> None:
         ),
     ):
         assert _resolve_loaded_matic_vacuums(hass, call) == ["vacuum.test"]
+
+
+async def test_domain_service_rejects_unauthorized_direct_and_indirect_targets() -> (
+    None
+):
+    user = SimpleNamespace(
+        is_admin=False,
+        permissions=SimpleNamespace(
+            check_entity=MagicMock(
+                side_effect=lambda entity_id, _policy: entity_id.endswith("allowed")
+            )
+        ),
+    )
+    hass = SimpleNamespace(
+        auth=SimpleNamespace(async_get_user=AsyncMock(return_value=user))
+    )
+    handler = AsyncMock()
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        {"device_id": ["robot-device"]},
+        context=Context(user_id="restricted-user"),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.allowed", "vacuum.denied"],
+        ),
+        pytest.raises(Unauthorized) as raised,
+    ):
+        await _require_matic_control(hass, handler)(call)
+
+    assert raised.value.entity_id == "vacuum.denied"
+    handler.assert_not_awaited()
+
+
+async def test_domain_service_allows_control_admin_and_system_contexts() -> None:
+    handler = AsyncMock(return_value={"ok": True})
+    allowed_user = SimpleNamespace(
+        is_admin=False,
+        permissions=SimpleNamespace(check_entity=MagicMock(return_value=True)),
+    )
+    admin = SimpleNamespace(
+        is_admin=True,
+        permissions=SimpleNamespace(check_entity=MagicMock(return_value=False)),
+    )
+    hass = SimpleNamespace(
+        auth=SimpleNamespace(
+            async_get_user=AsyncMock(side_effect=(allowed_user, admin, None))
+        )
+    )
+    guarded = _require_matic_control(hass, handler)
+    with patch(
+        "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+        return_value=["vacuum.test"],
+    ):
+        assert await guarded(
+            ServiceCall(
+                hass,
+                DOMAIN,
+                "clean",
+                {"entity_id": ["vacuum.test"]},
+                context=Context(user_id="allowed-user"),
+            )
+        ) == {"ok": True}
+        assert await guarded(
+            ServiceCall(
+                hass,
+                DOMAIN,
+                "clean",
+                {"entity_id": ["vacuum.test"]},
+                context=Context(user_id="admin-user"),
+            )
+        ) == {"ok": True}
+        assert await guarded(
+            ServiceCall(hass, DOMAIN, "clean", {"entity_id": ["vacuum.test"]})
+        ) == {"ok": True}
+        with pytest.raises(UnknownUser):
+            await guarded(
+                ServiceCall(
+                    hass,
+                    DOMAIN,
+                    "clean",
+                    {"entity_id": ["vacuum.test"]},
+                    context=Context(user_id="missing-user"),
+                )
+            )
+
+    admin.permissions.check_entity.assert_not_called()
+    assert handler.await_count == 3
 
 
 @pytest.mark.parametrize(("loaded", "available"), [(False, True), (True, False)])

@@ -8,6 +8,7 @@ import pytest
 from google.protobuf.descriptor import FieldDescriptor
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot.client import api as api_module
 from custom_components.matic_robot.client.api import _decode_operational_state
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
@@ -105,6 +106,41 @@ def test_decode_live_verified_activity_transitions(
 def test_decode_rejects_malformed_payload() -> None:
     with pytest.raises(DecodeError):
         _decode_operational_state(b"\x0a\xff")
+
+
+def test_operational_state_enforces_payload_field_and_code_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = KabukiOutputWire(states=[106, 119]).SerializeToString()
+
+    monkeypatch.setattr(api_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload) - 1)
+    with pytest.raises(DecodeError, match="byte limit"):
+        _decode_operational_state(payload)
+
+    monkeypatch.setattr(api_module, "_OPERATIONAL_STATE_MAX_BYTES", len(payload))
+    monkeypatch.setattr(api_module, "_OPERATIONAL_STATE_MAX_FIELDS", 0)
+    with pytest.raises(DecodeError, match="too many fields"):
+        _decode_operational_state(payload)
+
+    monkeypatch.setattr(api_module, "_OPERATIONAL_STATE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(api_module, "_OPERATIONAL_STATE_MAX_CODES", 1)
+    with pytest.raises(DecodeError, match="too many status codes"):
+        _decode_operational_state(payload)
+
+
+def test_operational_state_bounds_text_and_nested_cues(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    payload = KabukiOutputWire(states=[106]).SerializeToString() + b"\x22\x06v200.1"
+    monkeypatch.setattr(api_module, "_TELEMETRY_TEXT_MAX_BYTES", 2)
+
+    assert _decode_operational_state(payload).software_version is None
+    invalid_utf8 = KabukiOutputWire(states=[106]).SerializeToString() + b"\x22\x01\xff"
+    assert _decode_operational_state(invalid_utf8).software_version is None
+
+    monkeypatch.setattr(api_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    with pytest.raises(DecodeError, match="too many fields"):
+        _decode_operational_state(_cues_output(_message_field(20)))
 
 
 def test_decode_verified_build_and_area_fields() -> None:

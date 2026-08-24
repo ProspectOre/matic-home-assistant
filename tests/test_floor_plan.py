@@ -12,6 +12,7 @@ import pytest
 from google.protobuf.message import DecodeError
 from PIL import Image, ImageChops, ImageDraw
 
+from custom_components.matic_robot.client import floor_plan as floor_plan_module
 from custom_components.matic_robot.client.floor_plan import (
     _box_inside_mask,
     _boxes_overlap,
@@ -165,6 +166,40 @@ def test_robot_position_falls_back_to_the_current_room() -> None:
 def test_decode_rejects_plan_without_standard_partition() -> None:
     with pytest.raises(DecodeError, match="no standard partition"):
         decode_floor_plan(b"")
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit", "message"),
+    [
+        ("MAX_FLOOR_PLAN_PAYLOAD_BYTES", 1, "byte limit"),
+        ("MAX_FLOOR_PLAN_ROOMS", 0, "too many rooms"),
+        ("MAX_ROOM_BOUNDARY_POINTS", 3, "room has too many"),
+        ("MAX_FLOOR_PLAN_BOUNDARY_POINTS", 3, "too many boundary"),
+        ("MAX_ROOM_NAME_BYTES", 1, "room name"),
+        ("MAX_MAP_COORDINATE", 3.0, "boundary coordinate"),
+    ],
+)
+def test_decode_floor_plan_enforces_geometry_budgets(
+    monkeypatch, limit_name, limit, message
+) -> None:
+    monkeypatch.setattr(floor_plan_module, limit_name, limit)
+
+    with pytest.raises(DecodeError, match=message):
+        decode_floor_plan(_floor_plan_payload())
+
+
+@pytest.mark.parametrize("coordinate", [float("nan"), float("inf")])
+def test_decode_floor_plan_rejects_non_finite_coordinates(coordinate) -> None:
+    payload = _plan_payload(
+        _region_wire(
+            REGION_ID,
+            "Unsafe",
+            ((0.0, 0.0), (coordinate, 0.0), (1.0, 1.0)),
+        )
+    )
+
+    with pytest.raises(DecodeError, match="boundary coordinate"):
+        decode_floor_plan(payload)
 
 
 def test_decode_skips_rooms_with_degenerate_outlines() -> None:

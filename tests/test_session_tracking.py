@@ -6,12 +6,14 @@ from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
+from custom_components.matic_robot import session_tracking as session_tracking_module
 from custom_components.matic_robot.client.models import CleaningSession
 from custom_components.matic_robot.session_tracking import (
     CleaningSessionTracker,
     _build_session,
     _canonical_room,
     _parse_timestamp,
+    _room_timeline,
     _sessions_overlap,
 )
 
@@ -425,3 +427,35 @@ def test_helpers_reject_non_rooms_and_handle_timestamp_edges() -> None:
     assert reversed_session.room_durations == ()
     invalid_interval = CleaningSession("bad", "also-bad", 1, (), (), True)
     assert _sessions_overlap(invalid_interval, invalid_interval) is False
+
+
+def test_room_timeline_normalizes_names_once_per_room_and_event(
+    monkeypatch,
+) -> None:
+    start = datetime(2026, 7, 21, 8, tzinfo=UTC)
+    room_names = tuple(f"Room {index}" for index in range(100))
+    area_states = [
+        _state(f"the Room {index}", start + timedelta(seconds=index + 1))
+        for index in range(100)
+    ]
+    calls = 0
+    original = session_tracking_module._room_key
+
+    def counted_room_key(value: str) -> str:
+        nonlocal calls
+        calls += 1
+        return original(value)
+
+    monkeypatch.setattr(session_tracking_module, "_room_key", counted_room_key)
+
+    durations, rooms, current_room, _cursor = _room_timeline(
+        start,
+        start + timedelta(seconds=101),
+        area_states,
+        room_names,
+    )
+
+    assert len(durations) == len(room_names)
+    assert rooms == list(room_names)
+    assert current_room == "Room 99"
+    assert calls <= len(room_names) + len(area_states)

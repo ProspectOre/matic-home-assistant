@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, call
 
 import pytest
 
+from custom_components.matic_robot.client import api as api_module
 from custom_components.matic_robot.client.api import (
     MaticHermesClient,
     _decode_binary_state,
@@ -282,6 +283,64 @@ def test_decode_wifi_schedule_and_history() -> None:
     assert malformed_status.completed is None
     assert malformed_status.completed_rooms == ("Kitchen",)
     assert datetime.fromisoformat(session.started_at or "").tzinfo is UTC
+
+
+def test_wifi_decoder_enforces_payload_network_and_nested_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    network = _bfield(1, b"Test LAN") + _vfield(3, 1)
+    wifi = _vfield(1, 3) + _bfield(7, _bfield(1, network) + _bfield(1, network))
+
+    monkeypatch.setattr(api_module, "_WIFI_STATUS_MAX_BYTES", len(wifi) - 1)
+    assert _decode_wifi_status(wifi) == (None, None, None, ())
+
+    monkeypatch.setattr(api_module, "_WIFI_STATUS_MAX_BYTES", len(wifi))
+    monkeypatch.setattr(api_module, "_WIFI_NETWORK_MAX_COUNT", 1)
+    assert _decode_wifi_status(wifi)[3] == ()
+
+    one_network = _vfield(1, 3) + _bfield(7, _bfield(1, network))
+    monkeypatch.setattr(api_module, "_TELEMETRY_NESTED_MAX_FIELDS", 0)
+    assert _decode_wifi_status(one_network)[3] == ()
+
+
+def test_schedule_decoder_enforces_payload_field_and_uuid_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    room_id = _fixed64(1, 1) + _fixed64(2, 2)
+    weekly = _bfield(1, _vfield(1, 1)) + _bfield(3, _vfield(1, 510))
+    payload = _bfield(1, weekly) + _bfield(7, room_id)
+
+    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_BYTES", len(payload) - 1)
+    assert _decode_schedule(payload) is None
+
+    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_BYTES", len(payload))
+    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_FIELDS", 1)
+    assert _decode_schedule(payload) is None
+
+    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_FIELDS", 1024)
+    monkeypatch.setattr(api_module, "_SCHEDULE_MAX_UUIDS", 0)
+    assert _decode_schedule(payload) is None
+
+
+def test_cleaning_session_decoder_enforces_payload_field_and_room_budgets(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def room(name: bytes) -> bytes:
+        details = _bfield(3, name) + _bfield(4, _vfield(1, 30))
+        return _bfield(6, _bfield(1, _bfield(2, details)))
+
+    payload = _bfield(5, room(b"Kitchen") + room(b"Office"))
+
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload) - 1)
+    assert _decode_cleaning_session(payload) is None
+
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_BYTES", len(payload))
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_FIELDS", 1)
+    assert _decode_cleaning_session(payload) is None
+
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_FIELDS", 1024)
+    monkeypatch.setattr(api_module, "_CLEANING_SESSION_MAX_ROOMS", 1)
+    assert _decode_cleaning_session(payload) is None
 
 
 def test_decode_room_completion_statuses_fail_closed() -> None:

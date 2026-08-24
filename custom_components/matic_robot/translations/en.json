@@ -296,6 +296,7 @@
       "duplicate_area": "Use a unique area name with at least one letter or number.",
       "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
+      "plan_limit_reached": "Delete an existing plan before creating another one.",
       "no_rooms": "Turn on at least one room.",
       "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
       "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map."
@@ -821,6 +822,9 @@
     },
     "invalid_plan": {
       "message": "The saved cleaning plan is invalid: {error}"
+    },
+    "plan_limit_reached": {
+      "message": "This robot has reached the saved-plan limit. Delete an existing plan before creating another one."
     },
     "plan_timeout": {
       "message": "Timed out while cleaning {room}."

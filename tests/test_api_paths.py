@@ -3,18 +3,23 @@
 from __future__ import annotations
 
 import asyncio
+import struct
+from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import call as mock_call
 
 import pytest
 from google.protobuf.message import DecodeError
-from grpclib.const import Status
+from grpclib.const import Cardinality, Status
 from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
 
 from custom_components.matic_robot.client.api import (
+    MAX_HERMES_MESSAGE_BYTES,
     MaticHermesClient,
     _async_connection_candidates,
+    _async_recv_bounded_message,
+    _BoundedStream,
     _decode_cleaning_session,
     _decode_schedule,
     _decode_text_field,
@@ -332,6 +337,110 @@ def test_pinned_channel_rejects_missing_certificate() -> None:
         channel._validate_peer(None)
     with pytest.raises(InvalidRobotCertificateError, match="did not present"):
         channel._validate_peer(SimpleNamespace(getpeercert=lambda binary_form: None))
+
+
+class _RawFrameStream:
+    def __init__(self, *chunks: bytes) -> None:
+        self.chunks = iter(chunks)
+        self.requested: list[int] = []
+        self.connection = SimpleNamespace(
+            messages_received=0, last_message_received=None
+        )
+
+    async def recv_data(self, size: int) -> bytes:
+        self.requested.append(size)
+        return next(self.chunks)
+
+
+async def test_bounded_grpc_frame_rejects_length_before_reading_body(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.MAX_HERMES_MESSAGE_BYTES", 4
+    )
+    raw = _RawFrameStream(b"\x00" + struct.pack(">I", 5))
+
+    with pytest.raises(CannotConnectError, match="message byte limit"):
+        await _async_recv_bounded_message(raw, MagicMock(), bytes)
+
+    assert raw.requested == [5]
+
+
+async def test_bounded_grpc_frame_decodes_legitimate_message() -> None:
+    raw = _RawFrameStream(b"\x00" + struct.pack(">I", 3), b"abc")
+    codec = SimpleNamespace(decode=MagicMock(return_value="decoded"))
+
+    assert await _async_recv_bounded_message(raw, codec, bytes) == "decoded"
+    assert raw.requested == [5, 3]
+    codec.decode.assert_called_once_with(b"abc", bytes)
+
+
+async def test_bounded_grpc_frame_rejects_malformed_framing() -> None:
+    assert (
+        await _async_recv_bounded_message(_RawFrameStream(b""), MagicMock(), bytes)
+        is None
+    )
+    with pytest.raises(ProtocolError, match="header"):
+        await _async_recv_bounded_message(
+            _RawFrameStream(b"\x00\x00"), MagicMock(), bytes
+        )
+    with pytest.raises(NotImplementedError, match="Compression"):
+        await _async_recv_bounded_message(
+            _RawFrameStream(b"\x01" + struct.pack(">I", 0)), MagicMock(), bytes
+        )
+    with pytest.raises(ProtocolError, match="body"):
+        await _async_recv_bounded_message(
+            _RawFrameStream(b"\x00" + struct.pack(">I", 2), b"x"),
+            MagicMock(),
+            bytes,
+        )
+
+
+async def test_bounded_stream_dispatches_and_records_received_message() -> None:
+    stream = object.__new__(_BoundedStream)
+    raw = _RawFrameStream(b"\x00" + struct.pack(">I", 3), b"abc")
+    stream._recv_initial_metadata_done = False
+    stream._wrapper = nullcontext()
+    stream._stream = raw
+    stream._codec = SimpleNamespace(decode=MagicMock(return_value="decoded"))
+    stream._recv_type = bytes
+    stream._dispatch = SimpleNamespace(
+        recv_message=AsyncMock(return_value=("dispatched",))
+    )
+    stream._messages_received = 0
+
+    async def receive_metadata() -> None:
+        stream._recv_initial_metadata_done = True
+
+    stream.recv_initial_metadata = AsyncMock(side_effect=receive_metadata)
+
+    assert await stream.recv_message() == "dispatched"
+    stream.recv_initial_metadata.assert_awaited_once_with()
+    assert stream._messages_received == 1
+    assert raw.connection.messages_received == 1
+    assert raw.connection.last_message_received is not None
+
+    raw.chunks = iter([b""])
+    stream._recv_initial_metadata_done = True
+    assert await stream.recv_message() is None
+
+
+def test_pinned_channel_uses_bounded_stream_for_every_rpc() -> None:
+    from custom_components.matic_robot.client.api import _PinnedChannel
+
+    channel = _PinnedChannel(
+        "192.0.2.1",
+        16320,
+        ssl=object(),
+        expected_hostname=None,
+        expected_serial=None,
+        expected_fingerprint=None,
+    )
+    stream = channel.request("/hermes.Test/Read", Cardinality.UNARY_UNARY, bytes, bytes)
+
+    assert isinstance(stream, _BoundedStream)
+    assert MAX_HERMES_MESSAGE_BYTES > 0
+    channel.close()
 
 
 async def test_rpc_entry_points_reconnect_and_reject_unopened_channels() -> None:
@@ -667,6 +776,31 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
     assert stream.cancelled is True
 
 
+async def test_get_collection_entries_enforces_cumulative_byte_budget(
+    monkeypatch,
+) -> None:
+    stream = _SequenceStream(
+        [
+            _collection_response(direct=b"first", key=b"one"),
+            _collection_response(direct=b"second", key=b"two"),
+        ]
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda channel: SimpleNamespace(FetchCollection=_OpenMethod(stream)),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._COLLECTION_MAX_BYTES", 10
+    )
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+
+    with pytest.raises(CannotConnectError, match="byte limit"):
+        await client.async_get_collection_entries("history", limit=2)
+
+    assert stream.cancelled is True
+
+
 async def test_subscribe_collection_entries_yields_snapshot_and_updates(
     monkeypatch,
 ) -> None:
@@ -839,7 +973,7 @@ async def test_get_tracked_collection_entries_enforces_bounds(monkeypatch) -> No
 
     monkeypatch.setattr(client, "async_subscribe_collection_entries", entries)
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api._TRACKED_COLLECTION_MAX_BYTES", 1
+        "custom_components.matic_robot.client.api._COLLECTION_MAX_BYTES", 1
     )
 
     with pytest.raises(CannotConnectError, match="byte limit"):
@@ -1182,6 +1316,7 @@ async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None
 
 def test_decode_text_field_rejects_non_bytes_payloads() -> None:
     assert _decode_text_field(None, 1) is None
+    assert _decode_text_field(_bfield(1, b"x" * 513), 1) is None
 
 
 def test_decode_schedule_reads_explicit_enabled_markers() -> None:
