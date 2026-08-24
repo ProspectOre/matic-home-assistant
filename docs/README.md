@@ -9,6 +9,8 @@ the integration so instructions and behavior stay aligned with each release.
 
 ## Get started
 
+- [Release notes — 0.3.12](release-notes-0.3.12.md) — Safer service access and bounded robot data
+
 - [Install Matic (Unofficial)](../README.md#install) — Add the HACS custom
   repository or install the integration manually.
 - [Local pairing](hermes-pairing.md) — Complete discovery and authorization,
