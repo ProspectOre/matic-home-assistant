@@ -32,6 +32,7 @@ MAP_UPDATE_INTERVAL_SECONDS: Final = 900
 DATA_PLAN_MANAGER: Final = "cleaning_plan_manager"
 DATA_FIRMWARE_TRACKER: Final = "firmware_tracker"
 DATA_SLAM_MAP_STORE: Final = "slam_map_store"
+DATA_LLM_API: Final = "llm_api"
 
 EVENT_FIRMWARE_CHANGED: Final = f"{DOMAIN}_firmware_changed"
 EVENT_FIRMWARE_ANALYZED: Final = f"{DOMAIN}_firmware_analyzed"

@@ -4,7 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import math
-from collections.abc import AsyncIterator, Callable, Iterable, Mapping, MutableMapping
+from collections.abc import (
+    AsyncIterator,
+    Callable,
+    Iterable,
+    Mapping,
+    MutableMapping,
+    Sequence,
+)
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass
@@ -56,6 +63,27 @@ class CleaningRoom:
     name: str
     cleaning_mode: str
     coverage_setting: str
+
+
+def leg_groups(rooms: Sequence[CleaningRoom]) -> list[list[CleaningRoom]]:
+    """Group consecutive rooms that can share one native mission.
+
+    Matic firmware glides room to room inside one mission, but each mission
+    carries exactly one cleaning mode and coverage pair. A settings change
+    therefore starts a new leg.
+    """
+    groups: list[list[CleaningRoom]] = []
+    for room in rooms:
+        previous = groups[-1][-1] if groups else None
+        if (
+            previous is not None
+            and previous.cleaning_mode == room.cleaning_mode
+            and previous.coverage_setting == room.coverage_setting
+        ):
+            groups[-1].append(room)
+        else:
+            groups.append([room])
+    return groups
 
 
 @dataclass(frozen=True, slots=True)
