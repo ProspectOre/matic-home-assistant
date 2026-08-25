@@ -164,6 +164,23 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     assert event["data"]["coverage_setting"] == 1.5
     assert event["data"]["device_id"] is None
     assert "ignored" not in event["data"]
+    assert "software_version" not in event["data"]
+
+    event_callback(
+        Event(
+            "matic_robot_firmware_changed",
+            {
+                "firmware_version": "172.13",
+                "previous_version": "172.12",
+            },
+            time_fired_timestamp=1,
+        )
+    )
+    firmware_event = api.recent_events[-1]
+    assert firmware_event["data"] == {
+        "firmware_version": "172.13",
+        "previous_version": "172.12",
+    }
 
     missing_context = _context(None)
     with pytest.raises(HomeAssistantError, match="Administrator"):
@@ -264,7 +281,8 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     hass = _hass(entry)
     tool = MaticGetPlanTool(MaticOperationsAPI(hass))
     result = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
-    assert result["current_leg"] == 1
+    assert result["preview_scope"] == "next_run"
+    assert result["active_run_for_plan"] is True
     assert result["settings_boundary_count"] == 1
     assert result["legs"][0]["rooms"] == [
         {"id": "kitchen", "name": "Kitchen"},
@@ -282,7 +300,8 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     ordered = await tool.async_call(
         hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
     )
-    assert ordered["current_leg"] is None
+    assert ordered["preview_scope"] == "next_run"
+    assert ordered["active_run_for_plan"] is False
     assert ordered["plan"]["name"] == "saved"
 
     no_map = _entry()

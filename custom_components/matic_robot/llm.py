@@ -54,6 +54,8 @@ _SAFE_EVENT_FIELDS = (
     "coverage_setting",
     "error",
     "native_stop_reconciled",
+    "firmware_version",
+    "previous_version",
     "software_version",
     "previous_software_version",
 )
@@ -80,6 +82,8 @@ class MaticOperationsAPI(llm.API):
         """Retain only allowlisted scalar event evidence."""
         data: JsonObjectType = {}
         for key in _SAFE_EVENT_FIELDS:
+            if key not in event.data:
+                continue
             value = event.data.get(key)
             if value is None or isinstance(value, bool | int | float):
                 data[key] = value
@@ -157,12 +161,12 @@ class MaticGetOperationsTool(_MaticTool):
 
 
 class MaticGetPlanTool(_MaticTool):
-    """Preview exact native legs for one saved plan."""
+    """Preview exact next-run native legs for one saved plan."""
 
     name = "MaticGetPlan"
     description = (
-        "Inspect a selected or named saved plan and show its exact execution order, "
-        "native mission legs, settings boundaries, and current active leg."
+        "Inspect a selected or named saved plan and show its exact next-run "
+        "execution order, native mission legs, and settings boundaries."
     )
     parameters = vol.Schema(
         {
@@ -178,7 +182,7 @@ class MaticGetPlanTool(_MaticTool):
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
     ) -> JsonObjectType:
-        """Return one plan's computed leg boundary contract."""
+        """Return one plan's next-run leg boundary contract."""
         args = self.parameters(tool_input.tool_args)
         entry = _resolve_entry(hass, args.get("robot"))
         runtime = entry.runtime_data
@@ -203,29 +207,20 @@ class MaticGetPlanTool(_MaticTool):
         groups = leg_groups(chosen)
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
-        active_room_id = active.get("room_id") if isinstance(active, dict) else None
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
-        current_leg = next(
-            (
-                index
-                for index, group in enumerate(groups, start=1)
-                if active_plan_id == plan["id"]
-                and any(room.room_id == active_room_id for room in group)
-            ),
-            None,
-        )
         return cast(
             JsonObjectType,
             {
                 "read_only": True,
                 "robot": _entry_name(entry),
+                "preview_scope": "next_run",
+                "active_run_for_plan": active_plan_id == plan["id"],
                 "plan": {
                     "id": plan["id"],
                     "name": plan.get("name", plan["id"]),
                     "run_behavior": plan.get("run_behavior", "intelligent"),
                     "return_to_base": bool(plan.get("return_to_base", True)),
                 },
-                "current_leg": current_leg,
                 "settings_boundary_count": max(0, len(groups) - 1),
                 "legs": [
                     {
