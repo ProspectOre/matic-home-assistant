@@ -24,6 +24,8 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
+    MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
+    MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
     MAX_RECENT_EVENTS,
     MaticGetNativeHistoryTool,
     MaticGetOperationsTool,
@@ -398,11 +400,54 @@ async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:
         hass, llm.ToolInput(tool.name, {"limit": "1"}), _context()
     )
     assert len(result["sessions"]) == 1
-    assert result["sessions"][0]["completed_rooms"] == ["Study"]
-    assert result["sessions"][0]["room_durations"] == [
-        {"room": "Study", "duration_seconds": 540}
+    assert result["sessions"][0]["room_evidence"] == [
+        {
+            "room": "Study",
+            "visited": True,
+            "completed": True,
+            "duration_seconds": 540,
+        }
     ]
     assert "key" not in result["sessions"][0]
+
+    bounded_names = tuple(
+        f"Synthetic room {index:03d} " + ("x" * 490) for index in range(80)
+    )
+    bounded_records = tuple(
+        CleaningSessionRecord(
+            f"opaque-secret-{record_index}".encode(),
+            CleaningSession(
+                f"2026-08-{25 - record_index:02d}T20:00:00+00:00",
+                f"2026-08-{25 - record_index:02d}T20:10:00+00:00",
+                600,
+                bounded_names,
+                tuple((room, 540) for room in bounded_names),
+                True,
+                bounded_names,
+            ),
+        )
+        for record_index in range(2)
+    )
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        bounded_records
+    )
+    bounded = await tool.async_call(
+        hass, llm.ToolInput(tool.name, {"limit": 2}), _context()
+    )
+    evidence = [
+        item for session in bounded["sessions"] for item in session["room_evidence"]
+    ]
+    assert len(evidence) <= MAX_NATIVE_HISTORY_ROOM_EVIDENCE
+    assert (
+        sum(len(item["room"].encode("utf-8")) for item in evidence)
+        <= MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES
+    )
+    assert any(session["room_evidence_truncated"] for session in bounded["sessions"])
+    assert bounded["room_evidence_limits"] == {
+        "max_items_across_response": MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
+        "max_utf8_bytes_across_response": MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
+    }
+    assert "opaque-secret" not in str(bounded)
 
     entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
         CannotConnectError("synthetic outage")

@@ -15,6 +15,7 @@ from homeassistant.helpers import llm
 from homeassistant.util.json import JsonObjectType
 
 from .client.exceptions import MaticError
+from .client.models import CleaningSession
 from .const import (
     DOMAIN,
     EVENT_CLEANING_FINISHED,
@@ -28,6 +29,8 @@ LLM_API_ID = f"{DOMAIN}_operations"
 LLM_API_NAME = "Matic operations"
 MAX_RECENT_EVENTS = 64
 MAX_NATIVE_HISTORY_RESULTS = 20
+MAX_NATIVE_HISTORY_ROOM_EVIDENCE = 64
+MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES = 32 * 1024
 _ADMIN_ERROR = "Administrator access is required for Matic operational tools"
 _MATIC_EVENT_TYPES = (
     EVENT_CLEANING_FINISHED,
@@ -296,32 +299,83 @@ class MaticGetNativeHistoryTool(_MaticTool):
             key=lambda item: item.session.ended_at or item.session.started_at or "",
             reverse=True,
         )[: args["limit"]]
+        remaining_room_items = MAX_NATIVE_HISTORY_ROOM_EVIDENCE
+        remaining_room_bytes = MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES
+        sessions: list[JsonObjectType] = []
+        for record in ordered:
+            room_evidence, remaining_room_items, remaining_room_bytes, total_rooms = (
+                _bounded_native_room_evidence(
+                    record.session,
+                    remaining_room_items,
+                    remaining_room_bytes,
+                )
+            )
+            sessions.append(
+                cast(
+                    JsonObjectType,
+                    {
+                        "started_at": record.session.started_at,
+                        "ended_at": record.session.ended_at,
+                        "duration_seconds": record.session.duration_seconds,
+                        "room_evidence": room_evidence,
+                        "room_evidence_count": total_rooms,
+                        "room_evidence_returned": len(room_evidence),
+                        "room_evidence_truncated": len(room_evidence) < total_rooms,
+                        "completed": record.session.completed,
+                    },
+                )
+            )
         return cast(
             JsonObjectType,
             {
                 "read_only": True,
                 "robot": _entry_name(entry),
                 "completion_authority": (
-                    "Only completed_rooms with a positive room duration prove room "
-                    "completion; the global completed field alone does not."
+                    "Only returned room_evidence entries with completed true and a "
+                    "positive duration prove room completion; the global completed "
+                    "field and omitted evidence do not."
                 ),
-                "sessions": [
-                    {
-                        "started_at": record.session.started_at,
-                        "ended_at": record.session.ended_at,
-                        "duration_seconds": record.session.duration_seconds,
-                        "rooms": list(record.session.rooms),
-                        "completed_rooms": list(record.session.completed_rooms),
-                        "room_durations": [
-                            {"room": room, "duration_seconds": duration}
-                            for room, duration in record.session.room_durations
-                        ],
-                        "completed": record.session.completed,
-                    }
-                    for record in ordered
-                ],
+                "room_evidence_limits": {
+                    "max_items_across_response": MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
+                    "max_utf8_bytes_across_response": (
+                        MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES
+                    ),
+                },
+                "sessions": sessions,
             },
         )
+
+
+def _bounded_native_room_evidence(
+    session: CleaningSession,
+    remaining_items: int,
+    remaining_bytes: int,
+) -> tuple[list[JsonObjectType], int, int, int]:
+    """Normalize and bound one session's room evidence across the response."""
+    visited = set(session.rooms)
+    completed = set(session.completed_rooms)
+    durations: dict[str, int] = {}
+    for room, duration in session.room_durations:
+        durations.setdefault(room, duration)
+    ordered_rooms = list(
+        dict.fromkeys((*session.rooms, *session.completed_rooms, *durations.keys()))
+    )
+    evidence: list[JsonObjectType] = []
+    for room in ordered_rooms:
+        room_bytes = len(room.encode("utf-8"))
+        if remaining_items <= 0 or room_bytes > remaining_bytes:
+            break
+        evidence.append(
+            {
+                "room": room,
+                "visited": room in visited,
+                "completed": room in completed,
+                "duration_seconds": durations.get(room),
+            }
+        )
+        remaining_items -= 1
+        remaining_bytes -= room_bytes
+    return evidence, remaining_items, remaining_bytes, len(ordered_rooms)
 
 
 class MaticGetRecentEventsTool(_MaticTool):
