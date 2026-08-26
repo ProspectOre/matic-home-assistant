@@ -454,6 +454,7 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
     """A pre-upgrade mismatch warns once without discarding the old mapping."""
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
+    shed_plan = entity.coordinator.data.floor_plan
     home_plan = FloorPlan(
         3,
         "home-partition",
@@ -498,10 +499,26 @@ def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None
         entity_registry.async_update_entity_options.reset_mock()
         entity._async_check_segment_changes()
 
-    restored = entity_registry.async_update_entity_options.call_args.args[2]
-    assert restored["matic_floor_scope"] == _floor_scope(home_plan)
-    assert restored["area_mapping"] == home_mapping
-    assert "matic_unscoped_catalog" not in restored
+    restored_home = entity_registry.async_update_entity_options.call_args.args[2]
+    assert restored_home["matic_floor_scope"] == _floor_scope(home_plan)
+    assert restored_home["area_mapping"] == home_mapping
+    assert "matic_unscoped_catalog" not in restored_home
+
+    entity_entry.options = {"vacuum": restored_home}
+    entity.coordinator.data.floor_plan = shed_plan
+    entity_registry.async_update_entity_options.reset_mock()
+    with patch(
+        "custom_components.matic_robot.vacuum.er.async_get",
+        return_value=entity_registry,
+    ):
+        entity._async_check_segment_changes()
+
+    restored_shed = entity_registry.async_update_entity_options.call_args.args[2]
+    assert restored_shed["matic_floor_scope"] == shed_scope
+    assert restored_shed["last_seen_segments"] == [
+        {"id": "room-1", "name": "Kitchen", "group": "Current floor"}
+    ]
+    assert "area_mapping" not in restored_shed
     entity.async_create_segments_issue.assert_called_once()
 
 

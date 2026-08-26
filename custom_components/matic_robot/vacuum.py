@@ -344,10 +344,24 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             return
 
         if stored_scope != current_scope:
-            if configured is not None:
+            unscoped = options.get(_UNSCOPED_CATALOG_OPTION)
+            stored_catalog = catalogs.get(stored_scope)
+            stored_segments = (
+                _segments_from_payload(stored_catalog.get("last_seen_segments"))
+                if isinstance(stored_catalog, dict)
+                else None
+            )
+            active_matches_stored_scope = (
+                configured is not None
+                and stored_segments is not None
+                and _segment_signature(configured)
+                == _segment_signature(stored_segments)
+            )
+            if configured is not None and (
+                not isinstance(unscoped, dict) or active_matches_stored_scope
+            ):
                 catalogs[stored_scope] = _catalog_from_options(options)
             target = catalogs.get(current_scope)
-            unscoped = options.get(_UNSCOPED_CATALOG_OPTION)
             if target is None and isinstance(unscoped, dict):
                 legacy_segments = _segments_from_payload(
                     unscoped.get("last_seen_segments")
