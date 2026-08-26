@@ -1079,6 +1079,17 @@ async def test_custom_area_select_and_native_button() -> None:
     assert serial == "synthetic-serial"
     listener()
     area_button.async_write_ha_state.assert_called_once()
+    floor_listener = entry.runtime_data.slam_map.async_add_listener.call_args.args[0]
+    area_button.async_write_ha_state.reset_mock()
+    floor_listener()
+    area_button.async_write_ha_state.assert_not_called()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    floor_listener()
+    floor_listener()
+    area_button.async_write_ha_state.assert_called_once()
+    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
+        area_button._handle_coordinator_update()
+    parent_update.assert_called_once_with()
 
     registry_entry = SimpleNamespace(
         domain="vacuum", platform="matic_robot", entity_id="vacuum.test_robot"
@@ -1137,6 +1148,21 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     assert serial == "synthetic-serial"
     listener()
     start_button.async_write_ha_state.assert_called_once()
+    floor_listener = entry.runtime_data.slam_map.async_add_listener.call_args.args[0]
+    start_button.async_write_ha_state.reset_mock()
+    floor_listener()
+    start_button.async_write_ha_state.assert_not_called()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    floor_listener()
+    floor_listener()
+    start_button.async_write_ha_state.assert_called_once()
+    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
+        start_button._handle_coordinator_update()
+    parent_update.assert_called_once_with()
+
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        await stop_button.async_added_to_hass()
+    assert entry.runtime_data.slam_map.async_add_listener.call_count == 1
 
 
 async def test_saved_plan_select_rerenders_when_plans_change() -> None:

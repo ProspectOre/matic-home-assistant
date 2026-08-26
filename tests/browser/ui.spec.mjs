@@ -1183,21 +1183,23 @@ test.describe("map studio", () => {
         contentType: "application/json",
         body: JSON.stringify({
           live_available: floorCoherent,
-          snapshots: [currentSnapshot],
+          snapshots: floorCoherent ? [currentSnapshot] : [],
           floors: [
             {
               id: "current",
               active: true,
               read_only: false,
               live_available: floorCoherent,
-              snapshots: [currentSnapshot],
+              snapshots: floorCoherent ? [currentSnapshot] : [],
             },
             {
               id: "saved-1",
               active: false,
               read_only: true,
               ordinal: 1,
-              snapshots: [savedSnapshot],
+              snapshots: floorCoherent
+                ? [savedSnapshot]
+                : [savedSnapshot, currentSnapshot],
             },
           ],
         }),
@@ -1211,6 +1213,11 @@ test.describe("map studio", () => {
     await page.route("**/saved-floor-scene", (route) => route.fulfill({
       status: 200,
       body: syntheticScene("Saved floor room", 8),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+    await page.route("**/current-floor-history", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Current floor checkpoint", 24),
       headers: { "Content-Type": "application/vnd.matic.slam-scene" },
     }));
 
@@ -1241,6 +1248,12 @@ test.describe("map studio", () => {
     await expect(studio.locator(".timeline-live")).toBeVisible();
     await expect(studio.locator(".cleaning-plans")).toBeEnabled();
     await expect(studio.locator(".cleaning-areas")).toBeEnabled();
+    await studio.locator(".timeline-earlier").click();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Current floor checkpoint");
+    expect(await page.evaluate(() => window.__studio._selectedHistoryId))
+      .toBe("snapshot-current-floor");
 
     const coherentHistoryRequests = historyRequests;
     floorCoherent = false;
@@ -1256,6 +1269,8 @@ test.describe("map studio", () => {
     await expect(studio.locator(".cleaning-plans")).toBeDisabled();
     await expect(studio.locator(".cleaning-areas")).toBeDisabled();
     await expect(studio.locator(".scene-canvas")).toBeHidden();
+    expect(await page.evaluate(() => window.__studio._selectedHistoryId))
+      .toBeUndefined();
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobileLayout = await studio.evaluate((element) => {

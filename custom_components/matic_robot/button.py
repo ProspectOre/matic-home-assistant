@@ -33,7 +33,54 @@ async def async_setup_entry(
     )
 
 
-class MaticPlanButton(MaticEntity, ButtonEntity):
+class _MaticFloorBoundButton(MaticEntity, ButtonEntity):
+    """Refresh a button only when live floor coherence crosses an edge."""
+
+    def __init__(self, entry: MaticConfigEntry) -> None:
+        super().__init__(entry)
+        self._published_floor_coherent = self._floor_coherent()
+
+    @property
+    def _uses_floor_coherence(self) -> bool:
+        return True
+
+    def _floor_coherent(self) -> bool:
+        floor_plan = self.coordinator.data.floor_plan
+        return bool(
+            floor_plan is not None
+            and floor_plan.rooms
+            and self._config_entry.runtime_data.slam_map.floor_plan_is_current(
+                floor_plan
+            )
+        )
+
+    async def async_added_to_hass(self) -> None:
+        """Subscribe only buttons whose availability follows floor identity."""
+        await super().async_added_to_hass()
+        if self._uses_floor_coherence:
+            self.async_on_remove(
+                self._config_entry.runtime_data.slam_map.async_add_listener(
+                    self._async_floor_coherence_updated
+                )
+            )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Remember coherence already published by a coordinator refresh."""
+        self._published_floor_coherent = self._floor_coherent()
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_floor_coherence_updated(self) -> None:
+        """Suppress ordinary tile and stream notifications."""
+        floor_coherent = self._floor_coherent()
+        if floor_coherent == self._published_floor_coherent:
+            return
+        self._published_floor_coherent = floor_coherent
+        self.async_write_ha_state()
+
+
+class MaticPlanButton(_MaticFloorBoundButton):
     """Run one native saved-plan operation for this robot."""
 
     def __init__(self, entry: MaticConfigEntry, service: str) -> None:
@@ -48,17 +95,16 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
             "stop_intelligent_cleaning",
         }
 
+    @property
+    def _uses_floor_coherence(self) -> bool:
+        return self._service != "stop_intelligent_cleaning"
+
     async def async_added_to_hass(self) -> None:
         """Refresh availability when plans or managed runs change."""
         await super().async_added_to_hass()
         self.async_on_remove(
             self._plans.async_add_listener(
                 self._serial_number, self._async_plans_updated
-            )
-        )
-        self.async_on_remove(
-            self._config_entry.runtime_data.slam_map.async_add_listener(
-                self._async_plans_updated
             )
         )
 
@@ -75,13 +121,7 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
             return self._plans.snapshot(self._serial_number)["active_plan"] is not None
 
         floor_plan = self.coordinator.data.floor_plan
-        if (
-            floor_plan is None
-            or not floor_plan.rooms
-            or not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
-                floor_plan
-            )
-        ):
+        if not self._floor_coherent() or floor_plan is None:
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
@@ -113,7 +153,7 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
         )
 
 
-class MaticAreaButton(MaticEntity, ButtonEntity):
+class MaticAreaButton(_MaticFloorBoundButton):
     """Run the custom area selected on the Matic device page."""
 
     _attr_translation_key = "clean_selected_area"
@@ -133,11 +173,6 @@ class MaticAreaButton(MaticEntity, ButtonEntity):
                 self._serial_number, self._async_areas_updated
             )
         )
-        self.async_on_remove(
-            self._config_entry.runtime_data.slam_map.async_add_listener(
-                self._async_areas_updated
-            )
-        )
 
     @callback
     def _async_areas_updated(self) -> None:
@@ -146,14 +181,7 @@ class MaticAreaButton(MaticEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Expose the action only while a current custom area can be resolved."""
-        floor_plan = self.coordinator.data.floor_plan
-        if (
-            not super().available
-            or floor_plan is None
-            or not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
-                floor_plan
-            )
-        ):
+        if not super().available or not self._floor_coherent():
             return False
         try:
             self._areas.area(self._serial_number)

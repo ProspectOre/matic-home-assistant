@@ -2103,8 +2103,10 @@ class MaticMapStudio extends HTMLElement {
       this._syncTimeline();
     }
     if (photoState) await this._fetchHistory(photoState, force);
+    const refreshedLiveSelection =
+      this._view === "rooms" || !this._selectedHistoryId;
     if (
-      liveSelection
+      refreshedLiveSelection
       && (entityFloorIncoherent || catalogFloorIncoherent)
     ) {
       this._showFloorTransition(
