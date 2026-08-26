@@ -321,8 +321,13 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
             for _index in range(5):
                 await asyncio.sleep(0)
             history.async_add.assert_not_awaited()
-            current_floor = _floor_plan()
+            entry_reads = slam_map.entries.call_count
             assert floor_listener is not None
+            floor_listener()
+            for _index in range(5):
+                await asyncio.sleep(0)
+            assert slam_map.entries.call_count == entry_reads
+            current_floor = _floor_plan()
             floor_listener()
             await asyncio.wait_for(history_added.wait(), timeout=1)
         history.async_add.assert_awaited_once()

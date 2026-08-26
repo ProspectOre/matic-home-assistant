@@ -205,7 +205,17 @@ async def async_collect_slam_history(
     changed.set()
     remove_listeners = [slam_map.async_add_listener(changed.set)]
     if floor_plan_listener is not None:
-        remove_listeners.append(floor_plan_listener(changed.set))
+        observed_floor_plan = floor_plan()
+
+        def _floor_plan_changed() -> None:
+            nonlocal observed_floor_plan
+            current_floor_plan = floor_plan()
+            if current_floor_plan == observed_floor_plan:
+                return
+            observed_floor_plan = current_floor_plan
+            changed.set()
+
+        remove_listeners.append(floor_plan_listener(_floor_plan_changed))
     try:
         while True:
             await changed.wait()
