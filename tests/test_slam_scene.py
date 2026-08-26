@@ -756,6 +756,14 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
         ]
     }
 
+    runtime.slam_map.mission_identity = None
+    empty_identity = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    empty_entry = json.loads(empty_identity.body)["entries"][0]
+    assert empty_entry["history_count"] == 0
+    assert empty_entry["map_floor_coherent"] is False
+
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     runtime = _runtime()
@@ -1334,6 +1342,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     catalog = await MaticSlamHistoryView().get(_request(hass), "entry")
     assert json.loads(catalog.body) == {
         "entry_id": "entry",
+        "live_available": True,
         "snapshots": [
             {
                 "id": snapshot.snapshot_id,
@@ -1350,6 +1359,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 "id": "current",
                 "active": True,
                 "read_only": False,
+                "live_available": True,
                 "snapshots": [
                     {
                         "id": snapshot.snapshot_id,
@@ -1410,7 +1420,20 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
 
     runtime.slam_map.mission_identity = None
     no_active_floor = await MaticSlamHistoryView().get(_request(hass), "entry")
-    assert json.loads(no_active_floor.body)["snapshots"] == []
+    no_active_payload = json.loads(no_active_floor.body)
+    assert no_active_payload["live_available"] is False
+    assert no_active_payload["snapshots"] == []
+    assert no_active_payload["floors"][0] == {
+        "id": "current",
+        "active": True,
+        "read_only": False,
+        "live_available": False,
+        "snapshots": [],
+    }
+    assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [
+        "saved-1",
+        "saved-2",
+    ]
 
     with pytest.raises(Unauthorized):
         await MaticSlamHistoryView().get(_request(hass, admin=False), "entry")

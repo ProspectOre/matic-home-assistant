@@ -1183,6 +1183,7 @@ test.describe("map studio", () => {
             id: "current",
             active: true,
             read_only: false,
+            live_available: true,
             snapshots: [currentSnapshot],
           },
           {
@@ -1420,6 +1421,7 @@ test.describe("map studio", () => {
   test("never reuses a previous-floor snapshot during a floor transition", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let previousFloorRequests = 0;
+    let transitionFloorRequests = 0;
     const snapshot = {
       id: "snapshot-previous-floor",
       created_at: "2026-07-26T09:45:00Z",
@@ -1443,7 +1445,26 @@ test.describe("map studio", () => {
     await page.route("**/transition-history", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ snapshots: [snapshot] }),
+      body: JSON.stringify({
+        live_available: false,
+        snapshots: [],
+        floors: [
+          {
+            id: "current",
+            active: true,
+            read_only: false,
+            live_available: false,
+            snapshots: [],
+          },
+          {
+            id: "saved-1",
+            active: false,
+            read_only: true,
+            ordinal: 1,
+            snapshots: [snapshot],
+          },
+        ],
+      }),
     }));
     await page.route("**/previous-floor-scene", (route) => {
       previousFloorRequests += 1;
@@ -1452,25 +1473,31 @@ test.describe("map studio", () => {
         body: syntheticScene("Previous floor room", 8),
       });
     });
-    await page.route("**/transition-scene", (route) => route.fulfill({
-      status: 200,
-      body: syntheticScene(null, 16),
-      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
-    }));
+    await page.route("**/transition-scene", (route) => {
+      transitionFloorRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene(null, 16),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
 
     const studio = await loadStudio(page);
     await expect(studio.locator(".status")).toContainText(
       "Floor transition detected",
     );
-    expect(await page.evaluate(() => ({
-      sceneUrl: window.__studio._sceneUrl,
-      rooms: window.__studio._scene?.metadata?.rooms?.length,
-      stableId: window.__studio._stableLiveSnapshotId,
-    }))).toEqual({
-      sceneUrl: "/transition-scene",
-      rooms: 0,
-      stableId: undefined,
-    });
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".empty")).toContainText(
+      "map paused until localization completes",
+    );
+    await expect(studio.locator(".floor-select").locator("option").first()).toHaveText(
+      "Current floor · map settling",
+    );
+    await expect(
+      studio.locator(".floor-select").locator("option").first(),
+    ).toHaveAttribute("disabled", "");
+    expect(await page.evaluate(() => window.__studio._robot)).toBeUndefined();
+    expect(transitionFloorRequests).toBe(0);
     expect(previousFloorRequests).toBe(0);
   });
 
@@ -1496,7 +1523,7 @@ test.describe("map studio", () => {
       "warning",
     );
     await expect(studio.locator(".empty")).toContainText(
-      "room overlay paused",
+      "map paused until localization completes",
     );
     await expect(studio.locator(".map-image")).toBeHidden();
     await expect(studio.locator(".pose-status")).toBeHidden();

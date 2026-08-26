@@ -677,7 +677,10 @@ class MaticMapStudio extends HTMLElement {
       if (controller.signal.aborted) return;
       const selectedWasSaved = this._selectedFloor()?.readOnly === true;
       const selectedSnapshotId = this._selectedHistoryId;
-      this._floors = this._normaliseHistoryFloors(payload);
+      this._floors = this._normaliseHistoryFloors(
+        payload,
+        state?.attributes?.map_floor_coherent !== false,
+      );
       const retainedSavedFloor = selectedWasSaved && selectedSnapshotId
         ? this._floors.find((floor) =>
           floor.readOnly
@@ -750,11 +753,14 @@ class MaticMapStudio extends HTMLElement {
       .slice(-12);
   }
 
-  _normaliseHistoryFloors(payload) {
+  _normaliseHistoryFloors(payload, catalogFloorCoherent = true) {
+    const liveAvailable = catalogFloorCoherent
+      && payload?.live_available !== false;
     const fallbackCurrent = {
       id: "current",
       active: true,
       readOnly: false,
+      liveAvailable,
       ordinal: 0,
       snapshots: this._validHistorySnapshots(payload?.snapshots),
     };
@@ -767,6 +773,8 @@ class MaticMapStudio extends HTMLElement {
       if (candidate.id === "current" && candidate.active === true) {
         current = {
           ...fallbackCurrent,
+          liveAvailable: liveAvailable
+            && candidate.live_available !== false,
           snapshots: this._validHistorySnapshots(candidate.snapshots),
         };
         continue;
@@ -826,7 +834,13 @@ class MaticMapStudio extends HTMLElement {
           "Saved floor {number} · read only",
           { number: floor.ordinal },
         )
+        : floor.liveAvailable === false
+        ? this._localize(
+          "map_floor_current_settling",
+          "Current floor · map settling",
+        )
         : this._floorLabel(floor);
+      option.disabled = floor.active && floor.liveAvailable === false;
       option.selected = floor.id === this._selectedFloorId;
       select.append(option);
     }
@@ -856,7 +870,7 @@ class MaticMapStudio extends HTMLElement {
     const timeline = this.shadowRoot.querySelector(".timeline");
     if (!timeline) return;
     const floor = this._selectedFloor();
-    const hasLive = floor?.active !== false;
+    const hasLive = floor?.active !== false && floor?.liveAvailable !== false;
     const hasHistory = this._history.length > 0;
     timeline.hidden = this._view === "rooms";
     this._syncFloorSelector();
@@ -895,7 +909,9 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _selectTimelinePosition(position) {
-    const hasLive = this._selectedFloor()?.active !== false;
+    const selectedFloor = this._selectedFloor();
+    const hasLive = selectedFloor?.active !== false
+      && selectedFloor?.liveAvailable !== false;
     const maximum = hasLive
       ? this._history.length
       : Math.max(0, this._history.length - 1);
@@ -1964,10 +1980,10 @@ class MaticMapStudio extends HTMLElement {
     const coherent = state?.attributes?.map_floor_coherent !== false;
     this._setStatus(
       !coherent
-        ? this._localize(
-          "map_status_floor_transition",
-          "Floor transition detected · room overlay paused",
-        )
+          ? this._localize(
+            "map_status_floor_transition",
+            "Floor transition detected · map paused until localization completes",
+          )
         : complete
         ? this._localize(
           "map_status_full_scene",
@@ -2039,7 +2055,12 @@ class MaticMapStudio extends HTMLElement {
     const entities = this._entities(entryId);
     const photoState = catalogState || entities.photo?.[1];
     if (photoState) await this._fetchHistory(photoState, force);
-    if (this._view === "rooms") {
+    if (
+      !this._selectedHistoryId
+      && photoState?.attributes?.map_floor_coherent === false
+    ) {
+      this._showFloorTransition(photoState);
+    } else if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
     } else if (this._selectedHistoryId && this._scene) {
       this._showSpatialScene();
@@ -2120,17 +2141,7 @@ class MaticMapStudio extends HTMLElement {
       coherent ? state.attributes?.robot_location_source : "unavailable",
     );
     if (!coherent && !this._selectedHistoryId) {
-      this._cancelFallbackLoad();
-      this._setLoading(false);
-      image.hidden = true;
-      const message = this._localize(
-        "map_status_floor_transition",
-        "Floor transition detected · room overlay paused",
-      );
-      this._setEmpty(message);
-      this._setStatus(message, "warning");
-      this._updateHealth(state);
-      return false;
+      return this._showFloorTransition(state);
     }
     const version = `${entityId}:${state.last_updated}:${state.attributes?.map_revision || "rooms"}`;
     const viewport = this.shadowRoot.querySelector(".viewport");
@@ -2202,6 +2213,30 @@ class MaticMapStudio extends HTMLElement {
     );
     this._updateHealth(state);
     return true;
+  }
+
+  _showFloorTransition(state) {
+    this._stopDeltaStream();
+    this._sceneAbortController?.abort();
+    this._poseAbortController?.abort();
+    this._robot = undefined;
+    this._setPoseStatus("unavailable");
+    this._cancelFallbackLoad();
+    this._setLoading(false);
+    const canvas = this.shadowRoot.querySelector(".scene-canvas");
+    const overlays = this.shadowRoot.querySelector(".spatial-overlays");
+    const image = this.shadowRoot.querySelector(".map-image");
+    if (canvas) canvas.hidden = true;
+    if (overlays) overlays.hidden = true;
+    if (image) image.hidden = true;
+    const message = this._localize(
+      "map_status_floor_transition",
+      "Floor transition detected · map paused until localization completes",
+    );
+    this._setEmpty(message);
+    this._setStatus(message, "warning");
+    this._updateHealth(state);
+    return false;
   }
 
   _showSpatialScene() {

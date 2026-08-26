@@ -442,17 +442,20 @@ class MaticSlamHistoryView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
+        floor_plan = runtime.coordinator.data.floor_plan
+        floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
         current_token = (
             runtime.slam_map.mission_identity.mission_token
-            if runtime.slam_map.mission_identity is not None
+            if floor_plan_coherent and runtime.slam_map.mission_identity is not None
             else None
         )
-        current_snapshots = _mission_history(runtime)
+        current_snapshots = _mission_history(runtime) if floor_plan_coherent else ()
         floors = [
             {
                 "id": "current",
                 "active": True,
                 "read_only": False,
+                "live_available": floor_plan_coherent,
                 "snapshots": _history_metadata(entry_id, current_snapshots),
             }
         ]
@@ -476,6 +479,7 @@ class MaticSlamHistoryView(HomeAssistantView):
         return self.json(
             {
                 "entry_id": entry_id,
+                "live_available": floor_plan_coherent,
                 "snapshots": _history_metadata(entry_id, current_snapshots),
                 "floors": floors,
             },
