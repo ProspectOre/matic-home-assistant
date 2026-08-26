@@ -382,7 +382,18 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             entity_registry.async_update_entity_options(
                 self.entity_id, "vacuum", options
             )
-            self._reported_segment_change = None
+            target_segments = _segments_from_payload(target.get("last_seen_segments"))
+            target_signature = (
+                _segment_signature(target_segments)
+                if target_segments is not None
+                else signature
+            )
+            if target_signature != signature:
+                if self._reported_segment_change != signature:
+                    self.async_create_segments_issue()
+                    self._reported_segment_change = signature
+            else:
+                self._reported_segment_change = None
             return
 
         if configured is None:

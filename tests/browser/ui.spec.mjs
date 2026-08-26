@@ -1098,6 +1098,8 @@ test.describe("map studio", () => {
     const timeline = studio.locator(".timeline");
     await expect(timeline).toBeVisible();
     await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
+    await page.evaluate(() => window.__studio._setPoseStatus("current_area"));
+    await expect(studio.locator(".pose-status")).toBeVisible();
     expect(await timeline.locator(".timeline-summary").evaluate((summary) => {
       const event = new PointerEvent("pointerdown", {
         bubbles: true,
@@ -1128,6 +1130,7 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Recent room");
+    await expect(studio.locator(".pose-status")).toBeHidden();
     await expect(studio.locator(".status")).toContainText("Map captured");
     await timeline.locator(".timeline-earlier").click();
     await expect.poll(() => page.evaluate(() =>
@@ -2207,6 +2210,7 @@ test.describe("map studio", () => {
         attributes: {
           matic_entry_id: "alpha",
           robot_location_source: "exact_pose",
+          source: "local_room_map",
         },
       },
       "camera.beta_rooms": {
@@ -2215,6 +2219,7 @@ test.describe("map studio", () => {
         attributes: {
           matic_entry_id: "beta",
           robot_location_source: "exact_pose",
+          source: "local_room_map",
         },
       },
     });
@@ -2469,6 +2474,36 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__glCalls.some(([name]) => name === "bufferData"))).toBe(true);
   });
 
+  test("keeps the photorealistic camera out of the room-camera match", async ({ page }) => {
+    await installBrowserDoubles(page);
+    await loadStudio(page, {
+      "camera.synthetic_photo": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_robot_slam",
+          robot_location_source: "current_area",
+        },
+      },
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_room_map",
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+
+    expect(await page.evaluate(() => {
+      const entities = window.__studio._entities();
+      return { photo: entities.photo?.[0], rooms: entities.rooms?.[0] };
+    })).toEqual({
+      photo: "camera.synthetic_photo",
+      rooms: "camera.synthetic_rooms",
+    });
+  });
+
   test("uses the local camera map when WebGL 2 is unavailable", async ({ page }) => {
     await installBrowserDoubles(page, { images: true });
     const studio = await loadStudio(page, {
@@ -2684,7 +2719,10 @@ test.describe("map studio", () => {
           "camera.synthetic_rooms": {
             state: "idle",
             last_updated: "2026-01-01T00:00:00Z",
-            attributes: { robot_location_source: "exact_pose" },
+            attributes: {
+              robot_location_source: "exact_pose",
+              source: "local_room_map",
+            },
           },
         },
         auth: { data: { access_token: "synthetic-token" } },

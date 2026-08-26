@@ -400,6 +400,62 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
     entity.async_create_segments_issue.assert_not_called()
 
 
+def test_returning_to_changed_cataloged_floor_raises_repair() -> None:
+    """Revalidate a retained floor catalog against its current room topology."""
+    entity = _vacuum()
+    entity.async_create_segments_issue = MagicMock()
+    current_scope = _floor_scope(entity.coordinator.data.floor_plan)
+    previous_plan = FloorPlan(
+        2,
+        "previous-partition",
+        b"previous-partition",
+        (_room("old-room", "Old room"),),
+    )
+    previous_scope = _floor_scope(previous_plan)
+    previous_payload = [
+        {"id": "old-room", "name": "Old room", "group": "Current floor"}
+    ]
+    stale_current_payload = [
+        {"id": "room-1", "name": "Old kitchen", "group": "Current floor"}
+    ]
+    stale_mapping = {"kitchen": ["room-1"]}
+    entity_entry = SimpleNamespace(
+        options={
+            "vacuum": {
+                "last_seen_segments": previous_payload,
+                "matic_floor_scope": previous_scope,
+                "matic_floor_catalogs": {
+                    previous_scope: {"last_seen_segments": previous_payload},
+                    current_scope: {
+                        "area_mapping": stale_mapping,
+                        "last_seen_segments": stale_current_payload,
+                    },
+                },
+            }
+        }
+    )
+    entity_registry = MagicMock()
+    entity_registry.async_get.return_value = entity_entry
+    entity_registry.async_update_entity_options.side_effect = (
+        lambda _entity_id, domain, options: setattr(
+            entity_entry, "options", {domain: options}
+        )
+    )
+
+    with patch(
+        "custom_components.matic_robot.vacuum.er.async_get",
+        return_value=entity_registry,
+    ):
+        entity._async_check_segment_changes()
+        entity._async_check_segment_changes()
+
+    restored = entity_entry.options["vacuum"]
+    assert restored["matic_floor_scope"] == current_scope
+    assert restored["last_seen_segments"] == stale_current_payload
+    assert restored["area_mapping"] == stale_mapping
+    entity.async_create_segments_issue.assert_called_once()
+
+
 def test_new_floor_is_auto_mapped_in_the_same_idle_update() -> None:
     """Activate then exact-name map a floor without needing another refresh."""
     entity = _vacuum()

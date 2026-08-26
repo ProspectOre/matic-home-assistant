@@ -1191,6 +1191,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "robot_location_source": "exact_pose",
+        "source": "local_room_map",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 

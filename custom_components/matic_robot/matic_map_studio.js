@@ -425,7 +425,7 @@ class MaticMapStudio extends HTMLElement {
       photo: scoped.find(([, state]) =>
         state.attributes?.source === "local_robot_slam"),
       rooms: scoped.find(([, state]) =>
-        state.attributes?.robot_location_source),
+        state.attributes?.source === "local_room_map"),
       vacuum: scoped.find(([entityId]) => entityId.startsWith("vacuum.")),
     };
   }
@@ -920,6 +920,7 @@ class MaticMapStudio extends HTMLElement {
   }
 
   async _loadHistoricalScene(snapshot) {
+    this._setPoseStatus("unavailable");
     if (!snapshot.scene_url.startsWith("/")) return;
     this._stableLiveSnapshotId = undefined;
     this._stableLiveSourceIdentity = undefined;

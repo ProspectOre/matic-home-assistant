@@ -90,6 +90,7 @@ class MaticMapCamera(MaticEntity, Camera):
             "robot_location_source": robot_location_source(
                 data.floor_plan, data.pose, data.operational.current_area
             ),
+            "source": "local_room_map",
         }
 
 
