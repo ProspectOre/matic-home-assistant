@@ -1474,6 +1474,35 @@ test.describe("map studio", () => {
     expect(previousFloorRequests).toBe(0);
   });
 
+  test("withholds an incoherent room-camera fallback during a floor transition", async ({ page }) => {
+    await installBrowserDoubles(page, { images: true });
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_room_map",
+          map_floor_coherent: false,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+
+    await expect(studio.locator(".status")).toContainText(
+      "Floor transition detected",
+    );
+    await expect(studio.locator(".status")).toHaveAttribute(
+      "data-tone",
+      "warning",
+    );
+    await expect(studio.locator(".empty")).toContainText(
+      "room overlay paused",
+    );
+    await expect(studio.locator(".map-image")).toBeHidden();
+    await expect(studio.locator(".pose-status")).toBeHidden();
+    expect(await studio.locator(".map-image").getAttribute("src")).toBeNull();
+  });
+
   test("isolates timeline requests when switching robots", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({

@@ -1190,10 +1190,35 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert render.call_args.kwargs == {"width": 256, "height": 4096}
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
+        "map_floor_coherent": True,
         "robot_location_source": "exact_pose",
         "source": "local_room_map",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
+
+    entry = _entry()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+    with patch(
+        "custom_components.matic_robot.camera.render_floor_plan",
+        return_value=b"transition-png",
+    ) as transition_render:
+        assert await entity.async_camera_image() == b"transition-png"
+
+    transition_render.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity.extra_state_attributes == {
+        "matic_entry_id": "entry",
+        "map_floor_coherent": False,
+        "robot_location_source": "unavailable",
+        "source": "local_room_map",
+    }
 
 
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:

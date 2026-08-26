@@ -1818,19 +1818,24 @@ class MaticMapStudio extends HTMLElement {
         const entryId = state?.attributes?.entry_id
           || state?.attributes?.matic_entry_id;
         const entities = this._entities(entryId);
-        this._showFallback(entities.rooms || entities.photo, force);
+        const fallbackAvailable = this._showFallback(
+          entities.rooms || entities.photo,
+          force,
+        );
         const health = String(state?.attributes?.map_health || "").toLowerCase();
         const collecting = error?.status === 409
           && ["empty", "collecting", "incomplete"].includes(health);
-        this._setStatus(collecting
-          ? this._localize(
-            "map_status_scene_collecting",
-            "Building local 3D scene · showing the local map",
-          )
-          : this._localize(
-            "map_status_scene_fallback",
-            "3D scene is not ready · showing the local map",
-          ), collecting ? "normal" : "error");
+        if (fallbackAvailable) {
+          this._setStatus(collecting
+            ? this._localize(
+              "map_status_scene_collecting",
+              "Building local 3D scene · showing the local map",
+            )
+            : this._localize(
+              "map_status_scene_fallback",
+              "3D scene is not ready · showing the local map",
+            ), collecting ? "normal" : "error");
+        }
       }
     } finally {
       window.clearTimeout(timeout);
@@ -2065,25 +2070,28 @@ class MaticMapStudio extends HTMLElement {
           }
         } else {
           this._robot = undefined;
-          this._showFallback(entities.rooms || entities.photo, force);
-          this._setStatus(
-            this._localize(
-              "map_status_loading_scene",
-              "Loading local 3D scene…",
-            ),
-          );
+          if (this._showFallback(entities.rooms || entities.photo, force)) {
+            this._setStatus(
+              this._localize(
+                "map_status_loading_scene",
+                "Loading local 3D scene…",
+              ),
+            );
+          }
         }
       }
     } else if (this._scene) {
       this._showRetainedScene();
     } else {
-      this._showFallback(entities.rooms, force);
-      this._setStatus(
-        this._localize(
-          "map_status_no_map",
-          "No local map data is available yet",
-        ),
-      );
+      const roomMap = entities.rooms;
+      if (this._showFallback(roomMap, force) && !roomMap) {
+        this._setStatus(
+          this._localize(
+            "map_status_no_map",
+            "No local map data is available yet",
+          ),
+        );
+      }
     }
   }
 
@@ -2104,10 +2112,26 @@ class MaticMapStudio extends HTMLElement {
           "The local map will appear when the Matic integration is ready.",
         ),
       );
-      return;
+      return true;
     }
     const [entityId, state] = selected;
-    this._setPoseStatus(state.attributes?.robot_location_source);
+    const coherent = state.attributes?.map_floor_coherent !== false;
+    this._setPoseStatus(
+      coherent ? state.attributes?.robot_location_source : "unavailable",
+    );
+    if (!coherent && !this._selectedHistoryId) {
+      this._cancelFallbackLoad();
+      this._setLoading(false);
+      image.hidden = true;
+      const message = this._localize(
+        "map_status_floor_transition",
+        "Floor transition detected · room overlay paused",
+      );
+      this._setEmpty(message);
+      this._setStatus(message, "warning");
+      this._updateHealth(state);
+      return false;
+    }
     const version = `${entityId}:${state.last_updated}:${state.attributes?.map_revision || "rooms"}`;
     const viewport = this.shadowRoot.querySelector(".viewport");
     const pixelRatio = maticClamp(window.devicePixelRatio || 1, 1, 2);
@@ -2126,13 +2150,13 @@ class MaticMapStudio extends HTMLElement {
       image.hidden = false;
       this._setLoading(false);
       this._setEmpty();
-      return;
+      return true;
     }
     if (
       this._fallbackLoader
       && loadingVersion === this._fallbackLoadingVersion
     ) {
-      return;
+      return true;
     }
     this._cancelFallbackLoad();
     const token = state.attributes?.access_token;
@@ -2177,6 +2201,7 @@ class MaticMapStudio extends HTMLElement {
         ),
     );
     this._updateHealth(state);
+    return true;
   }
 
   _showSpatialScene() {
@@ -2191,7 +2216,7 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _showRenderingFallback(selected, force = false) {
-    this._showFallback(selected, force);
+    if (!this._showFallback(selected, force)) return;
     this._setStatus(
       this._localize(
         "map_status_rendering_fallback",

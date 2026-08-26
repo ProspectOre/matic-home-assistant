@@ -462,6 +462,20 @@ class MaticGetRecentEventsTool(_MaticTool):
 
 
 @callback
+def async_get_tools(
+    hass: HomeAssistant, llm_context: llm.LLMContext, api_id: str
+) -> None:
+    """Contribute no tools to another API's aggregated tool platform.
+
+    Home Assistant 2026.8 and later lazily imports every integration's
+    ``llm.py`` as a tool platform. Matic owns a dedicated API registered below,
+    so its tools must not also be merged into Assist or another API.
+    """
+    del hass, llm_context, api_id
+    return None
+
+
+@callback
 def async_register_matic_llm_api(hass: HomeAssistant) -> MaticOperationsAPI:
     """Register the operations API and its bounded event listener."""
     api = MaticOperationsAPI(hass)

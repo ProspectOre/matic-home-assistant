@@ -48,6 +48,7 @@ class MaticMapCamera(MaticEntity, Camera):
         Camera.__init__(self)
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
+        self._store = entry.runtime_data.slam_map
         self._cached_image_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
 
@@ -56,10 +57,12 @@ class MaticMapCamera(MaticEntity, Camera):
     ) -> bytes:
         """Return the current labeled room map."""
         data = self.coordinator.data
+        floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         cache_key = (
             id(data.floor_plan),
+            floor_plan_coherent,
             data.pose,
             data.operational.current_area,
             requested_width,
@@ -70,9 +73,9 @@ class MaticMapCamera(MaticEntity, Camera):
         image = await self.hass.async_add_executor_job(
             partial(
                 render_floor_plan,
-                data.floor_plan,
-                data.pose,
-                data.operational.current_area,
+                data.floor_plan if floor_plan_coherent else None,
+                data.pose if floor_plan_coherent else None,
+                data.operational.current_area if floor_plan_coherent else None,
                 width=requested_width,
                 height=requested_height,
             )
@@ -85,10 +88,14 @@ class MaticMapCamera(MaticEntity, Camera):
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose exact-position or non-positional room-presence availability."""
         data = self.coordinator.data
+        floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         return {
             "matic_entry_id": self._config_entry.entry_id,
+            "map_floor_coherent": floor_plan_coherent,
             "robot_location_source": robot_location_source(
-                data.floor_plan, data.pose, data.operational.current_area
+                data.floor_plan if floor_plan_coherent else None,
+                data.pose,
+                data.operational.current_area,
             ),
             "source": "local_room_map",
         }
