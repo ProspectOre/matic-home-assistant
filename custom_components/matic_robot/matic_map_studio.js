@@ -2114,8 +2114,9 @@ class MaticMapStudio extends HTMLElement {
       || refreshedEntities.photo?.[1];
     const refreshedPhotoState = refreshedCatalogState
       || refreshedEntities.photo?.[1];
-    const refreshedEntityFloorIncoherent = initialFloorIncoherent
-      || refreshedLiveMap?.attributes?.map_floor_coherent === false;
+    const refreshedEntityFloorIncoherent = refreshedLiveMap
+      ? refreshedLiveMap.attributes?.map_floor_coherent === false
+      : initialFloorIncoherent;
     const refreshedCatalogFloorIncoherent =
       refreshedPhotoState?.attributes?.map_floor_coherent === false;
     const refreshedLiveSelection =
