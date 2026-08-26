@@ -97,6 +97,7 @@ class _LoadedMap:
     """One fully decoded private storage snapshot built off the event loop."""
 
     mission_token: str | None
+    mission_id: int | None
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
     truncated: bool
@@ -147,9 +148,7 @@ class SlamMapStore:
             _decode_stored_snapshot, stored
         )
         self._mission_token = loaded.mission_token
-        self._mission_id = _mission_id_from_entries(
-            loaded.entries, loaded.structure_entries
-        )
+        self._mission_id = loaded.mission_id
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
         self._truncated = loaded.truncated
@@ -582,7 +581,7 @@ def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
 def _decode_stored_snapshot(stored: object) -> _LoadedMap:
     """Decode and bound one private cache snapshot away from the event loop."""
     if not isinstance(stored, Mapping):
-        return _LoadedMap(None, {}, {}, False, 0, 0, 1, True)
+        return _LoadedMap(None, None, {}, {}, False, 0, 0, 1, True)
     stored_mission = _stored_mission_token(stored.get("mission_token"))
     mission_token = stored_mission
     truncated = stored.get("truncated") is True
@@ -597,6 +596,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
     )
     entries: dict[str, HermesCollectionEntry] = {}
     structure_entries: dict[str, HermesCollectionEntry] = {}
+    mission_ids: set[int] = set()
 
     for structural, name in ((False, "tiles"), (True, "structure_tiles")):
         items = stored.get(name, ())
@@ -644,11 +644,14 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                     continue
                 entries.clear()
                 structure_entries.clear()
+                mission_ids.clear()
                 truncated = False
                 dropped_photo = 0
                 dropped_structure = 0
                 invalid = 0
                 dirty = True
+            if tile.mission_id is not None:
+                mission_ids.add(tile.mission_id)
             mission_token = tile.mission_token
             target = structure_entries if structural else entries
             key = _tile_key(tile)
@@ -671,6 +674,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         dirty = True
     return _LoadedMap(
         mission_token,
+        next(iter(mission_ids), None) if len(mission_ids) == 1 else None,
         entries,
         structure_entries,
         truncated,
@@ -728,32 +732,6 @@ def _enforce_collection_bounds(
         if entries:
             drop_layer(entries, structural=False)
     return dropped_photo, dropped_structure
-
-
-def _mission_id_from_entries(
-    entries: Mapping[str, HermesCollectionEntry],
-    structure_entries: Mapping[str, HermesCollectionEntry],
-) -> int | None:
-    """Recover a verified mission id from a validated retained-map snapshot."""
-    mission_ids: set[int] = set()
-    for structural, collection in (
-        (False, entries),
-        (True, structure_entries),
-    ):
-        for entry in collection.values():
-            try:
-                tile = (
-                    decode_slam_structure_tile(entry)
-                    if structural
-                    else decode_slam_tile(entry)
-                )
-            except DecodeError:
-                continue
-            if tile.mission_id is not None:
-                mission_ids.add(tile.mission_id)
-            if len(mission_ids) > 1:
-                return None
-    return next(iter(mission_ids), None)
 
 
 def _stored_bytes(

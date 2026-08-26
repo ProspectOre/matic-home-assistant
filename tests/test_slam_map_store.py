@@ -6,12 +6,14 @@ import asyncio
 import base64
 from collections import defaultdict
 from dataclasses import replace
+from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot import slam_map_store as slam_map_store_module
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import (
@@ -20,7 +22,6 @@ from custom_components.matic_robot.slam_map_store import (
     _bounded_count,
     _bucket,
     _decode_stored_snapshot,
-    _mission_id_from_entries,
     _stored_mission_token,
 )
 from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
@@ -105,18 +106,6 @@ async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> 
             replace(candidate_tile, mission_id=3),
             structural=False,
         )
-
-
-def test_mission_id_recovery_skips_corruption_and_conflicts() -> None:
-    corrupt = HermesCollectionEntry(b"bad", b"bad")
-    assert _mission_id_from_entries({"bad": corrupt}, {}) is None
-    assert (
-        _mission_id_from_entries(
-            {"photo": synthetic_slam_entry(mission_id=1)},
-            {"structure": synthetic_structure_entry(mission_id=2)},
-        )
-        is None
-    )
 
 
 async def test_slam_map_store_ignores_corrupt_private_cache(hass) -> None:
@@ -514,9 +503,20 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
     }
     await store._store.async_save({"tiles": [item] * 5, "structure_tiles": [item] * 5})
     original_executor = hass.async_add_executor_job
+    original_photo_decoder = slam_map_store_module.decode_slam_tile
+    original_structure_decoder = slam_map_store_module.decode_slam_structure_tile
+    event_loop_thread = get_ident()
 
     async def run_executor(target, *args):
         return await original_executor(target, *args)
+
+    def decode_photo_off_loop(item):
+        assert get_ident() != event_loop_thread
+        return original_photo_decoder(item)
+
+    def decode_structure_off_loop(item):
+        assert get_ident() != event_loop_thread
+        return original_structure_decoder(item)
 
     with (
         patch(
@@ -528,6 +528,16 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
             "async_add_executor_job",
             new=AsyncMock(side_effect=run_executor),
         ) as executor,
+        patch.object(
+            slam_map_store_module,
+            "decode_slam_tile",
+            side_effect=decode_photo_off_loop,
+        ),
+        patch.object(
+            slam_map_store_module,
+            "decode_slam_structure_tile",
+            side_effect=decode_structure_off_loop,
+        ),
     ):
         await store.async_load()
 
