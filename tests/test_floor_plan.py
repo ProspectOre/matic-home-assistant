@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.floor_plan import (
     pose_vector_paths,
     render_floor_plan,
     resolve_robot_map_position,
+    robot_location_source,
 )
 from custom_components.matic_robot.client.models import FloorPlan, RobotPose
 from tests.wire_builders import _field, _fixed32, _fixed64, _varint_field
@@ -135,7 +136,7 @@ def test_pose_vector_path_inspection_is_bounded_and_ignores_invalid_data() -> No
     assert pose_vector_paths(payload) == ()
 
 
-def test_robot_position_falls_back_to_the_current_room() -> None:
+def test_robot_position_requires_exact_coordinates_and_tracks_room_presence() -> None:
     floor_plan = decode_floor_plan(_floor_plan_payload())
 
     assert resolve_robot_map_position(floor_plan, RobotPose(2, 1, 0), "Test room") == (
@@ -143,11 +144,17 @@ def test_robot_position_falls_back_to_the_current_room() -> None:
         1,
         "exact_pose",
     )
-    fallback = resolve_robot_map_position(
-        floor_plan, RobotPose(float("nan"), 999, 0), "the  Test room"
+    invalid_pose = RobotPose(float("nan"), 999, 0)
+    assert (
+        resolve_robot_map_position(floor_plan, invalid_pose, "the  Test room") is None
     )
-    assert fallback is not None
-    assert fallback[2] == "current_area"
+    assert robot_location_source(floor_plan, invalid_pose, "the  Test room") == (
+        "current_area"
+    )
+    assert robot_location_source(floor_plan, RobotPose(2, 1, 0), None) == ("exact_pose")
+    assert robot_location_source(floor_plan, None, "Garage") == "unavailable"
+    assert robot_location_source(floor_plan, None, None) == "unavailable"
+    assert robot_location_source(None, None, "Test room") == "unavailable"
     assert resolve_robot_map_position(floor_plan, None, "Garage") is None
     assert resolve_robot_map_position(floor_plan, None, "   ") is None
     assert resolve_robot_map_position(None, None, "Test room") is None
@@ -160,7 +167,7 @@ def test_robot_position_falls_back_to_the_current_room() -> None:
     fallback_marker = render_floor_plan(
         floor_plan, None, "the Test room", width=256, height=256
     )
-    assert fallback_marker != without_marker
+    assert fallback_marker == without_marker
 
 
 def test_decode_rejects_plan_without_standard_partition() -> None:

@@ -572,6 +572,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     with patch("custom_components.matic_robot.slam_scene.monotonic", return_value=20.0):
         fallback = await MaticSlamPoseView().get(_request(fallback_hass), "entry")
     fallback_payload = json.loads(fallback.body)
+    assert fallback_payload["position"] is None
     assert fallback_payload["source"] == "current_area"
     assert fallback_payload["pose_freshness"] == "coordinator_fallback"
 

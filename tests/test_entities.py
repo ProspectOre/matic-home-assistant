@@ -1191,6 +1191,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "robot_location_source": "exact_pose",
+        "source": "local_room_map",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 
@@ -1226,11 +1227,15 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "map_complete": True,
         "map_revision": 1,
         "map_floor_coherent": True,
+        "robot_location_source": "exact_pose",
         "source": "local_robot_slam",
         "scene_url": "/api/matic_robot/slam_scene/entry",
         "pose_url": "/api/matic_robot/slam_pose/entry",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
+
+    store.floor_plan_is_current.return_value = False
+    assert entity.extra_state_attributes["robot_location_source"] == "unavailable"
 
 
 async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> None:

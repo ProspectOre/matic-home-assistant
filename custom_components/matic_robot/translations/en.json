@@ -153,6 +153,7 @@
     "map_resolution_sampled": "{rendered} of {total} pts · 1.5 cm",
     "map_room_default": "Room",
     "map_robot_position": "Robot position · {source}",
+    "map_robot_room_presence": "Robot is in the current room · exact position unavailable",
     "map_rotate_left": "Rotate left",
     "map_rotate_right": "Rotate right",
     "map_sampling_adaptive": "adaptive 1:{step} sampling",
