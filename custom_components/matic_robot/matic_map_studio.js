@@ -978,7 +978,10 @@ class MaticMapStudio extends HTMLElement {
       );
       this._requestRender();
     } catch (_error) {
-      if (this._selectedHistoryId === snapshot.id) {
+      if (
+        !controller.signal.aborted
+        && this._selectedHistoryId === snapshot.id
+      ) {
         this._setStatus(
           this._localize(
             "map_status_history_unavailable",
@@ -2235,6 +2238,14 @@ class MaticMapStudio extends HTMLElement {
     this._sceneAbortController?.abort();
     this._historySceneAbortController?.abort();
     this._poseAbortController?.abort();
+    this._scene = undefined;
+    this._sceneUrl = undefined;
+    this._sceneIdentity = undefined;
+    this._sceneRevision = undefined;
+    this._sceneEtag = undefined;
+    this._stableLiveSnapshotId = undefined;
+    this._stableLiveSourceIdentity = undefined;
+    this._stableLiveSourceUrl = undefined;
     this._robot = undefined;
     this._setPoseStatus("unavailable");
     this._cancelFallbackLoad();

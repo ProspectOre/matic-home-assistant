@@ -1724,6 +1724,7 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).toContainText(
       "map paused until localization completes",
     );
+    expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
     expect(await page.evaluate(() => ({
       floor: window.__studio._selectedFloorId,
       history: window.__studio._selectedHistoryId,
