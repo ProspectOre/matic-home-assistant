@@ -10,7 +10,11 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
-from .client.floor_plan import render_floor_plan, resolve_robot_map_position
+from .client.floor_plan import (
+    render_floor_plan,
+    resolve_robot_map_position,
+    robot_location_source,
+)
 from .client.models import HermesCollectionEntry, RobotState
 from .client.slam_map import (
     decode_slam_structure_tile,
@@ -79,16 +83,13 @@ class MaticMapCamera(MaticEntity, Camera):
 
     @property
     def extra_state_attributes(self) -> dict[str, object]:
-        """Expose whether the marker is exact or a room-level fallback."""
+        """Expose exact-position or non-positional room-presence availability."""
         data = self.coordinator.data
-        position = resolve_robot_map_position(
-            data.floor_plan, data.pose, data.operational.current_area
-        )
         return {
             "matic_entry_id": self._config_entry.entry_id,
-            "robot_location_source": position[2]
-            if position is not None
-            else "unavailable",
+            "robot_location_source": robot_location_source(
+                data.floor_plan, data.pose, data.operational.current_area
+            ),
         }
 
 

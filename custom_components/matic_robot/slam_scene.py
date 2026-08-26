@@ -30,7 +30,7 @@ from .area_binding import (
 from .area_selector import MaticAreaSelector
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
-from .client.floor_plan import resolve_robot_map_position
+from .client.floor_plan import resolve_robot_map_position, robot_location_source
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
@@ -614,10 +614,17 @@ class MaticSlamPoseView(HomeAssistantView):
             if floor_plan_coherent
             else None
         )
+        source = (
+            robot_location_source(
+                data.floor_plan, cached.pose, data.operational.current_area
+            )
+            if floor_plan_coherent
+            else "unavailable"
+        )
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
-                "source": position[2] if position is not None else "unavailable",
+                "source": source,
                 "revision": runtime.slam_map.revision,
                 "map_floor_coherent": floor_plan_coherent,
                 "pose_revision": cached.revision,

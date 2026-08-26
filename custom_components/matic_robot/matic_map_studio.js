@@ -847,6 +847,7 @@ class MaticMapStudio extends HTMLElement {
     }
     const snapshot = this._history.at(-1);
     this._selectedHistoryId = snapshot?.id;
+    this._setPoseStatus("unavailable");
     this._syncTimeline();
     if (snapshot) this._loadHistoricalScene(snapshot);
   }
@@ -1069,6 +1070,7 @@ class MaticMapStudio extends HTMLElement {
     this._stableLiveSourceIdentity = undefined;
     this._stableLiveSourceUrl = undefined;
     this._robot = undefined;
+    this._setPoseStatus("unavailable");
     this._renderFloorCount = undefined;
     this._renderSurfaceCount = undefined;
     this._renderPointCount = undefined;
@@ -1850,7 +1852,10 @@ class MaticMapStudio extends HTMLElement {
   }
 
   async _fetchPose(state) {
-    if (this._selectedHistoryId) return;
+    if (this._selectedHistoryId) {
+      this._setPoseStatus("unavailable");
+      return;
+    }
     const url = state?.attributes?.pose_url;
     const sceneUrl = state?.attributes?.scene_url;
     if (!url) return;
@@ -1890,8 +1895,11 @@ class MaticMapStudio extends HTMLElement {
         )
       ) return;
       const position = payload?.position;
+      const source = String(payload?.source || "unavailable");
+      this._setPoseStatus(source);
       if (
-        Array.isArray(position)
+        source === "exact_pose"
+        && Array.isArray(position)
         && position.length === 2
         && position.every(Number.isFinite)
       ) {
@@ -1899,7 +1907,7 @@ class MaticMapStudio extends HTMLElement {
         this._robot = {
           x: position[0] / metadata.metersPerCell - metadata.origin[0],
           y: position[1] / metadata.metersPerCell - metadata.origin[1],
-          source: String(payload.source || "unavailable"),
+          source,
         };
       } else {
         this._robot = undefined;
@@ -1919,6 +1927,19 @@ class MaticMapStudio extends HTMLElement {
         this._fetchPose(this._latestPoseState || state);
       }
     }
+  }
+
+  _setPoseStatus(source) {
+    const status = this.shadowRoot.querySelector(".pose-status");
+    if (!status) return;
+    const roomOnly = source === "current_area" && !this._selectedHistoryId;
+    status.hidden = !roomOnly;
+    status.textContent = roomOnly
+      ? this._localize(
+        "map_robot_room_presence",
+        "Robot is in the current room · exact position unavailable",
+      )
+      : "";
   }
 
   _updateSceneStatus(state) {
@@ -2072,6 +2093,7 @@ class MaticMapStudio extends HTMLElement {
     canvas.hidden = true;
     overlays.hidden = true;
     if (!selected) {
+      this._setPoseStatus("unavailable");
       this._cancelFallbackLoad();
       this._setLoading(false);
       image.hidden = true;
@@ -2084,6 +2106,7 @@ class MaticMapStudio extends HTMLElement {
       return;
     }
     const [entityId, state] = selected;
+    this._setPoseStatus(state.attributes?.robot_location_source);
     const version = `${entityId}:${state.last_updated}:${state.attributes?.map_revision || "rooms"}`;
     const viewport = this.shadowRoot.querySelector(".viewport");
     const pixelRatio = maticClamp(window.devicePixelRatio || 1, 1, 2);
@@ -4126,6 +4149,7 @@ class MaticMapStudio extends HTMLElement {
         .top-down .room-label { color: var(--primary-text-color); border-color: color-mix(in srgb, var(--primary-text-color) 18%, transparent); background: color-mix(in srgb, var(--card-background-color) 84%, transparent); }
         .robot-marker { position: absolute; top: 0; left: 0; width: 14px; height: 14px; border: 2px solid #fff; border-radius: 50%; background: #101923; box-shadow: 0 0 0 5px rgba(255,255,255,.16), 0 4px 14px rgba(0,0,0,.3); will-change: transform; }
         .top-down .robot-marker { border-color: #fff; background: #1438d0; box-shadow: 0 0 0 7px rgba(20,56,208,.16), 0 5px 18px rgba(0,0,0,.25); }
+        .pose-status { position: absolute; z-index: 4; top: 68px; left: 16px; max-width: min(360px, calc(100% - 32px)); padding: 7px 11px; border: 1px solid color-mix(in srgb, var(--primary-text-color) 16%, transparent); border-radius: 999px; color: var(--primary-text-color); background: color-mix(in srgb, var(--card-background-color) 88%, transparent); box-shadow: 0 6px 20px rgba(0,0,0,.18); backdrop-filter: blur(18px) saturate(1.15); font-size: 12px; line-height: 1.35; pointer-events: none; }
         .viewport.loading::after { content: ""; position: absolute; top: 16px; right: 16px; width: 24px; height: 24px; border: 3px solid rgba(255,255,255,.25); border-top-color: var(--primary-color); border-radius: 50%; animation: spin .8s linear infinite; z-index: 3; }
         @keyframes spin { to { transform: rotate(360deg); } }
         .empty { position: absolute; inset: 0; display: grid; place-items: center; color: var(--secondary-text-color); font-size: 17px; text-align: center; padding: 40px; z-index: 2; }
@@ -4309,6 +4333,7 @@ class MaticMapStudio extends HTMLElement {
             <div class="room-labels"></div>
             <span class="robot-marker" role="img" hidden></span>
           </div>
+          <span class="pose-status" role="status" aria-live="polite" hidden></span>
           <div class="empty">${text("map_empty_loading", "Loading the private local map…")}</div>
           <div class="spatial-controls floating-controls" role="toolbar" aria-label="${text("map_camera_controls", "Map camera controls")}">
             <button class="home-view" aria-label="${text("map_home_view", "Fit map")}" title="${text("map_home_view", "Fit map")}"><ha-icon icon="mdi:fit-to-screen-outline" aria-hidden="true"></ha-icon><span class="control-label visually-hidden">${text("map_home_view", "Fit map")}</span></button>

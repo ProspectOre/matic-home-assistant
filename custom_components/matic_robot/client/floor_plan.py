@@ -305,7 +305,7 @@ def render_floor_plan(
                 robot_x + radius,
                 robot_y + radius,
             ),
-            fill="#FFFFFF" if robot_position[2] == "exact_pose" else "#F6C85F",
+            fill="#FFFFFF",
             outline="#10151D",
             width=3,
         )
@@ -328,7 +328,15 @@ def resolve_robot_map_position(
     pose: RobotPose | None,
     current_area: str | None,
 ) -> tuple[float, float, str] | None:
-    """Return an exact pose or a truthful room-level fallback for the map."""
+    """Return only a verified exact pose for a positional map marker.
+
+    The robot's current-area label proves room presence, not a point inside the
+    room. Rendering that label at the polygon center creates a stationary dot
+    that looks exact while the robot moves, especially after a floor change.
+    Keep ``current_area`` in the signature for callers that also use
+    :func:`robot_location_source`, but never turn it into coordinates here.
+    """
+    del current_area
     if floor_plan is None or not floor_plan.rooms:
         return None
     all_points = [point for room in floor_plan.rooms for point in room.boundary]
@@ -343,17 +351,27 @@ def resolve_robot_map_position(
         and min_y <= pose.y <= max_y
     ):
         return pose.x, pose.y, "exact_pose"
+    return None
+
+
+def robot_location_source(
+    floor_plan: FloorPlan | None,
+    pose: RobotPose | None,
+    current_area: str | None,
+) -> str:
+    """Classify exact position, room-only presence, or unavailable location."""
+    if resolve_robot_map_position(floor_plan, pose, current_area) is not None:
+        return "exact_pose"
+    if floor_plan is None or not floor_plan.rooms:
+        return "unavailable"
     area_key = _room_name_key(current_area)
     if area_key is None:
-        return None
+        return "unavailable"
     room = next(
         (item for item in floor_plan.rooms if _room_name_key(item.name) == area_key),
         None,
     )
-    if room is None:
-        return None
-    x, y = _polygon_center(room.boundary)
-    return x, y, "current_area"
+    return "current_area" if room is not None else "unavailable"
 
 
 def _room_name_key(value: str | None) -> str | None:

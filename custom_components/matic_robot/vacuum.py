@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from hashlib import sha256
 from typing import Any
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
@@ -45,6 +46,12 @@ ACTIVITY_MAP = {
 }
 
 SegmentSignature = tuple[tuple[str, str, str | None], ...]
+
+_FLOOR_SCOPE_OPTION = "matic_floor_scope"
+_FLOOR_CATALOGS_OPTION = "matic_floor_catalogs"
+_UNSCOPED_CATALOG_OPTION = "matic_unscoped_catalog"
+_FLOOR_SCOPE_DOMAIN = b"matic-vacuum-floor-segments-v1\0"
+_MAX_FLOOR_CATALOGS = 12
 
 
 async def async_setup_entry(
@@ -266,6 +273,10 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if (entity_entry := entity_registry.async_get(self.entity_id)) is None:
             return
         options = dict(entity_entry.options.get("vacuum", {}))
+        scope = _floor_scope(self.coordinator.data.floor_plan)
+        stored_scope = options.get(_FLOOR_SCOPE_OPTION)
+        if isinstance(stored_scope, str) and stored_scope != scope:
+            return
         if "area_mapping" in options:
             return
         segments = self._current_segments()
@@ -281,17 +292,96 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "last_seen_segments": [asdict(segment) for segment in segments],
             }
         )
+        options[_FLOOR_SCOPE_OPTION] = scope
+        catalogs = _floor_catalogs(options)
+        catalogs[scope] = _catalog_from_options(options)
+        options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(catalogs, scope)
         entity_registry.async_update_entity_options(self.entity_id, "vacuum", options)
 
     @callback
     def _async_check_segment_changes(self) -> None:
-        """Raise Home Assistant's native repair when configured rooms change."""
-        if self.coordinator.data.floor_plan is None:
+        """Separate expected floor swaps from real same-floor room changes."""
+        floor_plan = self.coordinator.data.floor_plan
+        if self.entity_id is None or floor_plan is None:
             return
+        entity_registry = er.async_get(self.hass)
+        if (entity_entry := entity_registry.async_get(self.entity_id)) is None:
+            return
+        options = dict(entity_entry.options.get("vacuum", {}))
         current = self._current_segments()
         signature = _segment_signature(current)
-        configured = self.last_seen_segments
-        if configured is None or _segment_signature(configured) == signature:
+        current_payload = [asdict(segment) for segment in current]
+        current_scope = _floor_scope(floor_plan)
+        stored_scope = options.get(_FLOOR_SCOPE_OPTION)
+        configured = _segments_from_payload(options.get("last_seen_segments"))
+        catalogs = _floor_catalogs(options)
+
+        if not isinstance(stored_scope, str):
+            if configured is not None and _segment_signature(configured) != signature:
+                options[_UNSCOPED_CATALOG_OPTION] = _catalog_from_options(options)
+                options.pop("area_mapping", None)
+            options["last_seen_segments"] = current_payload
+            options[_FLOOR_SCOPE_OPTION] = current_scope
+            catalogs[current_scope] = _catalog_from_options(options)
+            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
+                catalogs, current_scope
+            )
+            entity_registry.async_update_entity_options(
+                self.entity_id, "vacuum", options
+            )
+            self._reported_segment_change = None
+            return
+
+        if stored_scope != current_scope:
+            if configured is not None:
+                catalogs[stored_scope] = _catalog_from_options(options)
+            target = catalogs.get(current_scope)
+            unscoped = options.get(_UNSCOPED_CATALOG_OPTION)
+            if target is None and isinstance(unscoped, dict):
+                legacy_segments = _segments_from_payload(
+                    unscoped.get("last_seen_segments")
+                )
+                if (
+                    legacy_segments is not None
+                    and _segment_signature(legacy_segments) == signature
+                ):
+                    target = dict(unscoped)
+                    options.pop(_UNSCOPED_CATALOG_OPTION, None)
+            if target is None:
+                target = {"last_seen_segments": current_payload}
+            catalogs[current_scope] = target
+            _activate_floor_catalog(options, current_scope, target)
+            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
+                catalogs, current_scope
+            )
+            entity_registry.async_update_entity_options(
+                self.entity_id, "vacuum", options
+            )
+            self._reported_segment_change = None
+            return
+
+        if configured is None:
+            options["last_seen_segments"] = current_payload
+            catalogs[current_scope] = _catalog_from_options(options)
+            options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
+                catalogs, current_scope
+            )
+            entity_registry.async_update_entity_options(
+                self.entity_id, "vacuum", options
+            )
+            self._reported_segment_change = None
+            return
+
+        if _segment_signature(configured) == signature:
+            current_catalog = _catalog_from_options(options)
+            if catalogs.get(current_scope) != current_catalog:
+                catalogs[current_scope] = current_catalog
+                options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
+                    catalogs, current_scope
+                )
+                entity_registry.async_update_entity_options(
+                    self.entity_id, "vacuum", options
+                )
             self._reported_segment_change = None
             return
         if self._reported_segment_change != signature:
@@ -452,6 +542,82 @@ def _validation_error(
         translation_key=translation_key,
         translation_placeholders=placeholders,
     )
+
+
+def _floor_scope(floor_plan: FloorPlan) -> str:
+    """Return a private stable token for one robot partition."""
+    identity = floor_plan.partition_id_wire or floor_plan.partition_protocol_id.encode()
+    return sha256(_FLOOR_SCOPE_DOMAIN + identity).hexdigest()[:24]
+
+
+def _segments_from_payload(value: object) -> list[Segment] | None:
+    """Decode Home Assistant's stored segment payload defensively."""
+    if not isinstance(value, list):
+        return None
+    segments: list[Segment] = []
+    for item in value:
+        if not isinstance(item, dict):
+            return None
+        segment_id = item.get("id")
+        name = item.get("name")
+        group = item.get("group")
+        if (
+            not isinstance(segment_id, str)
+            or not isinstance(name, str)
+            or (group is not None and not isinstance(group, str))
+        ):
+            return None
+        segments.append(Segment(segment_id, name, group))
+    return segments
+
+
+def _catalog_from_options(options: dict[str, Any]) -> dict[str, Any]:
+    """Copy the active floor's HA-native mapping fields into its catalog."""
+    catalog: dict[str, Any] = {
+        "last_seen_segments": list(options.get("last_seen_segments", []))
+    }
+    if isinstance(options.get("area_mapping"), dict):
+        catalog["area_mapping"] = dict(options["area_mapping"])
+    return catalog
+
+
+def _floor_catalogs(options: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    """Return only structurally valid private floor catalogs."""
+    raw = options.get(_FLOOR_CATALOGS_OPTION)
+    if not isinstance(raw, dict):
+        return {}
+    return {
+        scope: dict(catalog)
+        for scope, catalog in raw.items()
+        if isinstance(scope, str) and isinstance(catalog, dict)
+    }
+
+
+def _bounded_floor_catalogs(
+    catalogs: dict[str, dict[str, Any]], current_scope: str
+) -> dict[str, dict[str, Any]]:
+    """Keep a bounded catalog while always retaining the active floor."""
+    ordered = {
+        scope: catalog for scope, catalog in catalogs.items() if scope != current_scope
+    }
+    ordered[current_scope] = catalogs[current_scope]
+    while len(ordered) > _MAX_FLOOR_CATALOGS:
+        ordered.pop(next(iter(ordered)))
+    return ordered
+
+
+def _activate_floor_catalog(
+    options: dict[str, Any], scope: str, catalog: dict[str, Any]
+) -> None:
+    """Swap HA's single active mapping view to one known floor catalog."""
+    segments = _segments_from_payload(catalog.get("last_seen_segments"))
+    options["last_seen_segments"] = [asdict(segment) for segment in (segments or [])]
+    mapping = catalog.get("area_mapping")
+    if isinstance(mapping, dict):
+        options["area_mapping"] = dict(mapping)
+    else:
+        options.pop("area_mapping", None)
+    options[_FLOOR_SCOPE_OPTION] = scope
 
 
 def _matching_area_mapping(

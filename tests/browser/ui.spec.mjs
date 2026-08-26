@@ -1370,7 +1370,7 @@ test.describe("map studio", () => {
     await page.route("**/live-pose", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ position: [0.3, 0.3], source: "live_pose" }),
+      body: JSON.stringify({ position: [0.3, 0.3], source: "exact_pose" }),
     }));
     await page.route("**/rebuilding-delta?since=*", (route) => {
       deltaRequests += 1;
@@ -1391,7 +1391,7 @@ test.describe("map studio", () => {
     )).toBe("Complete retained room");
     await expect(studio.locator(".status")).toContainText("last complete map");
     await expect(studio.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
-    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("live_pose");
+    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("exact_pose");
     expect(await page.evaluate(() => ({
       sceneUrl: window.__studio._sceneUrl,
       stableId: window.__studio._stableLiveSnapshotId,
@@ -2028,6 +2028,46 @@ test.describe("map studio", () => {
     expect(zoomRange.label).toBe(`${zoomRange.maximum}%`);
   });
 
+  test("shows room presence without inventing a precise robot marker", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let pose = { position: [0.15, 0.15], source: "current_area" };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/room-presence-scene",
+        pose_url: "/room-presence-pose",
+        map_revision: 1,
+        map_complete: true,
+      }] }),
+    }));
+    await page.route("**/room-presence-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene(),
+      headers: { "Content-Type": "application/octet-stream", ETag: '"room-presence"' },
+    }));
+    await page.route("**/room-presence-pose", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify(pose),
+    }));
+
+    const studio = await loadStudio(page);
+    await expect(studio.locator(".pose-status")).toBeVisible();
+    await expect(studio.locator(".pose-status")).toHaveText(
+      "Robot is in the current room · exact position unavailable",
+    );
+    await expect(studio.locator(".robot-marker")).toBeHidden();
+    expect(await page.evaluate(() => window.__studio._robot)).toBeUndefined();
+
+    pose = { position: [0.15, 0.15], source: "exact_pose" };
+    await page.evaluate(() => window.__studio._update(true));
+    await expect(studio.locator(".pose-status")).toBeHidden();
+    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source))
+      .toBe("exact_pose");
+  });
+
   test("abandons a stalled catalog and continues from camera state", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     await page.addInitScript(() => {
@@ -2149,7 +2189,7 @@ test.describe("map studio", () => {
         await route.fulfill({
           status: 200,
           contentType: "application/json",
-          body: JSON.stringify({ position: [0.15, 0.15], source: "alpha_pose" }),
+          body: JSON.stringify({ position: [0.15, 0.15], source: "exact_pose" }),
         });
       } catch (_error) {
         // The entry switch intentionally aborts the superseded request.
@@ -2158,7 +2198,7 @@ test.describe("map studio", () => {
     await page.route("**/pose-beta", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
-      body: JSON.stringify({ position: [0.3, 0.3], source: "beta_pose" }),
+      body: JSON.stringify({ position: [0.3, 0.3], source: "exact_pose" }),
     }));
     const studio = await loadStudio(page, {
       "camera.alpha_rooms": {
@@ -2193,7 +2233,10 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene.metadata.rooms[0].name,
     )).toBe("Beta room");
-    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("beta_pose");
+    await expect.poll(() => page.evaluate(() => ({
+      source: window.__studio._robot?.source,
+      x: window.__studio._robot?.x,
+    }))).toEqual({ source: "exact_pose", x: 10 });
     expect(betaIfNoneMatch).toBeUndefined();
     expect(await page.evaluate(() =>
       window.__studio._entities("beta").rooms[0],
