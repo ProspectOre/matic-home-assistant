@@ -56,6 +56,11 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
                 self._serial_number, self._async_plans_updated
             )
         )
+        self.async_on_remove(
+            self._config_entry.runtime_data.slam_map.async_add_listener(
+                self._async_plans_updated
+            )
+        )
 
     @callback
     def _async_plans_updated(self) -> None:
@@ -70,7 +75,13 @@ class MaticPlanButton(MaticEntity, ButtonEntity):
             return self._plans.snapshot(self._serial_number)["active_plan"] is not None
 
         floor_plan = self.coordinator.data.floor_plan
-        if floor_plan is None or not floor_plan.rooms:
+        if (
+            floor_plan is None
+            or not floor_plan.rooms
+            or not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
+                floor_plan
+            )
+        ):
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
@@ -122,6 +133,11 @@ class MaticAreaButton(MaticEntity, ButtonEntity):
                 self._serial_number, self._async_areas_updated
             )
         )
+        self.async_on_remove(
+            self._config_entry.runtime_data.slam_map.async_add_listener(
+                self._async_areas_updated
+            )
+        )
 
     @callback
     def _async_areas_updated(self) -> None:
@@ -130,7 +146,14 @@ class MaticAreaButton(MaticEntity, ButtonEntity):
     @property
     def available(self) -> bool:
         """Expose the action only while a current custom area can be resolved."""
-        if not super().available or self.coordinator.data.floor_plan is None:
+        floor_plan = self.coordinator.data.floor_plan
+        if (
+            not super().available
+            or floor_plan is None
+            or not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
+                floor_plan
+            )
+        ):
             return False
         try:
             self._areas.area(self._serial_number)

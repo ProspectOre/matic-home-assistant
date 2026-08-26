@@ -337,7 +337,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_clean_area(call: ServiceCall) -> None:
         """Clean one private saved area without putting coordinates in the call."""
-        entity_id, entry, serial_number, _room_map = _saved_plan_context(hass, call)
+        entity_id, entry, serial_number, _room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         await _ensure_stop_settled(hass, manager, serial_number, entity_id)
         try:
             area = manager.area(serial_number, call.data["area"])
@@ -394,7 +396,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_run_saved_plan(call: ServiceCall, *, intelligent: bool) -> None:
         """Resolve and run every room in a saved plan."""
-        entity_id, entry, serial_number, room_map = _saved_plan_context(hass, call)
+        entity_id, entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         try:
             plan, rooms = manager.rooms_for_plan(
                 serial_number, room_map, call.data.get("plan")
@@ -502,7 +506,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_preview_plan(call: ServiceCall) -> dict[str, Any]:
         """Validate and return the exact next saved-plan execution."""
-        entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        entity_id, _entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         try:
             preview = manager.preview(
                 serial_number,
@@ -601,7 +607,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_save_plan(call: ServiceCall) -> dict[str, Any]:
         """Create or atomically replace a complete saved plan."""
-        _entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        _entity_id, _entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         plan_id = call.data.get("plan_id") or slugify(call.data["name"])
         if not plan_id or plan_id == "unknown":
             raise _validation_error(
@@ -672,7 +680,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_save_plan_room(call: ServiceCall) -> dict[str, Any]:
         """Append or replace one mapped room and its settings."""
-        _entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        _entity_id, _entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room = _normalize_saved_room(call.data["room"], room_map)
         position = next(
@@ -702,7 +712,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_delete_plan_room(call: ServiceCall) -> dict[str, Any]:
         """Delete one mapped room from a plan."""
-        _entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        _entity_id, _entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room_id = _resolve_room_id(call.data["room"], room_map)
         deleted = next(
@@ -731,7 +743,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_move_plan_room(call: ServiceCall) -> dict[str, Any]:
         """Move one mapped room to an exact one-based position."""
-        _entity_id, _entry, serial_number, room_map = _saved_plan_context(hass, call)
+        _entity_id, _entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
         plan = _resolve_saved_plan(manager, serial_number, call.data["plan"])
         room_id = _resolve_room_id(call.data["room"], room_map)
         room_count = len(plan["rooms"])
@@ -2703,6 +2717,7 @@ def _saved_plan_context(
     call: ServiceCall,
     *,
     require_rooms: bool = True,
+    require_current_floor: bool = False,
 ) -> tuple[str, ConfigEntry[Any], str, dict[str, str]]:
     """Resolve one loaded robot and its current stable room inventory."""
     entity_ids = _resolve_loaded_matic_vacuums(hass, call)
@@ -2714,6 +2729,13 @@ def _saved_plan_context(
     entity_id = entity_ids[0]
     entry = _entry_for_entity(hass, entity_id)
     data = entry.runtime_data.coordinator.data
+    if require_current_floor and (
+        data.floor_plan is None
+        or not entry.runtime_data.slam_map.floor_plan_is_current(data.floor_plan)
+    ):
+        raise _validation_error(
+            "The robot's room map is unavailable", "room_plan_unavailable"
+        )
     serial_number = data.info.serial_number
     room_map = (
         {room.id: room.name for room in data.floor_plan.rooms}

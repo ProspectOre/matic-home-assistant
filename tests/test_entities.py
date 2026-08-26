@@ -1069,6 +1069,9 @@ async def test_custom_area_select_and_native_button() -> None:
     assert button.MaticAreaButton(_entry(with_floor_plan=False)).available is False
 
     history.area.side_effect = None
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    assert area_button.available is False
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     area_button.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await area_button.async_added_to_hass()
@@ -1117,6 +1120,9 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     history.preview.side_effect = KeyError("missing")
     assert start_button.available is False
     history.preview.side_effect = None
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    assert start_button.available is False
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     assert (
         button.MaticPlanButton(
             _entry(with_floor_plan=False), "run_selected_plan"

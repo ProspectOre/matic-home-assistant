@@ -1113,7 +1113,12 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
         floor_plan=floor_plan,
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(coordinator=SimpleNamespace(data=data))
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=data),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     with (
         patch(
@@ -1129,6 +1134,14 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
             "synthetic-serial",
             {"one": "Kitchen", "two": "Study"},
         )
+        assert _saved_plan_context(hass, call, require_current_floor=True)[3] == {
+            "one": "Kitchen",
+            "two": "Study",
+        }
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        with pytest.raises(ServiceValidationError, match="room map"):
+            _saved_plan_context(hass, call, require_current_floor=True)
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
         data.floor_plan = None
         with pytest.raises(ServiceValidationError, match="room map"):
             _saved_plan_context(hass, call)

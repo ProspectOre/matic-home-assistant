@@ -920,6 +920,12 @@ async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
     assert (
         await view.get(_request(_hass(_entry(runtime))), "entry")
     ).status == HTTPStatus.CONFLICT
+    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.slam_map.floor_plan_is_current.side_effect = None
+    runtime.slam_map.floor_plan_is_current.return_value = False
+    assert (
+        await view.get(_request(_hass(_entry(runtime))), "entry")
+    ).status == HTTPStatus.CONFLICT
 
 
 async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> None:

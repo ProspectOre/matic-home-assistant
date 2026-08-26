@@ -886,7 +886,11 @@ class MaticPlansView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
-        if floor_plan is None or not floor_plan.rooms:
+        if (
+            floor_plan is None
+            or not floor_plan.rooms
+            or not runtime.slam_map.floor_plan_is_current(floor_plan)
+        ):
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )

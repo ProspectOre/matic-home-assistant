@@ -871,7 +871,7 @@ class MaticMapStudio extends HTMLElement {
     const timeline = this.shadowRoot.querySelector(".timeline");
     if (!timeline) return;
     const floor = this._selectedFloor();
-    const hasLive = floor?.active !== false && floor?.liveAvailable !== false;
+    const hasLive = floor?.active === true && floor.liveAvailable !== false;
     const hasHistory = this._history.length > 0;
     timeline.hidden = this._view === "rooms";
     this._syncFloorSelector();
@@ -911,7 +911,7 @@ class MaticMapStudio extends HTMLElement {
 
   _selectTimelinePosition(position) {
     const selectedFloor = this._selectedFloor();
-    const hasLive = selectedFloor?.active !== false
+    const hasLive = selectedFloor?.active === true
       && selectedFloor?.liveAvailable !== false;
     const maximum = hasLive
       ? this._history.length
@@ -2045,13 +2045,36 @@ class MaticMapStudio extends HTMLElement {
     const initialEntities = this._entities(configuredEntryId);
     const initialLiveMap = initialEntities.rooms?.[1]
       || initialEntities.photo?.[1];
+    const initialFloorIncoherent =
+      initialLiveMap?.attributes?.map_floor_coherent === false;
     if (
       (this._view === "rooms" || !this._selectedHistoryId)
-      && initialLiveMap?.attributes?.map_floor_coherent === false
+      && initialFloorIncoherent
     ) {
       this._showFloorTransition(initialLiveMap);
     }
     await this._fetchCatalog();
+    const catalogState = this._catalogState();
+    const entryId = catalogState?.attributes?.entry_id
+      || this._panel?.config?.entry_id;
+    const entities = this._entities(entryId);
+    const liveEntityState = entities.rooms?.[1] || entities.photo?.[1];
+    const photoState = catalogState || entities.photo?.[1];
+    const entityFloorIncoherent = initialFloorIncoherent
+      || liveEntityState?.attributes?.map_floor_coherent === false;
+    const catalogFloorIncoherent =
+      photoState?.attributes?.map_floor_coherent === false;
+    const liveSelection = this._view === "rooms" || !this._selectedHistoryId;
+    if (
+      liveSelection
+      && entityFloorIncoherent
+      && !catalogFloorIncoherent
+    ) {
+      this._showFloorTransition(
+        liveEntityState || initialLiveMap || photoState,
+      );
+      return;
+    }
     if (this._catalogReady && this._catalogEntries.length === 0) {
       this._clearPrivateMap();
       this._showFallback(undefined);
@@ -2063,17 +2086,30 @@ class MaticMapStudio extends HTMLElement {
       );
       return;
     }
-    const catalogState = this._catalogState();
-    const entryId = catalogState?.attributes?.entry_id
-      || this._panel?.config?.entry_id;
-    const entities = this._entities(entryId);
-    const photoState = catalogState || entities.photo?.[1];
+    if (!entityFloorIncoherent && !catalogFloorIncoherent) {
+      let currentFloor = this._floors.find((floor) => floor.active);
+      if (!currentFloor) {
+        currentFloor = {
+          id: "current",
+          active: true,
+          readOnly: false,
+          liveAvailable: true,
+          snapshots: [],
+        };
+        this._floors = [currentFloor, ...this._floors];
+      } else {
+        currentFloor.liveAvailable = true;
+      }
+      this._syncTimeline();
+    }
     if (photoState) await this._fetchHistory(photoState, force);
     if (
-      (this._view === "rooms" || !this._selectedHistoryId)
-      && photoState?.attributes?.map_floor_coherent === false
+      liveSelection
+      && (entityFloorIncoherent || catalogFloorIncoherent)
     ) {
-      this._showFloorTransition(photoState);
+      this._showFloorTransition(
+        liveEntityState || initialLiveMap || photoState,
+      );
     } else if (this._view === "rooms") {
       this._showFallback(entities.rooms || entities.photo, force);
     } else if (this._selectedHistoryId && this._scene) {
@@ -2248,6 +2284,13 @@ class MaticMapStudio extends HTMLElement {
     this._stableLiveSourceUrl = undefined;
     this._robot = undefined;
     this._setPoseStatus("unavailable");
+    const currentFloor = this._floors.find((floor) => floor.active);
+    if (currentFloor) currentFloor.liveAvailable = false;
+    if (!this._selectedHistoryId) {
+      this._selectedFloorId = currentFloor?.id || "current";
+      this._history = currentFloor?.snapshots || [];
+    }
+    this._syncTimeline();
     this._cancelFallbackLoad();
     this._setLoading(false);
     const canvas = this.shadowRoot.querySelector(".scene-canvas");

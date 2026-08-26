@@ -1576,6 +1576,8 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).toContainText(
       "map paused until localization completes",
     );
+    await expect(studio.locator(".cleaning-plans")).toBeDisabled();
+    await expect(studio.locator(".cleaning-areas")).toBeDisabled();
     expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
   });
 
@@ -1732,6 +1734,72 @@ test.describe("map studio", () => {
 
     await page.evaluate(() => window.__releaseSlowCatalog());
     await expect(studio.locator(".map-image")).toBeHidden();
+  });
+
+  test("keeps entity floor mismatch authoritative over an already-loading stale catalog", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let sceneRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/stale-catalog-scene",
+        history_url: "/stale-catalog-history",
+        map_revision: 1,
+        map_complete: true,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/stale-catalog-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ live_available: true, snapshots: [] }),
+    }));
+    await page.route("**/stale-catalog-scene", (route) => {
+      sceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Previous floor room", 16),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
+
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Previous floor room");
+    expect(sceneRequests).toBe(1);
+
+    await page.evaluate(async () => {
+      const map = window.__studio;
+      map._hass.states["camera.synthetic_rooms"].attributes.map_floor_coherent = false;
+      map._catalogLoading = true;
+      await map._update();
+    });
+
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText(
+      "map paused until localization completes",
+    );
+    await expect(studio.locator(".floor-select").locator("option").first()).toHaveText(
+      "Current floor · map settling",
+    );
+    await expect(studio.locator(".cleaning-plans")).toBeDisabled();
+    await expect(studio.locator(".cleaning-areas")).toBeDisabled();
+    expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
+    expect(sceneRequests).toBe(1);
   });
 
   test("isolates timeline requests when switching robots", async ({ page }) => {
