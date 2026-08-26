@@ -247,6 +247,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         map_complete=False,
         revision=0,
         floor_plan_is_current=MagicMock(return_value=True),
+        async_add_listener=MagicMock(return_value=MagicMock()),
     )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
@@ -1195,6 +1196,26 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
         "source": "local_room_map",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
+
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store = entity._store
+        store.async_add_listener.assert_called_once_with(
+            entity._async_handle_store_update
+        )
+        store.floor_plan_is_current.return_value = False
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+        store.floor_plan_is_current.return_value = True
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 2
+
+    store.floor_plan_is_current.return_value = False
+    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
+        entity._handle_coordinator_update()
+    assert entity._published_floor_coherent is False
+    update_state.assert_called_once_with()
 
     entry = _entry()
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
