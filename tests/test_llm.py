@@ -186,9 +186,41 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
 
     event_callback(
         Event(
+            "matic_robot_firmware_analyzed",
+            {
+                "firmware_version": "172.13",
+                "protocol_version": "3",
+                "compatibility_status": "compatible",
+                "analysis_version": 2,
+                "wire_shape_count": 7,
+                "availability_changed_endpoints": 1,
+                "content_changed_endpoints": 2,
+                "new_wire_shape_count": 3,
+                "structural_endpoints": ["synthetic endpoint"],
+                "wire_shape_changed_endpoints": ["synthetic endpoint"],
+                "new_wire_shapes": {"synthetic endpoint": ["opaque shape"]},
+                "opaque_secret": "must not be retained",
+            },
+            time_fired_timestamp=2,
+        )
+    )
+    analysis_event = api.recent_events[-1]
+    assert analysis_event["data"] == {
+        "firmware_version": "172.13",
+        "protocol_version": "3",
+        "compatibility_status": "compatible",
+        "analysis_version": 2,
+        "wire_shape_count": 7,
+        "availability_changed_endpoints": 1,
+        "content_changed_endpoints": 2,
+        "new_wire_shape_count": 3,
+    }
+
+    event_callback(
+        Event(
             "matic_robot_cues",
             {"event_type": "intent_classified", "intent": "clean_all"},
-            time_fired_timestamp=2,
+            time_fired_timestamp=3,
         )
     )
     cues_event = api.recent_events[-1]
@@ -209,7 +241,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
                 "completed_rooms": ["Private room"],
                 "room_durations": {"Private room": 540},
             },
-            time_fired_timestamp=3,
+            time_fired_timestamp=4,
         )
     )
     cleaning_event = api.recent_events[-1]
