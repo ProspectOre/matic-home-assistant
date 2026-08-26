@@ -637,6 +637,7 @@ class MaticMapStudio extends HTMLElement {
       state?.attributes?.history_count ?? "",
       state?.attributes?.history_floor_count ?? "",
       state?.attributes?.map_revision ?? "",
+      state?.attributes?.map_floor_coherent ?? "",
     ].join(":");
     if (!url) return;
     if (entryId !== this._historyEntryId) {
@@ -2037,6 +2038,16 @@ class MaticMapStudio extends HTMLElement {
 
   async _update(force = false) {
     if (!this.shadowRoot.hasChildNodes()) return;
+    const configuredEntryId = this._panel?.config?.entry_id;
+    const initialEntities = this._entities(configuredEntryId);
+    const initialLiveMap = initialEntities.rooms?.[1]
+      || initialEntities.photo?.[1];
+    if (
+      (this._view === "rooms" || !this._selectedHistoryId)
+      && initialLiveMap?.attributes?.map_floor_coherent === false
+    ) {
+      this._showFloorTransition(initialLiveMap);
+    }
     await this._fetchCatalog();
     if (this._catalogReady && this._catalogEntries.length === 0) {
       this._clearPrivateMap();
@@ -2056,7 +2067,7 @@ class MaticMapStudio extends HTMLElement {
     const photoState = catalogState || entities.photo?.[1];
     if (photoState) await this._fetchHistory(photoState, force);
     if (
-      !this._selectedHistoryId
+      (this._view === "rooms" || !this._selectedHistoryId)
       && photoState?.attributes?.map_floor_coherent === false
     ) {
       this._showFloorTransition(photoState);
@@ -2140,7 +2151,7 @@ class MaticMapStudio extends HTMLElement {
     this._setPoseStatus(
       coherent ? state.attributes?.robot_location_source : "unavailable",
     );
-    if (!coherent && !this._selectedHistoryId) {
+    if (!coherent) {
       return this._showFloorTransition(state);
     }
     const version = `${entityId}:${state.last_updated}:${state.attributes?.map_revision || "rooms"}`;
@@ -2216,8 +2227,13 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _showFloorTransition(state) {
+    this._latestSceneKey = undefined;
+    this._latestSceneState = undefined;
+    this._pendingSceneRefresh = false;
+    this._pendingSceneForce = false;
     this._stopDeltaStream();
     this._sceneAbortController?.abort();
+    this._historySceneAbortController?.abort();
     this._poseAbortController?.abort();
     this._robot = undefined;
     this._setPoseStatus("unavailable");
@@ -2596,6 +2612,12 @@ class MaticMapStudio extends HTMLElement {
     }
     this._view = view;
     if (["top", "rooms"].includes(view)) this._planView = view;
+    if (view === "rooms" && this._selectedHistoryId) {
+      this._historySceneAbortController?.abort();
+      this._selectedFloorId = "current";
+      this._selectedHistoryId = undefined;
+      this._history = this._selectedFloor()?.snapshots || [];
+    }
     for (const button of this.shadowRoot.querySelectorAll("[data-view]")) {
       const selected = button.dataset.view === view
         || (button.dataset.view === "top" && view === "rooms");

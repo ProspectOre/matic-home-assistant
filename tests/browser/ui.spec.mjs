@@ -1146,6 +1146,8 @@ test.describe("map studio", () => {
 
   test("offers retained floors as explicit read-only map choices", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
+    let floorCoherent = true;
+    let historyRequests = 0;
     const savedSnapshot = {
       id: "snapshot-saved-floor",
       created_at: "2026-07-25T08:30:00Z",
@@ -1171,31 +1173,36 @@ test.describe("map studio", () => {
         history_floor_count: 2,
         map_revision: 10,
         map_complete: true,
+        map_floor_coherent: floorCoherent,
       }] }),
     }));
-    await page.route("**/floor-history", (route) => route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        snapshots: [currentSnapshot],
-        floors: [
-          {
-            id: "current",
-            active: true,
-            read_only: false,
-            live_available: true,
-            snapshots: [currentSnapshot],
-          },
-          {
-            id: "saved-1",
-            active: false,
-            read_only: true,
-            ordinal: 1,
-            snapshots: [savedSnapshot],
-          },
-        ],
-      }),
-    }));
+    await page.route("**/floor-history", (route) => {
+      historyRequests += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          live_available: floorCoherent,
+          snapshots: [currentSnapshot],
+          floors: [
+            {
+              id: "current",
+              active: true,
+              read_only: false,
+              live_available: floorCoherent,
+              snapshots: [currentSnapshot],
+            },
+            {
+              id: "saved-1",
+              active: false,
+              read_only: true,
+              ordinal: 1,
+              snapshots: [savedSnapshot],
+            },
+          ],
+        }),
+      });
+    });
     await page.route("**/current-floor-scene", (route) => route.fulfill({
       status: 200,
       body: syntheticScene("Current floor room", 40),
@@ -1234,6 +1241,21 @@ test.describe("map studio", () => {
     await expect(studio.locator(".timeline-live")).toBeVisible();
     await expect(studio.locator(".cleaning-plans")).toBeEnabled();
     await expect(studio.locator(".cleaning-areas")).toBeEnabled();
+
+    const coherentHistoryRequests = historyRequests;
+    floorCoherent = false;
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => historyRequests).toBe(coherentHistoryRequests + 1);
+    await expect(floorSelect.locator("option").first()).toHaveText(
+      "Current floor · map settling",
+    );
+    await expect(floorSelect.locator("option").first()).toHaveAttribute(
+      "disabled",
+      "",
+    );
+    await expect(studio.locator(".cleaning-plans")).toBeDisabled();
+    await expect(studio.locator(".cleaning-areas")).toBeDisabled();
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
 
     await page.setViewportSize({ width: 390, height: 844 });
     const mobileLayout = await studio.evaluate((element) => {
@@ -1501,6 +1523,132 @@ test.describe("map studio", () => {
     expect(previousFloorRequests).toBe(0);
   });
 
+  test("does not resurface an in-flight live scene after a floor transition", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let releaseScene;
+    const sceneStarted = new Promise((resolve) => {
+      releaseScene = resolve;
+    });
+    let continueScene;
+    const sceneBlocked = new Promise((resolve) => {
+      continueScene = resolve;
+    });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/slow-live-scene",
+        history_url: "/empty-history",
+        map_revision: 1,
+        map_complete: true,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/empty-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [] }),
+    }));
+    await page.route("**/slow-live-scene", async (route) => {
+      releaseScene();
+      await sceneBlocked;
+      try {
+        await route.fulfill({
+          status: 200,
+          body: syntheticScene("Previous floor room", 16),
+          headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+        });
+      } catch (_error) {
+        // The transition intentionally aborts the superseded request.
+      }
+    });
+
+    const studio = await loadStudio(page);
+    await sceneStarted;
+    await page.evaluate(() => window.__studio._showFloorTransition({
+      attributes: { map_floor_coherent: false },
+    }));
+    continueScene();
+
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneLoading)).toBe(false);
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText(
+      "map paused until localization completes",
+    );
+    expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
+  });
+
+  test("cancels an in-flight stable snapshot when floors diverge", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let announceSnapshot;
+    const snapshotStarted = new Promise((resolve) => {
+      announceSnapshot = resolve;
+    });
+    let continueSnapshot;
+    const snapshotBlocked = new Promise((resolve) => {
+      continueSnapshot = resolve;
+    });
+    let liveSceneRequests = 0;
+    const snapshot = {
+      id: "stable-before-transition",
+      created_at: "2026-07-26T09:45:00Z",
+      revision: 1,
+      point_count: 1,
+      scene_url: "/slow-stable-scene",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/partial-live-scene",
+        history_url: "/stable-history",
+        history_count: 1,
+        map_revision: 2,
+        map_complete: false,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/stable-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    await page.route("**/slow-stable-scene", async (route) => {
+      announceSnapshot();
+      await snapshotBlocked;
+      try {
+        await route.fulfill({
+          status: 200,
+          body: syntheticScene("Previous stable room", 8),
+          headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+        });
+      } catch (_error) {
+        // The transition intentionally aborts the superseded request.
+      }
+    });
+    await page.route("**/partial-live-scene", (route) => {
+      liveSceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Partial floor room", 24),
+      });
+    });
+
+    const studio = await loadStudio(page);
+    await snapshotStarted;
+    await page.evaluate(() => window.__studio._showFloorTransition({
+      attributes: { map_floor_coherent: false },
+    }));
+    continueSnapshot();
+
+    await expect.poll(() => page.evaluate(() => window.__studio._sceneLoading)).toBe(false);
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
+    expect(liveSceneRequests).toBe(0);
+  });
+
   test("withholds an incoherent room-camera fallback during a floor transition", async ({ page }) => {
     await installBrowserDoubles(page, { images: true });
     const studio = await loadStudio(page, {
@@ -1528,6 +1676,61 @@ test.describe("map studio", () => {
     await expect(studio.locator(".map-image")).toBeHidden();
     await expect(studio.locator(".pose-status")).toBeHidden();
     expect(await studio.locator(".map-image").getAttribute("src")).toBeNull();
+  });
+
+  test("hides a stale room map before a slow catalog and clears hidden history", async ({ page }) => {
+    await installBrowserDoubles(page, { images: true });
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+    await expect(studio.locator(".map-image")).toBeVisible();
+
+    await page.evaluate(() => {
+      const map = window.__studio;
+      map._floors = [
+        {
+          id: "current",
+          active: true,
+          readOnly: false,
+          liveAvailable: true,
+          snapshots: [],
+        },
+        {
+          id: "saved-1",
+          active: false,
+          readOnly: true,
+          liveAvailable: false,
+          snapshots: [{ id: "hidden-history" }],
+        },
+      ];
+      map._selectedFloorId = "saved-1";
+      map._selectedHistoryId = "hidden-history";
+      map._hass.states["camera.synthetic_rooms"].attributes.map_floor_coherent = false;
+      map._fetchCatalog = () => new Promise((resolve) => {
+        window.__releaseSlowCatalog = resolve;
+      });
+      map._setView("rooms");
+    });
+
+    await expect(studio.locator(".map-image")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText(
+      "map paused until localization completes",
+    );
+    expect(await page.evaluate(() => ({
+      floor: window.__studio._selectedFloorId,
+      history: window.__studio._selectedHistoryId,
+    }))).toEqual({ floor: "current", history: undefined });
+
+    await page.evaluate(() => window.__releaseSlowCatalog());
+    await expect(studio.locator(".map-image")).toBeHidden();
   });
 
   test("isolates timeline requests when switching robots", async ({ page }) => {
