@@ -371,6 +371,56 @@ def test_floor_swap_stores_and_restores_floor_specific_area_mapping() -> None:
     entity.async_create_segments_issue.assert_not_called()
 
 
+def test_new_floor_is_auto_mapped_in_the_same_idle_update() -> None:
+    """Activate then exact-name map a floor without needing another refresh."""
+    entity = _vacuum()
+    previous_plan = FloorPlan(
+        2,
+        "previous-partition",
+        b"previous-partition",
+        (_room("old-room", "Old room"),),
+    )
+    old_payload = [{"id": "old-room", "name": "Old room", "group": "Current floor"}]
+    entity_entry = SimpleNamespace(
+        options={
+            "vacuum": {
+                "area_mapping": {"old-area": ["old-room"]},
+                "last_seen_segments": old_payload,
+                "matic_floor_scope": _floor_scope(previous_plan),
+            }
+        }
+    )
+    entity_registry = MagicMock()
+    entity_registry.async_get.return_value = entity_entry
+    entity_registry.async_update_entity_options.side_effect = (
+        lambda _entity_id, domain, options: setattr(
+            entity_entry, "options", {domain: options}
+        )
+    )
+    area_registry = MagicMock()
+    area_registry.async_get_area_by_name.return_value = SimpleNamespace(id="kitchen")
+
+    with (
+        patch(
+            "custom_components.matic_robot.vacuum.er.async_get",
+            return_value=entity_registry,
+        ),
+        patch(
+            "custom_components.matic_robot.vacuum.ar.async_get",
+            return_value=area_registry,
+        ),
+        patch.object(MaticEntity, "_handle_coordinator_update"),
+    ):
+        entity._handle_coordinator_update()
+
+    current_options = entity_entry.options["vacuum"]
+    assert entity_registry.async_update_entity_options.call_count == 2
+    assert current_options["matic_floor_scope"] == _floor_scope(
+        entity.coordinator.data.floor_plan
+    )
+    assert current_options["area_mapping"] == {"kitchen": ["room-1"]}
+
+
 def test_legacy_single_catalog_is_claimed_when_its_floor_returns() -> None:
     """A pre-upgrade mapping survives first observing a different floor."""
     entity = _vacuum()
@@ -420,18 +470,24 @@ def test_legacy_single_catalog_is_claimed_when_its_floor_returns() -> None:
 
 async def test_lifecycle_runs_area_mapping_and_change_checks() -> None:
     entity = _vacuum()
-    entity._async_auto_map_rooms = MagicMock()
-    entity._async_check_segment_changes = MagicMock()
+    calls: list[str] = []
+    entity._async_auto_map_rooms = MagicMock(side_effect=lambda: calls.append("map"))
+    entity._async_check_segment_changes = MagicMock(
+        side_effect=lambda: calls.append("segments")
+    )
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await entity.async_added_to_hass()
 
+    assert calls == ["segments", "map"]
     entity._async_auto_map_rooms.assert_called_once()
     entity._async_check_segment_changes.assert_called_once()
 
+    calls.clear()
     entity._async_auto_map_rooms.reset_mock()
     entity._async_check_segment_changes.reset_mock()
     with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
         entity._handle_coordinator_update()
+    assert calls == ["segments", "map"]
     entity._async_auto_map_rooms.assert_called_once()
     entity._async_check_segment_changes.assert_called_once()
     parent_update.assert_called_once()

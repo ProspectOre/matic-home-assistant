@@ -80,14 +80,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_added_to_hass(self) -> None:
         """Auto-link unconfigured robot rooms to matching Home Assistant Areas."""
         await super().async_added_to_hass()
-        self._async_auto_map_rooms()
         self._async_check_segment_changes()
+        self._async_auto_map_rooms()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Detect room changes and retry safe exact-name auto-mapping."""
-        self._async_auto_map_rooms()
         self._async_check_segment_changes()
+        self._async_auto_map_rooms()
         super()._handle_coordinator_update()
 
     @property

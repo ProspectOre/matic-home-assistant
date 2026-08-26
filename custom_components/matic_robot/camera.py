@@ -165,14 +165,19 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     @property
     def extra_state_attributes(self) -> dict[str, object]:
         """Expose cache readiness without exposing private map content."""
+        data = self.coordinator.data
+        floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "cached_tiles": self._store.tile_count,
             "structural_tiles": self._store.structure_tile_count,
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
-            "map_floor_coherent": self._store.floor_plan_is_current(
-                self.coordinator.data.floor_plan
+            "map_floor_coherent": floor_plan_coherent,
+            "robot_location_source": robot_location_source(
+                data.floor_plan if floor_plan_coherent else None,
+                data.pose,
+                data.operational.current_area,
             ),
             "source": "local_robot_slam",
             "scene_url": scene_api_url(self._config_entry.entry_id),

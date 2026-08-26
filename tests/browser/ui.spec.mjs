@@ -2475,7 +2475,11 @@ test.describe("map studio", () => {
       "camera.synthetic_map": {
         state: "idle",
         last_updated: "2026-01-01T00:00:00Z",
-        attributes: { source: "local_robot_slam", map_revision: 1 },
+        attributes: {
+          source: "local_robot_slam",
+          map_revision: 1,
+          robot_location_source: "current_area",
+        },
       },
     });
     await expect(studio.locator(".map-image")).toBeVisible();
@@ -2483,6 +2487,10 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).toContainText("3D rendering paused");
     await expect(studio.locator(".status")).toHaveAttribute("data-tone", "warning");
     await expect(studio.locator(".resolution-value")).toHaveText("640 × 480");
+    await expect(studio.locator(".pose-status")).toHaveText(
+      "Robot is in the current room · exact position unavailable",
+    );
+    await expect(studio.locator(".robot-marker")).toBeHidden();
   });
 
   test("ends a stalled first image load with actionable state", async ({ page }) => {
