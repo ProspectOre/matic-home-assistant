@@ -1596,6 +1596,75 @@ test.describe("map studio", () => {
     expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
   });
 
+  test("rechecks floor coherence after an older history request completes", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let announceHistory;
+    const historyStarted = new Promise((resolve) => {
+      announceHistory = resolve;
+    });
+    let continueHistory;
+    const historyBlocked = new Promise((resolve) => {
+      continueHistory = resolve;
+    });
+    let sceneRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/post-history-live-scene",
+        history_url: "/slow-transition-history",
+        map_revision: 1,
+        map_complete: true,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/slow-transition-history", async (route) => {
+      announceHistory();
+      await historyBlocked;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ snapshots: [] }),
+      });
+    });
+    await page.route("**/post-history-live-scene", (route) => {
+      sceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Previous floor room", 16),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
+
+    const load = loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+    await historyStarted;
+    await page.evaluate(() => {
+      const entity = window.__studio._hass.states["camera.synthetic_rooms"];
+      entity.attributes.map_floor_coherent = false;
+      window.__studio._showFloorTransition(entity);
+    });
+    continueHistory();
+    const studio = await load;
+
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".status")).toContainText(
+      "map paused until localization completes",
+    );
+    expect(sceneRequests).toBe(0);
+  });
+
   test("cancels an in-flight stable snapshot when floors diverge", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let announceSnapshot;

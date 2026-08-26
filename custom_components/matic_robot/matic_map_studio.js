@@ -2103,17 +2103,35 @@ class MaticMapStudio extends HTMLElement {
       this._syncTimeline();
     }
     if (photoState) await this._fetchHistory(photoState, force);
+    // History is asynchronous and a newer update may have observed a floor
+    // transition while this one was waiting. Re-read live inputs so an older
+    // coherent snapshot cannot start a stale scene request afterward.
+    const refreshedCatalogState = this._catalogState();
+    const refreshedEntryId = refreshedCatalogState?.attributes?.entry_id
+      || this._panel?.config?.entry_id;
+    const refreshedEntities = this._entities(refreshedEntryId);
+    const refreshedLiveMap = refreshedEntities.rooms?.[1]
+      || refreshedEntities.photo?.[1];
+    const refreshedPhotoState = refreshedCatalogState
+      || refreshedEntities.photo?.[1];
+    const refreshedEntityFloorIncoherent = initialFloorIncoherent
+      || refreshedLiveMap?.attributes?.map_floor_coherent === false;
+    const refreshedCatalogFloorIncoherent =
+      refreshedPhotoState?.attributes?.map_floor_coherent === false;
     const refreshedLiveSelection =
       this._view === "rooms" || !this._selectedHistoryId;
     if (
       refreshedLiveSelection
-      && (entityFloorIncoherent || catalogFloorIncoherent)
+      && (
+        refreshedEntityFloorIncoherent
+        || refreshedCatalogFloorIncoherent
+      )
     ) {
       this._showFloorTransition(
-        liveEntityState || initialLiveMap || photoState,
+        refreshedLiveMap || initialLiveMap || refreshedPhotoState,
       );
     } else if (this._view === "rooms") {
-      this._showFallback(entities.rooms || entities.photo, force);
+      this._showFallback(refreshedEntities.rooms || refreshedEntities.photo, force);
     } else if (this._selectedHistoryId && this._scene) {
       this._showSpatialScene();
       const snapshot = this._history.find(
@@ -2122,24 +2140,27 @@ class MaticMapStudio extends HTMLElement {
       if (snapshot) {
         this._setStatus(this._historicalStatus(snapshot));
       }
-    } else if (photoState) {
+    } else if (refreshedPhotoState) {
       if (!this._webglAvailable) {
-        this._showRenderingFallback(entities.rooms || entities.photo, force);
+        this._showRenderingFallback(
+          refreshedEntities.rooms || refreshedEntities.photo,
+          force,
+        );
       } else {
-        this._fetchScene(photoState, force);
-        this._fetchPose(photoState);
+        this._fetchScene(refreshedPhotoState, force);
+        this._fetchPose(refreshedPhotoState);
         if (
           this._scene
           && (
-            this._sceneUrl === photoState.attributes?.scene_url
-            || this._isStableLiveScene(photoState)
+            this._sceneUrl === refreshedPhotoState.attributes?.scene_url
+            || this._isStableLiveScene(refreshedPhotoState)
           )
         ) {
           this._showSpatialScene();
-          if (this._isStableLiveScene(photoState)) {
-            this._updateStableLiveStatus(photoState);
+          if (this._isStableLiveScene(refreshedPhotoState)) {
+            this._updateStableLiveStatus(refreshedPhotoState);
           } else {
-            this._updateSceneStatus(photoState);
+            this._updateSceneStatus(refreshedPhotoState);
           }
         } else {
           this._robot = undefined;

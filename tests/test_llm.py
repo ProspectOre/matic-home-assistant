@@ -43,7 +43,7 @@ from custom_components.matic_robot.plans import CleaningRoom
 
 def test_llm_platform_does_not_duplicate_the_dedicated_api() -> None:
     """Home Assistant 2026.8 can safely discover this module as a platform."""
-    assert async_get_tools(MagicMock(), MagicMock(), "assist") is None
+    assert async_get_tools(MagicMock(), MagicMock(), "assist") == []
 
 
 def _state(*, name: str = "Synthetic Robot", floor_plan: FloorPlan | None = None):
