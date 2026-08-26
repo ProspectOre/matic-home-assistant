@@ -47,6 +47,7 @@ _SAFE_EVENT_FIELDS = (
     "device_id",
     "entity_id",
     "event_type",
+    "intent",
     "plan_id",
     "room_id",
     "room",
@@ -58,6 +59,10 @@ _SAFE_EVENT_FIELDS = (
     "previous_version",
     "software_version",
     "previous_software_version",
+    "started_at",
+    "ended_at",
+    "duration_seconds",
+    "completed",
 )
 
 
@@ -89,6 +94,16 @@ class MaticOperationsAPI(llm.API):
                 data[key] = value
             elif isinstance(value, str):
                 data[key] = value[:256]
+        if event.event_type == EVENT_CLEANING_FINISHED:
+            rooms = event.data.get("rooms")
+            completed_rooms = event.data.get("completed_rooms")
+            room_durations = event.data.get("room_durations")
+            if isinstance(rooms, list):
+                data["room_count"] = len(rooms)
+            if isinstance(completed_rooms, list):
+                data["completed_room_count"] = len(completed_rooms)
+            if isinstance(room_durations, dict):
+                data["room_duration_count"] = len(room_durations)
         self.recent_events.append(
             {
                 "event_type": str(event.event_type),

@@ -182,6 +182,45 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "previous_version": "172.12",
     }
 
+    event_callback(
+        Event(
+            "matic_robot_cues",
+            {"event_type": "intent_classified", "intent": "clean_all"},
+            time_fired_timestamp=2,
+        )
+    )
+    cues_event = api.recent_events[-1]
+    assert cues_event["data"] == {
+        "event_type": "intent_classified",
+        "intent": "clean_all",
+    }
+
+    event_callback(
+        Event(
+            "matic_robot_cleaning_finished",
+            {
+                "started_at": "2026-08-25T20:00:00+00:00",
+                "ended_at": "2026-08-25T20:10:00+00:00",
+                "duration_seconds": 600,
+                "completed": True,
+                "rooms": ["Private room", "Other private room"],
+                "completed_rooms": ["Private room"],
+                "room_durations": {"Private room": 540},
+            },
+            time_fired_timestamp=3,
+        )
+    )
+    cleaning_event = api.recent_events[-1]
+    assert cleaning_event["data"] == {
+        "started_at": "2026-08-25T20:00:00+00:00",
+        "ended_at": "2026-08-25T20:10:00+00:00",
+        "duration_seconds": 600,
+        "completed": True,
+        "room_count": 2,
+        "completed_room_count": 1,
+        "room_duration_count": 1,
+    }
+
     missing_context = _context(None)
     with pytest.raises(HomeAssistantError, match="Administrator"):
         await api.async_get_api_instance(missing_context)
