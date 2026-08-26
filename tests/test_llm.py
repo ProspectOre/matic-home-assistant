@@ -283,6 +283,11 @@ async def test_operations_and_robot_resolution() -> None:
     assert _resolve_entry(hass, "ENTRY-ONE") is named
     assert _resolve_entry(hass, "matic FALLBACK") is named
     assert _resolve_entry(hass, "fallback") is fallback
+    duplicate_name = _entry(entry_id="entry-three")
+    duplicate_hass = _hass(named, duplicate_name)
+    assert _resolve_entry(duplicate_hass, "ENTRY-ONE") is named
+    with pytest.raises(HomeAssistantError, match="share that name"):
+        _resolve_entry(duplicate_hass, "Synthetic Robot")
     with pytest.raises(HomeAssistantError, match="Unknown Matic robot"):
         _resolve_entry(hass, "missing")
     with pytest.raises(HomeAssistantError, match="No loaded"):

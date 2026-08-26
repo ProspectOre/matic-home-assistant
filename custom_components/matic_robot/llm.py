@@ -389,12 +389,24 @@ def _resolve_entry(hass: HomeAssistant, reference: str | None) -> ConfigEntry[An
         return entries[0]
     folded = reference.casefold()
     for entry in entries:
-        if folded in {
-            entry.entry_id.casefold(),
+        if folded == entry.entry_id.casefold():
+            return entry
+    matches = [
+        entry
+        for entry in entries
+        if folded
+        in {
             entry.title.casefold(),
             _entry_name(entry).casefold(),
-        }:
-            return entry
+        }
+    ]
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        raise HomeAssistantError(
+            "Multiple Matic robots share that name; specify one by its "
+            "Home Assistant entry ID"
+        )
     raise HomeAssistantError(f"Unknown Matic robot: {reference}")
 
 
