@@ -237,13 +237,20 @@ class MaticGetPlanTool(_MaticTool):
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
+        active_run_for_plan = (
+            active_plan_id == plan["id"]
+            if active_plan_id is not None
+            else (
+                None if runtime.cleaning_plans.lock(serial_number).locked() else False
+            )
+        )
         return cast(
             JsonObjectType,
             {
                 "read_only": True,
                 "robot": _entry_name(entry),
                 "preview_scope": "next_run",
-                "active_run_for_plan": active_plan_id == plan["id"],
+                "active_run_for_plan": active_run_for_plan,
                 "plan": {
                     "id": plan["id"],
                     "name": plan.get("name", plan["id"]),

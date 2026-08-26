@@ -387,8 +387,14 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
         hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
     )
     assert ordered["preview_scope"] == "next_run"
-    assert ordered["active_run_for_plan"] is False
+    assert ordered["active_run_for_plan"] is None
     assert ordered["plan"]["name"] == "saved"
+
+    manager.lock.return_value.locked.return_value = False
+    idle = await tool.async_call(
+        hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
+    )
+    assert idle["active_run_for_plan"] is False
 
     manager.plans.return_value = {"named-id": {"name": "Unique name"}}
     manager.rooms_for_plan.return_value = (
