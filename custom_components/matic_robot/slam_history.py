@@ -24,7 +24,7 @@ from .client.slam_map import (
 )
 from .const import DOMAIN
 from .slam_delta import MAX_SCENE_BYTES
-from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapStore
+from .slam_map_store import MAP_SETTLE_SECONDS, SlamMapIdentity, SlamMapStore
 
 STORAGE_VERSION = 1
 MAX_HISTORY_ITEMS = 12
@@ -42,6 +42,7 @@ class SlamHistorySnapshot:
     revision: int
     point_count: int
     compressed: bytes
+    mission_token: str | None = None
 
 
 class SlamHistoryStore:
@@ -76,6 +77,7 @@ class SlamHistoryStore:
         revision: int,
         *,
         created_at: datetime | None = None,
+        mission_token: str | None = None,
     ) -> bool:
         """Add or refresh one time-spaced scene checkpoint."""
         if self._closed:
@@ -85,11 +87,17 @@ class SlamHistoryStore:
             scene,
             revision,
             created_at or datetime.now(UTC),
+            mission_token,
         )
-        if self._snapshots and self._snapshots[-1].snapshot_id == snapshot.snapshot_id:
+        if (
+            self._snapshots
+            and self._snapshots[-1].snapshot_id == snapshot.snapshot_id
+            and self._snapshots[-1].mission_token == snapshot.mission_token
+        ):
             return False
         if (
             self._snapshots
+            and self._snapshots[-1].mission_token == snapshot.mission_token
             and (snapshot.created_at - self._snapshots[-1].created_at).total_seconds()
             < MIN_HISTORY_INTERVAL_SECONDS
         ):
@@ -104,13 +112,52 @@ class SlamHistoryStore:
         """Return immutable snapshot metadata and compressed payload references."""
         return tuple(self._snapshots)
 
-    async def async_scene(self, snapshot_id: str) -> bytes | None:
+    def catalog_for_mission(
+        self, mission_token: str | None
+    ) -> tuple[SlamHistorySnapshot, ...]:
+        """Return only snapshots proven to belong to the active map mission."""
+        if not _valid_mission_token(mission_token):
+            return ()
+        return tuple(
+            snapshot
+            for snapshot in self._snapshots
+            if snapshot.mission_token == mission_token
+        )
+
+    def catalogs_by_mission(
+        self,
+    ) -> tuple[tuple[str, tuple[SlamHistorySnapshot, ...]], ...]:
+        """Group classified snapshots by floor without exposing map content."""
+        grouped: dict[str, list[SlamHistorySnapshot]] = {}
+        for snapshot in self._snapshots:
+            mission_token = snapshot.mission_token
+            if not isinstance(mission_token, str) or not _valid_mission_token(
+                mission_token
+            ):
+                continue
+            grouped.setdefault(mission_token, []).append(snapshot)
+        return tuple(
+            (mission_token, tuple(snapshots))
+            for mission_token, snapshots in sorted(
+                grouped.items(),
+                key=lambda item: item[1][-1].created_at,
+                reverse=True,
+            )
+        )
+
+    async def async_scene(
+        self,
+        snapshot_id: str,
+        *,
+        mission_token: str | None = None,
+    ) -> bytes | None:
         """Return one validated scene without retaining another decompressed copy."""
         snapshot = next(
             (
                 candidate
                 for candidate in self._snapshots
                 if candidate.snapshot_id == snapshot_id
+                and (mission_token is None or candidate.mission_token == mission_token)
             ),
             None,
         )
@@ -150,11 +197,15 @@ async def async_collect_slam_history(
     slam_map: SlamMapStore,
     history: SlamHistoryStore,
     floor_plan: Callable[[], FloorPlan | None],
+    floor_plan_listener: Callable[[Callable[[], None]], Callable[[], None]]
+    | None = None,
 ) -> None:
     """Capture a checkpoint after each stable, complete map revision."""
     changed = asyncio.Event()
     changed.set()
-    remove_listener = slam_map.async_add_listener(changed.set)
+    remove_listeners = [slam_map.async_add_listener(changed.set)]
+    if floor_plan_listener is not None:
+        remove_listeners.append(floor_plan_listener(changed.set))
     try:
         while True:
             await changed.wait()
@@ -166,20 +217,33 @@ async def async_collect_slam_history(
                 continue
             if not slam_map.map_complete:
                 continue
+            identity = slam_map.mission_identity
             entries = slam_map.entries()
             current_floor_plan = floor_plan()
+            if not _mission_matches_floor_plan(identity, current_floor_plan):
+                continue
             try:
                 scene = await hass.async_add_executor_job(
                     partial(_encode_history_scene, entries, current_floor_plan)
                 )
             except DecodeError:
                 continue
-            if revision != slam_map.revision:
+            if (
+                revision != slam_map.revision
+                or identity != slam_map.mission_identity
+                or current_floor_plan != floor_plan()
+            ):
                 changed.set()
                 continue
-            await history.async_add(scene, revision)
+            assert identity is not None
+            await history.async_add(
+                scene,
+                revision,
+                mission_token=identity.mission_token,
+            )
     finally:
-        remove_listener()
+        for remove_listener in remove_listeners:
+            remove_listener()
 
 
 def _encode_history_scene(
@@ -192,13 +256,18 @@ def _encode_history_scene(
 
 
 def _build_snapshot(
-    scene: bytes, revision: int, created_at: datetime
+    scene: bytes,
+    revision: int,
+    created_at: datetime,
+    mission_token: str | None,
 ) -> SlamHistorySnapshot:
     header = parse_slam_scene_header(scene)
     if not 0 <= revision < 2**64:
         raise DecodeError("invalid SLAM history revision")
     if created_at.tzinfo is None:
         raise DecodeError("SLAM history timestamp must include a time zone")
+    if mission_token is not None and not _valid_mission_token(mission_token):
+        raise DecodeError("SLAM history mission token is invalid")
     timestamp = created_at.astimezone(UTC)
     compressed = zlib.compress(scene, level=6)
     if len(compressed) > MAX_HISTORY_COMPRESSED_BYTES:
@@ -210,6 +279,7 @@ def _build_snapshot(
         revision,
         header.point_count,
         compressed,
+        mission_token,
     )
 
 
@@ -223,6 +293,7 @@ def _serialize_history(
                 "created_at": snapshot.created_at.isoformat(),
                 "revision": snapshot.revision,
                 "point_count": snapshot.point_count,
+                "mission_token": snapshot.mission_token,
                 "scene": base64.b64encode(snapshot.compressed).decode("ascii"),
             }
             for snapshot in snapshots
@@ -246,6 +317,7 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
             created_at = datetime.fromisoformat(str(item["created_at"]))
             revision = item["revision"]
             point_count = item["point_count"]
+            mission_token = item.get("mission_token")
             compressed = base64.b64decode(item["scene"], validate=True)
             if (
                 not isinstance(snapshot_id, str)
@@ -258,6 +330,10 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 or not isinstance(point_count, int)
                 or isinstance(point_count, bool)
                 or point_count < 1
+                or (
+                    mission_token is not None
+                    and not _valid_mission_token(mission_token)
+                )
                 or len(compressed) > MAX_HISTORY_COMPRESSED_BYTES
             ):
                 raise ValueError
@@ -278,6 +354,7 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
                 revision,
                 point_count,
                 compressed,
+                mission_token,
             )
         )
     snapshots.sort(key=lambda snapshot: snapshot.created_at)
@@ -285,6 +362,22 @@ def _decode_history(stored: object) -> tuple[list[SlamHistorySnapshot], bool]:
     _enforce_history_bounds(snapshots)
     dirty |= before != tuple(snapshot.snapshot_id for snapshot in snapshots)
     return snapshots, dirty
+
+
+def _mission_matches_floor_plan(
+    identity: SlamMapIdentity | None, floor_plan: FloorPlan | None
+) -> bool:
+    return identity is not None and identity.matches_floor_plan(floor_plan)
+
+
+def _valid_mission_token(value: object) -> bool:
+    if not isinstance(value, str) or len(value) != 64:
+        return False
+    try:
+        bytes.fromhex(value)
+    except ValueError:
+        return False
+    return True
 
 
 def _decompress_scene(compressed: bytes) -> bytes:

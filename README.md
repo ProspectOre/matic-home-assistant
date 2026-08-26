@@ -96,10 +96,12 @@ The integration adds Home Assistant-native planning and automation:
   The 2D appearance can use the photo map or stable labeled room map. It supports orbit, pan, pinch,
   twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
   control, full-screen use, live point-cloud deltas, a private map timeline,
-  mode-specific camera framing, and last-good-scene recovery. A compact native
-  toolbar preserves map space, 2D stays aligned and planar, and the room map
-  stays centered at any aspect ratio. No map is uploaded to a vendor or third
-  party.
+  mode-specific camera framing, and same-floor last-good-scene recovery. When
+  retained history contains more than one verified floor, a floor selector
+  offers the current live floor plus clearly read-only saved floors. A compact
+  native toolbar preserves map space, 2D stays aligned and planar, and the room
+  map stays centered at any aspect ratio. No map is uploaded to a vendor or
+  third party.
 - **Painted custom areas.** Open **Matic Map → Cleaning → Custom areas**, focus a labeled
   room, and paint over the authenticated Photo or Rooms layer without
   leaving the map workspace. Erase mistakes or move the map independently,
@@ -258,12 +260,14 @@ uses the LAN.
 - Map Studio starts with one bounded full scene, then long-polls authenticated
   revision changes and applies compressed point-cloud deltas. If its retained
   base is unavailable or a delta would be inefficient, the same request returns
-  a complete scene. During mission rollover, the live workspace keeps the last
-  complete checkpoint under the current robot-position overlay until the new
-  scene is complete; the status identifies that retained-map state. Private,
-  time-spaced map checkpoints are limited to 12 items and 48 MiB of compressed
-  data; deleting the integration removes them. Map health is not proof that
-  every part of the home has been scanned.
+  a complete scene. A same-floor rebuild can keep the last complete checkpoint
+  under the current robot-position overlay. If SLAM and floor-plan mission
+  identities diverge during a physical floor move, the room overlay, pose, and
+  coordinate editing fail closed until both sources agree; a previous-floor
+  checkpoint is never substituted as the live map. Private, time-spaced map
+  checkpoints are grouped by verified floor identity and limited to 12 items
+  and 48 MiB of compressed data; deleting the integration removes them. Map
+  health is not proof that every part of the home has been scanned.
 - Pairing credentials, certificate secrets, Wi-Fi passwords, account tokens,
   Matter setup codes, and arbitrary raw writes are never exposed.
 - If discovery fails, confirm the robot and Home Assistant share a

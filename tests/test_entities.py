@@ -246,6 +246,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         structure_tile_count=0,
         map_complete=False,
         revision=0,
+        floor_plan_is_current=MagicMock(return_value=True),
     )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
@@ -1224,6 +1225,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "structural_tiles": 1,
         "map_complete": True,
         "map_revision": 1,
+        "map_floor_coherent": True,
         "source": "local_robot_slam",
         "scene_url": "/api/matic_robot/slam_scene/entry",
         "pose_url": "/api/matic_robot/slam_pose/entry",
@@ -1264,6 +1266,7 @@ def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
             (synthetic_slam_entry(),),
             (synthetic_structure_entry(),),
             _state(floor_plan=_floor_plan()),
+            floor_plan_coherent=True,
             width=640,
             height=480,
         )
@@ -1272,6 +1275,27 @@ def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
     assert len(render.call_args.args[0]) == 1
     assert len(render.call_args.kwargs["structure_tiles"]) == 1
     assert render.call_args.kwargs["robot_position"] == (1, 2, "exact_pose")
+
+
+def test_photorealistic_camera_withholds_mismatched_floor_overlays() -> None:
+    from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
+
+    with patch(
+        "custom_components.matic_robot.camera.render_slam_map",
+        return_value=b"rendered",
+    ) as render:
+        result = camera._render_photorealistic_entries(
+            (synthetic_slam_entry(),),
+            (synthetic_structure_entry(),),
+            _state(floor_plan=_floor_plan()),
+            floor_plan_coherent=False,
+            width=640,
+            height=480,
+        )
+
+    assert result == b"rendered"
+    assert render.call_args.kwargs["floor_plan"] is None
+    assert render.call_args.kwargs["robot_position"] is None
 
 
 async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:

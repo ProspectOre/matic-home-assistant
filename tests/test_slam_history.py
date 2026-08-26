@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -11,6 +12,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot.client.models import FloorPlan, Room
 from custom_components.matic_robot.client.slam_map import (
     decode_slam_tile,
     encode_slam_scene,
@@ -22,11 +24,82 @@ from custom_components.matic_robot.slam_history import (
     _decompress_scene,
     async_collect_slam_history,
 )
+from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from tests.test_slam_map import synthetic_slam_entry
 
 
-def _scene(*, page_x: int = 0) -> bytes:
-    return encode_slam_scene((decode_slam_tile(synthetic_slam_entry(page_x=page_x)),))
+def _scene(*, page_x: int = 0, mission_id: int = 0x1234ABCD) -> bytes:
+    return encode_slam_scene(
+        (decode_slam_tile(synthetic_slam_entry(page_x=page_x, mission_id=mission_id)),)
+    )
+
+
+def _identity(mission_id: int = 0x1234ABCD) -> SlamMapIdentity:
+    tile = decode_slam_tile(synthetic_slam_entry(mission_id=mission_id))
+    return SlamMapIdentity(tile.mission_token, tile.mission_id)
+
+
+def _floor_plan() -> FloorPlan:
+    return FloorPlan(
+        0x1234ABCD,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room(
+                "room-1",
+                "Synthetic room",
+                "protocol-1",
+                b"room",
+                ((0.0, 0.0), (0.3, 0.0), (0.3, 0.3)),
+            ),
+        ),
+    )
+
+
+async def test_history_is_scoped_per_floor_mission(hass) -> None:
+    store = SlamHistoryStore(hass, "multi-floor-entry")
+    await store.async_load()
+    started = datetime(2026, 7, 26, 12, 0, tzinfo=UTC)
+    first = _identity(1)
+    second = _identity(2)
+
+    assert await store.async_add(
+        _scene(mission_id=1),
+        1,
+        created_at=started,
+        mission_token=first.mission_token,
+    )
+    assert await store.async_add(
+        _scene(mission_id=2),
+        2,
+        created_at=started + timedelta(seconds=30),
+        mission_token=second.mission_token,
+    )
+
+    assert len(store.catalog()) == 2
+    first_revisions = [
+        item.revision for item in store.catalog_for_mission(first.mission_token)
+    ]
+    second_revisions = [
+        item.revision for item in store.catalog_for_mission(second.mission_token)
+    ]
+    assert first_revisions == [1]
+    assert second_revisions == [2]
+    assert store.catalog_for_mission(None) == ()
+    assert [
+        (mission_token, [snapshot.revision for snapshot in snapshots])
+        for mission_token, snapshots in store.catalogs_by_mission()
+    ] == [
+        (second.mission_token, [2]),
+        (first.mission_token, [1]),
+    ]
+    await store.async_shutdown()
+
+    restored = SlamHistoryStore(hass, "multi-floor-entry")
+    await restored.async_load()
+    assert [
+        item.revision for item in restored.catalog_for_mission(second.mission_token)
+    ] == [2]
 
 
 async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
@@ -58,6 +131,7 @@ async def test_history_round_trips_replaces_recent_and_removes(hass) -> None:
         is True
     )
     assert len(store.catalog()) == 2
+    assert store.catalogs_by_mission() == ()
     await store.async_shutdown()
 
     restored = SlamHistoryStore(hass, "synthetic-entry")
@@ -87,6 +161,8 @@ async def test_history_rejects_add_after_shutdown_and_invalid_revision(hass) -> 
             1,
             created_at=datetime(2026, 7, 26, 12, 0),
         )
+    with pytest.raises(DecodeError, match="mission token"):
+        await active.async_add(_scene(), 1, mission_token="z" * 64)
     with (
         patch(
             "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
@@ -185,6 +261,7 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
     slam_map = SimpleNamespace(
         revision=4,
         map_complete=True,
+        mission_identity=_identity(),
         entries=MagicMock(return_value=(synthetic_slam_entry(),)),
         async_add_listener=MagicMock(
             side_effect=lambda listener: listeners.append(listener) or remove_listener
@@ -192,10 +269,10 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
     )
     history_added = asyncio.Event()
     history = SimpleNamespace(
-        async_add=AsyncMock(side_effect=lambda *_args: history_added.set())
+        async_add=AsyncMock(side_effect=lambda *_args, **_kwargs: history_added.set())
     )
     task = asyncio.create_task(
-        async_collect_slam_history(hass, slam_map, history, lambda: None)
+        async_collect_slam_history(hass, slam_map, history, _floor_plan)
     )
     try:
         with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
@@ -206,6 +283,55 @@ async def test_history_collector_captures_stable_complete_revision(hass) -> None
         with pytest.raises(asyncio.CancelledError):
             await task
     remove_listener.assert_called_once()
+
+
+async def test_history_collector_waits_for_matching_floor_identity(hass) -> None:
+    remove_map_listener = MagicMock()
+    remove_floor_listener = MagicMock()
+    floor_listener = None
+
+    def subscribe_floor(callback):
+        nonlocal floor_listener
+        floor_listener = callback
+        return remove_floor_listener
+
+    slam_map = SimpleNamespace(
+        revision=4,
+        map_complete=True,
+        mission_identity=_identity(),
+        entries=MagicMock(return_value=(synthetic_slam_entry(),)),
+        async_add_listener=MagicMock(return_value=remove_map_listener),
+    )
+    current_floor = replace(_floor_plan(), mission_id=2)
+    history_added = asyncio.Event()
+    history = SimpleNamespace(
+        async_add=AsyncMock(side_effect=lambda *_args, **_kwargs: history_added.set())
+    )
+    task = asyncio.create_task(
+        async_collect_slam_history(
+            hass,
+            slam_map,
+            history,
+            lambda: current_floor,
+            subscribe_floor,
+        )
+    )
+    try:
+        with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
+            for _index in range(5):
+                await asyncio.sleep(0)
+            history.async_add.assert_not_awaited()
+            current_floor = _floor_plan()
+            assert floor_listener is not None
+            floor_listener()
+            await asyncio.wait_for(history_added.wait(), timeout=1)
+        history.async_add.assert_awaited_once()
+    finally:
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    remove_map_listener.assert_called_once()
+    remove_floor_listener.assert_called_once()
 
 
 async def test_history_collector_retries_churn_and_skips_incomplete(hass) -> None:
@@ -219,12 +345,13 @@ async def test_history_collector_retries_churn_and_skips_incomplete(hass) -> Non
     slam_map = SimpleNamespace(
         revision=1,
         map_complete=False,
+        mission_identity=_identity(),
         entries=MagicMock(return_value=(synthetic_slam_entry(),)),
         async_add_listener=MagicMock(side_effect=subscribe),
     )
     history = SimpleNamespace(async_add=AsyncMock())
     task = asyncio.create_task(
-        async_collect_slam_history(hass, slam_map, history, lambda: None)
+        async_collect_slam_history(hass, slam_map, history, _floor_plan)
     )
     with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
         await asyncio.sleep(0)
@@ -254,6 +381,7 @@ async def test_history_collector_skips_incomplete_or_undecodable_scene(
     slam_map = SimpleNamespace(
         revision=1,
         map_complete=complete,
+        mission_identity=_identity(),
         entries=MagicMock(return_value=entries),
         async_add_listener=MagicMock(return_value=remove_listener),
     )
@@ -262,7 +390,7 @@ async def test_history_collector_skips_incomplete_or_undecodable_scene(
         async_add_executor_job=AsyncMock(side_effect=lambda target: target())
     )
     task = asyncio.create_task(
-        async_collect_slam_history(fake_hass, slam_map, history, lambda: None)
+        async_collect_slam_history(fake_hass, slam_map, history, _floor_plan)
     )
     try:
         with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):
@@ -281,6 +409,7 @@ async def test_history_collector_discards_scene_after_revision_change() -> None:
     slam_map = SimpleNamespace(
         revision=1,
         map_complete=True,
+        mission_identity=_identity(),
         entries=MagicMock(return_value=(synthetic_slam_entry(),)),
         async_add_listener=MagicMock(return_value=remove_listener),
     )
@@ -293,7 +422,7 @@ async def test_history_collector_discards_scene_after_revision_change() -> None:
     fake_hass = SimpleNamespace(async_add_executor_job=encode_then_advance)
     history = SimpleNamespace(async_add=AsyncMock())
     task = asyncio.create_task(
-        async_collect_slam_history(fake_hass, slam_map, history, lambda: None)
+        async_collect_slam_history(fake_hass, slam_map, history, _floor_plan)
     )
     try:
         with patch("custom_components.matic_robot.slam_history.MAP_SETTLE_SECONDS", 0):

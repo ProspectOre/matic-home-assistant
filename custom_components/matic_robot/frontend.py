@@ -80,7 +80,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     hass.http.register_view(pose_view)
     hass.http.register_view(MaticSlamHistoryView)
     hass.http.register_view(MaticSlamHistorySceneView)
-    hass.http.register_view(MaticSlamCatalogView(ROOM_PLAN_EDITOR_PATH))
+    hass.http.register_view(MaticSlamCatalogView(ROOM_PLAN_EDITOR_PATH, scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
     frontend.add_extra_js_url(

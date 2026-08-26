@@ -180,6 +180,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                 slam_map,
                 slam_history,
                 lambda: coordinator.data.floor_plan,
+                coordinator.async_add_listener,
             ),
             f"{DOMAIN} map history collector",
         )
