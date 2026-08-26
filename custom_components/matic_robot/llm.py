@@ -23,7 +23,7 @@ from .const import (
     EVENT_FIRMWARE_ANALYZED,
     EVENT_FIRMWARE_CHANGED,
 )
-from .plans import leg_groups
+from .plans import CleaningPlanManager, leg_groups
 
 LLM_API_ID = f"{DOMAIN}_operations"
 LLM_API_NAME = "Matic operations"
@@ -61,6 +61,7 @@ _SAFE_EVENT_FIELDS = (
     "firmware_version",
     "previous_version",
     "protocol_version",
+    "previous_protocol",
     "compatibility_status",
     "analysis_version",
     "wire_shape_count",
@@ -218,8 +219,11 @@ class MaticGetPlanTool(_MaticTool):
         serial_number = state.info.serial_number
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
+            plan_id = _resolve_plan_id(
+                runtime.cleaning_plans, serial_number, args.get("plan")
+            )
             plan, rooms = runtime.cleaning_plans.rooms_for_plan(
-                serial_number, room_map, args.get("plan")
+                serial_number, room_map, plan_id
             )
         except (KeyError, ValueError) as err:
             raise HomeAssistantError(f"The Matic plan is unavailable: {err}") from err
@@ -266,6 +270,32 @@ class MaticGetPlanTool(_MaticTool):
                 ],
             },
         )
+
+
+def _resolve_plan_id(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    requested: str | None,
+) -> str | None:
+    """Resolve an explicit plan name without selecting an ambiguous match."""
+    if requested is None:
+        return None
+    plans = manager.plans(serial_number)
+    if requested in plans:
+        return requested
+    folded = requested.casefold()
+    matches = [
+        plan_id
+        for plan_id, plan in plans.items()
+        if str(plan.get("name", plan_id)).casefold() == folded
+    ]
+    if len(matches) > 1:
+        raise ValueError(
+            f'multiple saved plans share the name "{requested}"; use a plan ID'
+        )
+    if matches:
+        return matches[0]
+    raise KeyError(requested)
 
 
 class MaticGetNativeHistoryTool(_MaticTool):

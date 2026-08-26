@@ -94,6 +94,10 @@ def _entry(
         "selected_plan": "whole-home",
         "selected_plan_name": "Whole home",
     }
+    manager.plans.return_value = {
+        "whole-home": {"name": "Whole home"},
+        "saved": {"name": "Saved"},
+    }
     manager.lock.return_value.locked.return_value = True
     manager.stop_pending.return_value = False
     manager.pending_native_reconciliation.return_value = {
@@ -174,6 +178,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
             {
                 "firmware_version": "172.13",
                 "previous_version": "172.12",
+                "protocol_version": "3",
+                "previous_protocol": "2",
             },
             time_fired_timestamp=1,
         )
@@ -182,6 +188,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     assert firmware_event["data"] == {
         "firmware_version": "172.13",
         "previous_version": "172.12",
+        "protocol_version": "3",
+        "previous_protocol": "2",
     }
 
     event_callback(
@@ -381,6 +389,48 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     assert ordered["preview_scope"] == "next_run"
     assert ordered["active_run_for_plan"] is False
     assert ordered["plan"]["name"] == "saved"
+
+    manager.plans.return_value = {"named-id": {"name": "Unique name"}}
+    manager.rooms_for_plan.return_value = (
+        {"id": "named-id", "name": "Unique name"},
+        rooms[:1],
+    )
+    by_name = await tool.async_call(
+        hass, llm.ToolInput(tool.name, {"plan": "unique NAME"}), _context()
+    )
+    assert by_name["plan"]["id"] == "named-id"
+
+    manager.plans.return_value = {
+        "first-id": {"name": "Shared name"},
+        "second-id": {"name": "Shared name"},
+    }
+    manager.rooms_for_plan.reset_mock()
+    manager.rooms_for_plan.return_value = (
+        {"id": "first-id", "name": "Shared name"},
+        rooms[:1],
+    )
+    by_id = await tool.async_call(
+        hass, llm.ToolInput(tool.name, {"plan": "first-id"}), _context()
+    )
+    assert by_id["plan"]["id"] == "first-id"
+    manager.rooms_for_plan.assert_called_once_with(
+        "synthetic-serial",
+        {"kitchen": "Kitchen", "study": "Study", "hall": "Hall"},
+        "first-id",
+    )
+
+    manager.rooms_for_plan.reset_mock()
+    with pytest.raises(HomeAssistantError, match="share the name"):
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"plan": "Shared name"}), _context()
+        )
+    manager.rooms_for_plan.assert_not_called()
+
+    with pytest.raises(HomeAssistantError, match="plan is unavailable"):
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"plan": "missing"}), _context()
+        )
+    manager.rooms_for_plan.assert_not_called()
 
     no_map = _entry()
     no_map_hass = _hass(no_map)
