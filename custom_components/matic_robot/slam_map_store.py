@@ -16,7 +16,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.storage import Store
 
 from .client.api import MaticHermesClient
-from .client.models import HermesCollectionEntry
+from .client.models import FloorPlan, HermesCollectionEntry
 from .client.slam_map import (
     SlamStructureTile,
     SlamTile,
@@ -63,6 +63,22 @@ class SlamMapHealth:
     stream_failures: int
 
 
+@dataclass(frozen=True, slots=True)
+class SlamMapIdentity:
+    """Private identity of the map mission currently safe to render."""
+
+    mission_token: str
+    mission_id: int | None
+
+    def matches_floor_plan(self, floor_plan: FloorPlan | None) -> bool:
+        """Return whether a floor plan is proven to describe this map."""
+        return (
+            self.mission_id is not None
+            and floor_plan is not None
+            and floor_plan.mission_id == self.mission_id
+        )
+
+
 @dataclass(slots=True)
 class _MissionCandidate:
     """Bounded pages waiting for cross-layer mission confirmation."""
@@ -70,6 +86,7 @@ class _MissionCandidate:
     generation: int
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
+    mission_id: int | None
     truncated: bool = False
     dropped_photo_tiles: int = 0
     dropped_structure_tiles: int = 0
@@ -80,6 +97,7 @@ class _LoadedMap:
     """One fully decoded private storage snapshot built off the event loop."""
 
     mission_token: str | None
+    mission_id: int | None
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
     truncated: bool
@@ -102,6 +120,7 @@ class SlamMapStore:
             serialize_in_event_loop=False,
         )
         self._mission_token: str | None = None
+        self._mission_id: int | None = None
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
         self._revision = 0
@@ -129,6 +148,7 @@ class SlamMapStore:
             _decode_stored_snapshot, stored
         )
         self._mission_token = loaded.mission_token
+        self._mission_id = loaded.mission_id
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
         self._truncated = loaded.truncated
@@ -173,14 +193,24 @@ class SlamMapStore:
         mission_token = tile.mission_token
         if self._mission_token is None:
             self._mission_token = mission_token
+            self._mission_id = tile.mission_id
         if mission_token != self._mission_token:
             self._stage_candidate(entry, tile, structural=structural)
             return
+        if (
+            self._mission_id is not None
+            and tile.mission_id is not None
+            and tile.mission_id != self._mission_id
+        ):
+            raise DecodeError("SLAM mission identity changed without a new token")
+        identity_changed = self._mission_id is None and tile.mission_id is not None
+        if identity_changed:
+            self._mission_id = tile.mission_id
         target = self._structure_entries if structural else self._entries
         key = _tile_key(tile)
         changed = target.get(key) != entry
         target[key] = entry
-        if not changed:
+        if not changed and not identity_changed:
             return
         self._content_changed()
 
@@ -201,10 +231,20 @@ class SlamMapStore:
                 evicted_token, _candidate = self._candidates.popitem(last=False)
                 self._retire_mission(evicted_token)
             self._candidate_generation += 1
-            candidate = _MissionCandidate(self._candidate_generation, {}, {})
+            candidate = _MissionCandidate(
+                self._candidate_generation, {}, {}, tile.mission_id
+            )
             self._candidates[mission_token] = candidate
         else:
             self._candidates.move_to_end(mission_token)
+            if (
+                candidate.mission_id is not None
+                and tile.mission_id is not None
+                and candidate.mission_id != tile.mission_id
+            ):
+                raise DecodeError("candidate SLAM mission identity is inconsistent")
+            if candidate.mission_id is None:
+                candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
         target[_tile_key(tile)] = entry
         self._enforce_candidate_bounds(candidate)
@@ -222,6 +262,7 @@ class SlamMapStore:
                 self._candidates.pop(token)
                 self._retire_mission(token)
         self._mission_token = mission_token
+        self._mission_id = candidate.mission_id
         self._entries = candidate.entries
         self._structure_entries = candidate.structure_entries
         self._truncated = candidate.truncated
@@ -342,6 +383,18 @@ class SlamMapStore:
         return self._revision
 
     @property
+    def mission_identity(self) -> SlamMapIdentity | None:
+        """Return the active private mission identity without its raw payload."""
+        if self._mission_token is None:
+            return None
+        return SlamMapIdentity(self._mission_token, self._mission_id)
+
+    def floor_plan_is_current(self, floor_plan: FloorPlan | None) -> bool:
+        """Return whether the active SLAM map and floor plan are correlated."""
+        identity = self.mission_identity
+        return identity is not None and identity.matches_floor_plan(floor_plan)
+
+    @property
     def structure_tile_count(self) -> int:
         """Return the number of cached structural pages."""
         return len(self._structure_entries)
@@ -415,6 +468,7 @@ class SlamMapStore:
         self._retired_missions.clear()
         self._candidate_generation = 0
         self._mission_token = None
+        self._mission_id = None
         self._revision += 1
         self._last_change = monotonic()
         self._map_complete = False
@@ -527,7 +581,7 @@ def _serialize_entry(item: HermesCollectionEntry) -> dict[str, str]:
 def _decode_stored_snapshot(stored: object) -> _LoadedMap:
     """Decode and bound one private cache snapshot away from the event loop."""
     if not isinstance(stored, Mapping):
-        return _LoadedMap(None, {}, {}, False, 0, 0, 1, True)
+        return _LoadedMap(None, None, {}, {}, False, 0, 0, 1, True)
     stored_mission = _stored_mission_token(stored.get("mission_token"))
     mission_token = stored_mission
     truncated = stored.get("truncated") is True
@@ -542,6 +596,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
     )
     entries: dict[str, HermesCollectionEntry] = {}
     structure_entries: dict[str, HermesCollectionEntry] = {}
+    mission_ids: set[int] = set()
 
     for structural, name in ((False, "tiles"), (True, "structure_tiles")):
         items = stored.get(name, ())
@@ -589,11 +644,14 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
                     continue
                 entries.clear()
                 structure_entries.clear()
+                mission_ids.clear()
                 truncated = False
                 dropped_photo = 0
                 dropped_structure = 0
                 invalid = 0
                 dirty = True
+            if tile.mission_id is not None:
+                mission_ids.add(tile.mission_id)
             mission_token = tile.mission_token
             target = structure_entries if structural else entries
             key = _tile_key(tile)
@@ -616,6 +674,7 @@ def _decode_stored_snapshot(stored: object) -> _LoadedMap:
         dirty = True
     return _LoadedMap(
         mission_token,
+        next(iter(mission_ids), None) if len(mission_ids) == 1 else None,
         entries,
         structure_entries,
         truncated,

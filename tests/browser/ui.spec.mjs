@@ -181,7 +181,9 @@ function syntheticScene(roomName = "Synthetic room", pointX = 10) {
     span_cells: [100, 80],
     origin_cells: [10, 10],
     sample_step: 1,
-    rooms: [{ name: roomName, boundary: [[0, 0], [1, 0], [1, 1]], center: [0.3, 0.3] }],
+    rooms: roomName === null
+      ? []
+      : [{ name: roomName, boundary: [[0, 0], [1, 0], [1, 1]], center: [0.3, 0.3] }],
   }));
   const scene = Buffer.alloc(24 + metadata.length + 8);
   scene.write("MATIC3D\0", 0, "binary");
@@ -1139,6 +1141,111 @@ test.describe("map studio", () => {
     await expect(timeline.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
   });
 
+  test("offers retained floors as explicit read-only map choices", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    const savedSnapshot = {
+      id: "snapshot-saved-floor",
+      created_at: "2026-07-25T08:30:00Z",
+      revision: 2,
+      point_count: 1,
+      scene_url: "/saved-floor-scene",
+    };
+    const currentSnapshot = {
+      id: "snapshot-current-floor",
+      created_at: "2026-07-26T08:30:00Z",
+      revision: 9,
+      point_count: 1,
+      scene_url: "/current-floor-history",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/current-floor-scene",
+        history_url: "/floor-history",
+        history_count: 1,
+        history_floor_count: 2,
+        map_revision: 10,
+        map_complete: true,
+      }] }),
+    }));
+    await page.route("**/floor-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        snapshots: [currentSnapshot],
+        floors: [
+          {
+            id: "current",
+            active: true,
+            read_only: false,
+            snapshots: [currentSnapshot],
+          },
+          {
+            id: "saved-1",
+            active: false,
+            read_only: true,
+            ordinal: 1,
+            snapshots: [savedSnapshot],
+          },
+        ],
+      }),
+    }));
+    await page.route("**/current-floor-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Current floor room", 40),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+    await page.route("**/saved-floor-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Saved floor room", 8),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+
+    const studio = await loadStudio(page);
+    const floorSelect = studio.locator(".floor-select");
+    await expect(floorSelect).toBeVisible();
+    await expect(floorSelect.locator("option")).toHaveText([
+      "Current floor",
+      "Saved floor 1 · read only",
+    ]);
+    await studio.locator(".timeline-summary").click();
+    await floorSelect.selectOption("saved-1");
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Saved floor room");
+    await expect(studio.locator(".status")).toContainText(
+      "Saved floor 1",
+    );
+    await expect(studio.locator(".status")).toContainText("read only");
+    await expect(studio.locator(".timeline-live")).toBeHidden();
+    await expect(studio.locator(".cleaning-plans")).toBeDisabled();
+    await expect(studio.locator(".cleaning-areas")).toBeDisabled();
+
+    await floorSelect.selectOption("current");
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Current floor room");
+    await expect(studio.locator(".timeline-live")).toBeVisible();
+    await expect(studio.locator(".cleaning-plans")).toBeEnabled();
+    await expect(studio.locator(".cleaning-areas")).toBeEnabled();
+
+    await page.setViewportSize({ width: 390, height: 844 });
+    const mobileLayout = await studio.evaluate((element) => {
+      const header = element.shadowRoot.querySelector("header").getBoundingClientRect();
+      const select = element.shadowRoot.querySelector(".floor-select").getBoundingClientRect();
+      return {
+        headerHeight: header.height,
+        selectHeight: select.height,
+        contained: select.left >= header.left && select.right <= header.right,
+      };
+    });
+    expect(mobileLayout.headerHeight).toBe(56);
+    expect(mobileLayout.selectHeight).toBeGreaterThanOrEqual(38);
+    expect(mobileLayout.contained).toBe(true);
+  });
+
   test("repairs self-intersecting room perimeters before projection", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     const studio = await loadStudio(page);
@@ -1305,6 +1412,63 @@ test.describe("map studio", () => {
       stableId: window.__studio._stableLiveSnapshotId,
     }))).toEqual({ sceneUrl: "/rebuilding-map", stableId: undefined });
     await expect(studio.locator(".status")).toContainText("points · full capture");
+  });
+
+  test("never reuses a previous-floor snapshot during a floor transition", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let previousFloorRequests = 0;
+    const snapshot = {
+      id: "snapshot-previous-floor",
+      created_at: "2026-07-26T09:45:00Z",
+      revision: 1,
+      point_count: 1,
+      scene_url: "/previous-floor-scene",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/transition-scene",
+        history_url: "/transition-history",
+        history_count: 1,
+        map_revision: 2,
+        map_complete: false,
+        map_floor_coherent: false,
+      }] }),
+    }));
+    await page.route("**/transition-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    await page.route("**/previous-floor-scene", (route) => {
+      previousFloorRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Previous floor room", 8),
+      });
+    });
+    await page.route("**/transition-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene(null, 16),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+
+    const studio = await loadStudio(page);
+    await expect(studio.locator(".status")).toContainText(
+      "Floor transition detected",
+    );
+    expect(await page.evaluate(() => ({
+      sceneUrl: window.__studio._sceneUrl,
+      rooms: window.__studio._scene?.metadata?.rooms?.length,
+      stableId: window.__studio._stableLiveSnapshotId,
+    }))).toEqual({
+      sceneUrl: "/transition-scene",
+      rooms: 0,
+      stableId: undefined,
+    });
+    expect(previousFloorRequests).toBe(0);
   });
 
   test("isolates timeline requests when switching robots", async ({ page }) => {

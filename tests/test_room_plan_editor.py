@@ -311,6 +311,8 @@ def test_map_panel_has_private_live_navigation_controls() -> None:
     assert "viewport.releasePointerCapture" in panel
     assert 'class="room-labels"' in panel
     assert 'class="robot-marker"' in panel
+    assert 'class="floor-select"' in panel
+    assert '"Saved floor {number} · read only"' in panel
     assert "label.textContent = room.name" in panel
 
 

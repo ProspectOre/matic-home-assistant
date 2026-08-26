@@ -35,11 +35,13 @@ from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
 from .slam_delta import encode_slam_scene_delta
+from .slam_map_store import SlamMapIdentity
 
 if TYPE_CHECKING:
     from homeassistant.core import HomeAssistant
 
     from . import MaticConfigEntry, MaticRuntimeData
+    from .slam_history import SlamHistorySnapshot
 
 SCENE_API_URL = "/api/matic_robot/slam_scene/{entry_id}"
 POSE_API_URL = "/api/matic_robot/slam_pose/{entry_id}"
@@ -115,6 +117,15 @@ class _CachedScene:
     payload: bytes
     etag: str
     revision: int
+    floor_plan_coherent: bool
+
+
+@dataclass(frozen=True, slots=True)
+class _SceneGeneration:
+    """A privacy-safe transport generation for one private scene identity."""
+
+    key: tuple[object, ...]
+    revision: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,13 +158,28 @@ class MaticSlamSceneView(HomeAssistantView):
         self._versions: dict[str, deque[_CachedScene]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._epochs: dict[str, int] = {}
+        self._generations: dict[str, _SceneGeneration] = {}
 
     def clear_entry(self, entry_id: str) -> None:
         """Forget all in-memory scene material retained for one robot."""
         self._cache.pop(entry_id, None)
         self._versions.pop(entry_id, None)
         self._locks.pop(entry_id, None)
+        self._generations.pop(entry_id, None)
         self._epochs[entry_id] = self._epochs.get(entry_id, 0) + 1
+
+    def current_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
+        """Return a monotonic revision covering SLAM and floor-plan changes."""
+        key = _scene_snapshot_key(runtime)
+        current = self._generations.get(entry_id)
+        if current is not None and current.key == key:
+            return current.revision
+        revision = max(
+            runtime.slam_map.revision,
+            current.revision + 1 if current is not None else 0,
+        )
+        self._generations[entry_id] = _SceneGeneration(key, revision)
+        return revision
 
     def scene_for_revision(self, entry_id: str, revision: int) -> _CachedScene | None:
         """Return a recent in-memory base for a delta request."""
@@ -172,7 +198,7 @@ class MaticSlamSceneView(HomeAssistantView):
         """Encode or return the current coherent scene snapshot."""
         data = runtime.coordinator.data
         epoch = self._epochs.get(entry_id, 0)
-        key = (runtime.slam_map.revision, data.floor_plan)
+        key = _scene_snapshot_key(runtime)
         cached = self._cache.get(entry_id)
         if cached is not None and cached.key == key:
             return cached
@@ -189,19 +215,27 @@ class MaticSlamSceneView(HomeAssistantView):
                 return cached
             for _attempt in range(SCENE_ENCODE_ATTEMPTS):
                 data = runtime.coordinator.data
-                revision = runtime.slam_map.revision
+                map_revision = runtime.slam_map.revision
+                identity = runtime.slam_map.mission_identity
                 floor_plan = data.floor_plan
-                key = (revision, floor_plan)
+                key = (map_revision, identity, floor_plan)
                 cached = self._cache.get(entry_id)
                 if cached is not None and cached.key == key:
                     return cached
                 entries = runtime.slam_map.entries()
+                floor_plan_coherent = _mission_matches_floor_plan(identity, floor_plan)
                 try:
                     encoded = await hass.async_add_executor_job(
-                        partial(_encode_scene_entries, entries, floor_plan)
+                        partial(
+                            _encode_scene_entries,
+                            entries,
+                            floor_plan if floor_plan_coherent else None,
+                        )
                     )
                 except DecodeError:
-                    if not _scene_snapshot_is_current(runtime, revision, floor_plan):
+                    if not _scene_snapshot_is_current(
+                        runtime, map_revision, identity, floor_plan
+                    ):
                         continue
                     raise
                 if (
@@ -209,12 +243,17 @@ class MaticSlamSceneView(HomeAssistantView):
                     or _runtime_for_entry(hass, entry_id) is not runtime
                 ):
                     return None
-                previous_revision = (
-                    cached.revision + 1 if cached is not None else revision
-                )
-                scene_revision = max(revision, previous_revision)
+                if not _scene_snapshot_is_current(
+                    runtime, map_revision, identity, floor_plan
+                ):
+                    continue
+                scene_revision = self.current_revision(entry_id, runtime)
                 cached = _CachedScene(
-                    key, encoded.payload, encoded.etag, scene_revision
+                    key,
+                    encoded.payload,
+                    encoded.etag,
+                    scene_revision,
+                    floor_plan_coherent,
                 )
                 self._cache[entry_id] = cached
                 versions = self._versions.setdefault(
@@ -251,6 +290,7 @@ class MaticSlamSceneView(HomeAssistantView):
                     **PRIVATE_NO_STORE_HEADERS,
                     "ETag": cached.etag,
                     "X-Matic-Revision": str(cached.revision),
+                    "X-Matic-Floor-Coherent": _header_bool(cached.floor_plan_coherent),
                 },
             )
         return web.Response(
@@ -260,6 +300,7 @@ class MaticSlamSceneView(HomeAssistantView):
                 **PRIVATE_NO_STORE_HEADERS,
                 "ETag": cached.etag,
                 "X-Matic-Revision": str(cached.revision),
+                "X-Matic-Floor-Coherent": _header_bool(cached.floor_plan_coherent),
             },
         )
 
@@ -302,7 +343,12 @@ class MaticSlamDeltaView(HomeAssistantView):
             )
         if current.revision == since:
             changed = asyncio.Event()
-            remove_listener = runtime.slam_map.async_add_listener(changed.set)
+            remove_listeners = [runtime.slam_map.async_add_listener(changed.set)]
+            coordinator_subscribe = getattr(
+                runtime.coordinator, "async_add_listener", None
+            )
+            if callable(coordinator_subscribe):
+                remove_listeners.append(coordinator_subscribe(changed.set))
             try:
                 if current.revision == since:
                     try:
@@ -314,10 +360,14 @@ class MaticSlamDeltaView(HomeAssistantView):
                             headers={
                                 **PRIVATE_NO_STORE_HEADERS,
                                 "X-Matic-Revision": str(since),
+                                "X-Matic-Floor-Coherent": _header_bool(
+                                    current.floor_plan_coherent
+                                ),
                             },
                         )
             finally:
-                remove_listener()
+                for remove_listener in remove_listeners:
+                    remove_listener()
         if _runtime_for_entry(hass, entry_id) is not runtime:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -338,6 +388,7 @@ class MaticSlamDeltaView(HomeAssistantView):
                 headers={
                     **PRIVATE_NO_STORE_HEADERS,
                     "X-Matic-Revision": str(since),
+                    "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
                 },
             )
         base = self._scene_view.scene_for_revision(entry_id, since)
@@ -360,6 +411,7 @@ class MaticSlamDeltaView(HomeAssistantView):
                     **PRIVATE_NO_STORE_HEADERS,
                     "ETag": current.etag,
                     "X-Matic-Revision": str(current.revision),
+                    "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
                 },
             )
         assert base is not None
@@ -371,6 +423,7 @@ class MaticSlamDeltaView(HomeAssistantView):
                 "ETag": current.etag,
                 "X-Matic-Base-Revision": str(base.revision),
                 "X-Matic-Revision": str(current.revision),
+                "X-Matic-Floor-Coherent": _header_bool(current.floor_plan_coherent),
             },
         )
 
@@ -389,18 +442,43 @@ class MaticSlamHistoryView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        snapshots = [
+        current_token = (
+            runtime.slam_map.mission_identity.mission_token
+            if runtime.slam_map.mission_identity is not None
+            else None
+        )
+        current_snapshots = _mission_history(runtime)
+        floors = [
             {
-                "id": snapshot.snapshot_id,
-                "created_at": snapshot.created_at.isoformat(),
-                "revision": snapshot.revision,
-                "point_count": snapshot.point_count,
-                "scene_url": history_scene_api_url(entry_id, snapshot.snapshot_id),
+                "id": "current",
+                "active": True,
+                "read_only": False,
+                "snapshots": _history_metadata(entry_id, current_snapshots),
             }
-            for snapshot in runtime.slam_history.catalog()
         ]
+        saved_ordinal = 0
+        for (
+            mission_token,
+            mission_snapshots,
+        ) in runtime.slam_history.catalogs_by_mission():
+            if mission_token == current_token:
+                continue
+            saved_ordinal += 1
+            floors.append(
+                {
+                    "id": f"saved-{saved_ordinal}",
+                    "active": False,
+                    "read_only": True,
+                    "ordinal": saved_ordinal,
+                    "snapshots": _history_metadata(entry_id, mission_snapshots),
+                }
+            )
         return self.json(
-            {"entry_id": entry_id, "snapshots": snapshots},
+            {
+                "entry_id": entry_id,
+                "snapshots": _history_metadata(entry_id, current_snapshots),
+                "floors": floors,
+            },
             headers=PRIVATE_NO_STORE_HEADERS,
         )
 
@@ -421,7 +499,22 @@ class MaticSlamHistorySceneView(HomeAssistantView):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
-        scene = await runtime.slam_history.async_scene(snapshot_id)
+        snapshot = next(
+            (
+                candidate
+                for candidate in runtime.slam_history.catalog()
+                if candidate.snapshot_id == snapshot_id
+                and candidate.mission_token is not None
+            ),
+            None,
+        )
+        if snapshot is None:
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
+        scene = await runtime.slam_history.async_scene(
+            snapshot_id, mission_token=snapshot.mission_token
+        )
         if scene is None:
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -513,14 +606,20 @@ class MaticSlamPoseView(HomeAssistantView):
                     )
                     self._cache[entry_id] = cached
         data = runtime.coordinator.data
-        position = resolve_robot_map_position(
-            data.floor_plan, cached.pose, data.operational.current_area
+        floor_plan_coherent = runtime.slam_map.floor_plan_is_current(data.floor_plan)
+        position = (
+            resolve_robot_map_position(
+                data.floor_plan, cached.pose, data.operational.current_area
+            )
+            if floor_plan_coherent
+            else None
         )
         return self.json(
             {
                 "position": list(position[:2]) if position is not None else None,
                 "source": position[2] if position is not None else "unavailable",
                 "revision": runtime.slam_map.revision,
+                "map_floor_coherent": floor_plan_coherent,
                 "pose_revision": cached.revision,
                 "pose_age_seconds": round(max(0.0, monotonic() - cached.fetched_at), 3),
                 "pose_freshness": cached.freshness,
@@ -535,9 +634,14 @@ class MaticSlamCatalogView(HomeAssistantView):
     url = CATALOG_API_URL
     name = "api:matic_robot:slam_entries"
 
-    def __init__(self, area_editor_url: str) -> None:
+    def __init__(
+        self,
+        area_editor_url: str,
+        scene_view: MaticSlamSceneView | None = None,
+    ) -> None:
         """Initialize the catalog with the private area-editor module route."""
         self._area_editor_url = area_editor_url
+        self._scene_view = scene_view
 
     @require_admin
     async def get(self, request: web.Request) -> web.Response:
@@ -549,6 +653,9 @@ class MaticSlamCatalogView(HomeAssistantView):
             if runtime is None:
                 continue
             health = runtime.slam_map.health
+            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(
+                runtime.coordinator.data.floor_plan
+            )
             entries.append(
                 {
                     "entry_id": entry.entry_id,
@@ -559,8 +666,16 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "areas_url": areas_api_url(entry.entry_id),
                     "plans_url": plans_api_url(entry.entry_id),
                     "area_editor_url": self._area_editor_url,
-                    "history_count": len(runtime.slam_history.catalog()),
-                    "map_revision": runtime.slam_map.revision,
+                    "history_count": len(_mission_history(runtime)),
+                    "history_floor_count": len(
+                        runtime.slam_history.catalogs_by_mission()
+                    ),
+                    "map_revision": self._scene_view.current_revision(
+                        entry.entry_id, runtime
+                    )
+                    if self._scene_view is not None
+                    else runtime.slam_map.revision,
+                    "map_floor_coherent": floor_plan_coherent,
                     "map_health": health.state,
                     "map_complete": health.complete,
                     "map_truncated": health.truncated,
@@ -606,7 +721,11 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
-        if floor_plan is None or not floor_plan.rooms:
+        if (
+            floor_plan is None
+            or not floor_plan.rooms
+            or not runtime.slam_map.floor_plan_is_current(floor_plan)
+        ):
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )
@@ -656,7 +775,11 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
-        if floor_plan is None or not floor_plan.rooms:
+        if (
+            floor_plan is None
+            or not floor_plan.rooms
+            or not runtime.slam_map.floor_plan_is_current(floor_plan)
+        ):
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
             )
@@ -817,10 +940,59 @@ def _encode_scene_entries(
 
 
 def _scene_snapshot_is_current(
-    runtime: MaticRuntimeData, revision: int, floor_plan: FloorPlan | None
+    runtime: MaticRuntimeData,
+    revision: int,
+    identity: SlamMapIdentity | None,
+    floor_plan: FloorPlan | None,
 ) -> bool:
     """Return whether an encoded snapshot still matches live map identity."""
     return (
         runtime.slam_map.revision == revision
+        and runtime.slam_map.mission_identity == identity
         and runtime.coordinator.data.floor_plan == floor_plan
     )
+
+
+def _scene_snapshot_key(runtime: MaticRuntimeData) -> tuple[object, ...]:
+    """Return the complete private identity of the currently renderable scene."""
+    return (
+        runtime.slam_map.revision,
+        runtime.slam_map.mission_identity,
+        runtime.coordinator.data.floor_plan,
+    )
+
+
+def _mission_matches_floor_plan(
+    identity: SlamMapIdentity | None, floor_plan: FloorPlan | None
+) -> bool:
+    return identity is not None and identity.matches_floor_plan(floor_plan)
+
+
+def _header_bool(value: bool) -> str:
+    return "1" if value else "0"
+
+
+def _mission_history(
+    runtime: MaticRuntimeData,
+) -> tuple[SlamHistorySnapshot, ...]:
+    """Return retained scenes proven to belong to the active SLAM mission."""
+    identity = runtime.slam_map.mission_identity
+    if identity is None:
+        return ()
+    return runtime.slam_history.catalog_for_mission(identity.mission_token)
+
+
+def _history_metadata(
+    entry_id: str, snapshots: tuple[SlamHistorySnapshot, ...]
+) -> list[dict[str, object]]:
+    """Return bounded, content-free history metadata for the admin UI."""
+    return [
+        {
+            "id": snapshot.snapshot_id,
+            "created_at": snapshot.created_at.isoformat(),
+            "revision": snapshot.revision,
+            "point_count": snapshot.point_count,
+            "scene_url": history_scene_api_url(entry_id, snapshot.snapshot_id),
+        }
+        for snapshot in snapshots
+    ]

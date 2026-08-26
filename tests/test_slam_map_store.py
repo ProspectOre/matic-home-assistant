@@ -5,13 +5,17 @@ from __future__ import annotations
 import asyncio
 import base64
 from collections import defaultdict
+from dataclasses import replace
+from threading import get_ident
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from google.protobuf.message import DecodeError
 
+from custom_components.matic_robot import slam_map_store as slam_map_store_module
 from custom_components.matic_robot.client.exceptions import CannotConnectError
-from custom_components.matic_robot.client.models import HermesCollectionEntry
+from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import (
     MAX_HEALTH_COUNTER,
     SlamMapStore,
@@ -36,6 +40,12 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     assert store.entries() == (entry,)
     assert store.revision == 1
     assert store.decoded_tiles() == (tile,)
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 0x1234ABCD
+    assert store.floor_plan_is_current(
+        FloorPlan(0x1234ABCD, "partition", b"partition", ())
+    )
+    assert not store.floor_plan_is_current(FloorPlan(2, "partition", b"partition", ()))
 
     await store.async_add(entry)
     assert store.revision == 1
@@ -44,18 +54,19 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     await restored.async_load()
     assert restored.tile_count == 1
     assert restored.revision == 1
+    assert restored.mission_identity == store.mission_identity
 
-    replacement = synthetic_slam_entry(mission=b"synthetic-new-mission")
+    replacement = synthetic_slam_entry(mission_id=2)
     with patch("custom_components.matic_robot.slam_map_store.SAVE_DELAY_SECONDS", 0):
         await restored.async_add(replacement)
-        await restored.async_add_structure(
-            synthetic_structure_entry(mission=b"synthetic-new-mission")
-        )
+        await restored.async_add_structure(synthetic_structure_entry(mission_id=2))
     await asyncio.sleep(0)
     await hass.async_block_till_done()
     assert restored.tile_count == 1
     assert restored.revision == 2
     assert restored.decoded_tiles()[0].mission_token != tile.mission_token
+    assert restored.mission_identity is not None
+    assert restored.mission_identity.mission_id == 2
 
     await restored.async_remove()
     assert restored.tile_count == 0
@@ -64,6 +75,37 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     empty = SlamMapStore(hass, "synthetic-entry")
     await empty.async_load()
     assert empty.tile_count == 0
+
+
+async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> None:
+    store = SlamMapStore(hass, "mission-identity-entry")
+    assert store.mission_identity is None
+    opaque_entry = synthetic_slam_entry(mission=b"\x00")
+    opaque_tile = await store.async_add(opaque_entry)
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id is None
+
+    store._async_cache_entry(
+        opaque_entry,
+        replace(opaque_tile, mission_id=7),
+        structural=False,
+    )
+    assert store.mission_identity.mission_id == 7
+    with pytest.raises(DecodeError, match="identity changed"):
+        store._async_cache_entry(
+            opaque_entry,
+            replace(opaque_tile, mission_id=8),
+            structural=False,
+        )
+
+    candidate_entry = synthetic_slam_entry(mission_id=2)
+    candidate_tile = await store.async_add(candidate_entry)
+    with pytest.raises(DecodeError, match=r"candidate.*inconsistent"):
+        store._async_cache_entry(
+            candidate_entry,
+            replace(candidate_tile, mission_id=3),
+            structural=False,
+        )
 
 
 async def test_slam_map_store_ignores_corrupt_private_cache(hass) -> None:
@@ -461,9 +503,20 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
     }
     await store._store.async_save({"tiles": [item] * 5, "structure_tiles": [item] * 5})
     original_executor = hass.async_add_executor_job
+    original_photo_decoder = slam_map_store_module.decode_slam_tile
+    original_structure_decoder = slam_map_store_module.decode_slam_structure_tile
+    event_loop_thread = get_ident()
 
     async def run_executor(target, *args):
         return await original_executor(target, *args)
+
+    def decode_photo_off_loop(item):
+        assert get_ident() != event_loop_thread
+        return original_photo_decoder(item)
+
+    def decode_structure_off_loop(item):
+        assert get_ident() != event_loop_thread
+        return original_structure_decoder(item)
 
     with (
         patch(
@@ -475,6 +528,16 @@ async def test_slam_map_store_load_is_off_loop_and_bounds_input_items(hass) -> N
             "async_add_executor_job",
             new=AsyncMock(side_effect=run_executor),
         ) as executor,
+        patch.object(
+            slam_map_store_module,
+            "decode_slam_tile",
+            side_effect=decode_photo_off_loop,
+        ),
+        patch.object(
+            slam_map_store_module,
+            "decode_slam_structure_tile",
+            side_effect=decode_structure_off_loop,
+        ),
     ):
         await store.async_load()
 

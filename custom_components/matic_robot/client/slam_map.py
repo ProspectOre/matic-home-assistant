@@ -69,6 +69,7 @@ class SlamTile:
     floor_rgba: bytes
     surface_bits: bytes
     rgb_data: bytes
+    mission_id: int | None = None
 
     @property
     def voxels(self) -> tuple[SlamVoxel, ...]:
@@ -85,6 +86,7 @@ class SlamStructureTile:
     mission_token: str
     occupancy: bytes
     semantics: bytes
+    mission_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -449,6 +451,7 @@ def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
 
     mission = first_bytes(entry.value, 5)
     mission_token = hashlib.sha256(mission).hexdigest()
+    mission_id = decode_slam_mission_id(mission)
     floor_rgba = _decode_floor_rgba(floor_data)
     return SlamTile(
         page_x,
@@ -457,6 +460,7 @@ def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
         floor_rgba,
         surface_bits,
         rgb_data,
+        mission_id,
     )
 
 
@@ -490,7 +494,31 @@ def decode_slam_structure_tile(entry: HermesCollectionEntry) -> SlamStructureTil
         hashlib.sha256(mission).hexdigest(),
         occupancy,
         semantics,
+        decode_slam_mission_id(mission),
     )
+
+
+def decode_slam_mission_id(mission: bytes) -> int | None:
+    """Return the verified fixed-width mission identifier when available.
+
+    Older retained synthetic/private-map data treated the mission envelope as
+    deliberately opaque.  Keep those scenes renderable, but return ``None``
+    unless the value has the exact mission shape independently verified by the
+    trajectory and semantic-map decoders.  Callers can therefore fail closed
+    whenever floor identity matters without guessing at unknown payloads.
+    """
+    try:
+        fields = decode_fields(mission)
+    except DecodeError:
+        return None
+    if (
+        len(fields) != 1
+        or fields[0].number != 2
+        or fields[0].wire_type != 5
+        or not isinstance(fields[0].value, bytes)
+    ):
+        return None
+    return int(struct.unpack("<I", fields[0].value)[0])
 
 
 def decode_slam_semantic_tile(entry: HermesCollectionEntry) -> SlamSemanticTile:

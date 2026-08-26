@@ -28,7 +28,9 @@ from custom_components.matic_robot.client.models import (
     RobotPose,
     Room,
 )
+from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import (
     AREAS_API_URL,
     CATALOG_API_URL,
@@ -78,42 +80,58 @@ def _floor_plan() -> FloorPlan:
 def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
     floor_plan = _floor_plan()
     robot_pose = RobotPose(0.1, 0.2, 0.0) if pose else None
+    map_entries = (
+        entries
+        if entries is not None
+        else (synthetic_slam_entry(page_x=0, page_y=0, mission_id=1),)
+    )
+    identity = None
+    if map_entries:
+        tile = decode_slam_tile(map_entries[0])
+        identity = SlamMapIdentity(tile.mission_token, tile.mission_id)
+    slam_map = SimpleNamespace(
+        revision=revision,
+        mission_identity=identity,
+        map_complete=True,
+        tile_count=2,
+        structure_tile_count=1,
+        health=SimpleNamespace(
+            state="ready",
+            complete=True,
+            truncated=False,
+            photo_tiles=2,
+            structure_tiles=1,
+            dropped_photo_tiles=0,
+            dropped_structure_tiles=0,
+            invalid_tiles=0,
+            stream_state="connected",
+            stream_failures=0,
+        ),
+        entries=MagicMock(return_value=map_entries),
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
+    slam_map.floor_plan_is_current = MagicMock(
+        side_effect=lambda candidate: (
+            slam_map.mission_identity is not None
+            and slam_map.mission_identity.matches_floor_plan(candidate)
+        )
+    )
     return SimpleNamespace(
         client=SimpleNamespace(async_get_pose=AsyncMock(return_value=robot_pose)),
-        slam_map=SimpleNamespace(
-            revision=revision,
-            map_complete=True,
-            tile_count=2,
-            structure_tile_count=1,
-            health=SimpleNamespace(
-                state="ready",
-                complete=True,
-                truncated=False,
-                photo_tiles=2,
-                structure_tiles=1,
-                dropped_photo_tiles=0,
-                dropped_structure_tiles=0,
-                invalid_tiles=0,
-                stream_state="connected",
-                stream_failures=0,
-            ),
-            entries=MagicMock(
-                return_value=entries
-                if entries is not None
-                else (synthetic_slam_entry(page_x=0, page_y=0),)
-            ),
-            async_add_listener=MagicMock(return_value=MagicMock()),
-        ),
+        slam_map=slam_map,
         coordinator=SimpleNamespace(
+            async_add_listener=MagicMock(return_value=MagicMock()),
             data=SimpleNamespace(
                 info=SimpleNamespace(serial_number="synthetic-serial"),
                 floor_plan=floor_plan,
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
-            )
+            ),
         ),
         slam_history=SimpleNamespace(
             catalog=MagicMock(return_value=()),
+            catalog_for_mission=MagicMock(return_value=()),
+            catalogs_by_mission=MagicMock(return_value=()),
             async_scene=AsyncMock(return_value=None),
         ),
         cleaning_plans=SimpleNamespace(
@@ -172,6 +190,25 @@ def _json_request(
     return request
 
 
+def _scene_metadata(payload: bytes) -> dict[str, object]:
+    metadata_bytes = int.from_bytes(payload[12:16], "little")
+    return json.loads(payload[24 : 24 + metadata_bytes])
+
+
+def _set_map_mission(runtime: SimpleNamespace, mission_id: int, revision: int) -> None:
+    entry = synthetic_slam_entry(
+        page_x=0,
+        page_y=0,
+        mission_id=mission_id,
+    )
+    tile = decode_slam_tile(entry)
+    runtime.slam_map.mission_identity = SlamMapIdentity(
+        tile.mission_token, tile.mission_id
+    )
+    runtime.slam_map.entries.return_value = (entry,)
+    runtime.slam_map.revision = revision
+
+
 def _entry(
     runtime,
     *,
@@ -212,12 +249,83 @@ async def test_scene_view_serves_and_etag_caches_compact_private_payload() -> No
     assert hass.async_add_executor_job.await_count == 2
 
 
+async def test_scene_withholds_floor_overlays_until_mission_identity_matches() -> None:
+    runtime = _runtime()
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan, mission_id=2
+    )
+    hass = _hass(_entry(runtime))
+
+    response = await MaticSlamSceneView().get(_request(hass), "entry")
+    pose = await MaticSlamPoseView().get(_request(hass), "entry")
+    areas_get = await MaticAreasView().get(_request(hass), "entry")
+    areas_post = await MaticAreasView().post(
+        _json_request(
+            hass,
+            "POST",
+            {
+                "name": "Synthetic area",
+                "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            },
+        ),
+        "entry",
+    )
+
+    assert response.status == HTTPStatus.OK
+    assert response.headers["X-Matic-Floor-Coherent"] == "0"
+    assert _scene_metadata(response.body)["rooms"] == []
+    assert json.loads(pose.body)["position"] is None
+    assert json.loads(pose.body)["map_floor_coherent"] is False
+    assert areas_get.status == HTTPStatus.CONFLICT
+    assert areas_post.status == HTTPStatus.CONFLICT
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+
+@pytest.mark.parametrize("first_change", ["floor", "slam"])
+async def test_scene_generation_covers_both_multi_floor_transition_orders(
+    first_change: str,
+) -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    catalog_view = MaticSlamCatalogView("/editor.js", scene_view)
+
+    initial = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
+    assert initial["map_revision"] == 7
+    assert initial["map_floor_coherent"] is True
+
+    if first_change == "floor":
+        runtime.coordinator.data.floor_plan = replace(
+            runtime.coordinator.data.floor_plan, mission_id=2
+        )
+    else:
+        _set_map_mission(runtime, 2, 8)
+    transition = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
+    assert transition["map_revision"] > initial["map_revision"]
+    assert transition["map_floor_coherent"] is False
+
+    if first_change == "floor":
+        _set_map_mission(runtime, 2, 8)
+    else:
+        runtime.coordinator.data.floor_plan = replace(
+            runtime.coordinator.data.floor_plan, mission_id=2
+        )
+    settled = json.loads((await catalog_view.get(_request(hass))).body)["entries"][0]
+    assert settled["map_revision"] > transition["map_revision"]
+    assert settled["map_floor_coherent"] is True
+
+    response = await scene_view.get(_request(hass), "entry")
+    assert response.headers["X-Matic-Floor-Coherent"] == "1"
+    assert len(_scene_metadata(response.body)["rooms"]) == 1
+
+
 @pytest.mark.parametrize("change", ["revision", "floor"])
 async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
     change: str,
 ) -> None:
     runtime = _runtime()
-    captured_floor_plan = runtime.coordinator.data.floor_plan
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
     calls = 0
@@ -230,7 +338,9 @@ async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
             if change == "revision":
                 runtime.slam_map.revision = 8
             else:
-                runtime.coordinator.data.floor_plan = _floor_plan()
+                runtime.coordinator.data.floor_plan = replace(
+                    _floor_plan(), mission_id=2
+                )
         return encoded
 
     hass.async_add_executor_job.side_effect = mutate_during_first_encode
@@ -238,11 +348,15 @@ async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
     response = await view.get(_request(hass), "entry")
 
     assert response.status == HTTPStatus.OK
-    assert calls == 1
-    assert view._cache["entry"].key == (7, captured_floor_plan)
+    assert calls == 2
+    assert view._cache["entry"].key == (
+        runtime.slam_map.revision,
+        runtime.slam_map.mission_identity,
+        runtime.coordinator.data.floor_plan,
+    )
 
 
-async def test_scene_advances_coherent_snapshots_during_continuous_updates() -> None:
+async def test_scene_fails_closed_during_continuous_identity_updates() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
@@ -257,11 +371,11 @@ async def test_scene_advances_coherent_snapshots_during_continuous_updates() -> 
     first = await view.get(_request(hass), "entry")
     second = await view.get(_request(hass), "entry")
 
-    assert first.status == HTTPStatus.OK
-    assert second.status == HTTPStatus.OK
-    assert hass.async_add_executor_job.await_count == 2
-    assert view._cache["entry"].key[0] == 8
-    assert runtime.slam_map.revision == 9
+    assert first.status == HTTPStatus.CONFLICT
+    assert second.status == HTTPStatus.CONFLICT
+    assert hass.async_add_executor_job.await_count == 4
+    assert view._cache == {}
+    assert runtime.slam_map.revision == 11
 
 
 async def test_scene_revision_advances_when_room_metadata_changes() -> None:
@@ -375,7 +489,7 @@ async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -
     responses = await asyncio.gather(*requests)
 
     assert [response.status for response in responses] == [HTTPStatus.OK] * 24
-    hass.async_add_executor_job.assert_awaited_once()
+    assert hass.async_add_executor_job.await_count == 2
 
 
 async def test_scene_waiter_reuses_cache_if_revision_returns() -> None:
@@ -443,6 +557,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "position": [0.1, 0.2],
         "source": "exact_pose",
         "revision": 7,
+        "map_floor_coherent": True,
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
@@ -469,6 +584,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "position": None,
         "source": "unavailable",
         "revision": 7,
+        "map_floor_coherent": False,
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
@@ -622,7 +738,9 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "plans_url": f"/api/matic_robot/plans/{loaded.entry_id}",
                 "area_editor_url": "/matic_robot/test/room-plan-editor.js",
                 "history_count": 0,
+                "history_floor_count": 0,
                 "map_revision": 7,
+                "map_floor_coherent": True,
                 "map_health": "ready",
                 "map_complete": True,
                 "map_truncated": False,
@@ -1066,6 +1184,41 @@ async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
     ).status == HTTPStatus.NOT_FOUND
 
 
+async def test_delta_view_wakes_when_only_the_floor_plan_changes() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    initial = await scene_view.get(_request(hass), "entry")
+    assert initial.headers["X-Matic-Revision"] == "7"
+    subscribed = asyncio.Event()
+    floor_listener = None
+    remove_floor_listener = MagicMock()
+
+    def subscribe(listener):
+        nonlocal floor_listener
+        floor_listener = listener
+        subscribed.set()
+        return remove_floor_listener
+
+    runtime.coordinator.async_add_listener.side_effect = subscribe
+    waiting = asyncio.create_task(
+        MaticSlamDeltaView(scene_view).get(_request(hass, path="/?since=7"), "entry")
+    )
+    await asyncio.wait_for(subscribed.wait(), timeout=1)
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan, mission_id=2
+    )
+    assert floor_listener is not None
+    floor_listener()
+
+    response = await asyncio.wait_for(waiting, timeout=1)
+
+    assert response.status == HTTPStatus.OK
+    assert response.headers["X-Matic-Revision"] == "8"
+    assert response.headers["X-Matic-Floor-Coherent"] == "0"
+    remove_floor_listener.assert_called_once()
+
+
 @pytest.mark.parametrize(
     ("result", "status"),
     [(DecodeError(), HTTPStatus.CONFLICT), (None, HTTPStatus.NOT_FOUND)],
@@ -1096,7 +1249,7 @@ async def test_delta_view_handles_initial_scene_failure(result, status) -> None:
 )
 async def test_delta_view_revalidates_scene_after_wakeup(second, status) -> None:
     runtime = _runtime()
-    current = SimpleNamespace(revision=7)
+    current = SimpleNamespace(revision=7, floor_plan_coherent=True)
     scene_view = SimpleNamespace(
         async_scene=AsyncMock(),
         scene_for_revision=MagicMock(),
@@ -1126,7 +1279,7 @@ async def test_delta_view_revalidates_scene_after_wakeup(second, status) -> None
 async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
     runtime = _runtime()
     entry = _entry(runtime)
-    current = SimpleNamespace(revision=7)
+    current = SimpleNamespace(revision=7, floor_plan_coherent=True)
     scene_view = SimpleNamespace(async_scene=AsyncMock(return_value=current))
 
     def unload(listener):
@@ -1146,18 +1299,34 @@ async def test_delta_view_rejects_entry_unload_after_wakeup() -> None:
 
 async def test_history_views_list_serve_hide_and_require_admin() -> None:
     runtime = _runtime()
+    current_token = runtime.slam_map.mission_identity.mission_token
     snapshot = SimpleNamespace(
         snapshot_id="0123456789abcdef01234567",
         created_at=datetime(2026, 7, 26, 12, 0, tzinfo=UTC),
         revision=5,
         point_count=1025,
+        mission_token=current_token,
     )
-    runtime.slam_history.catalog.return_value = (snapshot,)
+    saved_snapshot = SimpleNamespace(
+        snapshot_id="89abcdef0123456701234567",
+        created_at=datetime(2026, 7, 25, 12, 0, tzinfo=UTC),
+        revision=3,
+        point_count=512,
+        mission_token="1" * 64,
+    )
+    runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
+    runtime.slam_history.catalog.return_value = (snapshot, saved_snapshot)
+    runtime.slam_history.catalogs_by_mission.return_value = (
+        (current_token, (snapshot,)),
+        (saved_snapshot.mission_token, (saved_snapshot,)),
+    )
     scene = (
         await MaticSlamSceneView().get(_request(_hass(_entry(runtime))), "entry")
     ).body
-    runtime.slam_history.async_scene.side_effect = lambda snapshot_id: (
-        scene if snapshot_id == snapshot.snapshot_id else None
+    runtime.slam_history.async_scene.side_effect = lambda snapshot_id, **_kwargs: (
+        scene
+        if snapshot_id in {snapshot.snapshot_id, saved_snapshot.snapshot_id}
+        else None
     )
     hass = _hass(_entry(runtime))
 
@@ -1175,6 +1344,43 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 ),
             }
         ],
+        "floors": [
+            {
+                "id": "current",
+                "active": True,
+                "read_only": False,
+                "snapshots": [
+                    {
+                        "id": snapshot.snapshot_id,
+                        "created_at": "2026-07-26T12:00:00+00:00",
+                        "revision": 5,
+                        "point_count": 1025,
+                        "scene_url": (
+                            "/api/matic_robot/slam_history_scene/entry/"
+                            "0123456789abcdef01234567"
+                        ),
+                    }
+                ],
+            },
+            {
+                "id": "saved-1",
+                "active": False,
+                "read_only": True,
+                "ordinal": 1,
+                "snapshots": [
+                    {
+                        "id": saved_snapshot.snapshot_id,
+                        "created_at": "2026-07-25T12:00:00+00:00",
+                        "revision": 3,
+                        "point_count": 512,
+                        "scene_url": (
+                            "/api/matic_robot/slam_history_scene/entry/"
+                            "89abcdef0123456701234567"
+                        ),
+                    }
+                ],
+            },
+        ],
     }
     response = await MaticSlamHistorySceneView().get(
         _request(hass), "entry", snapshot.snapshot_id
@@ -1182,9 +1388,28 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     assert response.status == HTTPStatus.OK
     assert response.body == scene
     assert response.headers["ETag"] == f'"{snapshot.snapshot_id}"'
+    saved_response = await MaticSlamHistorySceneView().get(
+        _request(hass), "entry", saved_snapshot.snapshot_id
+    )
+    assert saved_response.status == HTTPStatus.OK
+    runtime.slam_history.async_scene.assert_awaited_with(
+        saved_snapshot.snapshot_id,
+        mission_token=saved_snapshot.mission_token,
+    )
+    runtime.slam_history.async_scene.side_effect = None
+    runtime.slam_history.async_scene.return_value = None
+    assert (
+        await MaticSlamHistorySceneView().get(
+            _request(hass), "entry", snapshot.snapshot_id
+        )
+    ).status == HTTPStatus.NOT_FOUND
     assert (
         await MaticSlamHistorySceneView().get(_request(hass), "entry", "missing")
     ).status == HTTPStatus.NOT_FOUND
+
+    runtime.slam_map.mission_identity = None
+    no_active_floor = await MaticSlamHistoryView().get(_request(hass), "entry")
+    assert json.loads(no_active_floor.body)["snapshots"] == []
 
     with pytest.raises(Unauthorized):
         await MaticSlamHistoryView().get(_request(hass, admin=False), "entry")

@@ -25,6 +25,7 @@ from custom_components.matic_robot.client.slam_map import (
     SEMANTIC_BYTES,
     SURFACE_BYTES,
     SlamTile,
+    decode_slam_mission_id,
     decode_slam_semantic_tile,
     decode_slam_structure_tile,
     decode_slam_tile,
@@ -60,7 +61,8 @@ def synthetic_slam_entry(
     *,
     page_x: int = 2,
     page_y: int = -1,
-    mission: bytes = b"synthetic-mission",
+    mission: bytes | None = None,
+    mission_id: int = 0x1234ABCD,
     malformed: str | None = None,
     surface_height: int = 7,
     surface_outer: int = 0,
@@ -68,6 +70,8 @@ def synthetic_slam_entry(
     with_rgb: bool = True,
 ) -> HermesCollectionEntry:
     """Build a byte-for-byte synthetic equivalent of the observed tile shape."""
+    if mission is None:
+        mission = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
     page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
     key = _bytes_field(1, page) + _bytes_field(2, mission)
 
@@ -120,10 +124,13 @@ def synthetic_structure_entry(
     *,
     page_x: int = 2,
     page_y: int = -1,
-    mission: bytes = b"synthetic-mission",
+    mission: bytes | None = None,
+    mission_id: int = 0x1234ABCD,
     malformed: str | None = None,
 ) -> HermesCollectionEntry:
     """Build a synthetic equivalent of an observed integrated-map page."""
+    if mission is None:
+        mission = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
     page = _varint_field(3, _sint32(page_x)) + _varint_field(4, _sint32(page_y))
     key = _bytes_field(1, page) + _bytes_field(2, mission)
     dimensions = b"".join(
@@ -207,10 +214,20 @@ def test_decode_slam_tile_matches_verified_geometry_and_texture() -> None:
 
     assert (tile.page_x, tile.page_y) == (2, -1)
     assert len(tile.mission_token) == 64
+    assert tile.mission_id == 0x1234ABCD
     assert tile.floor_rgba[:4] == bytes((12, 34, 56, 255))
     assert len(tile.floor_rgba) == 32 * 32 * 4
     assert len(tile.voxels) == 1
     assert (tile.voxels[0].x, tile.voxels[0].y, tile.voxels[0].z) == (64, -32, 0)
+
+
+def test_decode_slam_mission_id_requires_the_verified_exact_shape() -> None:
+    mission_id = 0x1234ABCD
+    mission = bytes((2 << 3 | 5,)) + struct.pack("<I", mission_id)
+
+    assert decode_slam_mission_id(mission) == mission_id
+    assert decode_slam_mission_id(b"opaque-mission") is None
+    assert decode_slam_mission_id(mission + _varint_field(3, 1)) is None
 
 
 def test_decode_slam_tile_transposes_floor_texture_axes() -> None:
@@ -486,6 +503,7 @@ def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None
 
     assert (tile.page_x, tile.page_y) == (2, -1)
     assert len(tile.mission_token) == 64
+    assert tile.mission_id == 0x1234ABCD
     assert tile.occupancy[991] == 0
     assert tile.occupancy[1023] == 3
     assert tile.occupancy[:4] == bytes((1, 1, 1, 1))

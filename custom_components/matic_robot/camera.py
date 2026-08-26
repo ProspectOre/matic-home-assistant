@@ -145,12 +145,14 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                 return self._cached_image
             entries = self._store.entries()
             structure_entries = self._store.structure_entries()
+            floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
             image = await self.hass.async_add_executor_job(
                 partial(
                     _render_photorealistic_entries,
                     entries,
                     structure_entries,
                     data,
+                    floor_plan_coherent=floor_plan_coherent,
                     width=requested_width,
                     height=requested_height,
                 )
@@ -168,6 +170,9 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "structural_tiles": self._store.structure_tile_count,
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
+            "map_floor_coherent": self._store.floor_plan_is_current(
+                self.coordinator.data.floor_plan
+            ),
             "source": "local_robot_slam",
             "scene_url": scene_api_url(self._config_entry.entry_id),
             "pose_url": pose_api_url(self._config_entry.entry_id),
@@ -179,19 +184,25 @@ def _render_photorealistic_entries(
     structure_entries: tuple[HermesCollectionEntry, ...],
     state: RobotState,
     *,
+    floor_plan_coherent: bool,
     width: int,
     height: int,
 ) -> bytes:
     """Decode and render the full private map away from the event loop."""
     tiles = tuple(decode_slam_tile(entry) for entry in entries)
     structures = tuple(decode_slam_structure_tile(entry) for entry in structure_entries)
-    position = resolve_robot_map_position(
-        state.floor_plan, state.pose, state.operational.current_area
+    floor_plan = state.floor_plan if floor_plan_coherent else None
+    position = (
+        resolve_robot_map_position(
+            floor_plan, state.pose, state.operational.current_area
+        )
+        if floor_plan is not None
+        else None
     )
     return render_slam_map(
         tiles,
         structure_tiles=structures,
-        floor_plan=state.floor_plan,
+        floor_plan=floor_plan,
         robot_position=position,
         width=width,
         height=height,

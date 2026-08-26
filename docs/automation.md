@@ -239,7 +239,20 @@ delta falls back to a complete scene in the same request. Select
 **History · Live** beneath the map to open the scrubber above the control, browse
 private time-spaced checkpoints, and return to live updates with **Live**. The
 panel remains discoverable and explains when no checkpoints have been saved yet.
-Checkpoints are capped at 12 items and 48 MiB compressed.
+Checkpoints are capped at 12 items and 48 MiB compressed. When checkpoints span
+more than one verified floor mission, the header adds a **Floor** selector. The
+active option is the current live floor. Other options use privacy-safe ordinal
+labels such as **Saved floor 1 · read only**; choosing one disables cleaning
+entry points and never asks the robot to switch floors. Firmware floor labels
+are not decoded or guessed.
+
+SLAM pages and the floor plan can update in either order after the robot is
+carried between floors. Map Studio correlates their independently verified
+mission identifiers before it draws room geometry, resolves pose, exposes
+custom-area coordinates, or stores a live checkpoint. While they differ, the
+status reports a floor transition and the dependent overlays fail closed. A
+same-floor incomplete capture may use that floor's last complete checkpoint,
+but history from another floor is never an automatic live fallback.
 
 Multiple entries keep scene, pose, ETag, timeline, and fallback state isolated.
 Unload clears browser buffers and backend scene caches. Catalog, scene, delta,

@@ -259,6 +259,8 @@ class MaticMapStudio extends HTMLElement {
     this._historyRequestUrl = undefined;
     this._historyEntryId = undefined;
     this._historySceneAbortController = undefined;
+    this._floors = [];
+    this._selectedFloorId = "current";
     this._selectedHistoryId = undefined;
     this._stableLiveSnapshotId = undefined;
     this._stableLiveSourceIdentity = undefined;
@@ -630,7 +632,12 @@ class MaticMapStudio extends HTMLElement {
   async _fetchHistory(state, force = false) {
     const url = state?.attributes?.history_url;
     const entryId = state?.attributes?.entry_id;
-    const identity = `${url || ""}:${state?.attributes?.history_count ?? ""}`;
+    const identity = [
+      url || "",
+      state?.attributes?.history_count ?? "",
+      state?.attributes?.history_floor_count ?? "",
+      state?.attributes?.map_revision ?? "",
+    ].join(":");
     if (!url) return;
     if (entryId !== this._historyEntryId) {
       this._historyAbortController?.abort();
@@ -639,6 +646,8 @@ class MaticMapStudio extends HTMLElement {
       this._historyUrl = undefined;
       this._historyIdentity = undefined;
       this._historyEntryId = entryId;
+      this._floors = [];
+      this._selectedFloorId = "current";
       this._selectedHistoryId = undefined;
       this._stableLiveSnapshotId = undefined;
       this._stableLiveSourceIdentity = undefined;
@@ -666,14 +675,28 @@ class MaticMapStudio extends HTMLElement {
       if (!response.ok) return;
       const payload = await response.json();
       if (controller.signal.aborted) return;
-      this._history = (Array.isArray(payload?.snapshots) ? payload.snapshots : [])
-        .filter((snapshot) =>
-          snapshot
-          && typeof snapshot.id === "string"
-          && typeof snapshot.scene_url === "string"
-          && snapshot.scene_url.startsWith("/")
-          && Number.isFinite(Date.parse(snapshot.created_at)))
-        .slice(-12);
+      const selectedWasSaved = this._selectedFloor()?.readOnly === true;
+      const selectedSnapshotId = this._selectedHistoryId;
+      this._floors = this._normaliseHistoryFloors(payload);
+      const retainedSavedFloor = selectedWasSaved && selectedSnapshotId
+        ? this._floors.find((floor) =>
+          floor.readOnly
+          && floor.snapshots.some(
+            (snapshot) => snapshot.id === selectedSnapshotId,
+          ))
+        : undefined;
+      if (selectedWasSaved && !retainedSavedFloor) {
+        this._selectedFloorId = "current";
+        this._selectedHistoryId = undefined;
+      } else if (retainedSavedFloor) {
+        this._selectedFloorId = retainedSavedFloor.id;
+      } else if (
+        !this._floors.some((floor) => floor.id === this._selectedFloorId)
+      ) {
+        this._selectedFloorId = "current";
+      }
+      const selectedFloor = this._selectedFloor();
+      this._history = selectedFloor?.snapshots || [];
       this._historyUrl = url;
       this._historyIdentity = identity;
       if (
@@ -682,9 +705,19 @@ class MaticMapStudio extends HTMLElement {
           (snapshot) => snapshot.id === this._selectedHistoryId,
         )
       ) {
-        this._selectedHistoryId = undefined;
+        this._selectedHistoryId = selectedFloor?.active
+          ? undefined
+          : this._history.at(-1)?.id;
       }
       this._syncTimeline();
+      if (!selectedFloor?.active && this._selectedHistoryId) {
+        const snapshot = this._history.find(
+          (candidate) => candidate.id === this._selectedHistoryId,
+        );
+        if (snapshot && this._sceneIdentity !== `history:${snapshot.id}`) {
+          this._loadHistoricalScene(snapshot);
+        }
+      }
     } catch (_error) {
       // The live scene remains available when timeline storage cannot be read.
     } finally {
@@ -706,16 +739,133 @@ class MaticMapStudio extends HTMLElement {
     }).format(timestamp);
   }
 
+  _validHistorySnapshots(value) {
+    return (Array.isArray(value) ? value : [])
+      .filter((snapshot) =>
+        snapshot
+        && typeof snapshot.id === "string"
+        && typeof snapshot.scene_url === "string"
+        && snapshot.scene_url.startsWith("/")
+        && Number.isFinite(Date.parse(snapshot.created_at)))
+      .slice(-12);
+  }
+
+  _normaliseHistoryFloors(payload) {
+    const fallbackCurrent = {
+      id: "current",
+      active: true,
+      readOnly: false,
+      ordinal: 0,
+      snapshots: this._validHistorySnapshots(payload?.snapshots),
+    };
+    if (!Array.isArray(payload?.floors)) return [fallbackCurrent];
+    let current = fallbackCurrent;
+    const saved = [];
+    const seen = new Set(["current"]);
+    for (const candidate of payload.floors.slice(0, 12)) {
+      if (!candidate || typeof candidate !== "object") continue;
+      if (candidate.id === "current" && candidate.active === true) {
+        current = {
+          ...fallbackCurrent,
+          snapshots: this._validHistorySnapshots(candidate.snapshots),
+        };
+        continue;
+      }
+      if (
+        typeof candidate.id !== "string"
+        || !/^saved-[a-zA-Z0-9_-]{1,64}$/.test(candidate.id)
+        || seen.has(candidate.id)
+        || candidate.active !== false
+        || candidate.read_only !== true
+        || !Number.isInteger(candidate.ordinal)
+        || candidate.ordinal < 1
+        || candidate.ordinal > 12
+      ) continue;
+      const snapshots = this._validHistorySnapshots(candidate.snapshots);
+      if (!snapshots.length) continue;
+      seen.add(candidate.id);
+      saved.push({
+        id: candidate.id,
+        active: false,
+        readOnly: true,
+        ordinal: candidate.ordinal,
+        snapshots,
+      });
+    }
+    return [current, ...saved];
+  }
+
+  _selectedFloor() {
+    return this._floors.find((floor) => floor.id === this._selectedFloorId)
+      || this._floors.find((floor) => floor.active)
+      || this._floors[0];
+  }
+
+  _floorLabel(floor) {
+    return floor?.active
+      ? this._localize("map_floor_current", "Current floor")
+      : this._localize(
+        "map_floor_saved",
+        "Saved floor {number}",
+        { number: floor?.ordinal || 1 },
+      );
+  }
+
+  _syncFloorSelector() {
+    const control = this.shadowRoot.querySelector(".floor-control");
+    const select = this.shadowRoot.querySelector(".floor-select");
+    if (!control || !select) return;
+    control.hidden = this._floors.length <= 1 || this._view === "rooms";
+    select.replaceChildren();
+    for (const floor of this._floors) {
+      const option = document.createElement("option");
+      option.value = floor.id;
+      option.textContent = floor.readOnly
+        ? this._localize(
+          "map_floor_saved_read_only",
+          "Saved floor {number} · read only",
+          { number: floor.ordinal },
+        )
+        : this._floorLabel(floor);
+      option.selected = floor.id === this._selectedFloorId;
+      select.append(option);
+    }
+  }
+
+  _selectFloor(floorId) {
+    const floor = this._floors.find((candidate) => candidate.id === floorId);
+    if (!floor || floor.id === this._selectedFloorId) return;
+    this._selectedFloorId = floor.id;
+    this._history = floor.snapshots;
+    this._historySceneAbortController?.abort();
+    if (floor.active) {
+      this._selectedHistoryId = undefined;
+      this._syncTimeline();
+      const state = this._catalogState();
+      if (state) this._fetchScene(state, true);
+      return;
+    }
+    const snapshot = this._history.at(-1);
+    this._selectedHistoryId = snapshot?.id;
+    this._syncTimeline();
+    if (snapshot) this._loadHistoricalScene(snapshot);
+  }
+
   _syncTimeline() {
     const timeline = this.shadowRoot.querySelector(".timeline");
     if (!timeline) return;
+    const floor = this._selectedFloor();
+    const hasLive = floor?.active !== false;
     const hasHistory = this._history.length > 0;
     timeline.hidden = this._view === "rooms";
+    this._syncFloorSelector();
     const panel = timeline.querySelector(".timeline-panel");
     panel.dataset.empty = String(!hasHistory);
     timeline.querySelector(".timeline-empty").hidden = hasHistory;
     const range = timeline.querySelector(".timeline-range");
-    const livePosition = this._history.length;
+    const livePosition = hasLive
+      ? this._history.length
+      : Math.max(0, this._history.length - 1);
     const selectedIndex = this._history.findIndex(
       (snapshot) => snapshot.id === this._selectedHistoryId,
     );
@@ -726,10 +876,15 @@ class MaticMapStudio extends HTMLElement {
     timeline.querySelector(".timeline-earlier").disabled = position <= 0;
     timeline.querySelector(".timeline-later").disabled = position >= livePosition;
     const live = timeline.querySelector(".timeline-live");
-    const isLive = position === livePosition;
+    const isLive = hasLive && position === livePosition;
+    live.hidden = !hasLive;
     live.classList.toggle("selected", isLive);
     live.setAttribute("aria-pressed", String(isLive));
     timeline.dataset.live = String(isLive);
+    for (const selector of [".cleaning-plans", ".cleaning-areas"]) {
+      const button = this.shadowRoot.querySelector(selector);
+      if (button) button.disabled = !isLive;
+    }
     const label = timeline.querySelector(".timeline-label");
     const value = isLive
       ? this._localize("map_timeline_live", "Live map")
@@ -739,12 +894,16 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _selectTimelinePosition(position) {
+    const hasLive = this._selectedFloor()?.active !== false;
+    const maximum = hasLive
+      ? this._history.length
+      : Math.max(0, this._history.length - 1);
     const bounded = maticClamp(
       Math.round(Number(position) || 0),
       0,
-      this._history.length,
+      maximum,
     );
-    if (bounded === this._history.length) {
+    if (hasLive && bounded === this._history.length) {
       this._selectedHistoryId = undefined;
       this._historySceneAbortController?.abort();
       this._syncTimeline();
@@ -796,11 +955,7 @@ class MaticMapStudio extends HTMLElement {
       this._calculateHomeDistances();
       this._showSpatialScene();
       this._setStatus(
-        this._localize(
-          "map_status_historical",
-          "Map captured {time}",
-          { time: this._formatHistoryTime(snapshot.created_at) },
-        ),
+        this._historicalStatus(snapshot),
       );
       this._requestRender();
     } catch (_error) {
@@ -820,6 +975,25 @@ class MaticMapStudio extends HTMLElement {
         this._setLoading(false);
       }
     }
+  }
+
+  _historicalStatus(snapshot) {
+    const floor = this._selectedFloor();
+    if (floor?.readOnly) {
+      return this._localize(
+        "map_status_saved_floor",
+        "Saved floor {number} · captured {time} · read only",
+        {
+          number: floor.ordinal,
+          time: this._formatHistoryTime(snapshot.created_at),
+        },
+      );
+    }
+    return this._localize(
+      "map_status_historical",
+      "Map captured {time}",
+      { time: this._formatHistoryTime(snapshot.created_at) },
+    );
   }
 
   _guardButton(button, action) {
@@ -888,6 +1062,8 @@ class MaticMapStudio extends HTMLElement {
     this._historyIdentity = undefined;
     this._historyRequestUrl = undefined;
     this._historyEntryId = undefined;
+    this._floors = [];
+    this._selectedFloorId = "current";
     this._selectedHistoryId = undefined;
     this._stableLiveSnapshotId = undefined;
     this._stableLiveSourceIdentity = undefined;
@@ -1534,6 +1710,7 @@ class MaticMapStudio extends HTMLElement {
     this._latestSceneState = state;
     this._latestSceneKey = requestKey;
     const stableSnapshot = state?.attributes?.map_complete === true
+      || state?.attributes?.map_floor_coherent === false
       ? undefined
       : this._latestHistorySnapshot();
     if (
@@ -1547,7 +1724,11 @@ class MaticMapStudio extends HTMLElement {
     }
     if (!force && !stableSnapshot && this._scene && this._sceneUrl === url) {
       this._startDeltaStream(state);
-      if (state?.attributes?.delta_url && typeof DecompressionStream === "function") {
+      if (
+        state?.attributes?.delta_url
+        && typeof DecompressionStream === "function"
+        && requestKey === this._sceneIdentity
+      ) {
         return;
       }
       if (requestKey === this._sceneIdentity) return;
@@ -1753,8 +1934,14 @@ class MaticMapStudio extends HTMLElement {
         { step: this._scene.metadata.sampleStep },
       );
     const complete = state?.attributes?.map_complete === true;
+    const coherent = state?.attributes?.map_floor_coherent !== false;
     this._setStatus(
-      complete
+      !coherent
+        ? this._localize(
+          "map_status_floor_transition",
+          "Floor transition detected · room overlay paused",
+        )
+        : complete
         ? this._localize(
           "map_status_full_scene",
           "{points} points · {sampling}",
@@ -1833,13 +2020,7 @@ class MaticMapStudio extends HTMLElement {
         (candidate) => candidate.id === this._selectedHistoryId,
       );
       if (snapshot) {
-        this._setStatus(
-          this._localize(
-            "map_status_historical",
-            "Map captured {time}",
-            { time: this._formatHistoryTime(snapshot.created_at) },
-          ),
-        );
+        this._setStatus(this._historicalStatus(snapshot));
       }
     } else if (photoState) {
       if (!this._webglAvailable) {
@@ -3567,7 +3748,19 @@ class MaticMapStudio extends HTMLElement {
   }
 
   async _fetchAreas(selectedId = this._selectedAreaId) {
-    const url = this._catalogState()?.attributes?.areas_url;
+    const state = this._catalogState();
+    const url = state?.attributes?.areas_url;
+    if (state?.attributes?.map_floor_coherent === false) {
+      this._clearAreaWorkspace();
+      this._setAreaWorkspaceStatus(
+        this._localize(
+          "area_workspace_floor_transition",
+          "Custom areas are paused while the active floor changes",
+        ),
+        "error",
+      );
+      return;
+    }
     if (typeof url !== "string" || !url.startsWith("/")) {
       this._setAreaWorkspaceStatus(
         this._localize("area_workspace_unavailable", "Custom cleaning areas are unavailable"),
@@ -3610,6 +3803,7 @@ class MaticMapStudio extends HTMLElement {
       );
     } catch (error) {
       if (error?.name === "AbortError") return;
+      this._clearAreaWorkspace();
       this._setAreaWorkspaceStatus(
         this._localize("area_workspace_unavailable", "Custom cleaning areas are unavailable"),
         "error",
@@ -3619,6 +3813,14 @@ class MaticMapStudio extends HTMLElement {
         this._areasAbortController = undefined;
       }
     }
+  }
+
+  _clearAreaWorkspace() {
+    this._areasPayload = undefined;
+    this._areas = [];
+    this._selectedAreaId = undefined;
+    this._renderAreaList();
+    this._selectArea(undefined);
   }
 
   _renderAreaList() {
@@ -3848,6 +4050,10 @@ class MaticMapStudio extends HTMLElement {
         .segmented { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--divider-color); border-radius: 13px; background: color-mix(in srgb, var(--card-background-color) 75%, transparent); }
         .segmented button { min-height: 34px; padding: 0 13px; border: 0; border-radius: 9px; background: transparent; }
         .segmented button.selected { color: var(--primary-text-color); background: color-mix(in srgb, var(--primary-color) 18%, var(--card-background-color)); box-shadow: 0 1px 3px rgba(0,0,0,.18); }
+        .floor-control { min-width: 0; display: inline-flex; flex: 0 1 auto; align-items: center; gap: 7px; color: var(--secondary-text-color); }
+        .floor-control ha-icon { width: 19px; height: 19px; flex: 0 0 auto; }
+        .floor-control-label { font-size: 11px; font-weight: 600; }
+        .floor-select { min-width: 116px; max-width: 190px; min-height: 38px; overflow: hidden; padding: 0 28px 0 10px; border-radius: 10px; text-overflow: ellipsis; white-space: nowrap; }
         .scene-summary { display: flex; flex: 0 1 auto; min-width: 0; align-items: center; gap: 8px; }
         .status { overflow: hidden; max-width: 420px; text-overflow: ellipsis; }
         .zoom-slider { width: 96px; accent-color: var(--primary-color); touch-action: pan-x; }
@@ -4015,7 +4221,7 @@ class MaticMapStudio extends HTMLElement {
         @media (prefers-reduced-motion: reduce) {
           *, *::before, *::after { scroll-behavior: auto !important; transition-duration: .001ms !important; animation-duration: .001ms !important; animation-iteration-count: 1 !important; }
         }
-        @media (max-width: 1050px) { .privacy, .status, .resolution-value { display: none; } .heading { min-width: 0; } header { gap: 8px; padding-inline: 10px; } }
+        @media (max-width: 1050px) { .privacy, .status, .resolution-value, .floor-control-label { display: none; } .heading { min-width: 0; } header { gap: 8px; padding-inline: 10px; } }
         @media (max-width: 760px) { .areas-shell { grid-template-rows: auto minmax(0, 1fr); } .areas-header { flex-wrap: wrap; gap: 7px; padding: 7px 9px; } .areas-heading { flex: 1 1 auto; } .areas-heading .areas-status { display: none; } .cleaning-tabs { order: 3; width: 100%; } .cleaning-tabs button { flex: 1 1 50%; } .plans-toolbar, .areas-toolbar { margin-left: auto; } .plans-list, .areas-list { width: min(210px, 42vw); } .plan-form { width: min(100% - 24px, 960px); padding: 22px 0 70px; } .plan-primary-fields, .plan-options { grid-template-columns: 1fr; } .plan-actions { flex-wrap: wrap; } .plan-feedback { flex: 1 1 100%; padding: 0 4px 2px; } }
         @media (max-width: 650px) {
           .shell { grid-template-rows: 56px minmax(0, 1fr); }
@@ -4024,6 +4230,8 @@ class MaticMapStudio extends HTMLElement {
           .privacy { display: none; }
           .heading { flex: 1 1 auto; min-width: 0; }
           .segmented button { min-height: 36px; padding: 0 10px; }
+          .floor-control ha-icon { display: none; }
+          .floor-select { min-width: 0; width: min(112px, 29vw); padding-left: 8px; }
           .scene-summary { flex: 0 0 auto; }
           .status, .resolution-value { display: none; }
           .health-value { max-width: 72px; overflow: hidden; text-overflow: ellipsis; }
@@ -4085,6 +4293,7 @@ class MaticMapStudio extends HTMLElement {
             <button data-view="three" class="${this._view === "three" ? "selected" : ""}" aria-pressed="${this._view === "three"}">${text("map_view_3d", "3D")}</button>
             <button data-view="top" class="${this._view !== "three" ? "selected" : ""}" aria-pressed="${this._view !== "three"}">${text("map_view_top", "2D")}</button>
           </span>
+          <label class="floor-control" hidden><ha-icon icon="mdi:layers-triple-outline" aria-hidden="true"></ha-icon><span class="floor-control-label">${text("map_floor_label", "Floor")}</span><select class="floor-select" aria-label="${text("map_floor_label", "Floor")}"></select></label>
           <span class="spacer"></span>
           <span class="scene-summary">
             <span class="status" role="status" aria-live="polite" aria-atomic="true">${text("map_status_loading_scene", "Loading local map…")}</span>
@@ -4381,6 +4590,10 @@ class MaticMapStudio extends HTMLElement {
         String(!help.hidden),
       );
     });
+    this.shadowRoot.querySelector(".floor-select").addEventListener(
+      "change",
+      (event) => this._selectFloor(event.target.value),
+    );
     const timelineRange = this.shadowRoot.querySelector(".timeline-range");
     this._guardButton(this.shadowRoot.querySelector(".timeline-earlier"), () => {
       this._selectTimelinePosition(Number(timelineRange.value) - 1);
