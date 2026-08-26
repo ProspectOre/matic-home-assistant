@@ -259,6 +259,35 @@ def test_segment_check_initializes_a_missing_catalog_for_a_known_floor() -> None
     )
 
 
+def test_matching_legacy_catalog_is_bound_to_the_current_floor() -> None:
+    entity = _vacuum()
+    current_payload = [{"id": "room-1", "name": "Kitchen", "group": "Current floor"}]
+    entity_entry = SimpleNamespace(
+        options={
+            "vacuum": {
+                "area_mapping": {"kitchen": ["room-1"]},
+                "last_seen_segments": current_payload,
+            }
+        }
+    )
+    entity_registry = MagicMock()
+    entity_registry.async_get.return_value = entity_entry
+
+    with patch(
+        "custom_components.matic_robot.vacuum.er.async_get",
+        return_value=entity_registry,
+    ):
+        entity._async_check_segment_changes()
+
+    updated = entity_registry.async_update_entity_options.call_args.args[2]
+    scope = _floor_scope(entity.coordinator.data.floor_plan)
+    assert updated["matic_floor_scope"] == scope
+    assert updated["area_mapping"] == {"kitchen": ["room-1"]}
+    assert (
+        updated["matic_floor_catalogs"][scope]["last_seen_segments"] == current_payload
+    )
+
+
 def test_segment_option_parsing_is_defensive_and_catalogs_are_bounded() -> None:
     assert _segments_from_payload(None) is None
     assert _segments_from_payload(["invalid"]) is None
@@ -421,8 +450,8 @@ def test_new_floor_is_auto_mapped_in_the_same_idle_update() -> None:
     assert current_options["area_mapping"] == {"kitchen": ["room-1"]}
 
 
-def test_legacy_single_catalog_is_claimed_when_its_floor_returns() -> None:
-    """A pre-upgrade mapping survives first observing a different floor."""
+def test_ambiguous_legacy_mapping_is_preserved_until_its_floor_returns() -> None:
+    """A pre-upgrade mismatch warns once without discarding the old mapping."""
     entity = _vacuum()
     entity.async_create_segments_issue = MagicMock()
     home_plan = FloorPlan(
@@ -454,7 +483,15 @@ def test_legacy_single_catalog_is_claimed_when_its_floor_returns() -> None:
             "area_mapping": home_mapping,
             "last_seen_segments": home_payload,
         }
-        assert "area_mapping" not in shed_options
+        assert shed_options["area_mapping"] == home_mapping
+        assert shed_options["last_seen_segments"] == home_payload
+        shed_scope = _floor_scope(entity.coordinator.data.floor_plan)
+        assert shed_options["matic_floor_catalogs"][shed_scope] == {
+            "last_seen_segments": [
+                {"id": "room-1", "name": "Kitchen", "group": "Current floor"}
+            ]
+        }
+        entity.async_create_segments_issue.assert_called_once()
 
         entity_entry.options = {"vacuum": shed_options}
         entity.coordinator.data.floor_plan = home_plan
@@ -465,7 +502,7 @@ def test_legacy_single_catalog_is_claimed_when_its_floor_returns() -> None:
     assert restored["matic_floor_scope"] == _floor_scope(home_plan)
     assert restored["area_mapping"] == home_mapping
     assert "matic_unscoped_catalog" not in restored
-    entity.async_create_segments_issue.assert_not_called()
+    entity.async_create_segments_issue.assert_called_once()
 
 
 async def test_lifecycle_runs_area_mapping_and_change_checks() -> None:

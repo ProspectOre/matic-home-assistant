@@ -319,7 +319,18 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if not isinstance(stored_scope, str):
             if configured is not None and _segment_signature(configured) != signature:
                 options[_UNSCOPED_CATALOG_OPTION] = _catalog_from_options(options)
-                options.pop("area_mapping", None)
+                catalogs[current_scope] = {"last_seen_segments": current_payload}
+                options[_FLOOR_SCOPE_OPTION] = current_scope
+                options[_FLOOR_CATALOGS_OPTION] = _bounded_floor_catalogs(
+                    catalogs, current_scope
+                )
+                if self._reported_segment_change != signature:
+                    self.async_create_segments_issue()
+                    self._reported_segment_change = signature
+                entity_registry.async_update_entity_options(
+                    self.entity_id, "vacuum", options
+                )
+                return
             options["last_seen_segments"] = current_payload
             options[_FLOOR_SCOPE_OPTION] = current_scope
             catalogs[current_scope] = _catalog_from_options(options)
