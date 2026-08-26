@@ -33,6 +33,7 @@ from .const import (
     CONF_HOSTNAME,
     CONF_SERIAL_NUMBER,
     DATA_FIRMWARE_TRACKER,
+    DATA_LLM_API,
     DATA_PLAN_MANAGER,
     DOMAIN,
     EVENT_CLEANING_FINISHED,
@@ -41,6 +42,7 @@ from .const import (
 from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
+from .llm import async_register_matic_llm_api
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
 from .services import (
@@ -78,6 +80,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register integration-wide services and the plan editor."""
     await async_register_room_plan_editor(hass)
     await async_register_services(hass)
+    hass.data[DOMAIN][DATA_LLM_API] = async_register_matic_llm_api(hass)
     return True
 
 

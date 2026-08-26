@@ -34,6 +34,7 @@ from custom_components.matic_robot.const import (
     CONF_HOSTNAME,
     CONF_SERIAL_NUMBER,
     DATA_FIRMWARE_TRACKER,
+    DATA_LLM_API,
     DATA_PLAN_MANAGER,
     DOMAIN,
     PLATFORMS,
@@ -288,6 +289,7 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
 async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
         http=SimpleNamespace(register_view=MagicMock()),
+        bus=SimpleNamespace(async_listen=MagicMock(return_value=MagicMock())),
         services=SimpleNamespace(async_register=MagicMock()),
         data={},
     )
@@ -303,12 +305,17 @@ async def test_setup_registers_services_without_media_view() -> None:
             "custom_components.matic_robot.services.FirmwareTracker",
             return_value=firmware,
         ),
+        patch(
+            "custom_components.matic_robot.async_register_matic_llm_api",
+            return_value=SimpleNamespace(id="matic_robot_operations"),
+        ),
     ):
         assert await async_setup(hass, {}) is True
 
     assert hass.services.async_register.call_count == 17
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
+    assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
 
 
 async def test_setup_registers_configuration_editor_when_frontend_is_loaded() -> None:
@@ -316,7 +323,10 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         http=SimpleNamespace(
             register_view=MagicMock(), async_register_static_paths=AsyncMock()
         ),
-        bus=SimpleNamespace(async_fire=MagicMock()),
+        bus=SimpleNamespace(
+            async_fire=MagicMock(),
+            async_listen=MagicMock(return_value=MagicMock()),
+        ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
     )
@@ -324,6 +334,10 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     with (
         patch("custom_components.matic_robot.services.CleaningPlanManager") as history,
         patch("custom_components.matic_robot.services.FirmwareTracker") as firmware,
+        patch(
+            "custom_components.matic_robot.async_register_matic_llm_api",
+            return_value=SimpleNamespace(id="matic_robot_operations"),
+        ),
     ):
         history.return_value.async_load = AsyncMock()
         firmware.return_value.async_load = AsyncMock()

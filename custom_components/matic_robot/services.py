@@ -71,6 +71,7 @@ from .plans import (
     CleaningRoom,
     ManagedMotionReplacedError,
     SavedPlanLimitError,
+    leg_groups,
     resolve_room_reference,
     resolve_rooms,
 )
@@ -129,27 +130,6 @@ class _PreparedRoomDispatch:
     rooms: tuple[CleaningRoom, ...]
     history_baseline: frozenset[bytes] | None
     dispatched_at: datetime
-
-
-def _leg_groups(rooms: Sequence[CleaningRoom]) -> list[list[CleaningRoom]]:
-    """Group consecutive rooms sharing one mission's mode and coverage.
-
-    Firmware glides room to room inside one mission without docking, but a
-    mission carries exactly one cleaning mode and coverage pair, so a
-    settings change starts a new leg.
-    """
-    groups: list[list[CleaningRoom]] = []
-    for room in rooms:
-        previous = groups[-1][-1] if groups else None
-        if (
-            previous is not None
-            and previous.cleaning_mode == room.cleaning_mode
-            and previous.coverage_setting == room.coverage_setting
-        ):
-            groups[-1].append(room)
-        else:
-            groups.append([room])
-    return groups
 
 
 @dataclass(frozen=True, slots=True)
@@ -2530,7 +2510,7 @@ async def _async_execute_rooms(
                 if intelligent
                 else rooms
             )
-            legs = _leg_groups(chosen)
+            legs = leg_groups(chosen)
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
                 if cancel_event.is_set() or not manager.managed_motion_is_current(

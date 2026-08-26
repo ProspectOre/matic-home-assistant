@@ -48,6 +48,7 @@ from custom_components.matic_robot.plans import (
     _record_native_completion,
     _stored_count,
     _validated_native_reconciliation,
+    leg_groups,
     resolve_room_reference,
     resolve_rooms,
 )
@@ -69,7 +70,6 @@ from custom_components.matic_robot.services import (
     _async_wait_for_room_outcome,
     _async_wait_for_vacuum_state,
     _entry_for_entity,
-    _leg_groups,
     _PreparedRoomDispatch,
 )
 
@@ -117,13 +117,13 @@ def test_leg_groups_split_only_on_settings_changes() -> None:
     )
     quick_c = _room("Guest Room", "room-d")
 
-    assert _leg_groups([quick_a, quick_b, standard, quick_c]) == [
+    assert leg_groups([quick_a, quick_b, standard, quick_c]) == [
         [quick_a, quick_b],
         [standard],
         [quick_c],
     ]
-    assert _leg_groups([quick_a]) == [[quick_a]]
-    assert _leg_groups([]) == []
+    assert leg_groups([quick_a]) == [[quick_a]]
+    assert leg_groups([]) == []
 
 
 async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
