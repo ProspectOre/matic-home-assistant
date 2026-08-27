@@ -238,6 +238,8 @@ class MaticMapStudio extends HTMLElement {
     this._catalogLoading = false;
     this._catalogReady = false;
     this._catalogAbortController = undefined;
+    this._observedFloorCoherent = undefined;
+    this._floorCoherenceGeneration = 0;
     this._areasAbortController = undefined;
     this._areas = [];
     this._areasPayload = undefined;
@@ -571,6 +573,7 @@ class MaticMapStudio extends HTMLElement {
   async _fetchCatalog() {
     if (this._catalogLoading) return;
     this._catalogLoading = true;
+    const floorCoherenceGeneration = this._floorCoherenceGeneration;
     const controller = new AbortController();
     this._catalogAbortController = controller;
     const aborted = new Promise((_resolve, reject) => {
@@ -599,6 +602,7 @@ class MaticMapStudio extends HTMLElement {
           : payload?.entry_id
             ? [payload]
             : [];
+      if (floorCoherenceGeneration !== this._floorCoherenceGeneration) return;
       this._catalogEntries = entries
         .filter((entry) => entry && typeof entry === "object")
         .slice(0, 64);
@@ -627,6 +631,17 @@ class MaticMapStudio extends HTMLElement {
         map_revision: entry.map_revision ?? entry.revision,
       },
     };
+  }
+
+  _observeFloorCoherence(state) {
+    const coherent = state?.attributes?.map_floor_coherent;
+    if (typeof coherent !== "boolean") return;
+    if (this._observedFloorCoherent === undefined) {
+      this._observedFloorCoherent = coherent;
+    } else if (coherent !== this._observedFloorCoherent) {
+      this._observedFloorCoherent = coherent;
+      this._floorCoherenceGeneration += 1;
+    }
   }
 
   async _fetchHistory(state, force = false) {
@@ -907,6 +922,23 @@ class MaticMapStudio extends HTMLElement {
       : this._formatHistoryTime(this._history[position]?.created_at);
     label.textContent = value;
     timeline.querySelector(".timeline-summary-label").textContent = value;
+  }
+
+  _markCurrentFloorAvailable() {
+    let currentFloor = this._floors.find((floor) => floor.active);
+    if (!currentFloor) {
+      currentFloor = {
+        id: "current",
+        active: true,
+        readOnly: false,
+        liveAvailable: true,
+        snapshots: [],
+      };
+      this._floors = [currentFloor, ...this._floors];
+    } else {
+      currentFloor.liveAvailable = true;
+    }
+    this._syncTimeline();
   }
 
   _selectTimelinePosition(position) {
@@ -2047,6 +2079,7 @@ class MaticMapStudio extends HTMLElement {
       || initialEntities.photo?.[1];
     const initialFloorIncoherent =
       initialLiveMap?.attributes?.map_floor_coherent === false;
+    this._observeFloorCoherence(initialLiveMap);
     if (
       (this._view === "rooms" || !this._selectedHistoryId)
       && initialFloorIncoherent
@@ -2068,8 +2101,7 @@ class MaticMapStudio extends HTMLElement {
     const liveSelection = this._view === "rooms" || !this._selectedHistoryId;
     if (
       liveSelection
-      && entityFloorIncoherent
-      && !catalogFloorIncoherent
+      && (entityFloorIncoherent || catalogFloorIncoherent)
     ) {
       this._showFloorTransition(
         liveEntityState || initialLiveMap || photoState,
@@ -2088,20 +2120,7 @@ class MaticMapStudio extends HTMLElement {
       return;
     }
     if (!entityFloorIncoherent && !catalogFloorIncoherent) {
-      let currentFloor = this._floors.find((floor) => floor.active);
-      if (!currentFloor) {
-        currentFloor = {
-          id: "current",
-          active: true,
-          readOnly: false,
-          liveAvailable: true,
-          snapshots: [],
-        };
-        this._floors = [currentFloor, ...this._floors];
-      } else {
-        currentFloor.liveAvailable = true;
-      }
-      this._syncTimeline();
+      this._markCurrentFloorAvailable();
     }
     if (photoState) await this._fetchHistory(photoState, force);
     // History is asynchronous and a newer update may have observed a floor
@@ -2118,6 +2137,7 @@ class MaticMapStudio extends HTMLElement {
     const refreshedEntityFloorIncoherent = refreshedLiveMap
       ? refreshedLiveMap.attributes?.map_floor_coherent === false
       : initialFloorIncoherent;
+    this._observeFloorCoherence(refreshedLiveMap);
     const refreshedCatalogFloorIncoherent =
       refreshedPhotoState?.attributes?.map_floor_coherent === false;
     const refreshedLiveSelection =
@@ -2132,61 +2152,72 @@ class MaticMapStudio extends HTMLElement {
       this._showFloorTransition(
         refreshedLiveMap || initialLiveMap || refreshedPhotoState,
       );
-    } else if (this._view === "rooms") {
-      this._showFallback(refreshedEntities.rooms || refreshedEntities.photo, force);
-    } else if (this._selectedHistoryId && this._scene) {
-      this._showSpatialScene();
-      const snapshot = this._history.find(
-        (candidate) => candidate.id === this._selectedHistoryId,
-      );
-      if (snapshot) {
-        this._setStatus(this._historicalStatus(snapshot));
+    } else {
+      if (
+        !refreshedEntityFloorIncoherent
+        && !refreshedCatalogFloorIncoherent
+      ) {
+        this._markCurrentFloorAvailable();
       }
-    } else if (refreshedPhotoState) {
-      if (!this._webglAvailable) {
-        this._showRenderingFallback(
+      if (this._view === "rooms") {
+        this._showFallback(
           refreshedEntities.rooms || refreshedEntities.photo,
           force,
         );
-      } else {
-        this._fetchScene(refreshedPhotoState, force);
-        this._fetchPose(refreshedPhotoState);
-        if (
-          this._scene
-          && (
-            this._sceneUrl === refreshedPhotoState.attributes?.scene_url
-            || this._isStableLiveScene(refreshedPhotoState)
-          )
-        ) {
-          this._showSpatialScene();
-          if (this._isStableLiveScene(refreshedPhotoState)) {
-            this._updateStableLiveStatus(refreshedPhotoState);
-          } else {
-            this._updateSceneStatus(refreshedPhotoState);
-          }
+      } else if (this._selectedHistoryId && this._scene) {
+        this._showSpatialScene();
+        const snapshot = this._history.find(
+          (candidate) => candidate.id === this._selectedHistoryId,
+        );
+        if (snapshot) {
+          this._setStatus(this._historicalStatus(snapshot));
+        }
+      } else if (refreshedPhotoState) {
+        if (!this._webglAvailable) {
+          this._showRenderingFallback(
+            refreshedEntities.rooms || refreshedEntities.photo,
+            force,
+          );
         } else {
-          this._robot = undefined;
-          if (this._showFallback(entities.rooms || entities.photo, force)) {
-            this._setStatus(
-              this._localize(
-                "map_status_loading_scene",
-                "Loading local 3D scene…",
-              ),
-            );
+          this._fetchScene(refreshedPhotoState, force);
+          this._fetchPose(refreshedPhotoState);
+          if (
+            this._scene
+            && (
+              this._sceneUrl === refreshedPhotoState.attributes?.scene_url
+              || this._isStableLiveScene(refreshedPhotoState)
+            )
+          ) {
+            this._showSpatialScene();
+            if (this._isStableLiveScene(refreshedPhotoState)) {
+              this._updateStableLiveStatus(refreshedPhotoState);
+            } else {
+              this._updateSceneStatus(refreshedPhotoState);
+            }
+          } else {
+            this._robot = undefined;
+            if (this._showFallback(entities.rooms || entities.photo, force)) {
+              this._setStatus(
+                this._localize(
+                  "map_status_loading_scene",
+                  "Loading local 3D scene…",
+                ),
+              );
+            }
           }
         }
-      }
-    } else if (this._scene) {
-      this._showRetainedScene();
-    } else {
-      const roomMap = entities.rooms;
-      if (this._showFallback(roomMap, force) && !roomMap) {
-        this._setStatus(
-          this._localize(
-            "map_status_no_map",
-            "No local map data is available yet",
-          ),
-        );
+      } else if (this._scene) {
+        this._showRetainedScene();
+      } else {
+        const roomMap = entities.rooms;
+        if (this._showFallback(roomMap, force) && !roomMap) {
+          this._setStatus(
+            this._localize(
+              "map_status_no_map",
+              "No local map data is available yet",
+            ),
+          );
+        }
       }
     }
   }

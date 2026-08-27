@@ -53,6 +53,7 @@ from custom_components.matic_robot.services import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
     PlanCancelledError,
+    _async_dispatch_leg_command,
     _async_execute_rooms,
     _async_expire_native_reconciliation,
     _async_reconcile_native_stop,
@@ -743,7 +744,9 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
+    floor_plan = _area_floor_plan()
     coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
         async_discard_current_room=MagicMock(),
         async_confirm_room_completed=MagicMock(),
@@ -754,7 +757,13 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_send_user_command=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(coordinator=coordinator, client=client)
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=client,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
     call = ServiceCall(
@@ -793,6 +802,11 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     )
     assert execute.await_args_list[1].kwargs["intelligent"] is False
     assert execute.await_args_list[2].kwargs["intelligent"] is False
+    floor_guard = execute.await_args_list[0].kwargs["floor_is_current"]
+    assert floor_guard() is True
+    coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+    assert floor_guard() is False
+    coordinator.data.floor_plan = floor_plan
     assert client.async_send_user_command.await_count == 3
     assert "stop_fence_expires_at" in manager._robot("serial")
     assert preview["plan_name"] == "Upstairs"
@@ -867,7 +881,16 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
         {"name": "Disabled", "enabled": False, "rooms": []},
     )
     services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"one": "Kitchen"})
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    context = ("vacuum.test", entry, "serial", {"one": "Kitchen"})
     missing = ServiceCall(
         hass,
         DOMAIN,
@@ -1652,7 +1675,16 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
         "serial", "disabled", {"name": "Disabled", "enabled": False, "rooms": []}
     )
     services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"one": "Kitchen"})
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    context = ("vacuum.test", entry, "serial", {"one": "Kitchen"})
     disabled = ServiceCall(
         hass,
         DOMAIN,
@@ -1827,6 +1859,41 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     manager.async_mark_cancelled.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
+
+
+@pytest.mark.parametrize("changes_during_history", [False, True])
+async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
+    changes_during_history: bool,
+) -> None:
+    """No room IDs are sent after either floor-coherence guard fails."""
+    services = SimpleNamespace(async_call=AsyncMock())
+    hass = SimpleNamespace(services=services)
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    session_history = AsyncMock(return_value=())
+    floor_is_current = MagicMock(
+        side_effect=[True, False] if changes_during_history else [False]
+    )
+    on_dispatch = MagicMock()
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _async_dispatch_leg_command(
+            hass,
+            _execution_call(hass),
+            "vacuum.test",
+            [room],
+            17,
+            session_history,
+            floor_is_current=floor_is_current,
+            on_dispatch=on_dispatch,
+        )
+
+    assert excinfo.value.translation_key == "room_plan_unavailable"
+    if changes_during_history:
+        session_history.assert_awaited_once()
+    else:
+        session_history.assert_not_awaited()
+    on_dispatch.assert_not_called()
+    services.async_call.assert_not_awaited()
 
 
 async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> None:

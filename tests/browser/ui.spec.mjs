@@ -1233,6 +1233,7 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Saved floor room");
+    await expect(studio.locator(".room-label")).toHaveText(["Saved floor room"]);
     await expect(studio.locator(".status")).toContainText(
       "Saved floor 1",
     );
@@ -1254,11 +1255,15 @@ test.describe("map studio", () => {
     )).toBe("Current floor checkpoint");
     expect(await page.evaluate(() => window.__studio._selectedHistoryId))
       .toBe("snapshot-current-floor");
+    await studio.locator(".timeline-live").click();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Current floor room");
 
     const coherentHistoryRequests = historyRequests;
     floorCoherent = false;
     await page.evaluate(() => window.__studio._update());
-    await expect.poll(() => historyRequests).toBe(coherentHistoryRequests + 1);
+    expect(historyRequests).toBe(coherentHistoryRequests);
     await expect(floorSelect.locator("option").first()).toHaveText(
       "Current floor · map settling",
     );
@@ -1667,7 +1672,7 @@ test.describe("map studio", () => {
 
   test("does not let an older transition update hide a recovered floor", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
-    let floorCoherent = false;
+    let floorCoherent = true;
     let announceHistory;
     const historyStarted = new Promise((resolve) => {
       announceHistory = resolve;
@@ -1710,20 +1715,21 @@ test.describe("map studio", () => {
         attributes: {
           matic_entry_id: "synthetic-entry",
           source: "local_room_map",
-          map_floor_coherent: false,
-          robot_location_source: "unavailable",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
         },
       },
     });
     await historyStarted;
-    await expect(studio.locator(".scene-canvas")).toBeHidden();
-
-    floorCoherent = true;
     await page.evaluate(async () => {
-      const entity = window.__studio._hass.states["camera.synthetic_rooms"];
+      const map = window.__studio;
+      const entity = map._hass.states["camera.synthetic_rooms"];
+      entity.attributes.map_floor_coherent = false;
+      entity.attributes.robot_location_source = "unavailable";
+      await map._update();
       entity.attributes.map_floor_coherent = true;
       entity.attributes.robot_location_source = "exact_pose";
-      await window.__studio._update();
+      await map._update();
     });
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
@@ -1737,6 +1743,10 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).not.toContainText(
       "map paused until localization completes",
     );
+    await expect(studio.locator(".floor-select").locator("option").first())
+      .toHaveText("Current floor");
+    await expect(studio.locator(".cleaning-plans")).toBeEnabled();
+    await expect(studio.locator(".cleaning-areas")).toBeEnabled();
     expect(await page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Recovered current floor room");
@@ -1760,13 +1770,18 @@ test.describe("map studio", () => {
       map_complete: true,
       map_floor_coherent: true,
     };
+    const staleTransitionEntry = {
+      ...recoveredEntry,
+      map_revision: 1,
+      map_floor_coherent: false,
+    };
     await page.route("**/api/matic_robot/slam_entries", async (route) => {
       announceCatalog();
       await catalogBlocked;
       await route.fulfill({
         status: 200,
         contentType: "application/json",
-        body: JSON.stringify({ entries: [recoveredEntry] }),
+        body: JSON.stringify({ entries: [staleTransitionEntry] }),
       });
     });
     await page.route("**/catalog-recovered-history", (route) => route.fulfill({
@@ -1816,6 +1831,10 @@ test.describe("map studio", () => {
     await expect(studio.locator(".status")).not.toContainText(
       "map paused until localization completes",
     );
+    expect(await page.evaluate(() => ({
+      revision: window.__studio._catalogState().attributes.map_revision,
+      coherent: window.__studio._catalogState().attributes.map_floor_coherent,
+    }))).toEqual({ revision: 2, coherent: true });
     expect(await page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Catalog recovered current room");
