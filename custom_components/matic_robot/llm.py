@@ -464,15 +464,17 @@ class MaticGetRecentEventsTool(_MaticTool):
 @callback
 def async_get_tools(
     hass: HomeAssistant, llm_context: llm.LLMContext, api_id: str
-) -> list[llm.Tool]:
+) -> None:
     """Contribute no tools to another API's aggregated tool platform.
 
     Home Assistant 2026.8 and later lazily imports every integration's
     ``llm.py`` as a tool platform. Matic owns a dedicated API registered below,
-    so its tools must not also be merged into Assist or another API.
+    so its tools must not also be merged into Assist or another API. Returning
+    ``None`` is the platform contract for an API that contributes no tools;
+    returning an empty list is not a valid platform result.
     """
     del hass, llm_context, api_id
-    return []
+    return None
 
 
 @callback
