@@ -42,13 +42,17 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     assert store.decoded_tiles() == (tile,)
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 0x1234ABCD
+    assert not store.floor_plan_is_current(
+        FloorPlan(0x1234ABCD, "partition", b"partition", ())
+    )
+    await store.async_add_structure(synthetic_structure_entry())
     assert store.floor_plan_is_current(
         FloorPlan(0x1234ABCD, "partition", b"partition", ())
     )
     assert not store.floor_plan_is_current(FloorPlan(2, "partition", b"partition", ()))
 
     await store.async_add(entry)
-    assert store.revision == 1
+    assert store.revision == 2
 
     restored = SlamMapStore(hass, "synthetic-entry")
     await restored.async_load()
@@ -75,6 +79,55 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     empty = SlamMapStore(hass, "synthetic-entry")
     await empty.async_load()
     assert empty.tile_count == 0
+
+
+async def test_slam_map_store_revalidates_a_persisted_map_before_live_use(hass) -> None:
+    """A restart must not advertise a retained map as the robot's live map."""
+    floor_plan = FloorPlan(0x1234ABCD, "partition", b"partition", ())
+    photo = synthetic_slam_entry()
+    structure = synthetic_structure_entry()
+    store = SlamMapStore(hass, "restart-provenance-entry")
+    await store.async_load()
+
+    with patch("custom_components.matic_robot.slam_map_store.SAVE_DELAY_SECONDS", 0):
+        await store.async_add(photo)
+        await store.async_add_structure(structure)
+    await asyncio.sleep(0)
+    await hass.async_block_till_done()
+    assert store.floor_plan_is_current(floor_plan)
+
+    restored = SlamMapStore(hass, "restart-provenance-entry")
+    await restored.async_load()
+    restored_revision = restored.revision
+    assert restored.mission_identity == store.mission_identity
+    assert restored.map_complete is False
+    assert not restored.floor_plan_is_current(floor_plan)
+
+    await restored.async_add(photo)
+    assert not restored.floor_plan_is_current(floor_plan)
+    await restored.async_add_structure(structure)
+
+    assert restored.floor_plan_is_current(floor_plan)
+    assert restored.revision == restored_revision + 1
+
+
+async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
+    """One new live layer hides the old floor until the replacement is proven."""
+    first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())
+    second_plan = FloorPlan(2, "second", b"second", ())
+    store = SlamMapStore(hass, "pending-mission-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(first_plan)
+
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+
+    assert not store.floor_plan_is_current(first_plan)
+    assert not store.floor_plan_is_current(second_plan)
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.floor_plan_is_current(second_plan)
+    assert not store.floor_plan_is_current(first_plan)
 
 
 async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> None:

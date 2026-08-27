@@ -742,6 +742,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_floor_count": 0,
                 "map_revision": 7,
                 "map_floor_coherent": True,
+                "map_session_verified": True,
                 "map_health": "ready",
                 "map_complete": True,
                 "map_truncated": False,

@@ -230,6 +230,9 @@ async def async_collect_slam_history(
             identity = slam_map.mission_identity
             entries = slam_map.entries()
             current_floor_plan = floor_plan()
+            # ``map_complete`` is false until both live collections have
+            # revalidated a persisted map for this process. Once complete,
+            # retain only a mission-correlated snapshot.
             if not _mission_matches_floor_plan(identity, current_floor_plan):
                 continue
             try:

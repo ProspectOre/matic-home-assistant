@@ -147,6 +147,9 @@ class MaticMapCamera(MaticEntity, Camera):
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "map_floor_coherent": floor_plan_coherent,
+            "map_session_verified": getattr(
+                self._store, "live_session_verified", floor_plan_coherent
+            ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,
@@ -217,7 +220,20 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         data = self.coordinator.data
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
-        key = (
+        if not floor_plan_coherent:
+            self._cached_key = None
+            self._cached_image = None
+            return await self.hass.async_add_executor_job(
+                partial(
+                    render_floor_plan,
+                    None,
+                    None,
+                    None,
+                    width=requested_width,
+                    height=requested_height,
+                )
+            )
+        key: tuple[object, ...] = (
             self._store.revision,
             id(data.floor_plan),
             floor_plan_coherent,
@@ -287,6 +303,9 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
             "map_floor_coherent": floor_plan_coherent,
+            "map_session_verified": getattr(
+                self._store, "live_session_verified", floor_plan_coherent
+            ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
                 data.pose,

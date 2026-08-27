@@ -126,6 +126,12 @@ class SlamMapStore:
         self._revision = 0
         self._last_change = 0.0
         self._map_complete = False
+        # A restored private cache is useful as a bounded local checkpoint, but
+        # it is not proof that it describes the robot's location *after this
+        # integration session starts*.  Both live map collections must confirm
+        # the active mission before anything treats the cached scene as live.
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         self._truncated = False
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
@@ -162,6 +168,8 @@ class SlamMapStore:
         self._revision = len(self._entries) + len(self._structure_entries)
         self._last_change = 0.0
         self._map_complete = not self._truncated and self._has_balanced_layers()
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         if loaded.dirty:
             self._schedule_save()
         self._notify_listeners()
@@ -210,7 +218,8 @@ class SlamMapStore:
         key = _tile_key(tile)
         changed = target.get(key) != entry
         target[key] = entry
-        if not changed and not identity_changed:
+        live_session_confirmed = self._observe_live_layer(structural=structural)
+        if not changed and not identity_changed and not live_session_confirmed:
             return
         self._content_changed()
 
@@ -225,6 +234,11 @@ class SlamMapStore:
         mission_token = tile.mission_token
         if mission_token in self._retired_missions:
             return
+        # One live page from a new mission is enough to prove that the old
+        # mission may no longer be current.  Do not keep labelling it as the
+        # robot's live location while we wait for the independent layer needed
+        # to promote the replacement map.
+        self._invalidate_live_session()
         candidate = self._candidates.get(mission_token)
         if candidate is None:
             if len(self._candidates) >= MAX_CANDIDATE_MISSIONS:
@@ -270,6 +284,9 @@ class SlamMapStore:
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
         self._candidates.pop(mission_token, None)
+        # Promotion itself requires live photographic and structural evidence.
+        self._live_photo_seen = True
+        self._live_structure_seen = True
         self._content_changed()
 
     def _retire_mission(self, mission_token: str) -> None:
@@ -300,6 +317,23 @@ class SlamMapStore:
         self._map_complete = False
         self._schedule_save()
         self._notify_listeners()
+
+    def _observe_live_layer(self, *, structural: bool) -> bool:
+        """Record one fresh collection layer and report first live proof."""
+        was_confirmed = self._live_photo_seen and self._live_structure_seen
+        if structural:
+            self._live_structure_seen = True
+        else:
+            self._live_photo_seen = True
+        return not was_confirmed and self._live_photo_seen and self._live_structure_seen
+
+    def _invalidate_live_session(self) -> None:
+        """Fail closed while a newly observed map mission is classified."""
+        if not (self._live_photo_seen or self._live_structure_seen):
+            return
+        self._live_photo_seen = False
+        self._live_structure_seen = False
+        self._content_changed()
 
     async def async_collect(self, client: MaticHermesClient) -> None:
         """Continuously collect photographic and structural map pages."""
@@ -392,7 +426,16 @@ class SlamMapStore:
     def floor_plan_is_current(self, floor_plan: FloorPlan | None) -> bool:
         """Return whether the active SLAM map and floor plan are correlated."""
         identity = self.mission_identity
-        return identity is not None and identity.matches_floor_plan(floor_plan)
+        return bool(
+            self.live_session_verified
+            and identity is not None
+            and identity.matches_floor_plan(floor_plan)
+        )
+
+    @property
+    def live_session_verified(self) -> bool:
+        """Return whether both live map collections confirmed this session."""
+        return self._live_photo_seen and self._live_structure_seen
 
     @property
     def structure_tile_count(self) -> int:
@@ -402,6 +445,8 @@ class SlamMapStore:
     @property
     def map_complete(self) -> bool:
         """Return whether both untruncated layers settled for the current mission."""
+        if not self.live_session_verified:
+            return False
         if self._truncated:
             return False
         if self._map_complete:
@@ -467,6 +512,8 @@ class SlamMapStore:
         self._candidates.clear()
         self._retired_missions.clear()
         self._candidate_generation = 0
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         self._mission_token = None
         self._mission_id = None
         self._revision += 1

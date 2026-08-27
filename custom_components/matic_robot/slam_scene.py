@@ -223,7 +223,10 @@ class MaticSlamSceneView(HomeAssistantView):
                 if cached is not None and cached.key == key:
                     return cached
                 entries = runtime.slam_map.entries()
-                floor_plan_coherent = _mission_matches_floor_plan(identity, floor_plan)
+                # A matching persisted mission is not enough after a restart.
+                # The map store admits room overlays only after both live map
+                # collections reconfirm that mission for this session.
+                floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
                 try:
                     encoded = await hass.async_add_executor_job(
                         partial(
@@ -687,6 +690,11 @@ class MaticSlamCatalogView(HomeAssistantView):
                     if self._scene_view is not None
                     else runtime.slam_map.revision,
                     "map_floor_coherent": floor_plan_coherent,
+                    "map_session_verified": getattr(
+                        runtime.slam_map,
+                        "live_session_verified",
+                        floor_plan_coherent,
+                    ),
                     "map_health": health.state,
                     "map_complete": health.complete,
                     "map_truncated": health.truncated,
@@ -975,12 +983,6 @@ def _scene_snapshot_key(runtime: MaticRuntimeData) -> tuple[object, ...]:
         runtime.slam_map.mission_identity,
         runtime.coordinator.data.floor_plan,
     )
-
-
-def _mission_matches_floor_plan(
-    identity: SlamMapIdentity | None, floor_plan: FloorPlan | None
-) -> bool:
-    return identity is not None and identity.matches_floor_plan(floor_plan)
 
 
 def _header_bool(value: bool) -> str:
