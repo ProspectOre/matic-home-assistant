@@ -1410,6 +1410,7 @@ test.describe("map studio", () => {
       ),
       headers: {
         "Content-Type": "application/vnd.matic.slam-scene",
+        "X-Matic-Floor-Coherent": "1",
         "X-Matic-Revision": String(revision),
       },
     }));
@@ -1840,6 +1841,70 @@ test.describe("map studio", () => {
     )).toBe("Catalog recovered current room");
   });
 
+  test("rejects a stale live scene when the catalog is the only floor source", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let liveSceneRequests = 0;
+    let retainedSceneRequests = 0;
+    const retainedSnapshot = {
+      id: "catalog-only-retained",
+      created_at: "2026-07-26T09:45:00Z",
+      revision: 1,
+      point_count: 1,
+      scene_url: "/catalog-only-retained-scene",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/catalog-only-live-scene",
+        history_url: "/catalog-only-history",
+        history_count: 1,
+        map_revision: 2,
+        map_complete: false,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/catalog-only-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [retainedSnapshot] }),
+    }));
+    await page.route("**/catalog-only-retained-scene", (route) => {
+      retainedSceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Retained previous-floor room", 8),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
+    await page.route("**/catalog-only-live-scene", (route) => {
+      liveSceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Stale live room", 16),
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Floor-Coherent": "0",
+          "X-Matic-Revision": "2",
+        },
+      });
+    });
+
+    const studio = await loadStudio(page);
+
+    await expect(studio.locator(".status")).toContainText(
+      "Floor transition detected",
+    );
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".empty")).toContainText(
+      "map paused until localization completes",
+    );
+    expect(liveSceneRequests).toBe(1);
+    expect(retainedSceneRequests).toBe(0);
+    expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
+  });
+
   test("cancels an in-flight stable snapshot when floors diverge", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let announceSnapshot;
@@ -1894,6 +1959,10 @@ test.describe("map studio", () => {
       return route.fulfill({
         status: 200,
         body: syntheticScene("Partial floor room", 24),
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Floor-Coherent": "1",
+        },
       });
     });
 
@@ -1907,7 +1976,7 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() => window.__studio._sceneLoading)).toBe(false);
     await expect(studio.locator(".scene-canvas")).toBeHidden();
     expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
-    expect(liveSceneRequests).toBe(0);
+    expect(liveSceneRequests).toBe(1);
   });
 
   test("withholds an incoherent room-camera fallback during a floor transition", async ({ page }) => {

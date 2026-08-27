@@ -22,10 +22,20 @@ from .client.slam_map import (
     render_slam_map,
 )
 from .entity import MaticEntity
+from .slam_map_store import SlamMapStore
 from .slam_scene import pose_api_url, scene_api_url
 
 PARALLEL_UPDATES = 0
 MAX_CAMERA_DIMENSION = 4096
+
+
+def _floor_render_identity(store: SlamMapStore, data: RobotState) -> tuple[object, ...]:
+    """Return the private map identity that one camera render may disclose."""
+    return (
+        store.mission_identity,
+        data.floor_plan,
+        store.floor_plan_is_current(data.floor_plan),
+    )
 
 
 async def async_setup_entry(
@@ -87,6 +97,7 @@ class MaticMapCamera(MaticEntity, Camera):
         """Return the current labeled room map."""
         data = self.coordinator.data
         floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
+        render_floor_identity = _floor_render_identity(self._store, data)
         requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         cache_key = (
@@ -109,6 +120,21 @@ class MaticMapCamera(MaticEntity, Camera):
                 height=requested_height,
             )
         )
+        if _floor_render_identity(self._store, self.coordinator.data) != (
+            render_floor_identity
+        ):
+            self._cached_image_key = None
+            self._cached_image = None
+            return await self.hass.async_add_executor_job(
+                partial(
+                    render_floor_plan,
+                    None,
+                    None,
+                    None,
+                    width=requested_width,
+                    height=requested_height,
+                )
+            )
         self._cached_image_key = cache_key
         self._cached_image = image
         return image
@@ -205,6 +231,7 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         async with self._render_lock:
             data = self.coordinator.data
             floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
+            render_floor_identity = _floor_render_identity(self._store, data)
             key = (
                 self._store.revision,
                 id(data.floor_plan),
@@ -229,6 +256,21 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                     height=requested_height,
                 )
             )
+            if _floor_render_identity(self._store, self.coordinator.data) != (
+                render_floor_identity
+            ):
+                self._cached_key = None
+                self._cached_image = None
+                return await self.hass.async_add_executor_job(
+                    partial(
+                        render_floor_plan,
+                        None,
+                        None,
+                        None,
+                        width=requested_width,
+                        height=requested_height,
+                    )
+                )
             self._cached_key = key
             self._cached_image = image
             return image

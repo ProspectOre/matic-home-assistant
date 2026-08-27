@@ -1626,6 +1626,7 @@ class MaticMapStudio extends HTMLElement {
             `${this._deltaUrl}${separator}since=${encodeURIComponent(this._sceneRevision)}`,
             { cache: "no-store", signal: controller.signal },
           );
+          if (this._rejectIncoherentLiveResponse(response, state)) return;
           if (response.status === 204) continue;
           if (!response.ok) throw new Error("scene delta request failed");
           const contentType = response.headers.get("Content-Type") || "";
@@ -1757,6 +1758,40 @@ class MaticMapStudio extends HTMLElement {
     return `${url}\u0000${String(version)}`;
   }
 
+  _rejectIncoherentLiveResponse(response, state) {
+    if (response.headers.get("X-Matic-Floor-Coherent") !== "0") return false;
+    this._showFloorTransition({
+      ...state,
+      attributes: {
+        ...(state?.attributes || {}),
+        map_floor_coherent: false,
+      },
+    });
+    return true;
+  }
+
+  async _validateCatalogOnlyFloor(state, controller) {
+    const response = await this._authenticatedFetch(
+      state?.attributes?.scene_url,
+      { cache: "no-store", signal: controller.signal },
+    );
+    if (
+      !response.ok
+      || response.headers.get("X-Matic-Floor-Coherent") !== "1"
+    ) {
+      this._showFloorTransition({
+        ...state,
+        attributes: {
+          ...(state?.attributes || {}),
+          map_floor_coherent: false,
+        },
+      });
+      return false;
+    }
+    await response.body?.cancel();
+    return true;
+  }
+
   async _fetchScene(state, force = false) {
     const url = state?.attributes?.scene_url;
     const revision = state?.attributes?.map_revision;
@@ -1764,6 +1799,10 @@ class MaticMapStudio extends HTMLElement {
     const requestKey = this._sceneRequestIdentity(state);
     this._latestSceneState = state;
     this._latestSceneKey = requestKey;
+    const entryId = state?.attributes?.entry_id
+      || state?.attributes?.matic_entry_id;
+    const entities = this._entities(entryId);
+    const entityBackedCoherence = Boolean(entities.rooms || entities.photo);
     const stableSnapshot = state?.attributes?.map_complete === true
       || state?.attributes?.map_floor_coherent === false
       ? undefined
@@ -1816,6 +1855,11 @@ class MaticMapStudio extends HTMLElement {
     try {
       if (
         stableSnapshot
+        && !entityBackedCoherence
+        && !(await this._validateCatalogOnlyFloor(state, controller))
+      ) return;
+      if (
+        stableSnapshot
         && await this._loadStableLiveScene(stableSnapshot, state, requestKey)
       ) return;
       if (
@@ -1831,6 +1875,7 @@ class MaticMapStudio extends HTMLElement {
         cache: "no-store",
         signal: controller.signal,
       });
+      if (this._rejectIncoherentLiveResponse(response, state)) return;
       if (response.status === 304) {
         if (this._latestSceneKey !== requestKey) return;
         this._sceneIdentity = requestKey;
@@ -1944,6 +1989,16 @@ class MaticMapStudio extends HTMLElement {
       });
       if (!response.ok) return;
       const payload = await response.json();
+      if (payload?.map_floor_coherent === false) {
+        this._showFloorTransition({
+          ...state,
+          attributes: {
+            ...(state?.attributes || {}),
+            map_floor_coherent: false,
+          },
+        });
+        return;
+      }
       if (
         controller.signal.aborted
         || this._latestPoseState?.attributes?.pose_url !== url

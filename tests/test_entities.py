@@ -246,6 +246,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         structure_tile_count=0,
         map_complete=False,
         revision=0,
+        mission_identity=None,
         floor_plan_is_current=MagicMock(return_value=True),
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
@@ -1274,6 +1275,30 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     }
 
 
+async def test_camera_discards_render_when_floor_changes_in_executor(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+
+    def render(floor_plan, _pose, _current_area, **_kwargs) -> bytes:
+        if floor_plan is not None:
+            store.floor_plan_is_current.return_value = False
+            return b"stale-floor"
+        return b"map-unavailable"
+
+    with patch(
+        "custom_components.matic_robot.camera.render_floor_plan",
+        side_effect=render,
+    ) as renderer:
+        assert await entity.async_camera_image() == b"map-unavailable"
+
+    assert renderer.call_count == 2
+    assert renderer.call_args_list[-1].args[:3] == (None, None, None)
+    assert entity._cached_image_key is None
+    assert entity._cached_image is None
+
+
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
     entry = _entry()
     store = entry.runtime_data.slam_map
@@ -1332,6 +1357,41 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     update_state.assert_called_once_with()
 
     assert entity.extra_state_attributes["robot_location_source"] == "unavailable"
+
+
+async def test_photorealistic_camera_discards_render_when_floor_changes(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+
+    def render(*_args, **_kwargs) -> bytes:
+        store.floor_plan_is_current.return_value = False
+        return b"stale-floor"
+
+    with (
+        patch(
+            "custom_components.matic_robot.camera._render_photorealistic_entries",
+            side_effect=render,
+        ) as renderer,
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"map-unavailable",
+        ) as unavailable_renderer,
+    ):
+        assert await entity.async_camera_image() == b"map-unavailable"
+
+    renderer.assert_called_once()
+    unavailable_renderer.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity._cached_key is None
+    assert entity._cached_image is None
 
 
 async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> None:
