@@ -326,6 +326,14 @@ class SlamMapStore:
         if relaxed:
             self._promote_latest_complete_candidate()
         self._schedule_candidate_expiry()
+        # This method also runs synchronously while processing a newly
+        # received page.  If that page crosses the classification deadline
+        # before the timer callback runs, schedule the same bounded
+        # revalidation the timer path would have requested.  Otherwise a
+        # quiet counterpart stream could leave live map state unavailable
+        # indefinitely after the candidate has been relaxed.
+        if relaxed and not self._has_blocking_candidate():
+            self._schedule_candidate_refresh()
         return relaxed
 
     def _has_blocking_candidate(self) -> bool:

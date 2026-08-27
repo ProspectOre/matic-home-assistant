@@ -291,6 +291,48 @@ async def test_slam_map_store_revalidates_after_silent_candidate_expiry(hass) ->
     ]
 
 
+async def test_slam_map_store_revalidates_after_page_driven_candidate_expiry(
+    hass,
+) -> None:
+    """A late active page schedules proof when it expires a candidate."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "page-driven-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].first_seen_at = (
+        slam_map_store_module.monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
+    )
+
+    async def snapshot(name: str, *, limit: int):
+        assert limit == 1
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(page_x=8),)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(page_x=8),)
+
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    store._collection_client = client
+
+    # This arrival relaxes the expired candidate before its scheduled timer
+    # callback executes.  It supplies only one active layer, so the bounded
+    # read is required to regain live proof.
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await hass.async_block_till_done()
+
+    assert store.floor_plan_is_current(active_plan)
+    assert client.async_get_collection_entries.await_args_list == [
+        call("map_compressed_rgb", limit=1),
+        call("map_integrated", limit=1),
+    ]
+
+
 async def test_slam_map_store_discards_refresh_after_live_revalidation(hass) -> None:
     """A slow expired-candidate read cannot override newer active proof."""
     active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
