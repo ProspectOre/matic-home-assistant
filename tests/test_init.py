@@ -279,6 +279,32 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
     slam_map.floor_plan_is_current.assert_called_with(floor_plan)
 
 
+async def test_slam_map_transition_ignores_an_opaque_mission_identity(hass) -> None:
+    entry = _entry()
+    remove_listener = MagicMock()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_floor_plan_refresh=AsyncMock(),
+    )
+
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        async_add_listener=lambda _candidate: remove_listener,
+        mission_identity=SlamMapIdentity("00" * 32, None),
+    )
+
+    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+
+    assert not scheduled
+    coordinator.async_request_floor_plan_refresh.assert_not_awaited()
+    slam_map.floor_plan_is_current.assert_not_called()
+
+
 async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
     pending = {
         "plan_id": "away",

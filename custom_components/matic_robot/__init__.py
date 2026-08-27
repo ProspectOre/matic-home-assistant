@@ -302,7 +302,7 @@ def _register_slam_map_floor_plan_sync(
         nonlocal refresh_in_progress, last_attempted_identity
         floor_plan = coordinator.data.floor_plan
         identity = slam_map.mission_identity
-        if identity is None:
+        if identity is None or identity.mission_id is None:
             return
         if floor_plan is not None and slam_map.floor_plan_is_current(floor_plan):
             last_attempted_identity = None
