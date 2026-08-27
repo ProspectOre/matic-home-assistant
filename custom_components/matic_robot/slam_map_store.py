@@ -290,7 +290,7 @@ class SlamMapStore:
         if (
             candidate.entries
             and candidate.structure_entries
-            and candidate.generation == self._candidate_generation
+            and self._candidate_can_promote(candidate)
         ):
             self._promote_candidate(mission_token, candidate)
 
@@ -304,13 +304,38 @@ class SlamMapStore:
         mission to earn fresh two-layer proof in the meantime.
         """
         cutoff = monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
+        relaxed = False
         for candidate in self._candidates.values():
             if candidate.blocks_active and candidate.first_seen_at <= cutoff:
                 candidate.blocks_active = False
+                relaxed = True
+        if relaxed:
+            self._promote_latest_complete_candidate()
 
     def _has_blocking_candidate(self) -> bool:
         """Return whether an unclassified candidate still blocks active proof."""
         return any(candidate.blocks_active for candidate in self._candidates.values())
+
+    def _candidate_can_promote(self, candidate: _MissionCandidate) -> bool:
+        """Return whether no newer unclassified candidate outranks ``candidate``."""
+        return not any(
+            pending.blocks_active and pending.generation > candidate.generation
+            for pending in self._candidates.values()
+        )
+
+    def _promote_latest_complete_candidate(self) -> None:
+        """Promote the best complete candidate after a newer one is classified."""
+        best: tuple[str, _MissionCandidate] | None = None
+        for mission_token, candidate in self._candidates.items():
+            if (
+                candidate.entries
+                and candidate.structure_entries
+                and self._candidate_can_promote(candidate)
+            ):
+                if best is None or candidate.generation > best[1].generation:
+                    best = mission_token, candidate
+        if best is not None:
+            self._promote_candidate(*best)
 
     def _promote_candidate(
         self, mission_token: str, candidate: _MissionCandidate

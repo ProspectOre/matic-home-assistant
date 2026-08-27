@@ -223,6 +223,39 @@ async def test_slam_map_store_promotes_a_late_candidate_counterpart(hass) -> Non
     assert candidate_token not in store._candidates
 
 
+async def test_slam_map_store_reconsiders_a_complete_candidate_after_expiry(
+    hass,
+) -> None:
+    """A newer one-sided candidate cannot permanently reject an older pair."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    complete_plan = FloorPlan(2, "complete", b"complete", ())
+    store = SlamMapStore(hass, "reconsider-complete-candidate-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await store.async_add(synthetic_slam_entry(mission_id=3))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert not store.live_session_verified
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        # This active-map page causes expiry to classify the newer one-sided
+        # candidate.  The retained, fully corroborated candidate must then
+        # become eligible before old active data can re-establish itself.
+        await store.async_add(synthetic_slam_entry(page_x=8))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(complete_plan)
+
+
 async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None:
     """A later mission signal prevents an older candidate from promotion."""
     store = SlamMapStore(hass, "newest-pending-mission-entry")
