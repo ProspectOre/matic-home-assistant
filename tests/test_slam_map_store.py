@@ -376,6 +376,32 @@ async def test_slam_map_store_retries_an_empty_silent_expiry_refresh(hass) -> No
     await store.async_shutdown()
 
 
+async def test_slam_map_store_retries_a_malformed_silent_expiry_refresh(hass) -> None:
+    """Malformed bounded entries retain fail-closed state and retry later."""
+    store = SlamMapStore(hass, "malformed-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(
+            side_effect=(
+                (HermesCollectionEntry(b"bad", b"bad"),),
+                (synthetic_structure_entry(page_x=8),),
+            )
+        )
+    )
+
+    await store._async_refresh_after_candidate_expiry(client)
+
+    assert not store.live_session_verified
+    assert store.health.invalid_tiles == 1
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
+
+
 async def test_slam_map_store_shutdown_cancels_candidate_snapshot(hass) -> None:
     """Unload cancels a timed map snapshot before persisting private cache data."""
     store = SlamMapStore(hass, "cancel-silent-candidate-expiry-entry")

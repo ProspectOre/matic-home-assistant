@@ -456,10 +456,16 @@ class SlamMapStore:
             return
         if self._closed:
             return
-        for entry in photo_entries:
-            await self.async_add(entry)
-        for entry in structure_entries:
-            await self.async_add_structure(entry)
+        try:
+            for entry in photo_entries:
+                await self.async_add(entry)
+            for entry in structure_entries:
+                await self.async_add_structure(entry)
+        except DecodeError:
+            self._record_invalid()
+            self._notify_listeners()
+            self._schedule_candidate_refresh_retry()
+            return
         if self._needs_candidate_refresh():
             self._schedule_candidate_refresh_retry()
         else:
