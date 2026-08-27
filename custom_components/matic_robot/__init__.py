@@ -168,6 +168,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             plans,
             serial_number,
         )
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
@@ -245,6 +246,48 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         client.close()
         raise
     return True
+
+
+def _register_slam_map_floor_plan_sync(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    slam_map: SlamMapStore,
+    coordinator: MaticCoordinator,
+) -> None:
+    """Refresh a cached floor plan when both map layers prove a new mission.
+
+    The map store switches missions only after photographic and structural
+    evidence agree.  That is the safe point to bypass the normal slow
+    floor-plan cache: without it, a robot that has already localized on a
+    different mapped floor can remain falsely marked as transitioning until
+    the next periodic map poll.
+    """
+    refresh_in_progress = False
+
+    async def _async_refresh_floor_plan() -> None:
+        nonlocal refresh_in_progress
+        try:
+            await coordinator.async_request_floor_plan_refresh()
+        finally:
+            refresh_in_progress = False
+
+    def _async_sync_floor_plan() -> None:
+        nonlocal refresh_in_progress
+        floor_plan = coordinator.data.floor_plan
+        if (
+            refresh_in_progress
+            or floor_plan is None
+            or slam_map.floor_plan_is_current(floor_plan)
+        ):
+            return
+        refresh_in_progress = True
+        entry.async_create_background_task(
+            hass,
+            _async_refresh_floor_plan(),
+            f"{DOMAIN} current floor map refresh",
+        )
+
+    entry.async_on_unload(slam_map.async_add_listener(_async_sync_floor_plan))
 
 
 def _register_native_history_sync(

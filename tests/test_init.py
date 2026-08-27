@@ -15,6 +15,7 @@ from custom_components.matic_robot import (
     _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
     _register_native_history_sync,
+    _register_slam_map_floor_plan_sync,
     _schedule_native_reconciliation_recovery,
     async_remove_entry,
     async_setup,
@@ -88,6 +89,44 @@ def test_floor_plan_area_binding_support_requires_usable_geometry() -> None:
             ),
         )
     )
+
+
+async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> None:
+    entry = _entry()
+    remove_listener = MagicMock()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_floor_plan_refresh=AsyncMock(),
+    )
+    listener: object | None = None
+
+    def add_listener(candidate):
+        nonlocal listener
+        listener = candidate
+        return remove_listener
+
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        async_add_listener=add_listener,
+    )
+
+    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+    assert callable(listener)
+    listener()
+    listener()
+    assert len(scheduled) == 1
+    await scheduled[0]
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    entry.async_on_unload.assert_called_once_with(remove_listener)
+
+    slam_map.floor_plan_is_current.return_value = True
+    listener()
+    assert len(scheduled) == 1
 
 
 async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
@@ -454,10 +493,13 @@ async def test_setup_refreshes_before_forwarding_platforms(
             target.close()
 
     entry.async_create_background_task.side_effect = capture_setup_tasks
+    map_unsubscribe = MagicMock()
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
+        async_add_listener=MagicMock(return_value=map_unsubscribe),
+        floor_plan_is_current=MagicMock(return_value=True),
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
@@ -517,6 +559,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.slam_map is slam_map
     assert entry.runtime_data.slam_history is slam_history
     slam_map.async_load.assert_awaited_once()
+    slam_map.async_add_listener.assert_called_once()
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()

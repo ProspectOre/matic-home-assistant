@@ -419,6 +419,17 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._force_full_refresh = True
         await self.async_request_refresh()
 
+    async def async_request_floor_plan_refresh(self) -> None:
+        """Refresh the active floor plan after a verified SLAM mission change.
+
+        A robot can localize onto another mapped floor between normal map
+        polling intervals.  Keep the other slow reads cached, but do not keep
+        a prior floor plan long enough to make a newly observed SLAM mission
+        look like an unresolved transition.
+        """
+        self._map_refresh_due = 0.0
+        await self.async_request_refresh()
+
     async def _async_capture_firmware_snapshot(
         self,
         tracker: FirmwareTracker,

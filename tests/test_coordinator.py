@@ -403,6 +403,27 @@ async def test_coordinator_caches_slow_reads_and_can_force_them(hass) -> None:
     assert client.async_get_telemetry.await_count == 2
 
 
+async def test_coordinator_refreshes_floor_plan_without_invalidating_telemetry(
+    hass,
+) -> None:
+    client = _client()
+    client.async_get_floor_plan.return_value = FloorPlan(1, "partition", b"", ())
+    coordinator = _coordinator(hass, client)
+
+    await coordinator._async_update_data()
+    await coordinator._async_update_data()
+    assert client.async_get_floor_plan.await_count == 1
+    assert client.async_get_telemetry.await_count == 1
+
+    coordinator.async_request_refresh = AsyncMock()
+    await coordinator.async_request_floor_plan_refresh()
+    coordinator.async_request_refresh.assert_awaited_once()
+    await coordinator._async_update_data()
+
+    assert client.async_get_floor_plan.await_count == 2
+    assert client.async_get_telemetry.await_count == 1
+
+
 async def test_slow_refresh_failure_retains_last_good_values(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
