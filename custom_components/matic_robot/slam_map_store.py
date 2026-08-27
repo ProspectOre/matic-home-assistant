@@ -454,7 +454,7 @@ class SlamMapStore:
         except Exception:
             self._schedule_candidate_refresh_retry()
             return
-        if self._closed:
+        if self._closed or not self._needs_candidate_refresh():
             return
         try:
             for entry in photo_entries:

@@ -415,6 +415,14 @@ class MaticSlamDeltaView(HomeAssistantView):
                     revision=current.revision,
                 )
             )
+        if (
+            _runtime_for_entry(hass, entry_id) is not runtime
+            or not bool(getattr(runtime.slam_map, "live_session_verified", True))
+            or self._scene_view.current_revision(entry_id, runtime) != current.revision
+        ):
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
+            )
         if delta is None:
             return web.Response(
                 body=current.payload,

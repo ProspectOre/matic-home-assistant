@@ -291,6 +291,51 @@ async def test_slam_map_store_revalidates_after_silent_candidate_expiry(hass) ->
     ]
 
 
+async def test_slam_map_store_discards_refresh_after_live_revalidation(hass) -> None:
+    """A slow expired-candidate read cannot override newer active proof."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "discard-stale-candidate-refresh-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    active_token = store.decoded_tiles()[0].mission_token
+    candidate = synthetic_slam_entry(mission_id=2)
+    candidate_token = (await store.async_add(candidate)).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def snapshot(name: str, *, limit: int):
+        nonlocal calls
+        assert limit == 1
+        calls += 1
+        if calls == 2:
+            started.set()
+        await release.wait()
+        if name == "map_compressed_rgb":
+            return (candidate,)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(mission_id=2),)
+
+    refresh = asyncio.create_task(
+        store._async_refresh_after_candidate_expiry(
+            SimpleNamespace(
+                async_get_collection_entries=AsyncMock(side_effect=snapshot)
+            )
+        )
+    )
+    await started.wait()
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(page_x=8))
+    assert store.floor_plan_is_current(active_plan)
+    release.set()
+    await refresh
+
+    assert store.decoded_tiles()[0].mission_token == active_token
+    assert candidate_token in store._candidates
+    await store.async_shutdown()
+
+
 async def test_slam_map_store_silent_expiry_refresh_fails_closed(hass) -> None:
     """A timed snapshot failure cannot reactivate the retained map."""
     store = SlamMapStore(hass, "failed-silent-candidate-expiry-entry")

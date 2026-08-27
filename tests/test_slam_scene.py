@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import (
     AREAS_API_URL,
@@ -1267,6 +1268,33 @@ async def test_delta_view_streams_revision_change_and_full_fallback() -> None:
     assert fallback.status == HTTPStatus.OK
     assert fallback.content_type == "application/vnd.matic.slam-scene"
     assert fallback.body.startswith(b"MATIC3D\x00")
+
+
+async def test_delta_view_discards_delta_after_live_session_invalidates() -> None:
+    """A transition during delta encoding cannot publish retained map bytes."""
+    runtime = _runtime()
+    runtime.slam_map.live_session_verified = True
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.revision = 8
+    runtime.slam_map.entries.return_value = (
+        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    )
+
+    async def invalidate_after_delta(target):
+        result = target()
+        if getattr(target, "func", None) is encode_slam_scene_delta:
+            runtime.slam_map.live_session_verified = False
+        return result
+
+    hass.async_add_executor_job.side_effect = invalidate_after_delta
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == HTTPStatus.NOT_FOUND
 
 
 async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
