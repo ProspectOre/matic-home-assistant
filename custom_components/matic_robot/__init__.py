@@ -298,6 +298,9 @@ def _register_slam_map_floor_plan_sync(
         if slam_map.floor_plan_is_current(floor_plan):
             last_attempted_identity = None
             return
+        # A busy SLAM stream can publish many pages before the floor-plan
+        # endpoint catches up. Each verified mission gets one bounded refresh
+        # sequence, rather than one coordinator refresh per page.
         if refresh_in_progress or identity == last_attempted_identity:
             return
         refresh_in_progress = True
@@ -309,6 +312,7 @@ def _register_slam_map_floor_plan_sync(
         )
 
     entry.async_on_unload(slam_map.async_add_listener(_async_sync_floor_plan))
+    _async_sync_floor_plan()
 
 
 def _register_native_history_sync(

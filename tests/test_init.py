@@ -120,6 +120,7 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     with patch("custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock):
         _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
         assert callable(listener)
+        assert len(scheduled) == 1
         listener()
         listener()
         assert len(scheduled) == 1
@@ -564,6 +565,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_shutdown=AsyncMock(),
         async_add_listener=MagicMock(return_value=map_unsubscribe),
         floor_plan_is_current=MagicMock(return_value=True),
+        mission_identity=None,
     )
     slam_history = SimpleNamespace(
         async_load=AsyncMock(),
