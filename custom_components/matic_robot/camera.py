@@ -38,6 +38,12 @@ def _floor_render_identity(store: SlamMapStore, data: RobotState) -> tuple[objec
     )
 
 
+def _map_session_verified(store: SlamMapStore, floor_plan_coherent: bool) -> bool:
+    """Return this process's live-map proof with a test-double fallback."""
+    verified = getattr(store, "live_session_verified", None)
+    return verified if isinstance(verified, bool) else floor_plan_coherent
+
+
 async def async_setup_entry(
     hass: HomeAssistant,
     entry: MaticConfigEntry,
@@ -59,8 +65,12 @@ class MaticMapCamera(MaticEntity, Camera):
         MaticEntity.__init__(self, entry)
         self._attr_unique_id = f"{self.coordinator.data.info.serial_number}_map"
         self._store = entry.runtime_data.slam_map
-        self._published_floor_coherent = self._store.floor_plan_is_current(
+        floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
+        )
+        self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = _map_session_verified(
+            self._store, floor_plan_coherent
         )
         self._cached_image_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
@@ -75,8 +85,12 @@ class MaticMapCamera(MaticEntity, Camera):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Publish coordinator state and remember its coherence classification."""
-        self._published_floor_coherent = self._store.floor_plan_is_current(
+        floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
+        )
+        self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = _map_session_verified(
+            self._store, floor_plan_coherent
         )
         super()._handle_coordinator_update()
 
@@ -86,9 +100,14 @@ class MaticMapCamera(MaticEntity, Camera):
         floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
         )
-        if floor_plan_coherent == self._published_floor_coherent:
+        session_verified = _map_session_verified(self._store, floor_plan_coherent)
+        if (
+            floor_plan_coherent == self._published_floor_coherent
+            and session_verified == self._published_session_verified
+        ):
             return
         self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = session_verified
         self.async_write_ha_state()
 
     async def async_camera_image(
@@ -147,8 +166,8 @@ class MaticMapCamera(MaticEntity, Camera):
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "map_floor_coherent": floor_plan_coherent,
-            "map_session_verified": getattr(
-                self._store, "live_session_verified", floor_plan_coherent
+            "map_session_verified": _map_session_verified(
+                self._store, floor_plan_coherent
             ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,
@@ -177,8 +196,12 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             f"{self.coordinator.data.info.serial_number}_photorealistic_map"
         )
         self._store = entry.runtime_data.slam_map
-        self._published_floor_coherent = self._store.floor_plan_is_current(
+        floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
+        )
+        self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = _map_session_verified(
+            self._store, floor_plan_coherent
         )
         self._cached_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
@@ -194,8 +217,12 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
     @callback
     def _handle_coordinator_update(self) -> None:
         """Publish coordinator state and remember its coherence classification."""
-        self._published_floor_coherent = self._store.floor_plan_is_current(
+        floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
+        )
+        self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = _map_session_verified(
+            self._store, floor_plan_coherent
         )
         super()._handle_coordinator_update()
 
@@ -205,9 +232,14 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         floor_plan_coherent = self._store.floor_plan_is_current(
             self.coordinator.data.floor_plan
         )
-        if floor_plan_coherent == self._published_floor_coherent:
+        session_verified = _map_session_verified(self._store, floor_plan_coherent)
+        if (
+            floor_plan_coherent == self._published_floor_coherent
+            and session_verified == self._published_session_verified
+        ):
             return
         self._published_floor_coherent = floor_plan_coherent
+        self._published_session_verified = session_verified
         self._cached_key = None
         self._cached_image = None
         self.async_write_ha_state()
@@ -316,8 +348,8 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             "map_complete": self._store.map_complete,
             "map_revision": self._store.revision,
             "map_floor_coherent": floor_plan_coherent,
-            "map_session_verified": getattr(
-                self._store, "live_session_verified", floor_plan_coherent
+            "map_session_verified": _map_session_verified(
+                self._store, floor_plan_coherent
             ),
             "robot_location_source": robot_location_source(
                 data.floor_plan if floor_plan_coherent else None,

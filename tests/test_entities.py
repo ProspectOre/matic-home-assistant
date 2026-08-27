@@ -1490,6 +1490,25 @@ async def test_photorealistic_camera_rechecks_coherence_after_render_lock(
     assert entity._cached_image is None
 
 
+async def test_camera_publishes_session_changes_without_a_floor_change(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    store.floor_plan_is_current.return_value = False
+    store.live_session_verified = False
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store.live_session_verified = True
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 1
+    assert entity._published_floor_coherent is False
+    assert entity._published_session_verified is True
+
+
 def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
     from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 

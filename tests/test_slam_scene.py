@@ -522,6 +522,44 @@ async def test_scene_view_returns_conflict_until_photo_pages_exist() -> None:
     )
 
 
+async def test_scene_view_withholds_a_cached_scene_until_map_is_live_again() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.live_session_verified = False
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    assert not view._versions
+    assert hass.async_add_executor_job.await_count == 1
+
+
+async def test_scene_view_rechecks_live_session_after_waiting_for_the_encode_lock() -> (
+    None
+):
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    lock = asyncio.Lock()
+    view._locks["entry"] = lock
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    runtime.slam_map.live_session_verified = False
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "entry",
     [

@@ -197,6 +197,9 @@ class MaticSlamSceneView(HomeAssistantView):
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
         data = runtime.coordinator.data
+        if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+            self.clear_entry(entry_id)
+            return None
         epoch = self._epochs.get(entry_id, 0)
         key = _scene_snapshot_key(runtime)
         cached = self._cache.get(entry_id)
@@ -219,13 +222,13 @@ class MaticSlamSceneView(HomeAssistantView):
                 identity = runtime.slam_map.mission_identity
                 floor_plan = data.floor_plan
                 key = (map_revision, identity, floor_plan)
+                if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                    self.clear_entry(entry_id)
+                    return None
                 cached = self._cache.get(entry_id)
                 if cached is not None and cached.key == key:
                     return cached
                 entries = runtime.slam_map.entries()
-                # A matching persisted mission is not enough after a restart.
-                # The map store admits room overlays only after both live map
-                # collections reconfirm that mission for this session.
                 floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
                 try:
                     encoded = await hass.async_add_executor_job(
