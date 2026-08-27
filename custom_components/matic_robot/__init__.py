@@ -53,11 +53,14 @@ from .slam_history import (
     SlamHistoryStore,
     async_collect_slam_history,
 )
-from .slam_map_store import SlamMapStore
+from .slam_map_store import SlamMapIdentity, SlamMapStore
 
 __all__ = ["async_migrate_entry"]
 
 _LOGGER = logging.getLogger(__name__)
+
+FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS = 2
 
 
 @dataclass(slots=True)
@@ -263,27 +266,45 @@ def _register_slam_map_floor_plan_sync(
     the next periodic map poll.
     """
     refresh_in_progress = False
+    last_attempted_identity: SlamMapIdentity | None = None
 
-    async def _async_refresh_floor_plan() -> None:
+    async def _async_refresh_floor_plan(identity: SlamMapIdentity) -> None:
         nonlocal refresh_in_progress
         try:
-            await coordinator.async_request_floor_plan_refresh()
+            for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
+                await coordinator.async_request_floor_plan_refresh()
+                floor_plan = coordinator.data.floor_plan
+                if floor_plan is not None and slam_map.floor_plan_is_current(
+                    floor_plan
+                ):
+                    return
+                if slam_map.mission_identity != identity:
+                    # A newer verified mission arrived while the robot was
+                    # answering. The finally block schedules that mission's
+                    # own bounded recheck after this task releases its guard.
+                    return
+                if attempt + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS:
+                    await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS)
         finally:
             refresh_in_progress = False
+            _async_sync_floor_plan()
 
     def _async_sync_floor_plan() -> None:
-        nonlocal refresh_in_progress
+        nonlocal refresh_in_progress, last_attempted_identity
         floor_plan = coordinator.data.floor_plan
-        if (
-            refresh_in_progress
-            or floor_plan is None
-            or slam_map.floor_plan_is_current(floor_plan)
-        ):
+        identity = slam_map.mission_identity
+        if floor_plan is None or identity is None:
+            return
+        if slam_map.floor_plan_is_current(floor_plan):
+            last_attempted_identity = None
+            return
+        if refresh_in_progress or identity == last_attempted_identity:
             return
         refresh_in_progress = True
+        last_attempted_identity = identity
         entry.async_create_background_task(
             hass,
-            _async_refresh_floor_plan(),
+            _async_refresh_floor_plan(identity),
             f"{DOMAIN} current floor map refresh",
         )
 
