@@ -1454,6 +1454,42 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     assert await task == b"finished-by-first-request"
 
 
+async def test_photorealistic_camera_rechecks_coherence_after_render_lock(
+    hass,
+) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+    store.floor_plan_is_current.side_effect = (True, False)
+    await entity._render_lock.acquire()
+
+    with (
+        patch(
+            "custom_components.matic_robot.camera._render_photorealistic_entries"
+        ) as render,
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"map-unavailable",
+        ) as unavailable_render,
+    ):
+        task = hass.async_create_task(entity.async_camera_image())
+        await asyncio.sleep(0)
+        entity._render_lock.release()
+        assert await task == b"map-unavailable"
+
+    render.assert_not_called()
+    unavailable_render.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity._cached_key is None
+    assert entity._cached_image is None
+
+
 def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:
     from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 

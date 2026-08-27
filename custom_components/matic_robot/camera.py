@@ -247,6 +247,19 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         async with self._render_lock:
             data = self.coordinator.data
             floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
+            if not floor_plan_coherent:
+                self._cached_key = None
+                self._cached_image = None
+                return await self.hass.async_add_executor_job(
+                    partial(
+                        render_floor_plan,
+                        None,
+                        None,
+                        None,
+                        width=requested_width,
+                        height=requested_height,
+                    )
+                )
             render_floor_identity = _floor_render_identity(self._store, data)
             key = (
                 self._store.revision,

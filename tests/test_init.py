@@ -142,6 +142,51 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     assert len(scheduled) == 1
 
 
+async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
+    entry = _entry()
+    remove_listener = MagicMock()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
+    listener: object | None = None
+
+    def add_listener(candidate):
+        nonlocal listener
+        listener = candidate
+        return remove_listener
+
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        async_add_listener=add_listener,
+        mission_identity=SlamMapIdentity("00" * 32, 43),
+        live_session_verified=False,
+    )
+
+    async def refresh_floor_plan() -> None:
+        slam_map.floor_plan_is_current.return_value = True
+
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
+    )
+
+    _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+
+    assert callable(listener)
+    assert not scheduled
+    coordinator.async_request_floor_plan_refresh.assert_not_awaited()
+
+    slam_map.live_session_verified = True
+    listener()
+    assert len(scheduled) == 1
+    await scheduled[0]
+
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    entry.async_on_unload.assert_called_once_with(remove_listener)
+
+
 async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) -> None:
     entry = _entry()
     remove_listener = MagicMock()

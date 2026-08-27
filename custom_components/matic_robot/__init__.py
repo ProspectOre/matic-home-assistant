@@ -304,6 +304,12 @@ def _register_slam_map_floor_plan_sync(
         identity = slam_map.mission_identity
         if identity is None or identity.mission_id is None:
             return
+        # A retained map is intentionally incoherent after a restart until
+        # both collection streams have supplied new pages. It is not a floor
+        # transition, so do not spend the bounded refresh budget or mark this
+        # identity attempted before live collection makes it actionable.
+        if not getattr(slam_map, "live_session_verified", True):
+            return
         if floor_plan is not None and slam_map.floor_plan_is_current(floor_plan):
             last_attempted_identity = None
             return
