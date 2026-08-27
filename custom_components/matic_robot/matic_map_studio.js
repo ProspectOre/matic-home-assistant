@@ -827,10 +827,10 @@ class MaticMapStudio extends HTMLElement {
 
   _floorLabel(floor) {
     return floor?.active
-      ? this._localize("map_floor_current", "Current floor")
+      ? this._localize("map_floor_current", "Live map · robot location")
       : this._localize(
         "map_floor_saved",
-        "Saved floor {number}",
+        "Saved map {number}",
         { number: floor?.ordinal || 1 },
       );
   }
@@ -847,13 +847,13 @@ class MaticMapStudio extends HTMLElement {
       option.textContent = floor.readOnly
         ? this._localize(
           "map_floor_saved_read_only",
-          "Saved floor {number} · read only",
+          "Saved map {number} · read only",
           { number: floor.ordinal },
         )
         : floor.liveAvailable === false
         ? this._localize(
           "map_floor_current_settling",
-          "Current floor · map settling",
+          "Live map · locating robot",
         )
         : this._floorLabel(floor);
       option.disabled = floor.active && floor.liveAvailable === false;
@@ -1036,7 +1036,7 @@ class MaticMapStudio extends HTMLElement {
     if (floor?.readOnly) {
       return this._localize(
         "map_status_saved_floor",
-        "Saved floor {number} · captured {time} · read only",
+        "Saved map {number} · captured {time} · read only",
         {
           number: floor.ordinal,
           time: this._formatHistoryTime(snapshot.created_at),
@@ -1755,7 +1755,8 @@ class MaticMapStudio extends HTMLElement {
     const version = state?.attributes?.map_revision
       ?? state?.last_updated
       ?? "";
-    return `${url}\u0000${String(version)}`;
+    const complete = state?.attributes?.map_complete === true;
+    return `${url}\u0000${String(version)}\u0000${String(complete)}`;
   }
 
   _rejectIncoherentLiveResponse(response, state) {
@@ -1786,10 +1787,13 @@ class MaticMapStudio extends HTMLElement {
       || state?.attributes?.map_floor_coherent === false
       ? undefined
       : this._latestHistorySnapshot();
+    // A map can settle without a new scene revision. Once it has, replace the
+    // retained scene with the verified current scene.
     if (
       !force
       && this._isStableLiveScene(state)
       && this._stableLiveSourceIdentity === requestKey
+      && state?.attributes?.map_complete !== true
     ) {
       this._updateStableLiveStatus(state);
       this._fetchPose(state);
@@ -1882,7 +1886,10 @@ class MaticMapStudio extends HTMLElement {
       if (
         !superseded
         && this._scene
-        && this._sceneUrl === url
+        && (
+          this._sceneUrl === url
+          || this._isStableLiveScene(state)
+        )
       ) {
         this._showRetainedScene();
       } else if (!superseded) {

@@ -1225,8 +1225,8 @@ test.describe("map studio", () => {
     const floorSelect = studio.locator(".floor-select");
     await expect(floorSelect).toBeVisible();
     await expect(floorSelect.locator("option")).toHaveText([
-      "Current floor",
-      "Saved floor 1 · read only",
+      "Live map · robot location",
+      "Saved map 1 · read only",
     ]);
     await studio.locator(".timeline-summary").click();
     await floorSelect.selectOption("saved-1");
@@ -1234,9 +1234,7 @@ test.describe("map studio", () => {
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Saved floor room");
     await expect(studio.locator(".room-label")).toHaveText(["Saved floor room"]);
-    await expect(studio.locator(".status")).toContainText(
-      "Saved floor 1",
-    );
+    await expect(studio.locator(".status")).toContainText("Saved map 1");
     await expect(studio.locator(".status")).toContainText("read only");
     await expect(studio.locator(".timeline-live")).toBeHidden();
     await expect(studio.locator(".cleaning-plans")).toBeDisabled();
@@ -1265,7 +1263,7 @@ test.describe("map studio", () => {
     await page.evaluate(() => window.__studio._update());
     expect(historyRequests).toBe(coherentHistoryRequests);
     await expect(floorSelect.locator("option").first()).toHaveText(
-      "Current floor · map settling",
+      "Live map · locating robot",
     );
     await expect(floorSelect.locator("option").first()).toHaveAttribute(
       "disabled",
@@ -1362,12 +1360,13 @@ test.describe("map studio", () => {
     expect(contours[0].points).toHaveLength(72);
   });
 
-  test("keeps a complete map under the live pose while a new mission rebuilds", async ({ page }) => {
+  test("replaces a retained map when the same live revision settles", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let currentComplete = true;
     let revision = 1;
     let deltaRequests = 0;
     let stableRequests = 0;
+    let failSettledRefresh = false;
     const snapshot = {
       id: "snapshot-stable",
       created_at: "2026-07-26T09:45:00Z",
@@ -1402,18 +1401,20 @@ test.describe("map studio", () => {
         headers: { "Content-Type": "application/vnd.matic.slam-scene" },
       });
     });
-    await page.route("**/rebuilding-map", (route) => route.fulfill({
-      status: 200,
-      body: syntheticScene(
-        currentComplete ? "Complete current room" : "Partial current room",
-        32,
-      ),
-      headers: {
-        "Content-Type": "application/vnd.matic.slam-scene",
-        "X-Matic-Floor-Coherent": "1",
-        "X-Matic-Revision": String(revision),
-      },
-    }));
+    await page.route("**/rebuilding-map", (route) => failSettledRefresh
+      ? route.fulfill({ status: 503, body: "temporarily unavailable" })
+      : route.fulfill({
+        status: 200,
+        body: syntheticScene(
+          currentComplete ? "Complete current room" : "Partial current room",
+          32,
+        ),
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Floor-Coherent": "1",
+          "X-Matic-Revision": String(revision),
+        },
+      }));
     await page.route("**/live-pose", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -1460,7 +1461,15 @@ test.describe("map studio", () => {
     expect(stableRequests).toBe(1);
 
     currentComplete = true;
-    revision = 3;
+    failSettledRefresh = true;
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Complete retained room");
+    await expect(studio.locator(".status")).toContainText("last local 3D scene");
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+
+    failSettledRefresh = false;
     await page.evaluate(() => window.__studio._update());
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
@@ -1545,7 +1554,7 @@ test.describe("map studio", () => {
       "map paused until localization completes",
     );
     await expect(studio.locator(".floor-select").locator("option").first()).toHaveText(
-      "Current floor · map settling",
+      "Live map · locating robot",
     );
     await expect(
       studio.locator(".floor-select").locator("option").first(),
@@ -1756,7 +1765,7 @@ test.describe("map studio", () => {
       "map paused until localization completes",
     );
     await expect(studio.locator(".floor-select").locator("option").first())
-      .toHaveText("Current floor");
+      .toHaveText("Live map · robot location");
     await expect(studio.locator(".cleaning-plans")).toBeEnabled();
     await expect(studio.locator(".cleaning-areas")).toBeEnabled();
     expect(await page.evaluate(() =>
@@ -2001,6 +2010,96 @@ test.describe("map studio", () => {
     expect(liveSceneRequests).toBe(0);
   });
 
+  test("queues a settled live scene while a retained snapshot loads", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let currentComplete = false;
+    let announceSnapshot;
+    const snapshotStarted = new Promise((resolve) => {
+      announceSnapshot = resolve;
+    });
+    let continueSnapshot;
+    const snapshotBlocked = new Promise((resolve) => {
+      continueSnapshot = resolve;
+    });
+    let liveSceneRequests = 0;
+    const snapshot = {
+      id: "stable-before-settle",
+      created_at: "2026-07-26T09:45:00Z",
+      revision: 1,
+      point_count: 1,
+      scene_url: "/slow-settling-stable-scene",
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/settled-live-scene",
+        history_url: "/settling-history",
+        history_count: 1,
+        map_revision: 2,
+        map_complete: currentComplete,
+        map_floor_coherent: true,
+      }] }),
+    }));
+    await page.route("**/settling-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ snapshots: [snapshot] }),
+    }));
+    await page.route("**/slow-settling-stable-scene", async (route) => {
+      announceSnapshot();
+      await snapshotBlocked;
+      try {
+        await route.fulfill({
+          status: 200,
+          body: syntheticScene("Retained map", 8),
+          headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+        });
+      } catch (_error) {
+        // A superseding completion read may abort this request.
+      }
+    });
+    await page.route("**/settled-live-scene", (route) => {
+      liveSceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Settled live map", 24),
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Floor-Coherent": "1",
+          "X-Matic-Revision": "2",
+        },
+      });
+    });
+
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
+    await snapshotStarted;
+    currentComplete = true;
+    await page.evaluate(() => window.__studio._update());
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._pendingSceneRefresh,
+    )).toBe(true);
+    continueSnapshot();
+
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Settled live map");
+    await expect(studio.locator(".status")).toContainText("points · full capture");
+    expect(liveSceneRequests).toBe(1);
+  });
+
   test("withholds an incoherent room-camera fallback during a floor transition", async ({ page }) => {
     await installBrowserDoubles(page, { images: true });
     const studio = await loadStudio(page, {
@@ -2144,7 +2243,7 @@ test.describe("map studio", () => {
       "map paused until localization completes",
     );
     await expect(studio.locator(".floor-select").locator("option").first()).toHaveText(
-      "Current floor · map settling",
+      "Live map · locating robot",
     );
     await expect(studio.locator(".cleaning-plans")).toBeDisabled();
     await expect(studio.locator(".cleaning-areas")).toBeDisabled();
