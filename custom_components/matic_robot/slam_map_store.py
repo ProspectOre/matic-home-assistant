@@ -92,6 +92,7 @@ class _MissionCandidate:
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
     mission_id: int | None
+    blocks_active: bool = True
     truncated: bool = False
     dropped_photo_tiles: int = 0
     dropped_structure_tiles: int = 0
@@ -228,7 +229,7 @@ class SlamMapStore:
         # active token are evidence only for the cached map.  They cannot
         # re-establish that it still represents the robot while a replacement
         # mission is awaiting its independent layer.
-        if self._candidates:
+        if self._has_blocking_candidate():
             self._invalidate_live_session()
             live_session_confirmed = False
         else:
@@ -248,11 +249,6 @@ class SlamMapStore:
         mission_token = tile.mission_token
         if mission_token in self._retired_missions:
             return
-        # One live page from a new mission is enough to prove that the old
-        # mission may no longer be current.  Do not keep labelling it as the
-        # robot's live location while we wait for the independent layer needed
-        # to promote the replacement map.
-        self._invalidate_live_session()
         candidate = self._candidates.get(mission_token)
         if candidate is None:
             if len(self._candidates) >= MAX_CANDIDATE_MISSIONS:
@@ -260,7 +256,11 @@ class SlamMapStore:
                 self._retire_mission(evicted_token)
             self._candidate_generation += 1
             candidate = _MissionCandidate(
-                self._candidate_generation, monotonic(), {}, {}, tile.mission_id
+                generation=self._candidate_generation,
+                first_seen_at=monotonic(),
+                entries={},
+                structure_entries={},
+                mission_id=tile.mission_id,
             )
             self._candidates[mission_token] = candidate
         else:
@@ -274,7 +274,15 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
+        missing_layer = not target
         target[_tile_key(tile)] = entry
+        # A new candidate, or a late counterpart for an expired candidate,
+        # makes the active map unsafe until this candidate is classified.  A
+        # further page from an already-expired one-sided stream does not start
+        # another indefinite pause; its retained page remains available for a
+        # future independent counterpart instead.
+        if candidate.blocks_active or missing_layer:
+            self._invalidate_live_session()
         self._enforce_candidate_bounds(candidate)
         # A newer observed mission is authoritative until it is classified.
         # Do not promote an older candidate merely because its delayed layer
@@ -287,18 +295,22 @@ class SlamMapStore:
             self._promote_candidate(mission_token, candidate)
 
     def _expire_incomplete_candidates(self) -> None:
-        """Discard one-sided mission observations after bounded classification.
+        """Relax one-sided candidates after bounded classification.
 
         An alternative token invalidates the active map immediately, but a
         failed or skewed subscription must not keep the active map unavailable
-        forever.  Expiry deliberately does not retire the token: a later page
-        from that mission starts a new two-layer classification instead of
-        silently accepting an unproven replacement.
+        forever.  Retain its bounded early layer so a delayed independent
+        counterpart can still promote the candidate, but allow the active
+        mission to earn fresh two-layer proof in the meantime.
         """
         cutoff = monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
-        for mission_token, candidate in tuple(self._candidates.items()):
-            if candidate.first_seen_at <= cutoff:
-                self._candidates.pop(mission_token)
+        for candidate in self._candidates.values():
+            if candidate.blocks_active and candidate.first_seen_at <= cutoff:
+                candidate.blocks_active = False
+
+    def _has_blocking_candidate(self) -> bool:
+        """Return whether an unclassified candidate still blocks active proof."""
+        return any(candidate.blocks_active for candidate in self._candidates.values())
 
     def _promote_candidate(
         self, mission_token: str, candidate: _MissionCandidate

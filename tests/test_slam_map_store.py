@@ -186,8 +186,41 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
 
     assert store.live_session_verified
     assert store.floor_plan_is_current(active_plan)
-    assert candidate_token not in store._candidates
+    assert candidate_token in store._candidates
+    assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
+
+
+async def test_slam_map_store_promotes_a_late_candidate_counterpart(hass) -> None:
+    """Expiry keeps the early candidate layer for a delayed subscription."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    candidate_plan = FloorPlan(2, "candidate", b"candidate", ())
+    store = SlamMapStore(hass, "late-candidate-counterpart-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        candidate_token = (
+            await store.async_add(synthetic_slam_entry(mission_id=2))
+        ).mission_token
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        await store.async_add_structure(synthetic_structure_entry(page_x=8))
+        assert store.floor_plan_is_current(active_plan)
+        assert not store._candidates[candidate_token].blocks_active
+
+        await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(candidate_plan)
+    assert candidate_token not in store._candidates
 
 
 async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None:
