@@ -1564,6 +1564,63 @@ test.describe("map studio", () => {
     expect(previousFloorRequests).toBe(0);
   });
 
+  test("withholds a restored map until this Home Assistant session revalidates it", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let sceneRequests = 0;
+    let historyRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [{
+        entry_id: "synthetic-entry",
+        scene_url: "/restored-scene",
+        history_url: "/restored-history",
+        history_count: 1,
+        map_revision: 2,
+        map_complete: false,
+        map_floor_coherent: false,
+        map_session_verified: false,
+      }] }),
+    }));
+    await page.route("**/restored-scene", (route) => {
+      sceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: syntheticScene("Restored room", 16),
+        headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+      });
+    });
+    await page.route("**/restored-history", (route) => {
+      historyRequests += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ live_available: false, snapshots: [], floors: [] }),
+      });
+    });
+
+    const studio = await loadStudio(page);
+
+    await expect(studio.locator(".status")).toContainText(
+      "Checking the current map after restart",
+    );
+    await expect(studio.locator(".status")).not.toContainText(
+      "Floor transition detected",
+    );
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+    await expect(studio.locator(".empty")).toContainText(
+      "map paused until localization completes",
+    );
+    await expect(studio.locator(".floor-select").locator("option").first()).toHaveText(
+      "Live map · locating robot",
+    );
+    await expect(
+      studio.locator(".floor-select").locator("option").first(),
+    ).toHaveAttribute("disabled", "");
+    expect(sceneRequests).toBe(0);
+    expect(historyRequests).toBe(0);
+  });
+
   test("does not resurface an in-flight live scene after a floor transition", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let releaseScene;

@@ -271,16 +271,25 @@ def _register_slam_map_floor_plan_sync(
     last_attempted_identity: SlamMapIdentity | None = None
 
     async def _async_refresh_floor_plan(identity: SlamMapIdentity) -> None:
-        nonlocal refresh_in_progress
+        nonlocal refresh_in_progress, last_attempted_identity
         try:
             for round_ in range(FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS):
                 for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
-                    if slam_map.mission_identity != identity:
+                    if slam_map.mission_identity != identity or not getattr(
+                        slam_map, "live_session_verified", True
+                    ):
                         # A newer verified mission arrived while the robot was
-                        # answering. The finally block schedules that mission's
-                        # own bounded recheck after this task releases its guard.
+                        # answering, or this mission lost its live proof. The
+                        # finally block schedules a fresh bounded recheck after
+                        # this task releases its guard.
+                        last_attempted_identity = None
                         return
                     await coordinator.async_request_floor_plan_refresh()
+                    if slam_map.mission_identity != identity or not getattr(
+                        slam_map, "live_session_verified", True
+                    ):
+                        last_attempted_identity = None
+                        return
                     floor_plan = coordinator.data.floor_plan
                     if floor_plan is not None and slam_map.floor_plan_is_current(
                         floor_plan
@@ -303,6 +312,13 @@ def _register_slam_map_floor_plan_sync(
         floor_plan = coordinator.data.floor_plan
         identity = slam_map.mission_identity
         if identity is None or identity.mission_id is None:
+            return
+        # A retained map is intentionally incoherent after a restart until
+        # both collection streams have supplied new pages. It is not a floor
+        # transition, so do not spend the bounded refresh budget or mark this
+        # identity attempted before live collection makes it actionable.
+        if not getattr(slam_map, "live_session_verified", True):
+            last_attempted_identity = None
             return
         if floor_plan is not None and slam_map.floor_plan_is_current(floor_plan):
             last_attempted_identity = None

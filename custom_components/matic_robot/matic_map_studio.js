@@ -2391,10 +2391,15 @@ class MaticMapStudio extends HTMLElement {
     if (canvas) canvas.hidden = true;
     if (overlays) overlays.hidden = true;
     if (image) image.hidden = true;
-    const message = this._localize(
-      "map_status_floor_transition",
-      "Floor transition detected · map paused until localization completes",
-    );
+    const message = state?.attributes?.map_session_verified === false
+      ? this._localize(
+        "map_status_session_revalidation",
+        "Checking the current map after restart · map paused until localization completes",
+      )
+      : this._localize(
+        "map_status_floor_transition",
+        "Floor transition detected · map paused until localization completes",
+      );
     this._setEmpty(message);
     this._setStatus(message, "warning");
     this._updateHealth(state);

@@ -1225,6 +1225,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "map_floor_coherent": True,
+        "map_session_verified": True,
         "robot_location_source": "exact_pose",
         "source": "local_room_map",
     }
@@ -1270,6 +1271,7 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "map_floor_coherent": False,
+        "map_session_verified": False,
         "robot_location_source": "unavailable",
         "source": "local_room_map",
     }
@@ -1330,6 +1332,7 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
         "map_complete": True,
         "map_revision": 1,
         "map_floor_coherent": True,
+        "map_session_verified": True,
         "robot_location_source": "exact_pose",
         "source": "local_robot_slam",
         "scene_url": "/api/matic_robot/slam_scene/entry",
@@ -1357,6 +1360,40 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     update_state.assert_called_once_with()
 
     assert entity.extra_state_attributes["robot_location_source"] == "unavailable"
+
+
+async def test_photorealistic_camera_withholds_a_restored_map_before_revalidation(
+    hass,
+) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    store.floor_plan_is_current.return_value = False
+    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    store.structure_entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+
+    with (
+        patch(
+            "custom_components.matic_robot.camera._render_photorealistic_entries"
+        ) as render,
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"map-unavailable",
+        ) as unavailable_render,
+    ):
+        assert await entity.async_camera_image() == b"map-unavailable"
+
+    render.assert_not_called()
+    unavailable_render.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity._cached_key is None
+    assert entity._cached_image is None
 
 
 async def test_photorealistic_camera_discards_render_when_floor_changes(hass) -> None:
@@ -1415,6 +1452,61 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     entity._render_lock.release()
 
     assert await task == b"finished-by-first-request"
+
+
+async def test_photorealistic_camera_rechecks_coherence_after_render_lock(
+    hass,
+) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+    store.floor_plan_is_current.side_effect = (True, False)
+    await entity._render_lock.acquire()
+
+    with (
+        patch(
+            "custom_components.matic_robot.camera._render_photorealistic_entries"
+        ) as render,
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"map-unavailable",
+        ) as unavailable_render,
+    ):
+        task = hass.async_create_task(entity.async_camera_image())
+        await asyncio.sleep(0)
+        entity._render_lock.release()
+        assert await task == b"map-unavailable"
+
+    render.assert_not_called()
+    unavailable_render.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity._cached_key is None
+    assert entity._cached_image is None
+
+
+async def test_camera_publishes_session_changes_without_a_floor_change(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    store.floor_plan_is_current.return_value = False
+    store.live_session_verified = False
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store.live_session_verified = True
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 1
+    assert entity._published_floor_coherent is False
+    assert entity._published_session_verified is True
 
 
 def test_photorealistic_camera_decodes_both_layers_for_renderer() -> None:

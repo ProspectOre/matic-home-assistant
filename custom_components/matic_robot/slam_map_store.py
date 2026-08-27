@@ -6,13 +6,16 @@ import asyncio
 import base64
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from time import monotonic
 from typing import Any, Literal
 
 from google.protobuf.message import DecodeError
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from .client.api import MaticHermesClient
@@ -40,6 +43,11 @@ MAX_CANDIDATE_MISSIONS = 2
 MAX_CANDIDATE_TILES_PER_LAYER = 128
 MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
 MAX_RETIRED_MISSIONS = 8
+# A candidate needs pages from both independent subscriptions.  Allow three
+# normal retry intervals for those streams to converge, then classify a
+# one-sided candidate so it cannot hold the active map unavailable forever.
+CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
+CANDIDATE_REFRESH_RETRY_SECONDS = STREAM_RETRY_SECONDS
 
 MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
@@ -84,9 +92,11 @@ class _MissionCandidate:
     """Bounded pages waiting for cross-layer mission confirmation."""
 
     generation: int
+    first_seen_at: float
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
     mission_id: int | None
+    blocks_active: bool = True
     truncated: bool = False
     dropped_photo_tiles: int = 0
     dropped_structure_tiles: int = 0
@@ -126,6 +136,12 @@ class SlamMapStore:
         self._revision = 0
         self._last_change = 0.0
         self._map_complete = False
+        # A restored private cache is useful as a bounded local checkpoint, but
+        # it is not proof that it describes the robot's location *after this
+        # integration session starts*.  Both live map collections must confirm
+        # the active mission before anything treats the cached scene as live.
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         self._truncated = False
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
@@ -139,10 +155,16 @@ class SlamMapStore:
         self._candidates: OrderedDict[str, _MissionCandidate] = OrderedDict()
         self._retired_missions: deque[str] = deque(maxlen=MAX_RETIRED_MISSIONS)
         self._candidate_generation = 0
+        self._candidate_expiry_cancel: CALLBACK_TYPE | None = None
+        self._candidate_refresh_retry_cancel: CALLBACK_TYPE | None = None
+        self._candidate_refresh_task: asyncio.Task[None] | None = None
+        self._collection_client: MaticHermesClient | None = None
         self._closed = False
 
     async def async_load(self) -> None:
         """Load and validate the robot-local tile cache."""
+        self._cancel_candidate_expiry()
+        self._cancel_candidate_refresh_retry()
         stored = await self._store.async_load() or {}
         loaded = await self._hass.async_add_executor_job(
             _decode_stored_snapshot, stored
@@ -162,6 +184,8 @@ class SlamMapStore:
         self._revision = len(self._entries) + len(self._structure_entries)
         self._last_change = 0.0
         self._map_complete = not self._truncated and self._has_balanced_layers()
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         if loaded.dirty:
             self._schedule_save()
         self._notify_listeners()
@@ -190,6 +214,7 @@ class SlamMapStore:
         """Cache an active page or stage a cross-layer mission candidate."""
         if self._closed:
             return
+        self._expire_incomplete_candidates()
         mission_token = tile.mission_token
         if self._mission_token is None:
             self._mission_token = mission_token
@@ -210,7 +235,18 @@ class SlamMapStore:
         key = _tile_key(tile)
         changed = target.get(key) != entry
         target[key] = entry
-        if not changed and not identity_changed:
+        # Once a different mission has been observed, delayed pages from the
+        # active token are evidence only for the cached map.  They cannot
+        # re-establish that it still represents the robot while a replacement
+        # mission is awaiting its independent layer.
+        if self._has_blocking_candidate():
+            self._invalidate_live_session()
+            live_session_confirmed = False
+        else:
+            live_session_confirmed = self._observe_live_layer(structural=structural)
+        if live_session_confirmed:
+            self._cancel_candidate_refresh_retry()
+        if not changed and not identity_changed and not live_session_confirmed:
             return
         self._content_changed()
 
@@ -232,7 +268,11 @@ class SlamMapStore:
                 self._retire_mission(evicted_token)
             self._candidate_generation += 1
             candidate = _MissionCandidate(
-                self._candidate_generation, {}, {}, tile.mission_id
+                generation=self._candidate_generation,
+                first_seen_at=monotonic(),
+                entries={},
+                structure_entries={},
+                mission_id=tile.mission_id,
             )
             self._candidates[mission_token] = candidate
         else:
@@ -246,15 +286,214 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
+        missing_layer = not target
         target[_tile_key(tile)] = entry
+        # A new candidate, or a late counterpart for an expired candidate,
+        # makes the active map unsafe until this candidate is classified.  A
+        # further page from an already-expired one-sided stream does not start
+        # another indefinite pause; its retained page remains available for a
+        # future independent counterpart instead.
+        if candidate.blocks_active or missing_layer:
+            self._cancel_candidate_refresh_retry()
+            self._invalidate_live_session()
         self._enforce_candidate_bounds(candidate)
-        if candidate.entries and candidate.structure_entries:
+        # A newer observed mission is authoritative until it is classified.
+        # Do not promote an older candidate merely because its delayed layer
+        # happened to arrive first.
+        if (
+            candidate.entries
+            and candidate.structure_entries
+            and self._candidate_can_promote(candidate)
+        ):
             self._promote_candidate(mission_token, candidate)
+        self._schedule_candidate_expiry()
+
+    def _expire_incomplete_candidates(self) -> bool:
+        """Relax one-sided candidates after bounded classification.
+
+        An alternative token invalidates the active map immediately, but a
+        failed or skewed subscription must not keep the active map unavailable
+        forever.  Retain its bounded early layer so a delayed independent
+        counterpart can still promote the candidate, but allow the active
+        mission to earn fresh two-layer proof in the meantime.
+        """
+        cutoff = monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
+        relaxed = False
+        for candidate in self._candidates.values():
+            if candidate.blocks_active and candidate.first_seen_at <= cutoff:
+                candidate.blocks_active = False
+                relaxed = True
+        if relaxed:
+            self._promote_latest_complete_candidate()
+        self._schedule_candidate_expiry()
+        # This method also runs synchronously while processing a newly
+        # received page.  If that page crosses the classification deadline
+        # before the timer callback runs, schedule the same bounded
+        # revalidation the timer path would have requested.  Otherwise a
+        # quiet counterpart stream could leave live map state unavailable
+        # indefinitely after the candidate has been relaxed.
+        if relaxed and not self._has_blocking_candidate():
+            self._schedule_candidate_refresh()
+        return relaxed
+
+    def _has_blocking_candidate(self) -> bool:
+        """Return whether an unclassified candidate still blocks active proof."""
+        return any(candidate.blocks_active for candidate in self._candidates.values())
+
+    def _candidate_can_promote(self, candidate: _MissionCandidate) -> bool:
+        """Return whether no newer unclassified candidate outranks ``candidate``."""
+        return not any(
+            pending.blocks_active and pending.generation > candidate.generation
+            for pending in self._candidates.values()
+        )
+
+    def _promote_latest_complete_candidate(self) -> None:
+        """Promote the best complete candidate after a newer one is classified."""
+        best: tuple[str, _MissionCandidate] | None = None
+        for mission_token, candidate in self._candidates.items():
+            if (
+                candidate.entries
+                and candidate.structure_entries
+                and self._candidate_can_promote(candidate)
+            ):
+                if best is None or candidate.generation > best[1].generation:
+                    best = mission_token, candidate
+        if best is not None:
+            self._promote_candidate(*best)
+
+    def _schedule_candidate_expiry(self) -> None:
+        """Schedule classification even while both map streams stay quiet."""
+        self._cancel_candidate_expiry()
+        if self._closed:
+            return
+        deadlines = [
+            candidate.first_seen_at + CANDIDATE_CLASSIFICATION_SECONDS
+            for candidate in self._candidates.values()
+            if candidate.blocks_active
+        ]
+        if not deadlines:
+            return
+        delay = max(0.0, min(deadlines) - monotonic())
+        self._candidate_expiry_cancel = async_call_later(
+            self._hass,
+            delay,
+            HassJob(
+                self._async_handle_candidate_expiry,
+                "matic_robot_map_candidate_expiry",
+                cancel_on_shutdown=True,
+            ),
+        )
+
+    def _cancel_candidate_expiry(self) -> None:
+        """Cancel the pending candidate-classification callback, if any."""
+        if self._candidate_expiry_cancel is not None:
+            self._candidate_expiry_cancel()
+            self._candidate_expiry_cancel = None
+
+    @callback
+    def _async_handle_candidate_expiry(self, _now: datetime) -> None:
+        """Classify a silent candidate and take fresh bounded map snapshots."""
+        self._candidate_expiry_cancel = None
+        if self._closed:
+            return
+        relaxed = self._expire_incomplete_candidates()
+        if relaxed and not self._has_blocking_candidate():
+            self._schedule_candidate_refresh()
+
+    def _schedule_candidate_refresh(self) -> None:
+        """Request fresh independent proof after a candidate expires."""
+        client = self._collection_client
+        task = self._candidate_refresh_task
+        if self._closed or client is None or (task is not None and not task.done()):
+            return
+        self._candidate_refresh_task = self._hass.async_create_task(
+            self._async_refresh_after_candidate_expiry(client),
+            "matic_robot_map_candidate_refresh",
+        )
+
+    def _needs_candidate_refresh(self) -> bool:
+        """Return whether expired candidates still need fresh active-map proof."""
+        return bool(
+            not self._closed
+            and self._candidates
+            and not self._has_blocking_candidate()
+            and not self.live_session_verified
+        )
+
+    def _schedule_candidate_refresh_retry(self) -> None:
+        """Retry bounded map revalidation after a transient snapshot failure."""
+        self._cancel_candidate_refresh_retry()
+        if not self._needs_candidate_refresh():
+            return
+        self._candidate_refresh_retry_cancel = async_call_later(
+            self._hass,
+            CANDIDATE_REFRESH_RETRY_SECONDS,
+            HassJob(
+                self._async_handle_candidate_refresh_retry,
+                "matic_robot_map_candidate_refresh_retry",
+                cancel_on_shutdown=True,
+            ),
+        )
+
+    def _cancel_candidate_refresh_retry(self) -> None:
+        """Cancel the pending candidate-refresh retry, if any."""
+        if self._candidate_refresh_retry_cancel is not None:
+            self._candidate_refresh_retry_cancel()
+            self._candidate_refresh_retry_cancel = None
+
+    @callback
+    def _async_handle_candidate_refresh_retry(self, _now: datetime) -> None:
+        """Retry only while no live proof or newer candidate has arrived."""
+        self._candidate_refresh_retry_cancel = None
+        if self._needs_candidate_refresh():
+            self._schedule_candidate_refresh()
+
+    async def _async_refresh_after_candidate_expiry(
+        self, client: MaticHermesClient
+    ) -> None:
+        """Read one page from each map collection without trusting cache state."""
+        try:
+            photo_entries, structure_entries = await asyncio.gather(
+                client.async_get_collection_entries("map_compressed_rgb", limit=1),
+                client.async_get_collection_entries("map_integrated", limit=1),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._schedule_candidate_refresh_retry()
+            return
+        if self._closed or not self._needs_candidate_refresh():
+            return
+        try:
+            for entry in photo_entries:
+                await self.async_add(entry)
+            for entry in structure_entries:
+                await self.async_add_structure(entry)
+        except DecodeError:
+            self._record_invalid()
+            self._notify_listeners()
+            self._schedule_candidate_refresh_retry()
+            return
+        if self._needs_candidate_refresh():
+            self._schedule_candidate_refresh_retry()
+        else:
+            self._cancel_candidate_refresh_retry()
+
+    async def _async_cancel_candidate_refresh(self) -> None:
+        """Stop an in-flight bounded map refresh during entry teardown."""
+        task = self._candidate_refresh_task
+        self._candidate_refresh_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     def _promote_candidate(
         self, mission_token: str, candidate: _MissionCandidate
     ) -> None:
         """Atomically replace the active mission after cross-layer evidence."""
+        self._cancel_candidate_refresh_retry()
         if self._mission_token is not None:
             self._retire_mission(self._mission_token)
         for token, pending in tuple(self._candidates.items()):
@@ -270,6 +509,9 @@ class SlamMapStore:
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
         self._candidates.pop(mission_token, None)
+        # Promotion itself requires live photographic and structural evidence.
+        self._live_photo_seen = True
+        self._live_structure_seen = True
         self._content_changed()
 
     def _retire_mission(self, mission_token: str) -> None:
@@ -301,12 +543,34 @@ class SlamMapStore:
         self._schedule_save()
         self._notify_listeners()
 
+    def _observe_live_layer(self, *, structural: bool) -> bool:
+        """Record one fresh collection layer and report first live proof."""
+        was_confirmed = self._live_photo_seen and self._live_structure_seen
+        if structural:
+            self._live_structure_seen = True
+        else:
+            self._live_photo_seen = True
+        return not was_confirmed and self._live_photo_seen and self._live_structure_seen
+
+    def _invalidate_live_session(self) -> None:
+        """Fail closed while a newly observed map mission is classified."""
+        if not (self._live_photo_seen or self._live_structure_seen):
+            return
+        self._live_photo_seen = False
+        self._live_structure_seen = False
+        self._content_changed()
+
     async def async_collect(self, client: MaticHermesClient) -> None:
         """Continuously collect photographic and structural map pages."""
-        await asyncio.gather(
-            self._async_collect_collection(client, "map_compressed_rgb", False),
-            self._async_collect_collection(client, "map_integrated", True),
-        )
+        self._collection_client = client
+        try:
+            await asyncio.gather(
+                self._async_collect_collection(client, "map_compressed_rgb", False),
+                self._async_collect_collection(client, "map_integrated", True),
+            )
+        finally:
+            if self._collection_client is client:
+                self._collection_client = None
 
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
@@ -392,7 +656,16 @@ class SlamMapStore:
     def floor_plan_is_current(self, floor_plan: FloorPlan | None) -> bool:
         """Return whether the active SLAM map and floor plan are correlated."""
         identity = self.mission_identity
-        return identity is not None and identity.matches_floor_plan(floor_plan)
+        return bool(
+            self.live_session_verified
+            and identity is not None
+            and identity.matches_floor_plan(floor_plan)
+        )
+
+    @property
+    def live_session_verified(self) -> bool:
+        """Return whether both live map collections confirmed this session."""
+        return self._live_photo_seen and self._live_structure_seen
 
     @property
     def structure_tile_count(self) -> int:
@@ -402,6 +675,8 @@ class SlamMapStore:
     @property
     def map_complete(self) -> bool:
         """Return whether both untruncated layers settled for the current mission."""
+        if not self.live_session_verified:
+            return False
         if self._truncated:
             return False
         if self._map_complete:
@@ -462,11 +737,17 @@ class SlamMapStore:
     async def async_remove(self) -> None:
         """Erase the private map cache when the robot entry is removed."""
         self._closed = True
+        self._cancel_candidate_expiry()
+        self._cancel_candidate_refresh_retry()
+        await self._async_cancel_candidate_refresh()
+        self._collection_client = None
         self._entries.clear()
         self._structure_entries.clear()
         self._candidates.clear()
         self._retired_missions.clear()
         self._candidate_generation = 0
+        self._live_photo_seen = False
+        self._live_structure_seen = False
         self._mission_token = None
         self._mission_id = None
         self._revision += 1
@@ -484,6 +765,10 @@ class SlamMapStore:
         if self._closed:
             return
         self._closed = True
+        self._cancel_candidate_expiry()
+        self._cancel_candidate_refresh_retry()
+        await self._async_cancel_candidate_refresh()
+        self._collection_client = None
         data = await self._hass.async_add_executor_job(
             _serialize_snapshot,
             tuple(self._entries.values()),

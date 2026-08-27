@@ -30,6 +30,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import (
     AREAS_API_URL,
@@ -522,6 +523,99 @@ async def test_scene_view_returns_conflict_until_photo_pages_exist() -> None:
     )
 
 
+async def test_scene_view_withholds_a_cached_scene_until_map_is_live_again() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.live_session_verified = False
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    assert not view._versions
+    assert hass.async_add_executor_job.await_count == 1
+
+
+async def test_scene_view_rechecks_live_session_after_waiting_for_the_encode_lock() -> (
+    None
+):
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    lock = asyncio.Lock()
+    view._locks["entry"] = lock
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    runtime.slam_map.live_session_verified = False
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
+async def test_scene_view_rechecks_live_session_before_returning_waiter_cache() -> None:
+    """A cache completed by another waiter cannot outlive map verification."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    completed_scene = view._cache.pop("entry")
+    lock = view._locks["entry"]
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    # Simulate the lock holder completing an encode while this request waits.
+    view._cache["entry"] = completed_scene
+    runtime.slam_map.live_session_verified = False
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+
+
+async def test_scene_view_rechecks_live_session_before_encoding() -> None:
+    """A session change after lock acquisition prevents a new scene encode."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    original_map = runtime.slam_map
+
+    class _SessionVerificationFlip:
+        """Expose a transition between the pre-lock and pre-encode checks."""
+
+        def __init__(self) -> None:
+            self.checks = 0
+
+        @property
+        def live_session_verified(self) -> bool:
+            self.checks += 1
+            return self.checks < 3
+
+        def __getattr__(self, name: str):
+            return getattr(original_map, name)
+
+    runtime.slam_map = _SessionVerificationFlip()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert runtime.slam_map.checks == 3
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "entry",
     [
@@ -742,6 +836,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_floor_count": 0,
                 "map_revision": 7,
                 "map_floor_coherent": True,
+                "map_session_verified": True,
                 "map_health": "ready",
                 "map_complete": True,
                 "map_truncated": False,
@@ -1173,6 +1268,33 @@ async def test_delta_view_streams_revision_change_and_full_fallback() -> None:
     assert fallback.status == HTTPStatus.OK
     assert fallback.content_type == "application/vnd.matic.slam-scene"
     assert fallback.body.startswith(b"MATIC3D\x00")
+
+
+async def test_delta_view_discards_delta_after_live_session_invalidates() -> None:
+    """A transition during delta encoding cannot publish retained map bytes."""
+    runtime = _runtime()
+    runtime.slam_map.live_session_verified = True
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.revision = 8
+    runtime.slam_map.entries.return_value = (
+        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    )
+
+    async def invalidate_after_delta(target):
+        result = target()
+        if getattr(target, "func", None) is encode_slam_scene_delta:
+            runtime.slam_map.live_session_verified = False
+        return result
+
+    hass.async_add_executor_job.side_effect = invalidate_after_delta
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == HTTPStatus.NOT_FOUND
 
 
 async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:

@@ -197,6 +197,9 @@ class MaticSlamSceneView(HomeAssistantView):
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
         data = runtime.coordinator.data
+        if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+            self.clear_entry(entry_id)
+            return None
         epoch = self._epochs.get(entry_id, 0)
         key = _scene_snapshot_key(runtime)
         cached = self._cache.get(entry_id)
@@ -210,6 +213,12 @@ class MaticSlamSceneView(HomeAssistantView):
                 or _runtime_for_entry(hass, entry_id) is not runtime
             ):
                 return None
+            # A concurrent encoder can populate this cache while this request
+            # waits for the lock. Check the live session before returning that
+            # newly available payload, not only before entering the lock.
+            if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                self.clear_entry(entry_id)
+                return None
             cached = self._cache.get(entry_id)
             if cached is not None and cached is not queued_after:
                 return cached
@@ -219,11 +228,14 @@ class MaticSlamSceneView(HomeAssistantView):
                 identity = runtime.slam_map.mission_identity
                 floor_plan = data.floor_plan
                 key = (map_revision, identity, floor_plan)
+                if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                    self.clear_entry(entry_id)
+                    return None
                 cached = self._cache.get(entry_id)
                 if cached is not None and cached.key == key:
                     return cached
                 entries = runtime.slam_map.entries()
-                floor_plan_coherent = _mission_matches_floor_plan(identity, floor_plan)
+                floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
                 try:
                     encoded = await hass.async_add_executor_job(
                         partial(
@@ -402,6 +414,14 @@ class MaticSlamDeltaView(HomeAssistantView):
                     base_revision=base.revision,
                     revision=current.revision,
                 )
+            )
+        if (
+            _runtime_for_entry(hass, entry_id) is not runtime
+            or not bool(getattr(runtime.slam_map, "live_session_verified", True))
+            or self._scene_view.current_revision(entry_id, runtime) != current.revision
+        ):
+            return web.Response(
+                status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         if delta is None:
             return web.Response(
@@ -687,6 +707,11 @@ class MaticSlamCatalogView(HomeAssistantView):
                     if self._scene_view is not None
                     else runtime.slam_map.revision,
                     "map_floor_coherent": floor_plan_coherent,
+                    "map_session_verified": getattr(
+                        runtime.slam_map,
+                        "live_session_verified",
+                        floor_plan_coherent,
+                    ),
                     "map_health": health.state,
                     "map_complete": health.complete,
                     "map_truncated": health.truncated,
@@ -975,12 +1000,6 @@ def _scene_snapshot_key(runtime: MaticRuntimeData) -> tuple[object, ...]:
         runtime.slam_map.mission_identity,
         runtime.coordinator.data.floor_plan,
     )
-
-
-def _mission_matches_floor_plan(
-    identity: SlamMapIdentity | None, floor_plan: FloorPlan | None
-) -> bool:
-    return identity is not None and identity.matches_floor_plan(floor_plan)
 
 
 def _header_bool(value: bool) -> str:

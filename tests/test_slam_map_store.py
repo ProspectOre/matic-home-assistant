@@ -6,9 +6,10 @@ import asyncio
 import base64
 from collections import defaultdict
 from dataclasses import replace
+from datetime import datetime
 from threading import get_ident
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, call, patch
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -17,6 +18,7 @@ from custom_components.matic_robot import slam_map_store as slam_map_store_modul
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import (
+    CANDIDATE_CLASSIFICATION_SECONDS,
     MAX_HEALTH_COUNTER,
     SlamMapStore,
     _bounded_count,
@@ -42,13 +44,17 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     assert store.decoded_tiles() == (tile,)
     assert store.mission_identity is not None
     assert store.mission_identity.mission_id == 0x1234ABCD
+    assert not store.floor_plan_is_current(
+        FloorPlan(0x1234ABCD, "partition", b"partition", ())
+    )
+    await store.async_add_structure(synthetic_structure_entry())
     assert store.floor_plan_is_current(
         FloorPlan(0x1234ABCD, "partition", b"partition", ())
     )
     assert not store.floor_plan_is_current(FloorPlan(2, "partition", b"partition", ()))
 
     await store.async_add(entry)
-    assert store.revision == 1
+    assert store.revision == 2
 
     restored = SlamMapStore(hass, "synthetic-entry")
     await restored.async_load()
@@ -75,6 +81,484 @@ async def test_slam_map_store_round_trips_replaces_and_removes(hass) -> None:
     empty = SlamMapStore(hass, "synthetic-entry")
     await empty.async_load()
     assert empty.tile_count == 0
+
+
+async def test_slam_map_store_revalidates_a_persisted_map_before_live_use(hass) -> None:
+    """A restart must not advertise a retained map as the robot's live map."""
+    floor_plan = FloorPlan(0x1234ABCD, "partition", b"partition", ())
+    photo = synthetic_slam_entry()
+    structure = synthetic_structure_entry()
+    store = SlamMapStore(hass, "restart-provenance-entry")
+    await store.async_load()
+
+    with patch("custom_components.matic_robot.slam_map_store.SAVE_DELAY_SECONDS", 0):
+        await store.async_add(photo)
+        await store.async_add_structure(structure)
+    await asyncio.sleep(0)
+    await hass.async_block_till_done()
+    assert store.floor_plan_is_current(floor_plan)
+
+    restored = SlamMapStore(hass, "restart-provenance-entry")
+    await restored.async_load()
+    restored_revision = restored.revision
+    assert restored.mission_identity == store.mission_identity
+    assert restored.map_complete is False
+    assert not restored.floor_plan_is_current(floor_plan)
+
+    await restored.async_add(photo)
+    assert not restored.floor_plan_is_current(floor_plan)
+    await restored.async_add_structure(structure)
+
+    assert restored.floor_plan_is_current(floor_plan)
+    assert restored.revision == restored_revision + 1
+
+
+async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
+    """One new live layer hides the old floor until the replacement is proven."""
+    first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())
+    second_plan = FloorPlan(2, "second", b"second", ())
+    store = SlamMapStore(hass, "pending-mission-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(first_plan)
+
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+
+    assert not store.floor_plan_is_current(first_plan)
+    assert not store.floor_plan_is_current(second_plan)
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.floor_plan_is_current(second_plan)
+    assert not store.floor_plan_is_current(first_plan)
+
+
+async def test_slam_map_store_does_not_revalidate_old_mission_while_pending(
+    hass,
+) -> None:
+    """Delayed old pages cannot make a pending replacement map live again."""
+    first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())
+    second_plan = FloorPlan(2, "second", b"second", ())
+    store = SlamMapStore(hass, "delayed-old-mission-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(first_plan)
+
+    # A new photographic layer invalidates the old map before the matching
+    # structure layer arrives.  In-flight pages from the old token must not
+    # make its cached map appear live during that interval.
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(page_x=8))
+
+    assert not store.live_session_verified
+    assert not store.floor_plan_is_current(first_plan)
+    assert not store.floor_plan_is_current(second_plan)
+
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.floor_plan_is_current(second_plan)
+    assert not store.floor_plan_is_current(first_plan)
+
+
+async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
+    hass,
+) -> None:
+    """A failed replacement subscription cannot permanently pause the map."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "expired-candidate-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    candidate = synthetic_slam_entry(mission_id=2)
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        candidate_token = (await store.async_add(candidate)).mission_token
+    assert not store.live_session_verified
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        assert not store.live_session_verified
+        await store.async_add_structure(synthetic_structure_entry(page_x=8))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(active_plan)
+    assert candidate_token in store._candidates
+    assert not store._candidates[candidate_token].blocks_active
+    assert candidate_token not in store._retired_missions
+
+
+async def test_slam_map_store_promotes_a_late_candidate_counterpart(hass) -> None:
+    """Expiry keeps the early candidate layer for a delayed subscription."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    candidate_plan = FloorPlan(2, "candidate", b"candidate", ())
+    store = SlamMapStore(hass, "late-candidate-counterpart-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        candidate_token = (
+            await store.async_add(synthetic_slam_entry(mission_id=2))
+        ).mission_token
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        await store.async_add_structure(synthetic_structure_entry(page_x=8))
+        assert store.floor_plan_is_current(active_plan)
+        assert not store._candidates[candidate_token].blocks_active
+
+        await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(candidate_plan)
+    assert candidate_token not in store._candidates
+
+
+async def test_slam_map_store_reconsiders_a_complete_candidate_after_expiry(
+    hass,
+) -> None:
+    """A newer one-sided candidate cannot permanently reject an older pair."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    complete_plan = FloorPlan(2, "complete", b"complete", ())
+    store = SlamMapStore(hass, "reconsider-complete-candidate-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await store.async_add(synthetic_slam_entry(mission_id=3))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert not store.live_session_verified
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        # This active-map page causes expiry to classify the newer one-sided
+        # candidate.  The retained, fully corroborated candidate must then
+        # become eligible before old active data can re-establish itself.
+        await store.async_add(synthetic_slam_entry(page_x=8))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(complete_plan)
+
+
+async def test_slam_map_store_revalidates_after_silent_candidate_expiry(hass) -> None:
+    """A timer takes bounded fresh reads when map subscriptions stay quiet."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    async def snapshot(name: str, *, limit: int):
+        assert limit == 1
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(page_x=8),)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(page_x=8),)
+
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    store._collection_client = client
+    with patch(
+        "custom_components.matic_robot.slam_map_store.CANDIDATE_CLASSIFICATION_SECONDS",
+        0,
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+
+    assert store.floor_plan_is_current(active_plan)
+    assert client.async_get_collection_entries.await_args_list == [
+        call("map_compressed_rgb", limit=1),
+        call("map_integrated", limit=1),
+    ]
+
+
+async def test_slam_map_store_revalidates_after_page_driven_candidate_expiry(
+    hass,
+) -> None:
+    """A late active page schedules proof when it expires a candidate."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "page-driven-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].first_seen_at = (
+        slam_map_store_module.monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
+    )
+
+    async def snapshot(name: str, *, limit: int):
+        assert limit == 1
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(page_x=8),)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(page_x=8),)
+
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    store._collection_client = client
+
+    # This arrival relaxes the expired candidate before its scheduled timer
+    # callback executes.  It supplies only one active layer, so the bounded
+    # read is required to regain live proof.
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await hass.async_block_till_done()
+
+    assert store.floor_plan_is_current(active_plan)
+    assert client.async_get_collection_entries.await_args_list == [
+        call("map_compressed_rgb", limit=1),
+        call("map_integrated", limit=1),
+    ]
+
+
+async def test_slam_map_store_discards_refresh_after_live_revalidation(hass) -> None:
+    """A slow expired-candidate read cannot override newer active proof."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "discard-stale-candidate-refresh-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    active_token = store.decoded_tiles()[0].mission_token
+    candidate = synthetic_slam_entry(mission_id=2)
+    candidate_token = (await store.async_add(candidate)).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    started = asyncio.Event()
+    release = asyncio.Event()
+    calls = 0
+
+    async def snapshot(name: str, *, limit: int):
+        nonlocal calls
+        assert limit == 1
+        calls += 1
+        if calls == 2:
+            started.set()
+        await release.wait()
+        if name == "map_compressed_rgb":
+            return (candidate,)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(mission_id=2),)
+
+    refresh = asyncio.create_task(
+        store._async_refresh_after_candidate_expiry(
+            SimpleNamespace(
+                async_get_collection_entries=AsyncMock(side_effect=snapshot)
+            )
+        )
+    )
+    await started.wait()
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(page_x=8))
+    assert store.floor_plan_is_current(active_plan)
+    release.set()
+    await refresh
+
+    assert store.decoded_tiles()[0].mission_token == active_token
+    assert candidate_token in store._candidates
+    await store.async_shutdown()
+
+
+async def test_slam_map_store_silent_expiry_refresh_fails_closed(hass) -> None:
+    """A timed snapshot failure cannot reactivate the retained map."""
+    store = SlamMapStore(hass, "failed-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.live_session_verified
+
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(
+            side_effect=CannotConnectError("synthetic snapshot failure")
+        )
+    )
+    store._collection_client = client
+    with patch(
+        "custom_components.matic_robot.slam_map_store.CANDIDATE_CLASSIFICATION_SECONDS",
+        0,
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+
+    assert not store.live_session_verified
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
+
+
+async def test_slam_map_store_retries_a_failed_silent_expiry_refresh(hass) -> None:
+    """A transient revalidation failure retries without trusting cached tiles."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "retry-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    calls = 0
+
+    async def snapshot(name: str, *, limit: int):
+        nonlocal calls
+        assert limit == 1
+        calls += 1
+        if calls <= 2:
+            raise CannotConnectError("synthetic transient snapshot failure")
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(page_x=8),)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(page_x=8),)
+
+    store._collection_client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.slam_map_store.CANDIDATE_CLASSIFICATION_SECONDS",
+            0,
+        ),
+        patch(
+            "custom_components.matic_robot.slam_map_store.CANDIDATE_REFRESH_RETRY_SECONDS",
+            0,
+        ),
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+
+    assert calls == 4
+    assert store.floor_plan_is_current(active_plan)
+    assert store._candidate_refresh_retry_cancel is None
+
+
+async def test_slam_map_store_retries_an_empty_silent_expiry_refresh(hass) -> None:
+    """An empty bounded read is insufficient to revalidate the active map."""
+    store = SlamMapStore(hass, "empty-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    client = SimpleNamespace(async_get_collection_entries=AsyncMock(return_value=()))
+
+    await store._async_refresh_after_candidate_expiry(client)
+
+    assert not store.live_session_verified
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
+
+
+async def test_slam_map_store_retries_a_malformed_silent_expiry_refresh(hass) -> None:
+    """Malformed bounded entries retain fail-closed state and retry later."""
+    store = SlamMapStore(hass, "malformed-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(
+            side_effect=(
+                (HermesCollectionEntry(b"bad", b"bad"),),
+                (synthetic_structure_entry(page_x=8),),
+            )
+        )
+    )
+
+    await store._async_refresh_after_candidate_expiry(client)
+
+    assert not store.live_session_verified
+    assert store.health.invalid_tiles == 1
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
+
+
+async def test_slam_map_store_shutdown_cancels_candidate_snapshot(hass) -> None:
+    """Unload cancels a timed map snapshot before persisting private cache data."""
+    store = SlamMapStore(hass, "cancel-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def snapshot(_name: str, *, limit: int):
+        assert limit == 1
+        started.set()
+        await release.wait()
+        return ()
+
+    store._collection_client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    with patch(
+        "custom_components.matic_robot.slam_map_store.CANDIDATE_CLASSIFICATION_SECONDS",
+        0,
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await asyncio.sleep(0)
+        await started.wait()
+        task = store._candidate_refresh_task
+        assert task is not None
+        assert not task.done()
+        await store.async_shutdown()
+
+    assert task.cancelled()
+    assert store._candidate_expiry_cancel is None
+
+
+async def test_slam_map_store_candidate_expiry_ignores_a_closed_store(hass) -> None:
+    """Timer and refresh callbacks cannot mutate an unloaded integration."""
+    store = SlamMapStore(hass, "closed-silent-candidate-expiry-entry")
+    client = SimpleNamespace(async_get_collection_entries=AsyncMock(return_value=()))
+    store._closed = True
+
+    store._schedule_candidate_expiry()
+    store._async_handle_candidate_expiry(datetime.now())
+    store._schedule_candidate_refresh()
+    store._schedule_candidate_refresh_retry()
+    store._async_handle_candidate_refresh_retry(datetime.now())
+    await store._async_refresh_after_candidate_expiry(client)
+
+    assert client.async_get_collection_entries.await_args_list == [
+        call("map_compressed_rgb", limit=1),
+        call("map_integrated", limit=1),
+    ]
+
+
+async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None:
+    """A later mission signal prevents an older candidate from promotion."""
+    store = SlamMapStore(hass, "newest-pending-mission-entry")
+    await store.async_add(synthetic_slam_entry(mission=b"active"))
+    await store.async_add_structure(synthetic_structure_entry(mission=b"active"))
+    active_token = store.decoded_tiles()[0].mission_token
+
+    await store.async_add(synthetic_slam_entry(mission=b"older"))
+    await store.async_add(synthetic_slam_entry(mission=b"newer"))
+    await store.async_add_structure(synthetic_structure_entry(mission=b"older"))
+
+    assert store.decoded_tiles()[0].mission_token == active_token
+    assert not store.live_session_verified
+
+    await store.async_add_structure(synthetic_structure_entry(mission=b"newer"))
+
+    assert store.decoded_tiles()[0].mission_token != active_token
+    assert store.live_session_verified
 
 
 async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> None:
