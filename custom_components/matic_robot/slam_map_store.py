@@ -218,7 +218,15 @@ class SlamMapStore:
         key = _tile_key(tile)
         changed = target.get(key) != entry
         target[key] = entry
-        live_session_confirmed = self._observe_live_layer(structural=structural)
+        # Once a different mission has been observed, delayed pages from the
+        # active token are evidence only for the cached map.  They cannot
+        # re-establish that it still represents the robot while a replacement
+        # mission is awaiting its independent layer.
+        if self._candidates:
+            self._invalidate_live_session()
+            live_session_confirmed = False
+        else:
+            live_session_confirmed = self._observe_live_layer(structural=structural)
         if not changed and not identity_changed and not live_session_confirmed:
             return
         self._content_changed()
@@ -262,7 +270,14 @@ class SlamMapStore:
         target = candidate.structure_entries if structural else candidate.entries
         target[_tile_key(tile)] = entry
         self._enforce_candidate_bounds(candidate)
-        if candidate.entries and candidate.structure_entries:
+        # A newer observed mission is authoritative until it is classified.
+        # Do not promote an older candidate merely because its delayed layer
+        # happened to arrive first.
+        if (
+            candidate.entries
+            and candidate.structure_entries
+            and candidate.generation == self._candidate_generation
+        ):
             self._promote_candidate(mission_token, candidate)
 
     def _promote_candidate(

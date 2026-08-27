@@ -130,6 +130,54 @@ async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> 
     assert not store.floor_plan_is_current(first_plan)
 
 
+async def test_slam_map_store_does_not_revalidate_old_mission_while_pending(
+    hass,
+) -> None:
+    """Delayed old pages cannot make a pending replacement map live again."""
+    first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())
+    second_plan = FloorPlan(2, "second", b"second", ())
+    store = SlamMapStore(hass, "delayed-old-mission-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(first_plan)
+
+    # A new photographic layer invalidates the old map before the matching
+    # structure layer arrives.  In-flight pages from the old token must not
+    # make its cached map appear live during that interval.
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add(synthetic_slam_entry(page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(page_x=8))
+
+    assert not store.live_session_verified
+    assert not store.floor_plan_is_current(first_plan)
+    assert not store.floor_plan_is_current(second_plan)
+
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+
+    assert store.floor_plan_is_current(second_plan)
+    assert not store.floor_plan_is_current(first_plan)
+
+
+async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None:
+    """A later mission signal prevents an older candidate from promotion."""
+    store = SlamMapStore(hass, "newest-pending-mission-entry")
+    await store.async_add(synthetic_slam_entry(mission=b"active"))
+    await store.async_add_structure(synthetic_structure_entry(mission=b"active"))
+    active_token = store.decoded_tiles()[0].mission_token
+
+    await store.async_add(synthetic_slam_entry(mission=b"older"))
+    await store.async_add(synthetic_slam_entry(mission=b"newer"))
+    await store.async_add_structure(synthetic_structure_entry(mission=b"older"))
+
+    assert store.decoded_tiles()[0].mission_token == active_token
+    assert not store.live_session_verified
+
+    await store.async_add_structure(synthetic_structure_entry(mission=b"newer"))
+
+    assert store.decoded_tiles()[0].mission_token != active_token
+    assert store.live_session_verified
+
+
 async def test_slam_map_store_fails_closed_on_inconsistent_mission_ids(hass) -> None:
     store = SlamMapStore(hass, "mission-identity-entry")
     assert store.mission_identity is None
