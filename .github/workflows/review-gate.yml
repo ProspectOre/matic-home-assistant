@@ -314,7 +314,10 @@ jobs:
                    | select(.replyTo == null)
                    | select((((.pullRequestReview.databaseId // -1) | tostring) as $review_id
                        | ($review_ids | index($review_id))) != null)
-                   | select((.commit.oid // .originalCommit.oid // "") == $head)
+                   # GitHub moves `commit` to the latest diff position after a
+                   # later push. The original commit identifies the reviewed
+                   # head that produced this finding, so it must win here.
+                   | select((.originalCommit.oid // .commit.oid // "") == $head)
                    | {id: (.pullRequestReview.databaseId | tostring),
                       active: (($thread.isResolved | not) and ($thread.isOutdated | not))}]
                   | group_by(.id)

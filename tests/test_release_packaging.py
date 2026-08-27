@@ -103,6 +103,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "availability_notice) | not" in review_gate
     assert 'source == "issue_comment"' in review_gate
     assert "total_count" in review_gate
+    assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
     assert "latest_regular_issue_comment_at" in review_gate
     assert "latest_regular_review_invalidation_at" in review_gate
     assert "latest_finding_at" in review_gate
