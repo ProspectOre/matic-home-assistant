@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import math
+import struct
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -39,6 +41,8 @@ STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 4
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
+PLAN_FLOOR_TOKEN = "_matic_plan_floor"
+_PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v1\0"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
 MAX_SAVED_PLANS_PER_ROBOT = 256
@@ -63,6 +67,37 @@ class CleaningRoom:
     name: str
     cleaning_mode: str
     coverage_setting: str
+
+
+def plan_floor_token(floor_plan: FloorPlan) -> str:
+    """Return a private opaque binding for one native room-command map."""
+    digest = hashlib.sha256(_PLAN_FLOOR_TOKEN_DOMAIN)
+
+    def add(value: bytes) -> None:
+        digest.update(struct.pack(">I", len(value)))
+        digest.update(value)
+
+    digest.update(struct.pack(">q", floor_plan.mission_id))
+    add(floor_plan.partition_id_wire)
+    add(floor_plan.partition_protocol_id.encode())
+    room_identities = sorted(
+        (
+            room.id_wire,
+            room.protocol_id.encode(),
+            room.id.encode(),
+            tuple(room.boundary),
+        )
+        for room in floor_plan.rooms
+    )
+    digest.update(struct.pack(">I", len(room_identities)))
+    for id_wire, protocol_id, room_id, boundary in room_identities:
+        add(id_wire)
+        add(protocol_id)
+        add(room_id)
+        digest.update(struct.pack(">I", len(boundary)))
+        for x, y in boundary:
+            digest.update(struct.pack(">dd", x, y))
+    return digest.hexdigest()
 
 
 def leg_groups(rooms: Sequence[CleaningRoom]) -> list[list[CleaningRoom]]:

@@ -66,12 +66,14 @@ from .firmware import (
 )
 from .plans import (
     OEM_STOP_RECONCILIATION_SECONDS,
+    PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
     SavedPlanLimitError,
     leg_groups,
+    plan_floor_token,
     resolve_room_reference,
     resolve_rooms,
 )
@@ -408,6 +410,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_current_floor=True
         )
         execution_floor_plan = _current_floor_plan(entry)
+        execution_floor_token = plan_floor_token(execution_floor_plan)
 
         def floor_is_current() -> bool:
             """Keep every native room dispatch bound to the starting map."""
@@ -415,7 +418,8 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 entry.runtime_data.coordinator.data.floor_plan
             )
             return (
-                floor_plan == execution_floor_plan
+                floor_plan is not None
+                and plan_floor_token(floor_plan) == execution_floor_token
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 
@@ -480,6 +484,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             managed_user_command=async_managed_command,
             mapped_room_names=tuple(room_map.values()),
             floor_is_current=floor_is_current,
+            floor_token=execution_floor_token,
         )
 
     async def async_intelligent_clean(call: ServiceCall) -> None:
@@ -881,6 +886,7 @@ async def _async_dispatch_leg_command(
     session_history: Callable[[], Awaitable[tuple[CleaningSessionRecord, ...]]] | None,
     *,
     floor_is_current: Callable[[], bool] | None = None,
+    floor_token: str | None = None,
     on_dispatch: Callable[[], None] | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline."""
@@ -903,6 +909,8 @@ async def _async_dispatch_leg_command(
     }
     if motion_token is not None:
         params[PLAN_MOTION_TOKEN] = motion_token
+    if floor_token is not None:
+        params[PLAN_FLOOR_TOKEN] = floor_token
     if on_dispatch is not None:
         on_dispatch()
     await hass.services.async_call(
@@ -938,6 +946,7 @@ async def _async_run_room(
     prepared_dispatch: _PreparedRoomDispatch | None = None,
     prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
     floor_is_current: Callable[[], bool] | None = None,
+    floor_token: str | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -977,6 +986,7 @@ async def _async_run_room(
                 motion_token,
                 session_history,
                 floor_is_current=floor_is_current,
+                floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
             )
         else:
@@ -1363,6 +1373,7 @@ async def _async_run_leg(
     prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
     finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
+    floor_token: str | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1391,6 +1402,7 @@ async def _async_run_leg(
             prepared_dispatch=prepared_dispatch,
             prefetch_next=prefetch_next,
             floor_is_current=floor_is_current,
+            floor_token=floor_token,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1435,6 +1447,7 @@ async def _async_run_leg(
                 motion_token,
                 session_history,
                 floor_is_current=floor_is_current,
+                floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
             )
         else:
@@ -2554,6 +2567,7 @@ async def _async_execute_rooms(
     managed_user_command: Callable[[int, UserCommand], Awaitable[None]] | None = None,
     mapped_room_names: tuple[str, ...] = (),
     floor_is_current: Callable[[], bool] | None = None,
+    floor_token: str | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     await _ensure_stop_settled(hass, manager, serial_number, entity_id)
@@ -2608,6 +2622,7 @@ async def _async_execute_rooms(
                             motion_token,
                             session_history,
                             floor_is_current=floor_is_current,
+                            floor_token=floor_token,
                         )
                     except (HomeAssistantError, MaticError) as err:
                         _LOGGER.debug(
@@ -2647,6 +2662,7 @@ async def _async_execute_rooms(
                     prefetch_next=prefetch_next if next_leg is not None else None,
                     finish_room_event=finish_room_event,
                     floor_is_current=floor_is_current,
+                    floor_token=floor_token,
                 )
                 if not completion_verified:
                     break

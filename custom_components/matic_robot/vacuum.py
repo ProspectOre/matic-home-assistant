@@ -19,7 +19,12 @@ from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
-from .plans import PLAN_MOTION_TOKEN, resolve_room_reference
+from .plans import (
+    PLAN_FLOOR_TOKEN,
+    PLAN_MOTION_TOKEN,
+    plan_floor_token,
+    resolve_room_reference,
+)
 from .stop_return import schedule_dock_after_stop
 
 PARALLEL_UPDATES = 1
@@ -157,6 +162,20 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             )
         return floor_plan
 
+    def _current_floor_plan(self, expected_floor_token: str | None = None) -> FloorPlan:
+        """Return only the coherent floor expected by a queued room command."""
+        floor_plan = self._floor_plan()
+        if not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
+            floor_plan
+        ) or (
+            expected_floor_token is not None
+            and plan_floor_token(floor_plan) != expected_floor_token
+        ):
+            raise _validation_error(
+                "The robot's room map is unavailable", "room_plan_unavailable"
+            )
+        return floor_plan
+
     async def _async_clean_rooms(
         self,
         rooms: list[Room],
@@ -165,8 +184,10 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         coverage_setting: CoverageSetting | None = None,
         ordered: bool = False,
         motion_token: int | None = None,
+        expected_floor_token: str | None = None,
     ) -> None:
-        floor_plan = self._floor_plan()
+        floor_plan = self._current_floor_plan(expected_floor_token)
+        command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
         await self._async_ensure_stop_settled(serial_number)
         context = (
@@ -176,6 +197,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with context:
             await self._async_ensure_stop_settled(serial_number)
+            floor_plan = self._current_floor_plan(command_floor_token)
             await self.coordinator.client.async_start_coverage(
                 floor_plan,
                 [room.protocol_id for room in rooms],
@@ -453,6 +475,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if normalized in {"clean_all", "start"}:
             options = self._clean_options(params)
             options["motion_token"] = self._motion_token(params)
+            options["expected_floor_token"] = self._floor_token(params)
             await self._async_clean_rooms(list(self._floor_plan().rooms), **options)
             return
         if normalized in {"clean_rooms", "clean_segments"}:
@@ -471,6 +494,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 )
             options = self._clean_options(params)
             options["motion_token"] = self._motion_token(params)
+            options["expected_floor_token"] = self._floor_token(params)
             await self._async_clean_rooms(self._resolve_rooms(identifiers), **options)
             return
         raise _validation_error(
@@ -543,6 +567,22 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         if not isinstance(token, int) or isinstance(token, bool):
             raise _validation_error(
                 "The managed plan command token is invalid", "invalid_plan_command"
+            )
+        return token
+
+    @staticmethod
+    def _floor_token(params: dict[str, Any] | list[Any] | None) -> str | None:
+        """Read the opaque map binding from an integration-owned plan command."""
+        if not isinstance(params, dict) or PLAN_FLOOR_TOKEN not in params:
+            return None
+        token = params[PLAN_FLOOR_TOKEN]
+        if (
+            not isinstance(token, str)
+            or len(token) != 64
+            or any(character not in "0123456789abcdef" for character in token)
+        ):
+            raise _validation_error(
+                "The managed plan floor token is invalid", "invalid_plan_command"
             )
         return token
 

@@ -31,6 +31,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     OEM_STOP_RECONCILIATION_SECONDS,
+    PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     AreaBindingUpgradeResult,
     CleaningPlanManager,
@@ -136,7 +137,13 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
 
     dispatch = await _async_dispatch_leg_command(
-        hass, _call(hass), "vacuum.matic", rooms, 7, None
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        rooms,
+        7,
+        None,
+        floor_token="a" * 64,
     )
 
     assert dispatch.rooms == tuple(rooms)
@@ -147,6 +154,7 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     assert params["cleaning_mode"] == "vacuum_and_mop"
     assert params["coverage"] == "standard"
     assert params[PLAN_MOTION_TOKEN] == 7
+    assert params[PLAN_FLOOR_TOKEN] == "a" * 64
 
 
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
@@ -171,6 +179,7 @@ async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
     assert params["rooms"] == ["room-kitchen"]
     assert params["ordered"] is False
     assert PLAN_MOTION_TOKEN not in params
+    assert PLAN_FLOOR_TOKEN not in params
 
 
 async def test_mark_completed_accepts_native_evidence(hass) -> None:

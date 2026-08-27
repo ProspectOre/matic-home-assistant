@@ -43,6 +43,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
     SavedPlanLimitError,
+    plan_floor_token,
 )
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
@@ -803,6 +804,9 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     assert execute.await_args_list[1].kwargs["intelligent"] is False
     assert execute.await_args_list[2].kwargs["intelligent"] is False
     floor_guard = execute.await_args_list[0].kwargs["floor_is_current"]
+    assert execute.await_args_list[0].kwargs["floor_token"] == plan_floor_token(
+        floor_plan
+    )
     assert floor_guard() is True
     coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
     assert floor_guard() is False
