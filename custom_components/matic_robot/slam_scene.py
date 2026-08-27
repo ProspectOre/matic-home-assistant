@@ -213,6 +213,12 @@ class MaticSlamSceneView(HomeAssistantView):
                 or _runtime_for_entry(hass, entry_id) is not runtime
             ):
                 return None
+            # A concurrent encoder can populate this cache while this request
+            # waits for the lock. Check the live session before returning that
+            # newly available payload, not only before entering the lock.
+            if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                self.clear_entry(entry_id)
+                return None
             cached = self._cache.get(entry_id)
             if cached is not None and cached is not queued_after:
                 return cached

@@ -560,6 +560,61 @@ async def test_scene_view_rechecks_live_session_after_waiting_for_the_encode_loc
     hass.async_add_executor_job.assert_not_awaited()
 
 
+async def test_scene_view_rechecks_live_session_before_returning_waiter_cache() -> None:
+    """A cache completed by another waiter cannot outlive map verification."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    completed_scene = view._cache.pop("entry")
+    lock = view._locks["entry"]
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    # Simulate the lock holder completing an encode while this request waits.
+    view._cache["entry"] = completed_scene
+    runtime.slam_map.live_session_verified = False
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+
+
+async def test_scene_view_rechecks_live_session_before_encoding() -> None:
+    """A session change after lock acquisition prevents a new scene encode."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    original_map = runtime.slam_map
+
+    class _SessionVerificationFlip:
+        """Expose a transition between the pre-lock and pre-encode checks."""
+
+        def __init__(self) -> None:
+            self.checks = 0
+
+        @property
+        def live_session_verified(self) -> bool:
+            self.checks += 1
+            return self.checks < 3
+
+        def __getattr__(self, name: str):
+            return getattr(original_map, name)
+
+    runtime.slam_map = _SessionVerificationFlip()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert runtime.slam_map.checks == 3
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "entry",
     [
