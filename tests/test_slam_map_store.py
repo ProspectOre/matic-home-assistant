@@ -313,6 +313,67 @@ async def test_slam_map_store_silent_expiry_refresh_fails_closed(hass) -> None:
         await hass.async_block_till_done()
 
     assert not store.live_session_verified
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
+
+
+async def test_slam_map_store_retries_a_failed_silent_expiry_refresh(hass) -> None:
+    """A transient revalidation failure retries without trusting cached tiles."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "retry-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    calls = 0
+
+    async def snapshot(name: str, *, limit: int):
+        nonlocal calls
+        assert limit == 1
+        calls += 1
+        if calls <= 2:
+            raise CannotConnectError("synthetic transient snapshot failure")
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(page_x=8),)
+        assert name == "map_integrated"
+        return (synthetic_structure_entry(page_x=8),)
+
+    store._collection_client = SimpleNamespace(
+        async_get_collection_entries=AsyncMock(side_effect=snapshot)
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.slam_map_store.CANDIDATE_CLASSIFICATION_SECONDS",
+            0,
+        ),
+        patch(
+            "custom_components.matic_robot.slam_map_store.CANDIDATE_REFRESH_RETRY_SECONDS",
+            0,
+        ),
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+
+    assert calls == 4
+    assert store.floor_plan_is_current(active_plan)
+    assert store._candidate_refresh_retry_cancel is None
+
+
+async def test_slam_map_store_retries_an_empty_silent_expiry_refresh(hass) -> None:
+    """An empty bounded read is insufficient to revalidate the active map."""
+    store = SlamMapStore(hass, "empty-silent-candidate-expiry-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    candidate_token = (
+        await store.async_add(synthetic_slam_entry(mission_id=2))
+    ).mission_token
+    store._candidates[candidate_token].blocks_active = False
+    client = SimpleNamespace(async_get_collection_entries=AsyncMock(return_value=()))
+
+    await store._async_refresh_after_candidate_expiry(client)
+
+    assert not store.live_session_verified
+    assert store._candidate_refresh_retry_cancel is not None
+    await store.async_shutdown()
 
 
 async def test_slam_map_store_shutdown_cancels_candidate_snapshot(hass) -> None:
@@ -357,6 +418,8 @@ async def test_slam_map_store_candidate_expiry_ignores_a_closed_store(hass) -> N
     store._schedule_candidate_expiry()
     store._async_handle_candidate_expiry(datetime.now())
     store._schedule_candidate_refresh()
+    store._schedule_candidate_refresh_retry()
+    store._async_handle_candidate_refresh_retry(datetime.now())
     await store._async_refresh_after_candidate_expiry(client)
 
     assert client.async_get_collection_entries.await_args_list == [
