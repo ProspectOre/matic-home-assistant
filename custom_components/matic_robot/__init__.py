@@ -61,6 +61,8 @@ _LOGGER = logging.getLogger(__name__)
 
 FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 
 
 @dataclass(slots=True)
@@ -271,20 +273,27 @@ def _register_slam_map_floor_plan_sync(
     async def _async_refresh_floor_plan(identity: SlamMapIdentity) -> None:
         nonlocal refresh_in_progress
         try:
-            for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
-                await coordinator.async_request_floor_plan_refresh()
-                floor_plan = coordinator.data.floor_plan
-                if floor_plan is not None and slam_map.floor_plan_is_current(
-                    floor_plan
-                ):
-                    return
-                if slam_map.mission_identity != identity:
-                    # A newer verified mission arrived while the robot was
-                    # answering. The finally block schedules that mission's
-                    # own bounded recheck after this task releases its guard.
-                    return
-                if attempt + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS:
-                    await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS)
+            for round_ in range(FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS):
+                for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
+                    if slam_map.mission_identity != identity:
+                        # A newer verified mission arrived while the robot was
+                        # answering. The finally block schedules that mission's
+                        # own bounded recheck after this task releases its guard.
+                        return
+                    await coordinator.async_request_floor_plan_refresh()
+                    floor_plan = coordinator.data.floor_plan
+                    if floor_plan is not None and slam_map.floor_plan_is_current(
+                        floor_plan
+                    ):
+                        return
+                    if attempt + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS:
+                        await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS)
+                # A floor-plan response can trail the verified SLAM mission.
+                # Retry it once after a short bounded backoff instead of
+                # leaving an otherwise-localized map stale for the normal
+                # fifteen-minute cache interval.
+                if round_ + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS:
+                    await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS)
         finally:
             refresh_in_progress = False
             _async_sync_floor_plan()

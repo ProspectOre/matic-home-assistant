@@ -12,6 +12,8 @@ from homeassistant.components import frontend
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
+    FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
     _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
     _register_native_history_sync,
@@ -125,7 +127,7 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
         listener()
         assert len(scheduled) == 1
         await scheduled[0]
-        assert coordinator.async_request_floor_plan_refresh.await_count == 2
+        assert coordinator.async_request_floor_plan_refresh.await_count == 4
         entry.async_on_unload.assert_called_once_with(remove_listener)
 
     listener()
@@ -192,6 +194,50 @@ async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) 
         await scheduled[1]
 
     assert coordinator.async_request_floor_plan_refresh.await_count == 2
+
+
+async def test_slam_map_transition_retries_a_delayed_floor_plan_once(hass) -> None:
+    entry = _entry()
+    remove_listener = MagicMock()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        mission_identity=SlamMapIdentity("00" * 32, 43),
+    )
+
+    async def refresh_floor_plan() -> None:
+        if coordinator.async_request_floor_plan_refresh.await_count == 3:
+            slam_map.floor_plan_is_current.return_value = True
+
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_floor_plan_refresh=AsyncMock(side_effect=refresh_floor_plan),
+    )
+    listener: object | None = None
+
+    def add_listener(candidate):
+        nonlocal listener
+        listener = candidate
+        return remove_listener
+
+    slam_map.async_add_listener = add_listener
+
+    with patch(
+        "custom_components.matic_robot.asyncio.sleep", new_callable=AsyncMock
+    ) as sleep:
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+        assert callable(listener)
+        await scheduled[0]
+
+    assert coordinator.async_request_floor_plan_refresh.await_count == 3
+    assert sleep.await_args_list == [
+        ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
+        ((FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,), {}),
+    ]
 
 
 async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
