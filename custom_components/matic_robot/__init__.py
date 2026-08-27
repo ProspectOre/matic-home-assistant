@@ -53,11 +53,16 @@ from .slam_history import (
     SlamHistoryStore,
     async_collect_slam_history,
 )
-from .slam_map_store import SlamMapStore
+from .slam_map_store import SlamMapIdentity, SlamMapStore
 
 __all__ = ["async_migrate_entry"]
 
 _LOGGER = logging.getLogger(__name__)
+
+FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
+FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 
 
 @dataclass(slots=True)
@@ -168,6 +173,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             plans,
             serial_number,
         )
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
         entry.async_create_background_task(
             hass,
             slam_map.async_collect(client),
@@ -245,6 +251,77 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         client.close()
         raise
     return True
+
+
+def _register_slam_map_floor_plan_sync(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    slam_map: SlamMapStore,
+    coordinator: MaticCoordinator,
+) -> None:
+    """Refresh a cached floor plan when both map layers prove a new mission.
+
+    The map store switches missions only after photographic and structural
+    evidence agree.  That is the safe point to bypass the normal slow
+    floor-plan cache: without it, a robot that has already localized on a
+    different mapped floor can remain falsely marked as transitioning until
+    the next periodic map poll.
+    """
+    refresh_in_progress = False
+    last_attempted_identity: SlamMapIdentity | None = None
+
+    async def _async_refresh_floor_plan(identity: SlamMapIdentity) -> None:
+        nonlocal refresh_in_progress
+        try:
+            for round_ in range(FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS):
+                for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
+                    if slam_map.mission_identity != identity:
+                        # A newer verified mission arrived while the robot was
+                        # answering. The finally block schedules that mission's
+                        # own bounded recheck after this task releases its guard.
+                        return
+                    await coordinator.async_request_floor_plan_refresh()
+                    floor_plan = coordinator.data.floor_plan
+                    if floor_plan is not None and slam_map.floor_plan_is_current(
+                        floor_plan
+                    ):
+                        return
+                    if attempt + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS:
+                        await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS)
+                # A floor-plan response can trail the verified SLAM mission.
+                # Retry it once after a short bounded backoff instead of
+                # leaving an otherwise-localized map stale for the normal
+                # fifteen-minute cache interval.
+                if round_ + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS:
+                    await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS)
+        finally:
+            refresh_in_progress = False
+            _async_sync_floor_plan()
+
+    def _async_sync_floor_plan() -> None:
+        nonlocal refresh_in_progress, last_attempted_identity
+        floor_plan = coordinator.data.floor_plan
+        identity = slam_map.mission_identity
+        if identity is None or identity.mission_id is None:
+            return
+        if floor_plan is not None and slam_map.floor_plan_is_current(floor_plan):
+            last_attempted_identity = None
+            return
+        # A busy SLAM stream can publish many pages before the floor-plan
+        # endpoint catches up. Each verified mission gets one bounded refresh
+        # sequence, rather than one coordinator refresh per page.
+        if refresh_in_progress or identity == last_attempted_identity:
+            return
+        refresh_in_progress = True
+        last_attempted_identity = identity
+        entry.async_create_background_task(
+            hass,
+            _async_refresh_floor_plan(identity),
+            f"{DOMAIN} current floor map refresh",
+        )
+
+    entry.async_on_unload(slam_map.async_add_listener(_async_sync_floor_plan))
+    _async_sync_floor_plan()
 
 
 def _register_native_history_sync(
