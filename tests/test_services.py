@@ -43,6 +43,7 @@ from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
     SavedPlanLimitError,
+    plan_floor_token,
 )
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
@@ -53,6 +54,7 @@ from custom_components.matic_robot.services import (
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
     PlanCancelledError,
+    _async_dispatch_leg_command,
     _async_execute_rooms,
     _async_expire_native_reconciliation,
     _async_reconcile_native_stop,
@@ -277,7 +279,13 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     context = ("vacuum.test", entry, "serial", {"office": "Office"})
     call = ServiceCall(
@@ -446,7 +454,13 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -495,7 +509,13 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -521,6 +541,57 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     client.async_start_custom_coverage.assert_not_awaited()
 
     coordinator.data.floor_plan = floor_plan
+    lock = manager.command_lock("serial")
+    await lock.acquire()
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await asyncio.sleep(0)
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        lock.release()
+        with pytest.raises(ServiceValidationError) as transitioning:
+            await task
+
+    assert transitioning.value.translation_key == "room_plan_unavailable"
+    assert manager.managed_motion_is_current("serial", managed_token) is True
+    client.async_start_custom_coverage.assert_not_awaited()
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+    replace_started = asyncio.Event()
+    release_replace = asyncio.Event()
+    original_replace = manager.async_replace_managed_motion
+
+    async def delayed_replace(serial_number: str) -> None:
+        replace_started.set()
+        await release_replace.wait()
+        await original_replace(serial_number)
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+        ),
+        patch.object(
+            manager,
+            "async_replace_managed_motion",
+            side_effect=delayed_replace,
+        ),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await replace_started.wait()
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        release_replace.set()
+        with pytest.raises(ServiceValidationError) as changed_during_replace:
+            await task
+
+    assert changed_during_replace.value.translation_key == "room_plan_unavailable"
+    assert manager.managed_motion_is_current("serial", managed_token) is False
+    client.async_start_custom_coverage.assert_not_awaited()
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+    managed_token = manager.begin_managed_motion("serial")
     lock = manager.command_lock("serial")
     await lock.acquire()
     with patch(
@@ -563,7 +634,13 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -618,7 +695,13 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     services = await _registered_services(hass, manager)
     call = ServiceCall(
@@ -662,7 +745,9 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
+    floor_plan = _area_floor_plan()
     coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
         async_discard_current_room=MagicMock(),
         async_confirm_room_completed=MagicMock(),
@@ -673,7 +758,13 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         async_send_user_command=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(coordinator=coordinator, client=client)
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=client,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
     call = ServiceCall(
@@ -712,6 +803,14 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     )
     assert execute.await_args_list[1].kwargs["intelligent"] is False
     assert execute.await_args_list[2].kwargs["intelligent"] is False
+    floor_guard = execute.await_args_list[0].kwargs["floor_is_current"]
+    assert execute.await_args_list[0].kwargs["floor_token"] == plan_floor_token(
+        floor_plan
+    )
+    assert floor_guard() is True
+    coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+    assert floor_guard() is False
+    coordinator.data.floor_plan = floor_plan
     assert client.async_send_user_command.await_count == 3
     assert "stop_fence_expires_at" in manager._robot("serial")
     assert preview["plan_name"] == "Upstairs"
@@ -786,7 +885,16 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
         {"name": "Disabled", "enabled": False, "rooms": []},
     )
     services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"one": "Kitchen"})
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    context = ("vacuum.test", entry, "serial", {"one": "Kitchen"})
     missing = ServiceCall(
         hass,
         DOMAIN,
@@ -1113,7 +1221,12 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
         floor_plan=floor_plan,
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(coordinator=SimpleNamespace(data=data))
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=data),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     with (
         patch(
@@ -1129,6 +1242,14 @@ def test_saved_plan_context_requires_one_robot_and_live_rooms() -> None:
             "synthetic-serial",
             {"one": "Kitchen", "two": "Study"},
         )
+        assert _saved_plan_context(hass, call, require_current_floor=True)[3] == {
+            "one": "Kitchen",
+            "two": "Study",
+        }
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        with pytest.raises(ServiceValidationError, match="room map"):
+            _saved_plan_context(hass, call, require_current_floor=True)
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
         data.floor_plan = None
         with pytest.raises(ServiceValidationError, match="room map"):
             _saved_plan_context(hass, call)
@@ -1558,7 +1679,16 @@ async def test_plan_runs_reject_disabled_plans_and_unknown_selection(hass) -> No
         "serial", "disabled", {"name": "Disabled", "enabled": False, "rooms": []}
     )
     services = await _registered_services(hass, manager)
-    context = ("vacuum.test", SimpleNamespace(), "serial", {"one": "Kitchen"})
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    context = ("vacuum.test", entry, "serial", {"one": "Kitchen"})
     disabled = ServiceCall(
         hass,
         DOMAIN,
@@ -1733,6 +1863,41 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     manager.async_mark_cancelled.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
+
+
+@pytest.mark.parametrize("changes_during_history", [False, True])
+async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
+    changes_during_history: bool,
+) -> None:
+    """No room IDs are sent after either floor-coherence guard fails."""
+    services = SimpleNamespace(async_call=AsyncMock())
+    hass = SimpleNamespace(services=services)
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    session_history = AsyncMock(return_value=())
+    floor_is_current = MagicMock(
+        side_effect=[True, False] if changes_during_history else [False]
+    )
+    on_dispatch = MagicMock()
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await _async_dispatch_leg_command(
+            hass,
+            _execution_call(hass),
+            "vacuum.test",
+            [room],
+            17,
+            session_history,
+            floor_is_current=floor_is_current,
+            on_dispatch=on_dispatch,
+        )
+
+    assert excinfo.value.translation_key == "room_plan_unavailable"
+    if changes_during_history:
+        session_history.assert_awaited_once()
+    else:
+        session_history.assert_not_awaited()
+    on_dispatch.assert_not_called()
+    services.async_call.assert_not_awaited()
 
 
 async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> None:

@@ -246,7 +246,9 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         structure_tile_count=0,
         map_complete=False,
         revision=0,
+        mission_identity=None,
         floor_plan_is_current=MagicMock(return_value=True),
+        async_add_listener=MagicMock(return_value=MagicMock()),
     )
     return SimpleNamespace(
         runtime_data=SimpleNamespace(
@@ -1068,6 +1070,9 @@ async def test_custom_area_select_and_native_button() -> None:
     assert button.MaticAreaButton(_entry(with_floor_plan=False)).available is False
 
     history.area.side_effect = None
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    assert area_button.available is False
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     area_button.async_write_ha_state = MagicMock()
     with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
         await area_button.async_added_to_hass()
@@ -1075,6 +1080,17 @@ async def test_custom_area_select_and_native_button() -> None:
     assert serial == "synthetic-serial"
     listener()
     area_button.async_write_ha_state.assert_called_once()
+    floor_listener = entry.runtime_data.slam_map.async_add_listener.call_args.args[0]
+    area_button.async_write_ha_state.reset_mock()
+    floor_listener()
+    area_button.async_write_ha_state.assert_not_called()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    floor_listener()
+    floor_listener()
+    area_button.async_write_ha_state.assert_called_once()
+    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
+        area_button._handle_coordinator_update()
+    parent_update.assert_called_once_with()
 
     registry_entry = SimpleNamespace(
         domain="vacuum", platform="matic_robot", entity_id="vacuum.test_robot"
@@ -1116,6 +1132,9 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     history.preview.side_effect = KeyError("missing")
     assert start_button.available is False
     history.preview.side_effect = None
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    assert start_button.available is False
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
     assert (
         button.MaticPlanButton(
             _entry(with_floor_plan=False), "run_selected_plan"
@@ -1130,6 +1149,21 @@ async def test_plan_buttons_disable_impossible_actions_and_refresh() -> None:
     assert serial == "synthetic-serial"
     listener()
     start_button.async_write_ha_state.assert_called_once()
+    floor_listener = entry.runtime_data.slam_map.async_add_listener.call_args.args[0]
+    start_button.async_write_ha_state.reset_mock()
+    floor_listener()
+    start_button.async_write_ha_state.assert_not_called()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    floor_listener()
+    floor_listener()
+    start_button.async_write_ha_state.assert_called_once()
+    with patch.object(MaticEntity, "_handle_coordinator_update") as parent_update:
+        start_button._handle_coordinator_update()
+    parent_update.assert_called_once_with()
+
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        await stop_button.async_added_to_hass()
+    assert entry.runtime_data.slam_map.async_add_listener.call_count == 1
 
 
 async def test_saved_plan_select_rerenders_when_plans_change() -> None:
@@ -1190,10 +1224,79 @@ async def test_camera_clamps_dimensions_and_renders_locally(hass) -> None:
     assert render.call_args.kwargs == {"width": 256, "height": 4096}
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
+        "map_floor_coherent": True,
         "robot_location_source": "exact_pose",
         "source": "local_room_map",
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
+
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store = entity._store
+        store.async_add_listener.assert_called_once_with(
+            entity._async_handle_store_update
+        )
+        store.floor_plan_is_current.return_value = False
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+        store.floor_plan_is_current.return_value = True
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 2
+
+    store.floor_plan_is_current.return_value = False
+    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
+        entity._handle_coordinator_update()
+    assert entity._published_floor_coherent is False
+    update_state.assert_called_once_with()
+
+    entry = _entry()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+    with patch(
+        "custom_components.matic_robot.camera.render_floor_plan",
+        return_value=b"transition-png",
+    ) as transition_render:
+        assert await entity.async_camera_image() == b"transition-png"
+
+    transition_render.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity.extra_state_attributes == {
+        "matic_entry_id": "entry",
+        "map_floor_coherent": False,
+        "robot_location_source": "unavailable",
+        "source": "local_room_map",
+    }
+
+
+async def test_camera_discards_render_when_floor_changes_in_executor(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    entity = camera.MaticMapCamera(entry)
+    entity.hass = hass
+
+    def render(floor_plan, _pose, _current_area, **_kwargs) -> bytes:
+        if floor_plan is not None:
+            store.floor_plan_is_current.return_value = False
+            return b"stale-floor"
+        return b"map-unavailable"
+
+    with patch(
+        "custom_components.matic_robot.camera.render_floor_plan",
+        side_effect=render,
+    ) as renderer:
+        assert await entity.async_camera_image() == b"map-unavailable"
+
+    assert renderer.call_count == 2
+    assert renderer.call_args_list[-1].args[:3] == (None, None, None)
+    assert entity._cached_image_key is None
+    assert entity._cached_image is None
 
 
 async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> None:
@@ -1234,8 +1337,61 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store.async_add_listener.assert_called_once_with(
+            entity._async_handle_store_update
+        )
+        store.floor_plan_is_current.return_value = False
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+        store.floor_plan_is_current.return_value = True
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 2
+
     store.floor_plan_is_current.return_value = False
+    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
+        entity._handle_coordinator_update()
+    assert entity._published_floor_coherent is False
+    update_state.assert_called_once_with()
+
     assert entity.extra_state_attributes["robot_location_source"] == "unavailable"
+
+
+async def test_photorealistic_camera_discards_render_when_floor_changes(hass) -> None:
+    entry = _entry()
+    store = entry.runtime_data.slam_map
+    store.entries.return_value = (HermesCollectionEntry(b"key", b"value"),)
+    entity = camera.MaticPhotorealisticMapCamera(entry)
+    entity.hass = hass
+
+    def render(*_args, **_kwargs) -> bytes:
+        store.floor_plan_is_current.return_value = False
+        return b"stale-floor"
+
+    with (
+        patch(
+            "custom_components.matic_robot.camera._render_photorealistic_entries",
+            side_effect=render,
+        ) as renderer,
+        patch(
+            "custom_components.matic_robot.camera.render_floor_plan",
+            return_value=b"map-unavailable",
+        ) as unavailable_renderer,
+    ):
+        assert await entity.async_camera_image() == b"map-unavailable"
+
+    renderer.assert_called_once()
+    unavailable_renderer.assert_called_once_with(
+        None,
+        None,
+        None,
+        width=1024,
+        height=1024,
+    )
+    assert entity._cached_key is None
+    assert entity._cached_image is None
 
 
 async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> None:
@@ -1249,6 +1405,7 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     entity._cached_key = (
         entry.runtime_data.slam_map.revision,
         id(data.floor_plan),
+        True,
         data.pose,
         data.operational.current_area,
         1024,

@@ -13,9 +13,11 @@ from homeassistant.exceptions import ServiceValidationError
 from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.plans import (
+    PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     CleaningPlanManager,
     ManagedMotionReplacedError,
+    plan_floor_token,
 )
 from tests.test_entities import _entry
 
@@ -51,6 +53,52 @@ async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
     for value in (True, "1"):
         with pytest.raises(ServiceValidationError, match="token is invalid"):
             await entity.async_send_command("clean_all", {PLAN_MOTION_TOKEN: value})
+
+    for value in (True, "not-a-token", "A" * 64):
+        with pytest.raises(ServiceValidationError, match="floor token is invalid"):
+            await entity.async_send_command("clean_all", {PLAN_FLOOR_TOKEN: value})
+
+
+@pytest.mark.parametrize("change", ["coherence", "identity"])
+async def test_managed_clean_rechecks_floor_inside_command_lock(
+    hass, change: str
+) -> None:
+    """A queued native command cannot outlive its exact coherent map."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    assert floor_plan is not None
+    motion_token = manager.begin_managed_motion("synthetic-serial")
+    command_lock = manager.command_lock("synthetic-serial")
+    await command_lock.acquire()
+
+    task = asyncio.create_task(
+        entity.async_send_command(
+            "clean_rooms",
+            {
+                "rooms": ["Study"],
+                PLAN_MOTION_TOKEN: motion_token,
+                PLAN_FLOOR_TOKEN: plan_floor_token(floor_plan),
+            },
+        )
+    )
+    await asyncio.sleep(0)
+    if change == "coherence":
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    else:
+        entry.runtime_data.coordinator.data = replace(
+            entry.runtime_data.coordinator.data,
+            floor_plan=replace(floor_plan, mission_id=floor_plan.mission_id + 1),
+        )
+    command_lock.release()
+
+    with pytest.raises(ServiceValidationError) as excinfo:
+        await task
+    assert excinfo.value.translation_key == "room_plan_unavailable"
+    entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
 
 
 async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> None:
