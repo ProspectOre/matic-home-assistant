@@ -6,13 +6,16 @@ import asyncio
 import base64
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
+from datetime import datetime
 from functools import partial
 from time import monotonic
 from typing import Any, Literal
 
 from google.protobuf.message import DecodeError
-from homeassistant.core import HomeAssistant
+from homeassistant.core import CALLBACK_TYPE, HassJob, HomeAssistant, callback
+from homeassistant.helpers.event import async_call_later
 from homeassistant.helpers.storage import Store
 
 from .client.api import MaticHermesClient
@@ -41,7 +44,7 @@ MAX_CANDIDATE_TILES_PER_LAYER = 128
 MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
 MAX_RETIRED_MISSIONS = 8
 # A candidate needs pages from both independent subscriptions.  Allow three
-# normal retry intervals for those streams to converge, then discard a
+# normal retry intervals for those streams to converge, then classify a
 # one-sided candidate so it cannot hold the active map unavailable forever.
 CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
 
@@ -151,10 +154,14 @@ class SlamMapStore:
         self._candidates: OrderedDict[str, _MissionCandidate] = OrderedDict()
         self._retired_missions: deque[str] = deque(maxlen=MAX_RETIRED_MISSIONS)
         self._candidate_generation = 0
+        self._candidate_expiry_cancel: CALLBACK_TYPE | None = None
+        self._candidate_refresh_task: asyncio.Task[None] | None = None
+        self._collection_client: MaticHermesClient | None = None
         self._closed = False
 
     async def async_load(self) -> None:
         """Load and validate the robot-local tile cache."""
+        self._cancel_candidate_expiry()
         stored = await self._store.async_load() or {}
         loaded = await self._hass.async_add_executor_job(
             _decode_stored_snapshot, stored
@@ -293,8 +300,9 @@ class SlamMapStore:
             and self._candidate_can_promote(candidate)
         ):
             self._promote_candidate(mission_token, candidate)
+        self._schedule_candidate_expiry()
 
-    def _expire_incomplete_candidates(self) -> None:
+    def _expire_incomplete_candidates(self) -> bool:
         """Relax one-sided candidates after bounded classification.
 
         An alternative token invalidates the active map immediately, but a
@@ -311,6 +319,8 @@ class SlamMapStore:
                 relaxed = True
         if relaxed:
             self._promote_latest_complete_candidate()
+        self._schedule_candidate_expiry()
+        return relaxed
 
     def _has_blocking_candidate(self) -> bool:
         """Return whether an unclassified candidate still blocks active proof."""
@@ -336,6 +346,86 @@ class SlamMapStore:
                     best = mission_token, candidate
         if best is not None:
             self._promote_candidate(*best)
+
+    def _schedule_candidate_expiry(self) -> None:
+        """Schedule classification even while both map streams stay quiet."""
+        self._cancel_candidate_expiry()
+        if self._closed:
+            return
+        deadlines = [
+            candidate.first_seen_at + CANDIDATE_CLASSIFICATION_SECONDS
+            for candidate in self._candidates.values()
+            if candidate.blocks_active
+        ]
+        if not deadlines:
+            return
+        delay = max(0.0, min(deadlines) - monotonic())
+        self._candidate_expiry_cancel = async_call_later(
+            self._hass,
+            delay,
+            HassJob(
+                self._async_handle_candidate_expiry,
+                "matic_robot_map_candidate_expiry",
+                cancel_on_shutdown=True,
+            ),
+        )
+
+    def _cancel_candidate_expiry(self) -> None:
+        """Cancel the pending candidate-classification callback, if any."""
+        if self._candidate_expiry_cancel is not None:
+            self._candidate_expiry_cancel()
+            self._candidate_expiry_cancel = None
+
+    @callback
+    def _async_handle_candidate_expiry(self, _now: datetime) -> None:
+        """Classify a silent candidate and take fresh bounded map snapshots."""
+        self._candidate_expiry_cancel = None
+        if self._closed:
+            return
+        relaxed = self._expire_incomplete_candidates()
+        if relaxed and not self._has_blocking_candidate():
+            self._schedule_candidate_refresh()
+
+    def _schedule_candidate_refresh(self) -> None:
+        """Request fresh independent proof after a candidate expires."""
+        client = self._collection_client
+        task = self._candidate_refresh_task
+        if self._closed or client is None or (task is not None and not task.done()):
+            return
+        self._candidate_refresh_task = self._hass.async_create_task(
+            self._async_refresh_after_candidate_expiry(client),
+            "matic_robot_map_candidate_refresh",
+        )
+
+    async def _async_refresh_after_candidate_expiry(
+        self, client: MaticHermesClient
+    ) -> None:
+        """Read one page from each map collection without trusting cache state."""
+        try:
+            photo_entries, structure_entries = await asyncio.gather(
+                client.async_get_collection_entries("map_compressed_rgb", limit=1),
+                client.async_get_collection_entries("map_integrated", limit=1),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            return
+        if self._closed:
+            return
+        for entry in photo_entries:
+            await self.async_add(entry)
+        for entry in structure_entries:
+            await self.async_add_structure(entry)
+
+    async def _async_cancel_candidate_refresh(self) -> None:
+        """Stop an in-flight bounded map refresh during entry teardown."""
+        task = self._candidate_refresh_task
+        self._candidate_refresh_task = None
+        if task is None or task.done():
+            return
+        task.cancel()
+        with suppress(asyncio.CancelledError):
+            await task
 
     def _promote_candidate(
         self, mission_token: str, candidate: _MissionCandidate
@@ -409,10 +499,15 @@ class SlamMapStore:
 
     async def async_collect(self, client: MaticHermesClient) -> None:
         """Continuously collect photographic and structural map pages."""
-        await asyncio.gather(
-            self._async_collect_collection(client, "map_compressed_rgb", False),
-            self._async_collect_collection(client, "map_integrated", True),
-        )
+        self._collection_client = client
+        try:
+            await asyncio.gather(
+                self._async_collect_collection(client, "map_compressed_rgb", False),
+                self._async_collect_collection(client, "map_integrated", True),
+            )
+        finally:
+            if self._collection_client is client:
+                self._collection_client = None
 
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
@@ -579,6 +674,9 @@ class SlamMapStore:
     async def async_remove(self) -> None:
         """Erase the private map cache when the robot entry is removed."""
         self._closed = True
+        self._cancel_candidate_expiry()
+        await self._async_cancel_candidate_refresh()
+        self._collection_client = None
         self._entries.clear()
         self._structure_entries.clear()
         self._candidates.clear()
@@ -603,6 +701,9 @@ class SlamMapStore:
         if self._closed:
             return
         self._closed = True
+        self._cancel_candidate_expiry()
+        await self._async_cancel_candidate_refresh()
+        self._collection_client = None
         data = await self._hass.async_add_executor_job(
             _serialize_snapshot,
             tuple(self._entries.values()),
