@@ -17,6 +17,7 @@ from custom_components.matic_robot import slam_map_store as slam_map_store_modul
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import FloorPlan, HermesCollectionEntry
 from custom_components.matic_robot.slam_map_store import (
+    CANDIDATE_CLASSIFICATION_SECONDS,
     MAX_HEALTH_COUNTER,
     SlamMapStore,
     _bounded_count,
@@ -156,6 +157,37 @@ async def test_slam_map_store_does_not_revalidate_old_mission_while_pending(
 
     assert store.floor_plan_is_current(second_plan)
     assert not store.floor_plan_is_current(first_plan)
+
+
+async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
+    hass,
+) -> None:
+    """A failed replacement subscription cannot permanently pause the map."""
+    active_plan = FloorPlan(0x1234ABCD, "active", b"active", ())
+    store = SlamMapStore(hass, "expired-candidate-entry")
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    assert store.floor_plan_is_current(active_plan)
+
+    candidate = synthetic_slam_entry(mission_id=2)
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        candidate_token = (await store.async_add(candidate)).mission_token
+    assert not store.live_session_verified
+
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(page_x=8))
+        assert not store.live_session_verified
+        await store.async_add_structure(synthetic_structure_entry(page_x=8))
+
+    assert store.live_session_verified
+    assert store.floor_plan_is_current(active_plan)
+    assert candidate_token not in store._candidates
+    assert candidate_token not in store._retired_missions
 
 
 async def test_slam_map_store_waits_for_the_newest_pending_mission(hass) -> None:

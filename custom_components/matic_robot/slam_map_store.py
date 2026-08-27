@@ -40,6 +40,10 @@ MAX_CANDIDATE_MISSIONS = 2
 MAX_CANDIDATE_TILES_PER_LAYER = 128
 MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
 MAX_RETIRED_MISSIONS = 8
+# A candidate needs pages from both independent subscriptions.  Allow three
+# normal retry intervals for those streams to converge, then discard a
+# one-sided candidate so it cannot hold the active map unavailable forever.
+CANDIDATE_CLASSIFICATION_SECONDS = STREAM_RETRY_SECONDS * 3
 
 MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
@@ -84,6 +88,7 @@ class _MissionCandidate:
     """Bounded pages waiting for cross-layer mission confirmation."""
 
     generation: int
+    first_seen_at: float
     entries: dict[str, HermesCollectionEntry]
     structure_entries: dict[str, HermesCollectionEntry]
     mission_id: int | None
@@ -198,6 +203,7 @@ class SlamMapStore:
         """Cache an active page or stage a cross-layer mission candidate."""
         if self._closed:
             return
+        self._expire_incomplete_candidates()
         mission_token = tile.mission_token
         if self._mission_token is None:
             self._mission_token = mission_token
@@ -254,7 +260,7 @@ class SlamMapStore:
                 self._retire_mission(evicted_token)
             self._candidate_generation += 1
             candidate = _MissionCandidate(
-                self._candidate_generation, {}, {}, tile.mission_id
+                self._candidate_generation, monotonic(), {}, {}, tile.mission_id
             )
             self._candidates[mission_token] = candidate
         else:
@@ -279,6 +285,20 @@ class SlamMapStore:
             and candidate.generation == self._candidate_generation
         ):
             self._promote_candidate(mission_token, candidate)
+
+    def _expire_incomplete_candidates(self) -> None:
+        """Discard one-sided mission observations after bounded classification.
+
+        An alternative token invalidates the active map immediately, but a
+        failed or skewed subscription must not keep the active map unavailable
+        forever.  Expiry deliberately does not retire the token: a later page
+        from that mission starts a new two-layer classification instead of
+        silently accepting an unproven replacement.
+        """
+        cutoff = monotonic() - CANDIDATE_CLASSIFICATION_SECONDS
+        for mission_token, candidate in tuple(self._candidates.items()):
+            if candidate.first_seen_at <= cutoff:
+                self._candidates.pop(mission_token)
 
     def _promote_candidate(
         self, mission_token: str, candidate: _MissionCandidate
