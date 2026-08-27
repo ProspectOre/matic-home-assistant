@@ -2060,8 +2060,9 @@ class MaticMapStudio extends HTMLElement {
     const entities = this._entities(entryId);
     const liveEntityState = entities.rooms?.[1] || entities.photo?.[1];
     const photoState = catalogState || entities.photo?.[1];
-    const entityFloorIncoherent = initialFloorIncoherent
-      || liveEntityState?.attributes?.map_floor_coherent === false;
+    const entityFloorIncoherent = liveEntityState
+      ? liveEntityState.attributes?.map_floor_coherent === false
+      : initialFloorIncoherent;
     const catalogFloorIncoherent =
       photoState?.attributes?.map_floor_coherent === false;
     const liveSelection = this._view === "rooms" || !this._selectedHistoryId;

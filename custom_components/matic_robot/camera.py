@@ -148,9 +148,40 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             f"{self.coordinator.data.info.serial_number}_photorealistic_map"
         )
         self._store = entry.runtime_data.slam_map
+        self._published_floor_coherent = self._store.floor_plan_is_current(
+            self.coordinator.data.floor_plan
+        )
         self._cached_key: tuple[object, ...] | None = None
         self._cached_image: bytes | None = None
         self._render_lock = asyncio.Lock()
+
+    async def async_added_to_hass(self) -> None:
+        """Refresh the entity when map and floor identities become coherent."""
+        await super().async_added_to_hass()
+        self.async_on_remove(
+            self._store.async_add_listener(self._async_handle_store_update)
+        )
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Publish coordinator state and remember its coherence classification."""
+        self._published_floor_coherent = self._store.floor_plan_is_current(
+            self.coordinator.data.floor_plan
+        )
+        super()._handle_coordinator_update()
+
+    @callback
+    def _async_handle_store_update(self) -> None:
+        """Publish only store changes that cross the floor-coherence boundary."""
+        floor_plan_coherent = self._store.floor_plan_is_current(
+            self.coordinator.data.floor_plan
+        )
+        if floor_plan_coherent == self._published_floor_coherent:
+            return
+        self._published_floor_coherent = floor_plan_coherent
+        self._cached_key = None
+        self._cached_image = None
+        self.async_write_ha_state()
 
     async def async_camera_image(
         self, width: int | None = None, height: int | None = None
@@ -159,9 +190,11 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
         requested_width = min(max(width or 1024, 256), MAX_CAMERA_DIMENSION)
         requested_height = min(max(height or 1024, 256), MAX_CAMERA_DIMENSION)
         data = self.coordinator.data
+        floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
         key = (
             self._store.revision,
             id(data.floor_plan),
+            floor_plan_coherent,
             data.pose,
             data.operational.current_area,
             requested_width,
@@ -171,9 +204,11 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
             return self._cached_image
         async with self._render_lock:
             data = self.coordinator.data
+            floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
             key = (
                 self._store.revision,
                 id(data.floor_plan),
+                floor_plan_coherent,
                 data.pose,
                 data.operational.current_area,
                 requested_width,
@@ -183,7 +218,6 @@ class MaticPhotorealisticMapCamera(MaticEntity, Camera):
                 return self._cached_image
             entries = self._store.entries()
             structure_entries = self._store.structure_entries()
-            floor_plan_coherent = self._store.floor_plan_is_current(data.floor_plan)
             image = await self.hass.async_add_executor_job(
                 partial(
                     _render_photorealistic_entries,

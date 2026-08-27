@@ -1742,6 +1742,85 @@ test.describe("map studio", () => {
     )).toBe("Recovered current floor room");
   });
 
+  test("does not let a slow transition catalog hide a recovered floor", async ({ page }) => {
+    await installBrowserDoubles(page, { webgl: true });
+    let announceCatalog;
+    const catalogStarted = new Promise((resolve) => {
+      announceCatalog = resolve;
+    });
+    let continueCatalog;
+    const catalogBlocked = new Promise((resolve) => {
+      continueCatalog = resolve;
+    });
+    const recoveredEntry = {
+      entry_id: "synthetic-entry",
+      scene_url: "/catalog-recovered-scene",
+      history_url: "/catalog-recovered-history",
+      map_revision: 2,
+      map_complete: true,
+      map_floor_coherent: true,
+    };
+    await page.route("**/api/matic_robot/slam_entries", async (route) => {
+      announceCatalog();
+      await catalogBlocked;
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ entries: [recoveredEntry] }),
+      });
+    });
+    await page.route("**/catalog-recovered-history", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ live_available: true, snapshots: [] }),
+    }));
+    await page.route("**/catalog-recovered-scene", (route) => route.fulfill({
+      status: 200,
+      body: syntheticScene("Catalog recovered current room", 32),
+      headers: { "Content-Type": "application/vnd.matic.slam-scene" },
+    }));
+
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: false,
+          robot_location_source: "unavailable",
+        },
+      },
+    });
+    await catalogStarted;
+    await expect(studio.locator(".scene-canvas")).toBeHidden();
+
+    await page.evaluate(async (entry) => {
+      const map = window.__studio;
+      const entity = map._hass.states["camera.synthetic_rooms"];
+      entity.attributes.map_floor_coherent = true;
+      entity.attributes.robot_location_source = "exact_pose";
+      map._catalogEntries = [entry];
+      map._catalogReady = true;
+      await map._update();
+    }, recoveredEntry);
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Catalog recovered current room");
+    continueCatalog();
+    await expect.poll(() => page.evaluate(() =>
+      window.__studio._catalogLoading,
+    )).toBe(false);
+
+    await expect(studio.locator(".scene-canvas")).toBeVisible();
+    await expect(studio.locator(".status")).not.toContainText(
+      "map paused until localization completes",
+    );
+    expect(await page.evaluate(() =>
+      window.__studio._scene?.metadata?.rooms?.[0]?.name,
+    )).toBe("Catalog recovered current room");
+  });
+
   test("cancels an in-flight stable snapshot when floors diverge", async ({ page }) => {
     await installBrowserDoubles(page, { webgl: true });
     let announceSnapshot;

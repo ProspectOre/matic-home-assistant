@@ -366,13 +366,21 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     "unknown_area",
                     {"area": str(call.data["area"])},
                 ) from err
+            floor_plan = _current_floor_plan(entry)
             floor_plan, circles, mode, coverage = _validated_area_command(
                 current_area,
-                entry.runtime_data.coordinator.data.floor_plan,
+                floor_plan,
                 call.data.get("cleaning_mode"),
                 call.data.get("coverage_setting"),
             )
             await manager.async_replace_managed_motion(serial_number)
+            floor_plan = _current_floor_plan(entry)
+            floor_plan, circles, mode, coverage = _validated_area_command(
+                current_area,
+                floor_plan,
+                call.data.get("cleaning_mode"),
+                call.data.get("coverage_setting"),
+            )
             try:
                 await entry.runtime_data.client.async_start_custom_coverage(
                     floor_plan,
@@ -2729,17 +2737,13 @@ def _saved_plan_context(
     entity_id = entity_ids[0]
     entry = _entry_for_entity(hass, entity_id)
     data = entry.runtime_data.coordinator.data
-    if require_current_floor and (
-        data.floor_plan is None
-        or not entry.runtime_data.slam_map.floor_plan_is_current(data.floor_plan)
-    ):
-        raise _validation_error(
-            "The robot's room map is unavailable", "room_plan_unavailable"
-        )
+    floor_plan = (
+        _current_floor_plan(entry) if require_current_floor else data.floor_plan
+    )
     serial_number = data.info.serial_number
     room_map = (
-        {room.id: room.name for room in data.floor_plan.rooms}
-        if data.floor_plan is not None
+        {room.id: room.name for room in floor_plan.rooms}
+        if floor_plan is not None
         else {}
     )
     if require_rooms and not room_map:
@@ -2747,6 +2751,18 @@ def _saved_plan_context(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     return entity_id, entry, serial_number, room_map
+
+
+def _current_floor_plan(entry: ConfigEntry[Any]) -> FloorPlan:
+    """Return the coordinator floor only while SLAM identity still matches."""
+    floor_plan: FloorPlan | None = entry.runtime_data.coordinator.data.floor_plan
+    if floor_plan is None or not entry.runtime_data.slam_map.floor_plan_is_current(
+        floor_plan
+    ):
+        raise _validation_error(
+            "The robot's room map is unavailable", "room_plan_unavailable"
+        )
+    return floor_plan
 
 
 def _resolve_saved_plan(

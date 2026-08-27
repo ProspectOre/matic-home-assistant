@@ -277,7 +277,13 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     context = ("vacuum.test", entry, "serial", {"office": "Office"})
     call = ServiceCall(
@@ -446,7 +452,13 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -495,7 +507,13 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -521,6 +539,57 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     client.async_start_custom_coverage.assert_not_awaited()
 
     coordinator.data.floor_plan = floor_plan
+    lock = manager.command_lock("serial")
+    await lock.acquire()
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await asyncio.sleep(0)
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        lock.release()
+        with pytest.raises(ServiceValidationError) as transitioning:
+            await task
+
+    assert transitioning.value.translation_key == "room_plan_unavailable"
+    assert manager.managed_motion_is_current("serial", managed_token) is True
+    client.async_start_custom_coverage.assert_not_awaited()
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+    replace_started = asyncio.Event()
+    release_replace = asyncio.Event()
+    original_replace = manager.async_replace_managed_motion
+
+    async def delayed_replace(serial_number: str) -> None:
+        replace_started.set()
+        await release_replace.wait()
+        await original_replace(serial_number)
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {"office": "Office"}),
+        ),
+        patch.object(
+            manager,
+            "async_replace_managed_motion",
+            side_effect=delayed_replace,
+        ),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await replace_started.wait()
+        entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+        release_replace.set()
+        with pytest.raises(ServiceValidationError) as changed_during_replace:
+            await task
+
+    assert changed_during_replace.value.translation_key == "room_plan_unavailable"
+    assert manager.managed_motion_is_current("serial", managed_token) is False
+    client.async_start_custom_coverage.assert_not_awaited()
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+    managed_token = manager.begin_managed_motion("serial")
     lock = manager.command_lock("serial")
     await lock.acquire()
     with patch(
@@ -563,7 +632,13 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     call = ServiceCall(
         hass,
@@ -618,7 +693,13 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
         async_request_refresh=AsyncMock(),
     )
     entry = SimpleNamespace(
-        runtime_data=SimpleNamespace(client=client, coordinator=coordinator)
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
     )
     services = await _registered_services(hass, manager)
     call = ServiceCall(

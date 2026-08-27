@@ -1312,7 +1312,25 @@ async def test_photorealistic_camera_fetches_and_renders_local_tiles(hass) -> No
     }
     assert entity._unrecorded_attributes == frozenset({"matic_entry_id"})
 
+    with patch.object(entity, "async_write_ha_state") as write_state:
+        await entity.async_added_to_hass()
+        store.async_add_listener.assert_called_once_with(
+            entity._async_handle_store_update
+        )
+        store.floor_plan_is_current.return_value = False
+        entity._async_handle_store_update()
+        entity._async_handle_store_update()
+        store.floor_plan_is_current.return_value = True
+        entity._async_handle_store_update()
+
+    assert write_state.call_count == 2
+
     store.floor_plan_is_current.return_value = False
+    with patch.object(MaticEntity, "_handle_coordinator_update") as update_state:
+        entity._handle_coordinator_update()
+    assert entity._published_floor_coherent is False
+    update_state.assert_called_once_with()
+
     assert entity.extra_state_attributes["robot_location_source"] == "unavailable"
 
 
@@ -1327,6 +1345,7 @@ async def test_photorealistic_camera_rechecks_cache_after_render_lock(hass) -> N
     entity._cached_key = (
         entry.runtime_data.slam_map.revision,
         id(data.floor_plan),
+        True,
         data.pose,
         data.operational.current_area,
         1024,
