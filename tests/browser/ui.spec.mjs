@@ -1424,7 +1424,18 @@ test.describe("map studio", () => {
       return route.fulfill({ status: 204 });
     });
 
-    const studio = await loadStudio(page);
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Complete current room");
@@ -1966,7 +1977,18 @@ test.describe("map studio", () => {
       });
     });
 
-    const studio = await loadStudio(page);
+    const studio = await loadStudio(page, {
+      "camera.synthetic_rooms": {
+        state: "idle",
+        last_updated: "2026-01-01T00:00:00Z",
+        attributes: {
+          matic_entry_id: "synthetic-entry",
+          source: "local_room_map",
+          map_floor_coherent: true,
+          robot_location_source: "exact_pose",
+        },
+      },
+    });
     await snapshotStarted;
     await page.evaluate(() => window.__studio._showFloorTransition({
       attributes: { map_floor_coherent: false },
@@ -1976,7 +1998,7 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() => window.__studio._sceneLoading)).toBe(false);
     await expect(studio.locator(".scene-canvas")).toBeHidden();
     expect(await page.evaluate(() => window.__studio._scene)).toBeUndefined();
-    expect(liveSceneRequests).toBe(1);
+    expect(liveSceneRequests).toBe(0);
   });
 
   test("withholds an incoherent room-camera fallback during a floor transition", async ({ page }) => {

@@ -1770,28 +1770,6 @@ class MaticMapStudio extends HTMLElement {
     return true;
   }
 
-  async _validateCatalogOnlyFloor(state, controller) {
-    const response = await this._authenticatedFetch(
-      state?.attributes?.scene_url,
-      { cache: "no-store", signal: controller.signal },
-    );
-    if (
-      !response.ok
-      || response.headers.get("X-Matic-Floor-Coherent") !== "1"
-    ) {
-      this._showFloorTransition({
-        ...state,
-        attributes: {
-          ...(state?.attributes || {}),
-          map_floor_coherent: false,
-        },
-      });
-      return false;
-    }
-    await response.body?.cancel();
-    return true;
-  }
-
   async _fetchScene(state, force = false) {
     const url = state?.attributes?.scene_url;
     const revision = state?.attributes?.map_revision;
@@ -1803,7 +1781,8 @@ class MaticMapStudio extends HTMLElement {
       || state?.attributes?.matic_entry_id;
     const entities = this._entities(entryId);
     const entityBackedCoherence = Boolean(entities.rooms || entities.photo);
-    const stableSnapshot = state?.attributes?.map_complete === true
+    const stableSnapshot = !entityBackedCoherence
+      || state?.attributes?.map_complete === true
       || state?.attributes?.map_floor_coherent === false
       ? undefined
       : this._latestHistorySnapshot();
@@ -1853,11 +1832,6 @@ class MaticMapStudio extends HTMLElement {
       MATIC_SCENE_REQUEST_TIMEOUT_MS,
     );
     try {
-      if (
-        stableSnapshot
-        && !entityBackedCoherence
-        && !(await this._validateCatalogOnlyFloor(state, controller))
-      ) return;
       if (
         stableSnapshot
         && await this._loadStableLiveScene(stableSnapshot, state, requestKey)
