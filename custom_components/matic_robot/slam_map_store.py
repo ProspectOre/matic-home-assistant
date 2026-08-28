@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -135,6 +136,8 @@ class SlamMapStore:
         self._mission_id: int | None = None
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
+        self._entry_content_digests: dict[str, bytes] = {}
+        self._structure_content_digests: dict[str, bytes] = {}
         self._revision = 0
         self._last_change = 0.0
         self._map_complete = False
@@ -175,6 +178,8 @@ class SlamMapStore:
         self._mission_id = loaded.mission_id
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._truncated = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
@@ -234,9 +239,25 @@ class SlamMapStore:
         if identity_changed:
             self._mission_id = tile.mission_id
         target = self._structure_entries if structural else self._entries
+        content_digests = (
+            self._structure_content_digests
+            if structural
+            else self._entry_content_digests
+        )
         key = _tile_key(tile)
-        changed = target.get(key) != entry
+        previous = target.get(key)
+        content_digest = _tile_content_digest(tile)
+        previous_digest = content_digests.get(key)
+        if previous is not None and previous_digest is None:
+            previous_tile = (
+                decode_slam_structure_tile(previous)
+                if structural
+                else decode_slam_tile(previous)
+            )
+            previous_digest = _tile_content_digest(previous_tile)
+        changed = previous is None or previous_digest != content_digest
         target[key] = entry
+        content_digests[key] = content_digest
         # Once a different mission has been observed, delayed pages from the
         # active token are evidence only for the cached map.  They cannot
         # re-establish that it still represents the robot while a replacement
@@ -506,6 +527,8 @@ class SlamMapStore:
         self._mission_id = candidate.mission_id
         self._entries = candidate.entries
         self._structure_entries = candidate.structure_entries
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._truncated = candidate.truncated
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
@@ -755,6 +778,8 @@ class SlamMapStore:
         self._collection_client = None
         self._entries.clear()
         self._structure_entries.clear()
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._candidates.clear()
         self._retired_missions.clear()
         self._candidate_generation = 0
@@ -806,6 +831,12 @@ class SlamMapStore:
             self._dropped_structure_tiles = _increment_by(
                 self._dropped_structure_tiles, dropped_structure
             )
+        for key in self._entry_content_digests.keys() - self._entries.keys():
+            self._entry_content_digests.pop(key)
+        for key in (
+            self._structure_content_digests.keys() - self._structure_entries.keys()
+        ):
+            self._structure_content_digests.pop(key)
 
     def _record_invalid(self) -> None:
         self._invalid_tiles = _increment(self._invalid_tiles)
@@ -1119,6 +1150,21 @@ def _increment(value: int) -> int:
 
 def _increment_by(value: int, amount: int) -> int:
     return min(MAX_HEALTH_COUNTER, value + max(0, amount))
+
+
+def _tile_content_digest(tile: SlamTile | SlamStructureTile) -> bytes:
+    """Identify decoded map content while ignoring opaque wire metadata."""
+    digest = hashlib.sha256()
+    if isinstance(tile, SlamTile):
+        digest.update(b"photo\0")
+        digest.update(tile.floor_rgba)
+        digest.update(tile.surface_bits)
+        digest.update(tile.rgb_data)
+    else:
+        digest.update(b"structure\0")
+        digest.update(tile.occupancy)
+        digest.update(tile.semantics)
+    return digest.digest()
 
 
 def _tile_key(tile: SlamTile | SlamStructureTile) -> str:

@@ -766,13 +766,15 @@ async def test_slam_map_store_structure_promotes_mission_and_enforces_bounds(
 async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) -> None:
     store = SlamMapStore(hass, "complete-entry")
     assert store.map_complete is False
+    photo = synthetic_slam_entry()
+    structure = synthetic_structure_entry()
 
     with (
         patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
         patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=1),
     ):
-        await store.async_add(synthetic_slam_entry())
-        await store.async_add_structure(synthetic_structure_entry())
+        await store.async_add(photo)
+        await store.async_add_structure(structure)
 
     with (
         patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
@@ -785,6 +787,21 @@ async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) 
         patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=5),
     ):
         assert store.map_complete is True
+
+    # Firmware can replay a page with changing unknown protobuf metadata even
+    # though every decoded pixel/voxel is identical. That must not invalidate a
+    # settled scene or advance its content revision.
+    revision = store.revision
+    wire_metadata = b"\x98\x06\x01"
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=6
+    ):
+        await store.async_add(replace(photo, value=photo.value + wire_metadata))
+        await store.async_add_structure(
+            replace(structure, value=structure.value + wire_metadata)
+        )
+    assert store.revision == revision
+    assert store.map_complete is True
 
     await store.async_add(synthetic_slam_entry(page_x=3))
     with (
