@@ -21,6 +21,7 @@ from custom_components.matic_robot.client.floor_plan import (
     _nearest_mask_point,
     _polygon_center,
     decode_floor_plan,
+    decode_floor_plans,
     decode_pose,
     pose_vector_paths,
     render_floor_plan,
@@ -40,7 +41,7 @@ def _uuid(value: UUID) -> bytes:
     return _field(2, raw)
 
 
-def _floor_plan_payload() -> bytes:
+def _floor_plan_payload(mission_id: int = 42) -> bytes:
     partition_id = _field(1, _uuid(PARTITION_ID))
     region_id = _field(2, _uuid(REGION_ID))
     points = b"".join(
@@ -50,7 +51,7 @@ def _floor_plan_payload() -> bytes:
     region = _field(9, b"Test room") + _field(10, _field(1, _field(2, points)))
     region_wire = _field(1, region_id) + _field(2, region)
     partition = partition_id + _field(3, _field(1, region_wire))
-    return _field(10, _varint_field(1, 42) + _field(2, partition))
+    return _field(10, _varint_field(1, mission_id) + _field(2, partition))
 
 
 def _region_wire(
@@ -79,6 +80,26 @@ def test_decode_named_rooms_and_protocol_ids() -> None:
     assert floor_plan.rooms[0].name == "Test room"
     assert floor_plan.rooms[0].protocol_id == str(REGION_ID)
     assert floor_plan.rooms[0].boundary[0] == (0.0, 0.0)
+
+
+def test_decode_all_mapped_floors_without_guessing_the_active_one() -> None:
+    payload = _floor_plan_payload(42) + _floor_plan_payload(84)
+
+    assert [plan.mission_id for plan in decode_floor_plans(payload)] == [42, 84]
+    with pytest.raises(DecodeError, match="multiple mapped floors"):
+        decode_floor_plan(payload)
+
+
+def test_decode_mapped_floors_rejects_duplicate_or_excessive_identities(
+    monkeypatch,
+) -> None:
+    duplicate = _floor_plan_payload(42) + _floor_plan_payload(42)
+    with pytest.raises(DecodeError, match="repeats a mapped floor"):
+        decode_floor_plans(duplicate)
+
+    monkeypatch.setattr(floor_plan_module, "MAX_FLOOR_PLANS", 1)
+    with pytest.raises(DecodeError, match="too many mapped floors"):
+        decode_floor_plans(_floor_plan_payload(42) + _floor_plan_payload(84))
 
 
 def test_decode_pose_and_render_local_png() -> None:

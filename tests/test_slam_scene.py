@@ -25,6 +25,7 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
+    MappedFloor,
     RobotPose,
     Room,
 )
@@ -1451,6 +1452,14 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         point_count=512,
         mission_token="1" * 64,
     )
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan,
+        floor_label="Main",
+        mapped_floors=(
+            MappedFloor(1, "Main", current_token),
+            MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+        ),
+    )
     runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
     runtime.slam_history.catalog.return_value = (snapshot, saved_snapshot)
     runtime.slam_history.catalogs_by_mission.return_value = (
@@ -1488,6 +1497,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 "active": True,
                 "read_only": False,
                 "live_available": True,
+                "label": "Main",
                 "snapshots": [
                     {
                         "id": snapshot.snapshot_id,
@@ -1506,6 +1516,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 "active": False,
                 "read_only": True,
                 "ordinal": 1,
+                "label": "Workshop",
                 "snapshots": [
                     {
                         "id": saved_snapshot.snapshot_id,
@@ -1556,6 +1567,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         "active": True,
         "read_only": False,
         "live_available": False,
+        "label": None,
         "snapshots": [],
     }
     assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [

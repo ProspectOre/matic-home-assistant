@@ -10,6 +10,7 @@ import ssl
 import struct
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from time import monotonic
 from types import TracebackType
@@ -43,7 +44,7 @@ from .exceptions import (
     MaticError,
     PairingModeRequiredError,
 )
-from .floor_plan import decode_floor_plan, decode_pose
+from .floor_plan import decode_floor_plans, decode_pose
 from .flythrough import Flythrough, decode_flythrough
 from .history import (
     CleaningSessionImage,
@@ -51,6 +52,7 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
+from .mission import decode_mission_client_state
 from .models import (
     CleaningSchedule,
     CleaningSession,
@@ -551,7 +553,42 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
     async def async_get_floor_plan(self) -> FloorPlan:
         """Read and decode the active local coverage plan."""
         try:
-            return decode_floor_plan(await self.async_get_property("coverage_plan"))
+            payload = await self.async_get_property("coverage_plan")
+            floor_plans = decode_floor_plans(payload)
+            if len(floor_plans) == 1:
+                return floor_plans[0]
+
+            mission_entries = await self.async_get_collection_entries(
+                "displayed_mission", limit=1
+            )
+            if len(mission_entries) != 1:
+                raise DecodeError(
+                    "multi-floor coverage plan has no mission client state"
+                )
+            mission_state = decode_mission_client_state(mission_entries[0].value)
+            active_floor = mission_state.active_floor
+            if active_floor is None:
+                raise DecodeError(
+                    "multi-floor coverage plan has no verified active floor"
+                )
+            if {plan.mission_id for plan in floor_plans} != {
+                floor.mission_id for floor in mission_state.mapped_floors
+            }:
+                raise DecodeError(
+                    "coverage plan and canonical floor identities disagree"
+                )
+            matching = tuple(
+                plan
+                for plan in floor_plans
+                if plan.mission_id == active_floor.mission_id
+            )
+            if len(matching) != 1:
+                raise DecodeError("active mission does not identify one coverage floor")
+            return replace(
+                matching[0],
+                floor_label=active_floor.label,
+                mapped_floors=mission_state.mapped_floors,
+            )
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed floor plan") from err
 

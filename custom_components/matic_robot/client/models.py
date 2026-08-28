@@ -251,6 +251,15 @@ class Room:
 
 
 @dataclass(frozen=True, slots=True)
+class MappedFloor:
+    """One robot-owned floor identity and its customer-facing label."""
+
+    mission_id: int
+    label: str
+    mission_token: str
+
+
+@dataclass(frozen=True, slots=True)
 class FloorPlan:
     """The active mission's standard partition."""
 
@@ -258,6 +267,8 @@ class FloorPlan:
     partition_protocol_id: str
     partition_id_wire: bytes
     rooms: tuple[Room, ...]
+    floor_label: str | None = None
+    mapped_floors: tuple[MappedFloor, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

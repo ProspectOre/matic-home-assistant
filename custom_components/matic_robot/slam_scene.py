@@ -470,12 +470,22 @@ class MaticSlamHistoryView(HomeAssistantView):
             else None
         )
         current_snapshots = _mission_history(runtime) if floor_plan_coherent else ()
+        floor_labels = (
+            {floor.mission_token: floor.label for floor in floor_plan.mapped_floors}
+            if floor_plan is not None
+            else {}
+        )
         floors = [
             {
                 "id": "current",
                 "active": True,
                 "read_only": False,
                 "live_available": floor_plan_coherent,
+                "label": (
+                    floor_plan.floor_label
+                    if floor_plan_coherent and floor_plan is not None
+                    else None
+                ),
                 "snapshots": _history_metadata(entry_id, current_snapshots),
             }
         ]
@@ -493,6 +503,7 @@ class MaticSlamHistoryView(HomeAssistantView):
                     "active": False,
                     "read_only": True,
                     "ordinal": saved_ordinal,
+                    "label": floor_labels.get(mission_token),
                     "snapshots": _history_metadata(entry_id, mission_snapshots),
                 }
             )

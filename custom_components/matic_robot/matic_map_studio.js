@@ -769,6 +769,15 @@ class MaticMapStudio extends HTMLElement {
       .slice(-12);
   }
 
+  _validFloorLabel(value) {
+    if (typeof value !== "string") return undefined;
+    const label = value.trim();
+    if (!label || label.length > 128 || /[\u0000-\u001f\u007f]/.test(label)) {
+      return undefined;
+    }
+    return label;
+  }
+
   _normaliseHistoryFloors(payload, catalogFloorCoherent = true) {
     const liveAvailable = catalogFloorCoherent
       && payload?.live_available !== false;
@@ -778,6 +787,7 @@ class MaticMapStudio extends HTMLElement {
       readOnly: false,
       liveAvailable,
       ordinal: 0,
+      label: undefined,
       snapshots: this._validHistorySnapshots(payload?.snapshots),
     };
     if (!Array.isArray(payload?.floors)) return [fallbackCurrent];
@@ -791,6 +801,7 @@ class MaticMapStudio extends HTMLElement {
           ...fallbackCurrent,
           liveAvailable: liveAvailable
             && candidate.live_available !== false,
+          label: this._validFloorLabel(candidate.label),
           snapshots: this._validHistorySnapshots(candidate.snapshots),
         };
         continue;
@@ -813,6 +824,7 @@ class MaticMapStudio extends HTMLElement {
         active: false,
         readOnly: true,
         ordinal: candidate.ordinal,
+        label: this._validFloorLabel(candidate.label),
         snapshots,
       });
     }
@@ -826,6 +838,15 @@ class MaticMapStudio extends HTMLElement {
   }
 
   _floorLabel(floor) {
+    if (floor?.label) {
+      return floor.active
+        ? this._localize(
+          "map_floor_current_named",
+          "{name} · robot location",
+          { name: floor.label },
+        )
+        : floor.label;
+    }
     return floor?.active
       ? this._localize("map_floor_current", "Live map · robot location")
       : this._localize(
@@ -844,18 +865,26 @@ class MaticMapStudio extends HTMLElement {
     for (const floor of this._floors) {
       const option = document.createElement("option");
       option.value = floor.id;
-      option.textContent = floor.readOnly
-        ? this._localize(
+      if (floor.readOnly && floor.label) {
+        option.textContent = this._localize(
+          "map_floor_saved_named_read_only",
+          "{name} · read only",
+          { name: floor.label },
+        );
+      } else if (floor.readOnly) {
+        option.textContent = this._localize(
           "map_floor_saved_read_only",
           "Saved map {number} · read only",
           { number: floor.ordinal },
-        )
-        : floor.liveAvailable === false
-        ? this._localize(
+        );
+      } else if (floor.liveAvailable === false) {
+        option.textContent = this._localize(
           "map_floor_current_settling",
           "Live map · locating robot",
-        )
-        : this._floorLabel(floor);
+        );
+      } else {
+        option.textContent = this._floorLabel(floor);
+      }
       option.disabled = floor.active && floor.liveAvailable === false;
       option.selected = floor.id === this._selectedFloorId;
       select.append(option);
@@ -1034,6 +1063,16 @@ class MaticMapStudio extends HTMLElement {
   _historicalStatus(snapshot) {
     const floor = this._selectedFloor();
     if (floor?.readOnly) {
+      if (floor.label) {
+        return this._localize(
+          "map_status_saved_floor_named",
+          "{name} · captured {time} · read only",
+          {
+            name: floor.label,
+            time: this._formatHistoryTime(snapshot.created_at),
+          },
+        );
+      }
       return this._localize(
         "map_status_saved_floor",
         "Saved map {number} · captured {time} · read only",
