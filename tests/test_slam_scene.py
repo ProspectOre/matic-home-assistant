@@ -76,6 +76,8 @@ def _floor_plan() -> FloorPlan:
                 ((0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
             ),
         ),
+        "Main floor",
+        (MappedFloor(1, "Main floor", "synthetic-token"),),
     )
 
 
@@ -839,6 +841,8 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_floor_count": 0,
                 "map_revision": 7,
                 "map_floor_coherent": True,
+                "selected_floor_ordinal": 1,
+                "map_floor_ordinal": 1,
                 "map_session_verified": True,
                 "map_health": "ready",
                 "map_complete": True,
@@ -863,6 +867,16 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
+    assert empty_entry["selected_floor_ordinal"] == 1
+    assert empty_entry["map_floor_ordinal"] is None
+
+    runtime.coordinator.data.floor_plan = None
+    empty_plan = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
+    assert empty_plan_entry["selected_floor_ordinal"] is None
+    assert empty_plan_entry["map_floor_ordinal"] is None
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:

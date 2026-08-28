@@ -695,9 +695,28 @@ class MaticSlamCatalogView(HomeAssistantView):
             if runtime is None:
                 continue
             health = runtime.slam_map.health
-            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(
-                runtime.coordinator.data.floor_plan
+            floor_plan = runtime.coordinator.data.floor_plan
+            mapped_floors = floor_plan.mapped_floors if floor_plan is not None else ()
+            selected_floor_ordinal = next(
+                (
+                    index
+                    for index, floor in enumerate(mapped_floors, start=1)
+                    if floor_plan is not None
+                    and floor.mission_id == floor_plan.mission_id
+                ),
+                None,
             )
+            map_identity = runtime.slam_map.mission_identity
+            map_floor_ordinal = next(
+                (
+                    index
+                    for index, floor in enumerate(mapped_floors, start=1)
+                    if map_identity is not None
+                    and floor.mission_id == map_identity.mission_id
+                ),
+                None,
+            )
+            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
             entries.append(
                 {
                     "entry_id": entry.entry_id,
@@ -718,6 +737,8 @@ class MaticSlamCatalogView(HomeAssistantView):
                     if self._scene_view is not None
                     else runtime.slam_map.revision,
                     "map_floor_coherent": floor_plan_coherent,
+                    "selected_floor_ordinal": selected_floor_ordinal,
+                    "map_floor_ordinal": map_floor_ordinal,
                     "map_session_verified": getattr(
                         runtime.slam_map,
                         "live_session_verified",
