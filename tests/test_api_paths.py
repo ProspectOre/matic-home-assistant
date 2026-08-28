@@ -1339,11 +1339,11 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     first_floor = MappedFloor(42, "Main", "1" * 64)
     second_floor = MappedFloor(84, "Workshop", "2" * 64)
     client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
             HermesCollectionEntry(b"unrelated", b"unrelated-record"),
-            HermesCollectionEntry(b"state", b"mission-state"),
-            HermesCollectionEntry(b"duplicate", b"mission-state"),
+            HermesCollectionEntry(b"historical", b"first-state"),
+            HermesCollectionEntry(b"current", b"second-state"),
         )
     )
     monkeypatch.setattr(
@@ -1353,8 +1353,11 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.decode_mission_client_state",
         lambda payload: (
-            MissionClientState(second_floor, (first_floor, second_floor))
-            if payload == b"mission-state"
+            MissionClientState(
+                first_floor if payload == b"first-state" else second_floor,
+                (first_floor, second_floor),
+            )
+            if payload in {b"first-state", b"second-state"}
             else (_ for _ in ()).throw(DecodeError("unrelated record"))
         ),
     )
@@ -1364,7 +1367,7 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     assert selected.mission_id == 84
     assert selected.floor_label == "Workshop"
     assert selected.mapped_floors == (first_floor, second_floor)
-    client.async_get_collection_entries.assert_awaited_once_with(
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "displayed_mission", limit=256
     )
 
@@ -1373,14 +1376,14 @@ async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     floor_plan = FloorPlan(42, "only", b"only", ())
     client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock()
+    client.async_get_tracked_collection_entries = AsyncMock()
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.decode_floor_plans",
         lambda _payload: (floor_plan,),
     )
 
     assert await client.async_get_floor_plan() is floor_plan
-    client.async_get_collection_entries.assert_not_awaited()
+    client.async_get_tracked_collection_entries.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
@@ -1424,7 +1427,7 @@ async def test_multi_floor_read_fails_closed_on_ambiguous_mission_state(
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(return_value=entries)
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
     plans = (
         FloorPlan(42, "first", b"first", ()),
         FloorPlan(84, "second", b"second", ()),
@@ -1445,87 +1448,15 @@ async def test_multi_floor_read_fails_closed_on_ambiguous_mission_state(
     assert message in str(error.value.__cause__)
 
 
-async def test_multi_floor_read_uses_newest_verified_mission_state(
-    monkeypatch,
-) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
-        return_value=(
-            HermesCollectionEntry(b"current", b"second-state", 10, 8),
-            HermesCollectionEntry(b"historical", b"first-state", 10, 3),
-        )
-    )
-    plans = (
-        FloorPlan(42, "first", b"first", ()),
-        FloorPlan(84, "second", b"second", ()),
-    )
-    floors = (
-        MappedFloor(42, "Main", "1" * 64),
-        MappedFloor(84, "Workshop", "2" * 64),
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_floor_plans",
-        lambda _payload: plans,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_mission_client_state",
-        lambda payload: MissionClientState(
-            floors[0] if payload == b"first-state" else floors[1], floors
-        ),
-    )
-
-    selected = await client.async_get_floor_plan()
-
-    assert selected.mission_id == floors[1].mission_id
-    assert selected.floor_label == floors[1].label
-
-
-async def test_multi_floor_read_rejects_unordered_conflicting_states(
-    monkeypatch,
-) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
-        return_value=(
-            HermesCollectionEntry(b"first", b"first-state"),
-            HermesCollectionEntry(b"second", b"second-state"),
-        )
-    )
-    plans = (
-        FloorPlan(42, "first", b"first", ()),
-        FloorPlan(84, "second", b"second", ()),
-    )
-    floors = (
-        MappedFloor(42, "Main", "1" * 64),
-        MappedFloor(84, "Workshop", "2" * 64),
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_floor_plans",
-        lambda _payload: plans,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_mission_client_state",
-        lambda payload: MissionClientState(
-            floors[0] if payload == b"first-state" else floors[1], floors
-        ),
-    )
-
-    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
-        await client.async_get_floor_plan()
-
-    assert "no verified ordering" in str(error.value.__cause__)
-
-
 async def test_multi_floor_read_rejects_unknown_newest_mission_state(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=(
-            HermesCollectionEntry(b"old", b"old-state", 10, 3),
-            HermesCollectionEntry(b"new", b"new-state", 10, 8),
+            HermesCollectionEntry(b"old", b"old-state"),
+            HermesCollectionEntry(b"new", b"new-state"),
         )
     )
     plans = (
@@ -1553,48 +1484,12 @@ async def test_multi_floor_read_rejects_unknown_newest_mission_state(
     assert "no verified active floor" in str(error.value.__cause__)
 
 
-async def test_multi_floor_read_rejects_tied_newest_mission_states(
-    monkeypatch,
-) -> None:
-    client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
-        return_value=(
-            HermesCollectionEntry(b"first", b"first-state", 10, 8),
-            HermesCollectionEntry(b"second", b"second-state", 10, 8),
-        )
-    )
-    plans = (
-        FloorPlan(42, "first", b"first", ()),
-        FloorPlan(84, "second", b"second", ()),
-    )
-    floors = (
-        MappedFloor(42, "Main", "1" * 64),
-        MappedFloor(84, "Workshop", "2" * 64),
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_floor_plans",
-        lambda _payload: plans,
-    )
-    monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_mission_client_state",
-        lambda payload: MissionClientState(
-            floors[0] if payload == b"first-state" else floors[1], floors
-        ),
-    )
-
-    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
-        await client.async_get_floor_plan()
-
-    assert "newest mission client state is ambiguous" in str(error.value.__cause__)
-
-
 async def test_multi_floor_read_rejects_truncated_mission_snapshot(
     monkeypatch,
 ) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_property = AsyncMock(return_value=b"coverage")
-    client.async_get_collection_entries = AsyncMock(
+    client.async_get_tracked_collection_entries = AsyncMock(
         return_value=tuple(
             HermesCollectionEntry(str(index).encode(), b"state") for index in range(256)
         )

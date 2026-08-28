@@ -61,7 +61,7 @@ HERMES_ENDPOINTS = (
     _property("coverage_time", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("current_version", HermesEndpointSensitivity.DIAGNOSTIC),
     _property("deep_mop_override_setting_state", HermesEndpointSensitivity.DIAGNOSTIC),
-    _collection("displayed_mission"),
+    _collection("displayed_mission", tracked=True),
     _collection("dock_detections", HermesEndpointSensitivity.DIAGNOSTIC),
     _collection("jukebox_state"),
     _property("kabuki_state", HermesEndpointSensitivity.DIAGNOSTIC),

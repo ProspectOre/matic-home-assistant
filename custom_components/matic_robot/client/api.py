@@ -559,54 +559,30 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             if len(floor_plans) == 1:
                 return floor_plans[0]
 
-            mission_entries = await self.async_get_collection_entries(
+            mission_entries = await self.async_get_tracked_collection_entries(
                 "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
             )
             if len(mission_entries) >= _DISPLAYED_MISSION_LIMIT:
                 raise DecodeError(
                     "displayed mission collection exceeds its snapshot bound"
                 )
-            mission_states: list[tuple[HermesCollectionEntry, MissionClientState]] = []
+            mission_states: list[MissionClientState] = []
             for entry in mission_entries:
                 try:
-                    mission_states.append(
-                        (entry, decode_mission_client_state(entry.value))
-                    )
+                    mission_states.append(decode_mission_client_state(entry.value))
                 except DecodeError:
                     # ``displayed_mission`` is a heterogeneous collection. Only
-                    # the exact verified MissionClientState shape is relevant;
-                    # unrelated records must not make their collection order a
-                    # hidden floor-selection input.
+                    # the exact verified MissionClientState shape is relevant.
                     continue
             if not mission_states:
                 raise DecodeError(
                     "multi-floor coverage plan has no mission client state"
                 )
-            versioned_states = tuple(
-                (entry, state)
-                for entry, state in mission_states
-                if entry.sequence_start_ns is not None and entry.sequence_no is not None
-            )
-            if len(mission_states) == 1:
-                mission_state = mission_states[0][1]
-            elif len(versioned_states) == len(mission_states):
-                newest_version = max(
-                    (entry.sequence_start_ns, entry.sequence_no)
-                    for entry, _state in versioned_states
-                )
-                newest_states = {
-                    state
-                    for entry, state in versioned_states
-                    if (entry.sequence_start_ns, entry.sequence_no) == newest_version
-                }
-                if len(newest_states) != 1:
-                    raise DecodeError("newest mission client state is ambiguous")
-                mission_state = newest_states.pop()
-            else:
-                unique_states = {state for _entry, state in mission_states}
-                if len(unique_states) != 1:
-                    raise DecodeError("mission client state has no verified ordering")
-                mission_state = unique_states.pop()
+            # Tracked collection delivery is the robot's authoritative order:
+            # Hermes does not send the next cached or live record until the
+            # prior sequence is acknowledged. The last decodable client state
+            # therefore represents the currently displayed mission.
+            mission_state = mission_states[-1]
             coverage_ids = {plan.mission_id for plan in floor_plans}
             if coverage_ids != {
                 floor.mission_id for floor in mission_state.mapped_floors
