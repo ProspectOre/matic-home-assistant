@@ -33,6 +33,14 @@ ANALYSIS_VERSION = 1
 # target data, coordinates, media, and every other nested opaque value.
 WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
     "kabuki_state": ((18,), (18, 17), (18, 21)),
+    "latest_pose": (
+        (2,),
+        (2, 1),
+        (3,),
+        (3, 1),
+        (5,),
+        (5, 1),
+    ),
 }
 
 

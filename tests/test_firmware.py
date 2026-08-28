@@ -420,6 +420,23 @@ def test_fingerprint_entry_keeps_only_hashes_sizes_and_wire_shape() -> None:
         "18:2/17:2",
         "18:2/17:2/2:2",
     ]
+
+
+def test_pose_fingerprint_recurses_only_through_verified_envelopes() -> None:
+    translation = b"\x00\x00\x80?" * 3
+    payload = b"\x12\x10\x0a\x0e\x0a\x0c" + translation + b"\x1a\x02\x08\x01"
+
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"", payload), endpoint_name="latest_pose"
+    )
+
+    assert fingerprint["wire_shape"] == [
+        "2:2",
+        "2:2/1:2",
+        "2:2/1:2/1:2",
+        "3:2",
+        "3:2/1:0",
+    ]
     rendered = repr(fingerprint)
     assert "private-key" not in rendered
     assert repr(payload) not in rendered
