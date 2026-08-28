@@ -23,6 +23,7 @@ from custom_components.matic_robot.client.floor_plan import (
     decode_floor_plan,
     decode_floor_plans,
     decode_pose,
+    pose_mission_ids,
     pose_vector_paths,
     render_floor_plan,
     resolve_robot_map_position,
@@ -103,7 +104,14 @@ def test_decode_mapped_floors_rejects_duplicate_or_excessive_identities(
 
 
 def test_decode_pose_and_render_local_png() -> None:
-    pose_payload = _field(2, _field(1, _field(1, struct.pack("<3f", 2, 1, 0))))
+    mission = bytes((2 << 3 | 5,)) + struct.pack("<I", 84)
+    pose_payload = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<3f", 2, 1, 0)) + _field(3, mission),
+        ),
+    )
     pose = decode_pose(pose_payload)
     image_bytes = render_floor_plan(
         decode_floor_plan(_floor_plan_payload()), pose, width=512, height=384
@@ -111,12 +119,14 @@ def test_decode_pose_and_render_local_png() -> None:
 
     assert (pose.x, pose.y, pose.z) == (2.0, 1.0, 0.0)
     assert pose_vector_paths(pose_payload) == ((2, 1, 1),)
+    assert pose_mission_ids(pose_payload) == (84,)
     with Image.open(BytesIO(image_bytes)) as image:
         assert image.format == "PNG"
         assert image.size == (512, 384)
 
     current_payload = _field(5, _field(1, struct.pack("<3f", 3, 2, 1)))
     assert decode_pose(current_payload) == RobotPose(3, 2, 1)
+    assert pose_mission_ids(current_payload) == ()
 
     repeated_components = _field(
         2,

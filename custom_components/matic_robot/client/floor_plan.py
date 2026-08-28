@@ -13,6 +13,7 @@ from google.protobuf.message import DecodeError
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 from .models import FloorPlan, RobotPose, Room
+from .slam_map import decode_slam_mission_id
 from .wire import (
     bytes_fields,
     decode_fields,
@@ -187,6 +188,23 @@ def decode_pose(payload: bytes) -> RobotPose:
         pose_info = first_bytes(payload, 5)
         translation = packed_floats(first_bytes(pose_info, 1), 3)
     return RobotPose(x=translation[0], y=translation[1], z=translation[2])
+
+
+def pose_mission_ids(payload: bytes) -> tuple[int, ...]:
+    """Return exact verified mission identities carried by a current pose."""
+    try:
+        pose_info = first_bytes(first_bytes(payload, 2), 1)
+        candidates = {
+            mission_id
+            for field in decode_fields(pose_info)
+            if field.number in (3, 4, 5)
+            and field.wire_type == 2
+            and isinstance(field.value, bytes)
+            and (mission_id := decode_slam_mission_id(field.value)) is not None
+        }
+    except DecodeError:
+        return ()
+    return tuple(sorted(candidates))
 
 
 def pose_vector_paths(

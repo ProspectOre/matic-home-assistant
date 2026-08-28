@@ -1564,7 +1564,15 @@ async def test_inspect_pose_endpoint_returns_only_safe_vector_paths() -> None:
             return_value=(HermesCollectionEntry(b"", b"synthetic"),)
         )
     )
-    entry = SimpleNamespace(runtime_data=SimpleNamespace(client=client))
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=client,
+            slam_map=SimpleNamespace(mission_identity=SimpleNamespace(mission_id=84)),
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=FloorPlan(42, "partition", b"", ()))
+            ),
+        )
+    )
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -1588,10 +1596,17 @@ async def test_inspect_pose_endpoint_returns_only_safe_vector_paths() -> None:
             "custom_components.matic_robot.services.pose_vector_paths",
             return_value=((2, 1, 1),),
         ),
+        patch(
+            "custom_components.matic_robot.services.pose_mission_ids",
+            return_value=(84,),
+        ),
     ):
         response = await _registered_handler(services, "inspect_hermes_endpoint")(call)
 
     assert response["pose_vector_paths"] == [[2, 1, 1]]
+    assert response["pose_mission_id_count"] == 1
+    assert response["pose_matches_map"] is True
+    assert response["pose_matches_floor"] is False
 
 
 async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
