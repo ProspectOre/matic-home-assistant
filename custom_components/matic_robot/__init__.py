@@ -63,6 +63,8 @@ FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
+FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
+FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
 
 
 @dataclass(slots=True)
@@ -303,6 +305,40 @@ def _register_slam_map_floor_plan_sync(
                 # fifteen-minute cache interval.
                 if round_ + 1 < FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS:
                     await asyncio.sleep(FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS)
+
+            # Some robots keep returning the previous floor plan for longer
+            # than the fast transition burst above. Keep the map fail-closed,
+            # but continue one low-frequency read at a bounded exponential
+            # backoff so a verified live mission cannot remain stranded until
+            # an unrelated identity or restart changes the state.
+            recovery_delay = FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS
+            while True:
+                await asyncio.sleep(recovery_delay)
+                if slam_map.mission_identity != identity or not getattr(
+                    slam_map, "live_session_verified", True
+                ):
+                    last_attempted_identity = None
+                    return
+                floor_plan = coordinator.data.floor_plan
+                if floor_plan is not None and slam_map.floor_plan_is_current(
+                    floor_plan
+                ):
+                    return
+                await coordinator.async_request_floor_plan_refresh()
+                if slam_map.mission_identity != identity or not getattr(
+                    slam_map, "live_session_verified", True
+                ):
+                    last_attempted_identity = None
+                    return
+                floor_plan = coordinator.data.floor_plan
+                if floor_plan is not None and slam_map.floor_plan_is_current(
+                    floor_plan
+                ):
+                    return
+                recovery_delay = min(
+                    recovery_delay * 2,
+                    FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS,
+                )
         finally:
             refresh_in_progress = False
             _async_sync_floor_plan()
@@ -324,8 +360,8 @@ def _register_slam_map_floor_plan_sync(
             last_attempted_identity = None
             return
         # A busy SLAM stream can publish many pages before the floor-plan
-        # endpoint catches up. Each verified mission gets one bounded refresh
-        # sequence, rather than one coordinator refresh per page.
+        # endpoint catches up. Keep one recovery task per verified mission,
+        # rather than one coordinator refresh per page.
         if refresh_in_progress or identity == last_attempted_identity:
             return
         refresh_in_progress = True
