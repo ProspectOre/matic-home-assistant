@@ -11,6 +11,7 @@ from functools import partial
 from time import monotonic
 from typing import Any, cast
 
+from google.protobuf.message import DecodeError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -28,6 +29,7 @@ from .client.exceptions import (
     InvalidRobotCertificateError,
     MaticError,
 )
+from .client.mission import decode_mission_client_state
 from .client.models import (
     CuesVoiceStatus,
     FloorPlan,
@@ -130,6 +132,45 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 raise
             except MaticError as err:
                 _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+
+    async def async_watch_floor_plan(self) -> None:
+        """Refresh floor geometry when the robot changes displayed mission."""
+        retry_delay = 1
+        while True:
+            try:
+                states_received = 0
+                async for entry in self.client.async_subscribe_collection_entries(
+                    "displayed_mission"
+                ):
+                    try:
+                        mission_state = decode_mission_client_state(entry.value)
+                    except DecodeError:
+                        continue
+                    active_floor = mission_state.active_floor
+                    if active_floor is None:
+                        continue
+                    states_received += 1
+                    if states_received > 1:
+                        retry_delay = 1
+                    floor_plan = self.data.floor_plan if self.data is not None else None
+                    if (
+                        floor_plan is not None
+                        and floor_plan.mission_id == active_floor.mission_id
+                        and floor_plan.mapped_floors == mission_state.mapped_floors
+                    ):
+                        continue
+                    # This stream is the robot's immediate localization signal.
+                    # A previously verified map identity may only be a replayed
+                    # scene at the dock, so it cannot override this newer state.
+                    self._verified_floor_mission_id = None
+                    self._map_refresh_due = 0.0
+                    await self.async_request_refresh()
+            except asyncio.CancelledError:
+                raise
+            except MaticError as err:
+                _LOGGER.debug("Matic floor subscription interrupted: %s", err)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 

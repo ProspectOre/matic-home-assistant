@@ -52,7 +52,7 @@ from .area_binding import AreaBindingStatus, area_binding_status
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
-from .client.floor_plan import pose_mission_ids, pose_vector_paths
+from .client.floor_plan import pose_vector_paths
 from .client.models import CleaningSessionRecord, FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
@@ -842,31 +842,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 for value in values
                 for path in pose_vector_paths(value.value)
             ]
-            mission_ids = {
-                mission_id
-                for value in values
-                for mission_id in pose_mission_ids(value.value)
-            }
-            slam_identity = entry.runtime_data.slam_map.mission_identity
-            floor_plan = entry.runtime_data.coordinator.data.floor_plan
-            canonical_ids = (
-                {floor.mission_id for floor in floor_plan.mapped_floors}
-                if floor_plan is not None
-                else set()
-            )
-            canonical_matches = mission_ids & canonical_ids
-            response["pose_mission_id_count"] = len(mission_ids)
-            response["pose_canonical_match_count"] = len(canonical_matches)
-            response["pose_matches_map"] = bool(
-                len(canonical_matches) == 1
-                and slam_identity is not None
-                and slam_identity.mission_id in canonical_matches
-            )
-            response["pose_matches_floor"] = bool(
-                len(canonical_matches) == 1
-                and floor_plan is not None
-                and floor_plan.mission_id in canonical_matches
-            )
         return response
 
     hass.services.async_register(

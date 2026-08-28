@@ -9,6 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from google.protobuf.message import DecodeError
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.update_coordinator import UpdateFailed
@@ -17,12 +18,15 @@ from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     MaticError,
 )
+from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (
     CleaningSession,
     CuesGestureStatus,
     CuesIntent,
     CuesVoiceStatus,
     FloorPlan,
+    HermesCollectionEntry,
+    MappedFloor,
     RobotInfo,
     RobotOperationalState,
     RobotTelemetry,
@@ -291,6 +295,91 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
         coordinator.data.operational.cues_voice_status
         is CuesVoiceStatus.LISTENING_FOR_INTENT
     )
+
+
+async def test_floor_watcher_refreshes_changed_mission_and_labels(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    client.async_get_floor_plan.return_value = FloorPlan(
+        42, "partition", b"", (), mapped_floors=floors
+    )
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator.async_request_refresh = AsyncMock()
+    coordinator._verified_floor_mission_id = 42
+    coordinator._map_refresh_due = 99.0
+
+    async def entries(name):
+        assert name == "displayed_mission"
+        yield HermesCollectionEntry(b"", b"same")
+        yield HermesCollectionEntry(b"", b"changed")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda payload: MissionClientState(
+            floors[0] if payload == b"same" else floors[1], floors
+        ),
+    )
+
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    assert coordinator._verified_floor_mission_id is None
+    assert coordinator._map_refresh_due == 0.0
+
+
+async def test_floor_watcher_ignores_unknown_state_and_retries_failures(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    floor = MappedFloor(42, "Main", "1" * 64)
+    attempts = 0
+
+    async def entries(name):
+        nonlocal attempts
+        assert name == "displayed_mission"
+        attempts += 1
+        yield HermesCollectionEntry(b"", b"bad")
+        yield HermesCollectionEntry(b"", b"unknown")
+        if attempts == 1:
+            yield HermesCollectionEntry(b"", b"current")
+        raise MaticError("stream closed")
+
+    client.async_subscribe_collection_entries = entries
+    coordinator = _coordinator(hass, client)
+    coordinator.async_request_refresh = AsyncMock()
+
+    def decode(payload):
+        if payload == b"bad":
+            raise DecodeError("bad")
+        return MissionClientState(
+            floor if payload == b"current" else None,
+            (floor,),
+        )
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        decode,
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.asyncio.sleep",
+            AsyncMock(side_effect=[None, asyncio.CancelledError]),
+        ) as sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator.async_watch_floor_plan()
+
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    assert [args.args for args in sleep.await_args_list] == [(1,), (2,)]
 
 
 async def test_live_cues_push_wins_over_an_overlapping_poll(hass) -> None:

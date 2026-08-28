@@ -159,6 +159,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             coordinator.async_watch_cues(),
             f"{DOMAIN} Cues state collector",
         )
+        entry.async_create_background_task(
+            hass,
+            coordinator.async_watch_floor_plan(),
+            f"{DOMAIN} displayed floor collector",
+        )
         _schedule_native_reconciliation_recovery(
             hass,
             entry,
@@ -286,9 +291,7 @@ def _register_slam_map_floor_plan_sync(
                         # this task releases its guard.
                         last_attempted_identity = None
                         return
-                    await coordinator.async_request_floor_plan_refresh(
-                        identity.mission_id
-                    )
+                    await coordinator.async_request_floor_plan_refresh()
                     if slam_map.mission_identity != identity or not getattr(
                         slam_map, "live_session_verified", True
                     ):
@@ -326,7 +329,7 @@ def _register_slam_map_floor_plan_sync(
                     floor_plan
                 ):
                     return
-                await coordinator.async_request_floor_plan_refresh(identity.mission_id)
+                await coordinator.async_request_floor_plan_refresh()
                 if slam_map.mission_identity != identity or not getattr(
                     slam_map, "live_session_verified", True
                 ):
