@@ -52,7 +52,7 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
-from .mission import decode_mission_client_state
+from .mission import MissionClientState, decode_mission_client_state
 from .models import (
     CleaningSchedule,
     CleaningSession,
@@ -559,24 +559,45 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 return floor_plans[0]
 
             mission_entries = await self.async_get_collection_entries(
-                "displayed_mission", limit=1
+                "displayed_mission", limit=64
             )
-            if len(mission_entries) != 1:
+            mission_states: list[MissionClientState] = []
+            for entry in mission_entries:
+                try:
+                    mission_states.append(decode_mission_client_state(entry.value))
+                except DecodeError:
+                    # ``displayed_mission`` is a heterogeneous collection. Only
+                    # the exact verified MissionClientState shape is relevant;
+                    # unrelated records must not make their collection order a
+                    # hidden floor-selection input.
+                    continue
+            if not mission_states:
                 raise DecodeError(
                     "multi-floor coverage plan has no mission client state"
                 )
-            mission_state = decode_mission_client_state(mission_entries[0].value)
-            active_floor = mission_state.active_floor
-            if active_floor is None:
-                raise DecodeError(
-                    "multi-floor coverage plan has no verified active floor"
-                )
-            if {plan.mission_id for plan in floor_plans} != {
-                floor.mission_id for floor in mission_state.mapped_floors
-            }:
+            coverage_ids = {plan.mission_id for plan in floor_plans}
+            matching_states = tuple(
+                state
+                for state in mission_states
+                if coverage_ids == {floor.mission_id for floor in state.mapped_floors}
+            )
+            if not matching_states:
                 raise DecodeError(
                     "coverage plan and canonical floor identities disagree"
                 )
+            active_states = tuple(
+                state for state in matching_states if state.active_floor is not None
+            )
+            if not active_states:
+                raise DecodeError(
+                    "multi-floor coverage plan has no verified active floor"
+                )
+            unique_states = set(active_states)
+            if len(unique_states) != 1:
+                raise DecodeError("mission client state is ambiguous")
+            mission_state = unique_states.pop()
+            active_floor = mission_state.active_floor
+            assert active_floor is not None
             matching = tuple(
                 plan
                 for plan in floor_plans
