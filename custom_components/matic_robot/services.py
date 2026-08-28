@@ -849,16 +849,23 @@ async def async_register_services(hass: HomeAssistant) -> None:
             }
             slam_identity = entry.runtime_data.slam_map.mission_identity
             floor_plan = entry.runtime_data.coordinator.data.floor_plan
+            canonical_ids = (
+                {floor.mission_id for floor in floor_plan.mapped_floors}
+                if floor_plan is not None
+                else set()
+            )
+            canonical_matches = mission_ids & canonical_ids
             response["pose_mission_id_count"] = len(mission_ids)
+            response["pose_canonical_match_count"] = len(canonical_matches)
             response["pose_matches_map"] = bool(
-                len(mission_ids) == 1
+                len(canonical_matches) == 1
                 and slam_identity is not None
-                and slam_identity.mission_id in mission_ids
+                and slam_identity.mission_id in canonical_matches
             )
             response["pose_matches_floor"] = bool(
-                len(mission_ids) == 1
+                len(canonical_matches) == 1
                 and floor_plan is not None
-                and floor_plan.mission_id in mission_ids
+                and floor_plan.mission_id in canonical_matches
             )
         return response
 

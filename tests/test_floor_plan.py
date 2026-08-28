@@ -128,6 +128,16 @@ def test_decode_pose_and_render_local_png() -> None:
     assert decode_pose(current_payload) == RobotPose(3, 2, 1)
     assert pose_mission_ids(current_payload) == ()
 
+    nested_identity = _field(
+        2,
+        _field(
+            1,
+            _field(1, struct.pack("<3f", 2, 1, 0))
+            + _field(4, _field(2, _varint_field(1, 126))),
+        ),
+    )
+    assert pose_mission_ids(nested_identity) == (126,)
+
     repeated_components = _field(
         2,
         _field(

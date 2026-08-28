@@ -191,17 +191,54 @@ def decode_pose(payload: bytes) -> RobotPose:
 
 
 def pose_mission_ids(payload: bytes) -> tuple[int, ...]:
-    """Return exact verified mission identities carried by a current pose."""
+    """Return bounded identity candidates outside the pose coordinate vector."""
+    candidates: set[int] = set()
+    field_count = 0
+
+    def collect(message: bytes, depth: int) -> None:
+        nonlocal field_count
+        if depth > 3 or field_count >= 64:
+            return
+        mission_id = decode_slam_mission_id(message)
+        if mission_id is not None:
+            candidates.add(mission_id)
+            return
+        try:
+            fields = decode_fields(message)
+        except DecodeError:
+            return
+        field_count += len(fields)
+        if field_count > 64:
+            return
+        for field in fields:
+            if field.wire_type == 0 and isinstance(field.value, int):
+                candidates.add(field.value)
+            elif (
+                field.wire_type == 5
+                and isinstance(field.value, bytes)
+                and len(field.value) == 4
+            ):
+                candidates.add(int.from_bytes(field.value, "little"))
+            elif field.wire_type == 2 and isinstance(field.value, bytes):
+                collect(field.value, depth + 1)
+
     try:
+        root_fields = decode_fields(payload)
         pose_info = first_bytes(first_bytes(payload, 2), 1)
-        candidates = {
-            mission_id
-            for field in decode_fields(pose_info)
-            if field.number in (3, 4, 5)
-            and field.wire_type == 2
-            and isinstance(field.value, bytes)
-            and (mission_id := decode_slam_mission_id(field.value)) is not None
-        }
+        for field in decode_fields(pose_info):
+            if (
+                field.number in (3, 4, 5)
+                and field.wire_type == 2
+                and isinstance(field.value, bytes)
+            ):
+                collect(field.value, 0)
+        for field in root_fields:
+            if (
+                field.number in (3, 5)
+                and field.wire_type == 2
+                and isinstance(field.value, bytes)
+            ):
+                collect(field.value, 0)
     except DecodeError:
         return ()
     return tuple(sorted(candidates))
