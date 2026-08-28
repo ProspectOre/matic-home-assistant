@@ -32,7 +32,7 @@ from custom_components.matic_robot.area_binding import (
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
 )
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
 
 
@@ -1358,6 +1358,58 @@ def test_area_issue_sync_preserves_unknown_state_and_clears_verified_state() -> 
             call.args == (hass, DOMAIN, issue_id) for call in delete.call_args_list
         )
         create.assert_not_called()
+
+
+def test_area_issue_sync_ignores_areas_bound_to_other_mapped_floors() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(
+            MappedFloor(42, "Main", "1" * 64),
+            MappedFloor(84, "Workshop", "2" * 64),
+        ),
+    )
+    other = replace(_floor_plan(), mission_id=84)
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+        ) as create,
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert (
+            async_sync_custom_area_issue(
+                hass,
+                "entry",
+                {"active": _area(active), "other": _area(other)},
+                active,
+            )
+            == 0
+        )
+
+    create.assert_not_called()
+    delete.assert_called_once_with(hass, DOMAIN, custom_area_issue_id("entry"))
+
+
+def test_area_issue_sync_repairs_areas_bound_to_retired_missions() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(MappedFloor(42, "Main", "1" * 64),),
+    )
+    retired = replace(_floor_plan(), mission_id=84)
+    with patch(
+        "custom_components.matic_robot.area_binding.ir.async_create_issue"
+    ) as create:
+        assert (
+            async_sync_custom_area_issue(
+                hass, "entry", {"retired": _area(retired)}, active
+            )
+            == 1
+        )
+
+    create.assert_called_once()
 
 
 def test_delete_custom_area_issue_uses_the_private_stable_key() -> None:

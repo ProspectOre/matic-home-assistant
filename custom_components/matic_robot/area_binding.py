@@ -103,8 +103,7 @@ def async_sync_custom_area_issue(
         return None
 
     stale_count = sum(
-        not isinstance(area, Mapping)
-        or area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT
+        not isinstance(area, Mapping) or _area_requires_repair(area, floor_plan)
         for area in areas.values()
     )
     issue_id = custom_area_issue_id(entry_id)
@@ -123,6 +122,17 @@ def async_sync_custom_area_issue(
     else:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
     return stale_count
+
+
+def _area_requires_repair(area: Mapping[str, Any], floor_plan: FloorPlan) -> bool:
+    """Return whether an area is stale rather than bound to another known floor."""
+    status = area_binding_status(area, floor_plan)
+    if status is not AreaBindingStatus.MISSION_CHANGED:
+        return status is not AreaBindingStatus.CURRENT
+    binding = area.get("map_binding")
+    assert isinstance(binding, Mapping)  # Validated by area_binding_status.
+    mission_id = binding["mission_id"]
+    return all(floor.mission_id != mission_id for floor in floor_plan.mapped_floors)
 
 
 @callback
