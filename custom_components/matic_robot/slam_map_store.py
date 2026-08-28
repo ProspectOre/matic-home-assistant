@@ -141,6 +141,7 @@ class SlamMapStore:
         self._structure_content_digests: dict[str, bytes] = {}
         self._revision = 0
         self._last_change = 0.0
+        self._last_topology_change = 0.0
         self._map_complete = False
         # A restored private cache is useful as a bounded local checkpoint, but
         # it is not proof that it describes the robot's location *after this
@@ -191,6 +192,7 @@ class SlamMapStore:
         self._closed = False
         self._revision = len(self._entries) + len(self._structure_entries)
         self._last_change = 0.0
+        self._last_topology_change = 0.0
         self._map_complete = not self._truncated and self._has_balanced_layers()
         self._live_photo_seen = False
         self._live_structure_seen = False
@@ -277,7 +279,11 @@ class SlamMapStore:
             self._cancel_candidate_refresh_retry()
         if not changed and not identity_changed and not live_session_confirmed:
             return
-        self._content_changed()
+        self._content_changed(
+            topology_changed=(
+                previous is None or identity_changed or live_session_confirmed
+            )
+        )
 
     def _stage_candidate(
         self,
@@ -565,12 +571,14 @@ class SlamMapStore:
                 candidate.dropped_structure_tiles, dropped_structure
             )
 
-    def _content_changed(self) -> None:
+    def _content_changed(self, *, topology_changed: bool = True) -> None:
         """Apply bounds and publish one content revision."""
         self._enforce_bounds()
         self._revision += 1
         self._last_change = monotonic()
-        self._map_complete = False
+        if topology_changed:
+            self._last_topology_change = self._last_change
+            self._map_complete = False
         self._schedule_save()
         self._notify_listeners()
 
@@ -729,7 +737,9 @@ class SlamMapStore:
             return True
         if not self._has_balanced_layers():
             return False
-        self._map_complete = monotonic() - self._last_change >= MAP_SETTLE_SECONDS
+        self._map_complete = (
+            monotonic() - self._last_topology_change >= MAP_SETTLE_SECONDS
+        )
         return self._map_complete
 
     @property
@@ -810,6 +820,7 @@ class SlamMapStore:
         self._mission_id = None
         self._revision += 1
         self._last_change = monotonic()
+        self._last_topology_change = self._last_change
         self._map_complete = False
         self._truncated = False
         self._dropped_photo_tiles = 0

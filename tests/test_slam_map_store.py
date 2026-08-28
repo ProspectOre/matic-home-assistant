@@ -821,6 +821,8 @@ async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) 
         patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
         patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=2),
     ):
+        refined_photo = synthetic_slam_entry(surface_height=8)
+        await store.async_add(refined_photo)
         assert store.map_complete is False
 
     with (
@@ -837,7 +839,9 @@ async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) 
     with patch(
         "custom_components.matic_robot.slam_map_store.monotonic", return_value=6
     ):
-        await store.async_add(replace(photo, value=photo.value + wire_metadata))
+        await store.async_add(
+            replace(refined_photo, value=refined_photo.value + wire_metadata)
+        )
         await store.async_add_structure(
             replace(structure, value=structure.value + wire_metadata)
         )
