@@ -969,6 +969,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     map_unsubscribe = MagicMock()
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
+        set_expected_mission_id=MagicMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
         async_add_listener=MagicMock(return_value=map_unsubscribe),
@@ -1033,6 +1034,12 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.slam_map is slam_map
     assert entry.runtime_data.slam_history is slam_history
     slam_map.async_load.assert_awaited_once()
+    assert slam_map.set_expected_mission_id.call_args_list[0].args == (
+        initial_floor_plan.mission_id if initial_floor_plan is not None else None,
+    )
+    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (
+        setup_floor_plan.mission_id,
+    )
     slam_map.async_add_listener.assert_called_once()
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
@@ -1233,6 +1240,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
+        set_expected_mission_id=MagicMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )

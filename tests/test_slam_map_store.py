@@ -113,6 +113,47 @@ async def test_slam_map_store_revalidates_a_persisted_map_before_live_use(hass) 
     assert restored.revision == restored_revision + 1
 
 
+async def test_slam_map_store_follows_the_explicit_selected_floor(hass) -> None:
+    """Saved-floor snapshot order cannot override the robot-selected mission."""
+    store = SlamMapStore(hass, "selected-floor-entry")
+    store.set_expected_mission_id(2)
+
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.mission_identity is None
+
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+
+    store.set_expected_mission_id(1)
+    assert not store.live_session_verified
+    await store.async_add(synthetic_slam_entry(mission_id=2, page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2, page_x=8))
+    assert store.mission_identity.mission_id == 2
+    assert not store.live_session_verified
+
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert store.live_session_verified
+
+    # Returning to a formerly retired floor is valid only after both fresh
+    # layers prove it again.
+    store.set_expected_mission_id(2)
+    assert not store.live_session_verified
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    assert not store.live_session_verified
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+    store.set_expected_mission_id(2)
+    assert store.live_session_verified
+
+
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
     """One new live layer hides the old floor until the replacement is proven."""
     first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())

@@ -134,6 +134,7 @@ class SlamMapStore:
         )
         self._mission_token: str | None = None
         self._mission_id: int | None = None
+        self._expected_mission_id: int | None = None
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
         self._entry_content_digests: dict[str, bytes] = {}
@@ -223,6 +224,11 @@ class SlamMapStore:
             return
         self._expire_incomplete_candidates()
         mission_token = tile.mission_token
+        if (
+            self._expected_mission_id is not None
+            and tile.mission_id != self._expected_mission_id
+        ):
+            return
         if self._mission_token is None:
             self._mission_token = mission_token
             self._mission_id = tile.mission_id
@@ -632,6 +638,21 @@ class SlamMapStore:
             self._listeners.discard(listener)
 
         return remove_listener
+
+    @callback
+    def set_expected_mission_id(self, mission_id: int | None) -> None:
+        """Bind live map ingestion to the robot-selected mapped floor."""
+        if self._expected_mission_id == mission_id:
+            return
+        self._expected_mission_id = mission_id
+        self._cancel_candidate_expiry()
+        self._cancel_candidate_refresh_retry()
+        self._candidates.clear()
+        # A mapped floor can become current again later in the same HA session.
+        # Explicit robot selection makes those pages authoritative, rather than
+        # delayed evidence from the previously selected floor.
+        self._retired_missions.clear()
+        self._invalidate_live_session()
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
         """Return all currently valid tiles for local rendering."""
