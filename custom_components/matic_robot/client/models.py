@@ -222,10 +222,12 @@ class CleaningSessionRecord:
 
 @dataclass(frozen=True, slots=True)
 class HermesCollectionEntry:
-    """One raw Hermes collection entry: its opaque key and value bytes."""
+    """One raw Hermes collection entry and its private version sequence."""
 
     key: bytes
     value: bytes
+    sequence_start_ns: int | None = None
+    sequence_no: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

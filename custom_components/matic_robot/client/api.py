@@ -566,10 +566,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 raise DecodeError(
                     "displayed mission collection exceeds its snapshot bound"
                 )
-            mission_states: list[MissionClientState] = []
+            mission_states: list[tuple[HermesCollectionEntry, MissionClientState]] = []
             for entry in mission_entries:
                 try:
-                    mission_states.append(decode_mission_client_state(entry.value))
+                    mission_states.append(
+                        (entry, decode_mission_client_state(entry.value))
+                    )
                 except DecodeError:
                     # ``displayed_mission`` is a heterogeneous collection. Only
                     # the exact verified MissionClientState shape is relevant;
@@ -580,12 +582,31 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 raise DecodeError(
                     "multi-floor coverage plan has no mission client state"
                 )
-            # FetchCollection preserves publisher order. A physical floor move
-            # appends a new MissionClientState while prior states remain in the
-            # heterogeneous snapshot, so only the newest verified state is
-            # authoritative. Falling back to an older active state when the
-            # newest one is unknown would resurrect the wrong floor.
-            mission_state = mission_states[-1]
+            versioned_states = tuple(
+                (entry, state)
+                for entry, state in mission_states
+                if entry.sequence_start_ns is not None and entry.sequence_no is not None
+            )
+            if len(mission_states) == 1:
+                mission_state = mission_states[0][1]
+            elif len(versioned_states) == len(mission_states):
+                newest_version = max(
+                    (entry.sequence_start_ns, entry.sequence_no)
+                    for entry, _state in versioned_states
+                )
+                newest_states = {
+                    state
+                    for entry, state in versioned_states
+                    if (entry.sequence_start_ns, entry.sequence_no) == newest_version
+                }
+                if len(newest_states) != 1:
+                    raise DecodeError("newest mission client state is ambiguous")
+                mission_state = newest_states.pop()
+            else:
+                unique_states = {state for _entry, state in mission_states}
+                if len(unique_states) != 1:
+                    raise DecodeError("mission client state has no verified ordering")
+                mission_state = unique_states.pop()
             coverage_ids = {plan.mission_id for plan in floor_plans}
             if coverage_ids != {
                 floor.mission_id for floor in mission_state.mapped_floors
@@ -966,8 +987,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                             "the byte limit"
                         )
                     collected_bytes += entry_size
+                    sequence = (
+                        response.sequence_id
+                        if response.HasField("sequence_id")
+                        else None
+                    )
                     entries.append(
-                        HermesCollectionEntry(bytes(response.key_bytes), payload)
+                        HermesCollectionEntry(
+                            bytes(response.key_bytes),
+                            payload,
+                            int(sequence.start_ts_nanos)
+                            if sequence is not None
+                            else None,
+                            int(sequence.sequence_no) if sequence is not None else None,
+                        )
                     )
                 if len(entries) >= limit:
                     cancel_stream = True
@@ -1010,9 +1043,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         while (response := await stream.recv_message()) is not None:
                             entry = None
                             if response.HasField("value"):
+                                sequence = (
+                                    response.sequence_id
+                                    if response.HasField("sequence_id")
+                                    else None
+                                )
                                 entry = HermesCollectionEntry(
                                     bytes(response.key_bytes),
                                     _response_value_bytes(response),
+                                    int(sequence.start_ts_nanos)
+                                    if sequence is not None
+                                    else None,
+                                    int(sequence.sequence_no)
+                                    if sequence is not None
+                                    else None,
                                 )
                             if response.HasField("sequence_id"):
                                 await stream.send_message(
