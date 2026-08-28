@@ -226,8 +226,8 @@ class HermesCollectionEntry:
 
     key: bytes
     value: bytes
-    sequence_start_ns: int | None = None
-    sequence_no: int | None = None
+    sequence_start_ns: int | None = field(default=None, compare=False)
+    sequence_no: int | None = field(default=None, compare=False)
 
 
 @dataclass(frozen=True, slots=True)

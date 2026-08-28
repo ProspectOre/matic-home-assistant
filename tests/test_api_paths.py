@@ -786,6 +786,12 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
     assert stream.cancelled is True
 
 
+def test_collection_entry_sequence_is_not_content_identity() -> None:
+    assert HermesCollectionEntry(b"key", b"value", 10, 1) == HermesCollectionEntry(
+        b"key", b"value", 20, 8
+    )
+
+
 async def test_get_collection_entries_enforces_cumulative_byte_budget(
     monkeypatch,
 ) -> None:
