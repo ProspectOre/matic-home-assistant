@@ -99,6 +99,7 @@ _RPC_TIMEOUT = 10.0
 _COLLECTION_TIMEOUT = 30.0
 MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
 _COLLECTION_MAX_BYTES = 64 * 1024 * 1024
+_DISPLAYED_MISSION_LIMIT = 256
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_NON_COMPLETION_STATUS = 1
 _ROOM_MODE_COMPLETED_STATUS = 2
@@ -559,8 +560,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 return floor_plans[0]
 
             mission_entries = await self.async_get_collection_entries(
-                "displayed_mission", limit=64
+                "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
             )
+            if len(mission_entries) >= _DISPLAYED_MISSION_LIMIT:
+                raise DecodeError(
+                    "displayed mission collection exceeds its snapshot bound"
+                )
             mission_states: list[MissionClientState] = []
             for entry in mission_entries:
                 try:
@@ -575,29 +580,24 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 raise DecodeError(
                     "multi-floor coverage plan has no mission client state"
                 )
+            # FetchCollection preserves publisher order. A physical floor move
+            # appends a new MissionClientState while prior states remain in the
+            # heterogeneous snapshot, so only the newest verified state is
+            # authoritative. Falling back to an older active state when the
+            # newest one is unknown would resurrect the wrong floor.
+            mission_state = mission_states[-1]
             coverage_ids = {plan.mission_id for plan in floor_plans}
-            matching_states = tuple(
-                state
-                for state in mission_states
-                if coverage_ids == {floor.mission_id for floor in state.mapped_floors}
-            )
-            if not matching_states:
+            if coverage_ids != {
+                floor.mission_id for floor in mission_state.mapped_floors
+            }:
                 raise DecodeError(
                     "coverage plan and canonical floor identities disagree"
                 )
-            active_states = tuple(
-                state for state in matching_states if state.active_floor is not None
-            )
-            if not active_states:
+            active_floor = mission_state.active_floor
+            if active_floor is None:
                 raise DecodeError(
                     "multi-floor coverage plan has no verified active floor"
                 )
-            unique_states = set(active_states)
-            if len(unique_states) != 1:
-                raise DecodeError("mission client state is ambiguous")
-            mission_state = unique_states.pop()
-            active_floor = mission_state.active_floor
-            assert active_floor is not None
             matching = tuple(
                 plan
                 for plan in floor_plans
