@@ -1372,6 +1372,67 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     )
 
 
+async def test_multi_floor_read_prefers_verified_live_map_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"state", b"stale-state"),)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: plans,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda _payload: MissionClientState(floors[0], floors),
+    )
+
+    selected = await client.async_get_floor_plan(expected_mission_id=84)
+
+    assert selected.mission_id == 84
+    assert selected.floor_label == "Workshop"
+
+
+async def test_multi_floor_read_rejects_unknown_verified_map_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"state", b"state"),)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (
+            FloorPlan(42, "first", b"first", ()),
+            FloorPlan(84, "second", b"second", ()),
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda _payload: MissionClientState(floors[0], floors),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
+        await client.async_get_floor_plan(expected_mission_id=126)
+
+    assert "verified map mission" in str(error.value.__cause__)
+
+
 async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     floor_plan = FloorPlan(42, "only", b"only", ())

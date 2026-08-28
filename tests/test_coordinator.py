@@ -416,11 +416,12 @@ async def test_coordinator_refreshes_floor_plan_without_invalidating_telemetry(
     assert client.async_get_telemetry.await_count == 1
 
     coordinator.async_request_refresh = AsyncMock()
-    await coordinator.async_request_floor_plan_refresh()
+    await coordinator.async_request_floor_plan_refresh(84)
     coordinator.async_request_refresh.assert_awaited_once()
     await coordinator._async_update_data()
 
     assert client.async_get_floor_plan.await_count == 2
+    client.async_get_floor_plan.assert_awaited_with(expected_mission_id=84)
     assert client.async_get_telemetry.await_count == 1
 
 

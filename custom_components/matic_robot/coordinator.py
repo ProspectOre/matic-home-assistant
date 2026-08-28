@@ -96,6 +96,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self.firmware_tracker = firmware_tracker
         self._cached_info: RobotInfo | None = None
         self._cached_floor_plan: FloorPlan | None = None
+        self._verified_floor_mission_id: int | None = None
         self._cached_telemetry: RobotTelemetry | None = None
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
@@ -378,7 +379,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         ):
             return self._cached_floor_plan
         try:
-            floor_plan = await self.client.async_get_floor_plan()
+            floor_plan = await self.client.async_get_floor_plan(
+                expected_mission_id=self._verified_floor_mission_id
+            )
             self._cached_floor_plan = floor_plan
             self._map_refresh_due = now + MAP_UPDATE_INTERVAL_SECONDS
             return floor_plan
@@ -419,7 +422,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._force_full_refresh = True
         await self.async_request_refresh()
 
-    async def async_request_floor_plan_refresh(self) -> None:
+    async def async_request_floor_plan_refresh(
+        self, expected_mission_id: int | None = None
+    ) -> None:
         """Refresh the active floor plan after a verified SLAM mission change.
 
         A robot can localize onto another mapped floor between normal map
@@ -427,6 +432,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         a prior floor plan long enough to make a newly observed SLAM mission
         look like an unresolved transition.
         """
+        if expected_mission_id is not None:
+            self._verified_floor_mission_id = expected_mission_id
         self._map_refresh_due = 0.0
         await self.async_request_refresh()
 

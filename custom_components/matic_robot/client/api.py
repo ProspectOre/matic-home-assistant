@@ -551,7 +551,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     "Hermes returned malformed subscribed robot state"
                 ) from err
 
-    async def async_get_floor_plan(self) -> FloorPlan:
+    async def async_get_floor_plan(
+        self, *, expected_mission_id: int | None = None
+    ) -> FloorPlan:
         """Read and decode the active local coverage plan."""
         try:
             payload = await self.async_get_property("coverage_plan")
@@ -590,11 +592,23 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 raise DecodeError(
                     "coverage plan and canonical floor identities disagree"
                 )
-            active_floor = mission_state.active_floor
-            if active_floor is None:
-                raise DecodeError(
-                    "multi-floor coverage plan has no verified active floor"
+            if expected_mission_id is None:
+                active_floor = mission_state.active_floor
+                if active_floor is None:
+                    raise DecodeError(
+                        "multi-floor coverage plan has no verified active floor"
+                    )
+            else:
+                verified_floors = tuple(
+                    floor
+                    for floor in mission_state.mapped_floors
+                    if floor.mission_id == expected_mission_id
                 )
+                if len(verified_floors) != 1:
+                    raise DecodeError(
+                        "verified map mission does not identify one canonical floor"
+                    )
+                active_floor = verified_floors[0]
             matching = tuple(
                 plan
                 for plan in floor_plans

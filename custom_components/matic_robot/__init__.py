@@ -286,7 +286,9 @@ def _register_slam_map_floor_plan_sync(
                         # this task releases its guard.
                         last_attempted_identity = None
                         return
-                    await coordinator.async_request_floor_plan_refresh()
+                    await coordinator.async_request_floor_plan_refresh(
+                        identity.mission_id
+                    )
                     if slam_map.mission_identity != identity or not getattr(
                         slam_map, "live_session_verified", True
                     ):
@@ -324,7 +326,7 @@ def _register_slam_map_floor_plan_sync(
                     floor_plan
                 ):
                     return
-                await coordinator.async_request_floor_plan_refresh()
+                await coordinator.async_request_floor_plan_refresh(identity.mission_id)
                 if slam_map.mission_identity != identity or not getattr(
                     slam_map, "live_session_verified", True
                 ):

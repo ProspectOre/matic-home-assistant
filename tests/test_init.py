@@ -104,7 +104,7 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     )
     floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 4:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -163,7 +163,7 @@ async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> Non
         async_add_listener=MagicMock(return_value=remove_listener),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 6:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -274,7 +274,7 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_read(
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 5:
             slam_map.mission_identity = second_identity
 
@@ -316,7 +316,7 @@ async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
         live_session_verified=False,
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         slam_map.floor_plan_is_current.return_value = True
 
     coordinator = SimpleNamespace(
@@ -349,7 +349,7 @@ async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) 
     first_request_started = asyncio.Event()
     release_first_request = asyncio.Event()
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         if not first_request_started.is_set():
             first_request_started.set()
             await release_first_request.wait()
@@ -447,7 +447,7 @@ async def test_slam_map_transition_retries_after_live_proof_is_interrupted(
     refresh_started = asyncio.Event()
     release_refresh = asyncio.Event()
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         refresh_started.set()
         await release_refresh.wait()
 
@@ -505,7 +505,7 @@ async def test_slam_map_transition_retries_a_delayed_floor_plan_once(hass) -> No
         mission_identity=SlamMapIdentity("00" * 32, 43),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 3:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -561,7 +561,7 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
         mission_identity=SlamMapIdentity("00" * 32, 43),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int) -> None:
         coordinator.data.floor_plan = floor_plan
 
     coordinator.async_request_floor_plan_refresh.side_effect = refresh_floor_plan
