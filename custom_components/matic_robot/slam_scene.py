@@ -109,11 +109,14 @@ def _runtime_for_entry(hass: HomeAssistant, entry_id: str) -> MaticRuntimeData |
     return cast("MaticConfigEntry", entry).runtime_data
 
 
+type _SceneKey = tuple[int, SlamMapIdentity | None, FloorPlan | None]
+
+
 @dataclass(frozen=True, slots=True)
 class _CachedScene:
     """One compact payload retained only in process memory."""
 
-    key: tuple[object, ...]
+    key: _SceneKey
     payload: bytes
     etag: str
     revision: int
@@ -124,7 +127,7 @@ class _CachedScene:
 class _SceneGeneration:
     """A privacy-safe transport generation for one private scene identity."""
 
-    key: tuple[object, ...]
+    key: _SceneKey
     revision: int
 
 
@@ -171,11 +174,15 @@ class MaticSlamSceneView(HomeAssistantView):
     def current_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
         """Return a monotonic revision covering SLAM and floor-plan changes."""
         key = _scene_snapshot_key(runtime)
+        return self._revision_for_key(entry_id, key)
+
+    def _revision_for_key(self, entry_id: str, key: _SceneKey) -> int:
+        """Return a monotonic transport revision for one captured scene key."""
         current = self._generations.get(entry_id)
         if current is not None and current.key == key:
             return current.revision
         revision = max(
-            runtime.slam_map.revision,
+            key[0],
             current.revision + 1 if current is not None else 0,
         )
         self._generations[entry_id] = _SceneGeneration(key, revision)
@@ -255,11 +262,16 @@ class MaticSlamSceneView(HomeAssistantView):
                     or _runtime_for_entry(hass, entry_id) is not runtime
                 ):
                     return None
-                if not _scene_snapshot_is_current(
-                    runtime, map_revision, identity, floor_plan
+                if not _scene_snapshot_is_publishable(
+                    runtime, identity, floor_plan, floor_plan_coherent
                 ):
                     continue
-                scene_revision = self.current_revision(entry_id, runtime)
+                # The encoded bytes represent the captured key, not a newer
+                # same-mission pixel refinement that may have arrived while a
+                # large scene was encoded. Publish this coherent point-in-time
+                # snapshot; the next request will observe and encode the newer
+                # key without starving the current request.
+                scene_revision = self._revision_for_key(entry_id, key)
                 cached = _CachedScene(
                     key,
                     encoded.payload,
@@ -415,10 +427,13 @@ class MaticSlamDeltaView(HomeAssistantView):
                     revision=current.revision,
                 )
             )
-        if (
-            _runtime_for_entry(hass, entry_id) is not runtime
-            or not bool(getattr(runtime.slam_map, "live_session_verified", True))
-            or self._scene_view.current_revision(entry_id, runtime) != current.revision
+        if _runtime_for_entry(
+            hass, entry_id
+        ) is not runtime or not _scene_snapshot_is_publishable(
+            runtime,
+            current.key[1],
+            current.key[2],
+            current.floor_plan_coherent,
         ):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -1020,14 +1035,30 @@ def _scene_snapshot_is_current(
     floor_plan: FloorPlan | None,
 ) -> bool:
     """Return whether an encoded snapshot still matches live map identity."""
-    return (
-        runtime.slam_map.revision == revision
-        and runtime.slam_map.mission_identity == identity
-        and runtime.coordinator.data.floor_plan == floor_plan
+    return runtime.slam_map.revision == revision and _scene_snapshot_is_publishable(
+        runtime,
+        identity,
+        floor_plan,
+        runtime.slam_map.floor_plan_is_current(floor_plan),
     )
 
 
-def _scene_snapshot_key(runtime: MaticRuntimeData) -> tuple[object, ...]:
+def _scene_snapshot_is_publishable(
+    runtime: MaticRuntimeData,
+    identity: SlamMapIdentity | None,
+    floor_plan: FloorPlan | None,
+    floor_plan_coherent: bool,
+) -> bool:
+    """Return whether a captured point-in-time scene remains safe to publish."""
+    return (
+        bool(getattr(runtime.slam_map, "live_session_verified", True))
+        and runtime.slam_map.mission_identity == identity
+        and runtime.coordinator.data.floor_plan == floor_plan
+        and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent
+    )
+
+
+def _scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
     """Return the complete private identity of the currently renderable scene."""
     return (
         runtime.slam_map.revision,
