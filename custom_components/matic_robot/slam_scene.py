@@ -728,6 +728,8 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "map_truncated": health.truncated,
                     "cached_tiles": health.photo_tiles,
                     "structural_tiles": health.structure_tiles,
+                    "overlapping_tiles": health.overlapping_tiles,
+                    "layer_overlap": round(health.layer_overlap, 4),
                     "dropped_photo_tiles": health.dropped_photo_tiles,
                     "dropped_structure_tiles": health.dropped_structure_tiles,
                     "invalid_tiles": health.invalid_tiles,

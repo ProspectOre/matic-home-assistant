@@ -64,6 +64,8 @@ class SlamMapHealth:
     truncated: bool
     photo_tiles: int
     structure_tiles: int
+    overlapping_tiles: int
+    layer_overlap: float
     dropped_photo_tiles: int
     dropped_structure_tiles: int
     invalid_tiles: int
@@ -691,6 +693,7 @@ class SlamMapStore:
         """Return bounded operational health without exposing map content."""
         complete = self.map_complete
         stream_state = self._combined_stream_state()
+        overlapping_tiles, layer_overlap = self._layer_overlap()
         if self._truncated:
             state: MapHealthState = "truncated"
         elif stream_state == "retrying" or self._invalid_tiles:
@@ -707,6 +710,8 @@ class SlamMapStore:
             truncated=self._truncated,
             photo_tiles=len(self._entries),
             structure_tiles=len(self._structure_entries),
+            overlapping_tiles=overlapping_tiles,
+            layer_overlap=layer_overlap,
             dropped_photo_tiles=self._dropped_photo_tiles,
             dropped_structure_tiles=self._dropped_structure_tiles,
             invalid_tiles=self._invalid_tiles,
@@ -730,9 +735,16 @@ class SlamMapStore:
         structure_count = len(self._structure_entries)
         if min(photo_count, structure_count) < MIN_COMPLETE_TILES:
             return False
-        overlap = len(self._entries.keys() & self._structure_entries.keys())
-        coverage = overlap / max(photo_count, structure_count)
+        _overlap, coverage = self._layer_overlap()
         return coverage >= MIN_LAYER_OVERLAP
+
+    def _layer_overlap(self) -> tuple[int, float]:
+        """Return content-free cross-layer page-grid coverage."""
+        largest_layer = max(len(self._entries), len(self._structure_entries))
+        if largest_layer == 0:
+            return 0, 0.0
+        overlap = len(self._entries.keys() & self._structure_entries.keys())
+        return overlap, overlap / largest_layer
 
     async def async_remove(self) -> None:
         """Erase the private map cache when the robot entry is removed."""

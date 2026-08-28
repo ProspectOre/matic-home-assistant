@@ -826,6 +826,8 @@ async def test_slam_map_store_requires_spatial_layer_overlap(hass) -> None:
         ),
     ):
         assert store.map_complete is False
+        assert store.health.overlapping_tiles == 0
+        assert store.health.layer_overlap == 0.0
         assert store.health.state == "incomplete"
 
 
