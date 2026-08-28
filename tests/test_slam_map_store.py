@@ -810,24 +810,21 @@ async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) 
     photo = synthetic_slam_entry()
     structure = synthetic_structure_entry()
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=1),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=1
     ):
         await store.async_add(photo)
         await store.async_add_structure(structure)
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=2),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=2
     ):
         refined_photo = synthetic_slam_entry(surface_height=8)
         await store.async_add(refined_photo)
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=5),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=5
     ):
         assert store.map_complete is True
 
@@ -849,24 +846,19 @@ async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) 
     assert store.map_complete is True
 
     await store.async_add(synthetic_slam_entry(page_x=3))
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=6),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=6
     ):
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=7),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=7
     ):
         await store.async_add_structure(synthetic_structure_entry(page_x=3))
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch(
-            "custom_components.matic_robot.slam_map_store.monotonic", return_value=11
-        ),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=11
     ):
         assert store.map_complete is True
         assert store.health.state == "ready"

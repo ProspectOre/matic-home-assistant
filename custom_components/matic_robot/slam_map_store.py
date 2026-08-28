@@ -35,7 +35,10 @@ MAX_STORED_BYTES = 16 * 1024 * 1024
 STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
-MIN_COMPLETE_TILES = 32
+# A valid mapped floor can be physically small. Completeness comes from both
+# independent live layers agreeing on mission and spatial topology, followed by
+# a bounded settle period; floor area is not a correctness signal.
+MIN_COMPLETE_TILES = 1
 MIN_LAYER_OVERLAP = 0.95
 SPATIAL_BUCKETS_PER_AXIS = 8
 MAX_HEALTH_COUNTER = 2**31 - 1
