@@ -38,9 +38,11 @@ from custom_components.matic_robot.client.exceptions import (
     EndpointUnsupportedError,
     PairingModeRequiredError,
 )
+from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (
     FloorPlan,
     HermesCollectionEntry,
+    MappedFloor,
     RobotActivity,
     RobotTrajectory,
 )
@@ -756,7 +758,11 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
     stream = _SequenceStream(
         [
             SimpleNamespace(HasField=lambda field: False),
-            _collection_response(direct=b"first", key=b"one"),
+            _collection_response(
+                direct=b"first",
+                key=b"one",
+                sequence_id=SequenceId(start_ts_nanos=10, sequence_no=1),
+            ),
             _collection_response(fast=b"second", key=b"two"),
         ]
     )
@@ -773,7 +779,17 @@ async def test_get_collection_entries_returns_bounded_values(monkeypatch) -> Non
         (b"one", b"first"),
         (b"two", b"second"),
     ]
+    assert [(entry.sequence_start_ns, entry.sequence_no) for entry in entries] == [
+        (10, 1),
+        (None, None),
+    ]
     assert stream.cancelled is True
+
+
+def test_collection_entry_sequence_is_not_content_identity() -> None:
+    assert HermesCollectionEntry(b"key", b"value", 10, 1) == HermesCollectionEntry(
+        b"key", b"value", 20, 8
+    )
 
 
 async def test_get_collection_entries_enforces_cumulative_byte_budget(
@@ -1298,7 +1314,7 @@ async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None
         lambda payload: (_ for _ in ()).throw(DecodeError()),
     )
     monkeypatch.setattr(
-        "custom_components.matic_robot.client.api.decode_floor_plan",
+        "custom_components.matic_robot.client.api.decode_floor_plans",
         lambda payload: (_ for _ in ()).throw(DecodeError()),
     )
     monkeypatch.setattr(
@@ -1312,6 +1328,245 @@ async def test_decode_wrappers_translate_malformed_payloads(monkeypatch) -> None
         await client.async_get_floor_plan()
     with pytest.raises(CannotConnectError, match="malformed robot pose"):
         await client.async_get_pose()
+
+
+async def test_multi_floor_read_selects_the_verified_active_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    first = FloorPlan(42, "first", b"first", ())
+    second = FloorPlan(84, "second", b"second", ())
+    first_floor = MappedFloor(42, "Main", "1" * 64)
+    second_floor = MappedFloor(84, "Workshop", "2" * 64)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(b"unrelated", b"unrelated-record"),
+            HermesCollectionEntry(b"historical", b"first-state"),
+            HermesCollectionEntry(b"current", b"second-state"),
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (first, second),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda payload: (
+            MissionClientState(
+                first_floor if payload == b"first-state" else second_floor,
+                (first_floor, second_floor),
+            )
+            if payload in {b"first-state", b"second-state"}
+            else (_ for _ in ()).throw(DecodeError("unrelated record"))
+        ),
+    )
+
+    selected = await client.async_get_floor_plan()
+
+    assert selected.mission_id == 84
+    assert selected.floor_label == "Workshop"
+    assert selected.mapped_floors == (first_floor, second_floor)
+    client.async_get_tracked_collection_entries.assert_awaited_once_with(
+        "displayed_mission", limit=256
+    )
+
+
+async def test_multi_floor_read_prefers_verified_live_map_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"state", b"stale-state"),)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: plans,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda _payload: MissionClientState(floors[0], floors),
+    )
+
+    selected = await client.async_get_floor_plan(expected_mission_id=84)
+
+    assert selected.mission_id == 84
+    assert selected.floor_label == "Workshop"
+
+
+async def test_multi_floor_read_rejects_unknown_verified_map_mission(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"state", b"state"),)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (
+            FloorPlan(42, "first", b"first", ()),
+            FloorPlan(84, "second", b"second", ()),
+        ),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda _payload: MissionClientState(floors[0], floors),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
+        await client.async_get_floor_plan(expected_mission_id=126)
+
+    assert "verified map mission" in str(error.value.__cause__)
+
+
+async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor_plan = FloorPlan(42, "only", b"only", ())
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (floor_plan,),
+    )
+
+    assert await client.async_get_floor_plan() is floor_plan
+    client.async_get_tracked_collection_entries.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    ("entries", "state", "message"),
+    [
+        ((), None, "no mission client state"),
+        (
+            (HermesCollectionEntry(b"", b"state"),),
+            MissionClientState(
+                None,
+                (
+                    MappedFloor(42, "Main", "1" * 64),
+                    MappedFloor(84, "Workshop", "2" * 64),
+                ),
+            ),
+            "no verified active floor",
+        ),
+        (
+            (HermesCollectionEntry(b"", b"state"),),
+            MissionClientState(
+                MappedFloor(42, "Main", "1" * 64),
+                (MappedFloor(42, "Main", "1" * 64),),
+            ),
+            "canonical floor identities disagree",
+        ),
+        (
+            (HermesCollectionEntry(b"", b"state"),),
+            MissionClientState(
+                MappedFloor(126, "Other", "3" * 64),
+                (
+                    MappedFloor(42, "Main", "1" * 64),
+                    MappedFloor(84, "Workshop", "2" * 64),
+                ),
+            ),
+            "does not identify one coverage floor",
+        ),
+    ],
+)
+async def test_multi_floor_read_fails_closed_on_ambiguous_mission_state(
+    monkeypatch, entries, state, message
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(return_value=entries)
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: plans,
+    )
+    if state is not None:
+        monkeypatch.setattr(
+            "custom_components.matic_robot.client.api.decode_mission_client_state",
+            lambda _payload: state,
+        )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
+        await client.async_get_floor_plan()
+
+    assert message in str(error.value.__cause__)
+
+
+async def test_multi_floor_read_rejects_unknown_newest_mission_state(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(
+            HermesCollectionEntry(b"old", b"old-state"),
+            HermesCollectionEntry(b"new", b"new-state"),
+        )
+    )
+    plans = (
+        FloorPlan(42, "first", b"first", ()),
+        FloorPlan(84, "second", b"second", ()),
+    )
+    floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: plans,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda payload: MissionClientState(
+            floors[0] if payload == b"old-state" else None, floors
+        ),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
+        await client.async_get_floor_plan()
+
+    assert "no verified active floor" in str(error.value.__cause__)
+
+
+async def test_multi_floor_read_rejects_truncated_mission_snapshot(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=tuple(
+            HermesCollectionEntry(str(index).encode(), b"state") for index in range(256)
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (
+            FloorPlan(42, "first", b"first", ()),
+            FloorPlan(84, "second", b"second", ()),
+        ),
+    )
+
+    with pytest.raises(CannotConnectError, match="malformed floor plan") as error:
+        await client.async_get_floor_plan()
+
+    assert "snapshot bound" in str(error.value.__cause__)
 
 
 def test_decode_text_field_rejects_non_bytes_payloads() -> None:

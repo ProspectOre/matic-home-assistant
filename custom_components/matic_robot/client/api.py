@@ -10,6 +10,7 @@ import ssl
 import struct
 from collections.abc import AsyncGenerator, AsyncIterator
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
 from time import monotonic
 from types import TracebackType
@@ -43,7 +44,7 @@ from .exceptions import (
     MaticError,
     PairingModeRequiredError,
 )
-from .floor_plan import decode_floor_plan, decode_pose
+from .floor_plan import decode_floor_plans, decode_pose
 from .flythrough import Flythrough, decode_flythrough
 from .history import (
     CleaningSessionImage,
@@ -51,6 +52,7 @@ from .history import (
     decode_cleaning_session_image,
     decode_monthly_cleaning_recap,
 )
+from .mission import MissionClientState, decode_mission_client_state
 from .models import (
     CleaningSchedule,
     CleaningSession,
@@ -97,6 +99,7 @@ _RPC_TIMEOUT = 10.0
 _COLLECTION_TIMEOUT = 30.0
 MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
 _COLLECTION_MAX_BYTES = 64 * 1024 * 1024
+_DISPLAYED_MISSION_LIMIT = 256
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_NON_COMPLETION_STATUS = 1
 _ROOM_MODE_COMPLETED_STATUS = 2
@@ -548,10 +551,76 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     "Hermes returned malformed subscribed robot state"
                 ) from err
 
-    async def async_get_floor_plan(self) -> FloorPlan:
+    async def async_get_floor_plan(
+        self, *, expected_mission_id: int | None = None
+    ) -> FloorPlan:
         """Read and decode the active local coverage plan."""
         try:
-            return decode_floor_plan(await self.async_get_property("coverage_plan"))
+            payload = await self.async_get_property("coverage_plan")
+            floor_plans = decode_floor_plans(payload)
+            if len(floor_plans) == 1:
+                return floor_plans[0]
+
+            mission_entries = await self.async_get_tracked_collection_entries(
+                "displayed_mission", limit=_DISPLAYED_MISSION_LIMIT
+            )
+            if len(mission_entries) >= _DISPLAYED_MISSION_LIMIT:
+                raise DecodeError(
+                    "displayed mission collection exceeds its snapshot bound"
+                )
+            mission_states: list[MissionClientState] = []
+            for entry in mission_entries:
+                try:
+                    mission_states.append(decode_mission_client_state(entry.value))
+                except DecodeError:
+                    # ``displayed_mission`` is a heterogeneous collection. Only
+                    # the exact verified MissionClientState shape is relevant.
+                    continue
+            if not mission_states:
+                raise DecodeError(
+                    "multi-floor coverage plan has no mission client state"
+                )
+            # Tracked collection delivery is the robot's authoritative order:
+            # Hermes does not send the next cached or live record until the
+            # prior sequence is acknowledged. The last decodable client state
+            # therefore represents the currently displayed mission.
+            mission_state = mission_states[-1]
+            coverage_ids = {plan.mission_id for plan in floor_plans}
+            if coverage_ids != {
+                floor.mission_id for floor in mission_state.mapped_floors
+            }:
+                raise DecodeError(
+                    "coverage plan and canonical floor identities disagree"
+                )
+            if expected_mission_id is None:
+                active_floor = mission_state.active_floor
+                if active_floor is None:
+                    raise DecodeError(
+                        "multi-floor coverage plan has no verified active floor"
+                    )
+            else:
+                verified_floors = tuple(
+                    floor
+                    for floor in mission_state.mapped_floors
+                    if floor.mission_id == expected_mission_id
+                )
+                if len(verified_floors) != 1:
+                    raise DecodeError(
+                        "verified map mission does not identify one canonical floor"
+                    )
+                active_floor = verified_floors[0]
+            matching = tuple(
+                plan
+                for plan in floor_plans
+                if plan.mission_id == active_floor.mission_id
+            )
+            if len(matching) != 1:
+                raise DecodeError("active mission does not identify one coverage floor")
+            return replace(
+                matching[0],
+                floor_label=active_floor.label,
+                mapped_floors=mission_state.mapped_floors,
+            )
         except DecodeError as err:
             raise CannotConnectError("Hermes returned a malformed floor plan") from err
 
@@ -908,8 +977,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                             "the byte limit"
                         )
                     collected_bytes += entry_size
+                    sequence = (
+                        response.sequence_id
+                        if response.HasField("sequence_id")
+                        else None
+                    )
                     entries.append(
-                        HermesCollectionEntry(bytes(response.key_bytes), payload)
+                        HermesCollectionEntry(
+                            bytes(response.key_bytes),
+                            payload,
+                            int(sequence.start_ts_nanos)
+                            if sequence is not None
+                            else None,
+                            int(sequence.sequence_no) if sequence is not None else None,
+                        )
                     )
                 if len(entries) >= limit:
                     cancel_stream = True
@@ -952,9 +1033,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         while (response := await stream.recv_message()) is not None:
                             entry = None
                             if response.HasField("value"):
+                                sequence = (
+                                    response.sequence_id
+                                    if response.HasField("sequence_id")
+                                    else None
+                                )
                                 entry = HermesCollectionEntry(
                                     bytes(response.key_bytes),
                                     _response_value_bytes(response),
+                                    int(sequence.start_ts_nanos)
+                                    if sequence is not None
+                                    else None,
+                                    int(sequence.sequence_no)
+                                    if sequence is not None
+                                    else None,
                                 )
                             if response.HasField("sequence_id"):
                                 await stream.send_message(

@@ -401,6 +401,35 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
     assert _compatibility_status(None, unchanged) == "current"
 
 
+def test_analyzer_upgrade_does_not_create_wire_shape_candidates() -> None:
+    previous = _snapshot("v168.11", wire_shapes=["1:2"])
+    previous["analysis_version"] = ANALYSIS_VERSION - 1
+    current = _snapshot("v169.0", wire_shapes=["1:2", "18:2", "18:2/17:2"])
+
+    comparison = _compare_snapshots(previous, current)
+
+    assert comparison["firmware_changed"] is True
+    assert comparison["wire_shape_changed_endpoints"] == []
+    assert comparison["new_wire_shapes"] == {}
+
+
+def test_pose_shape_variation_is_not_a_firmware_capability_candidate() -> None:
+    previous = _snapshot("v168.11", wire_shapes=["2:2"])
+    current = _snapshot("v169.0", wire_shapes=["2:2", "2:2/1:2"])
+    for snapshot in (previous, current):
+        endpoint = snapshot["endpoints"][0]
+        assert isinstance(endpoint, dict)
+        endpoint["name"] = "latest_pose"
+
+    comparison = _compare_snapshots(previous, current)
+
+    assert comparison["firmware_changed"] is True
+    assert comparison["changed_endpoints"] == []
+    assert comparison["content_changed_endpoints"] == ["latest_pose"]
+    assert comparison["wire_shape_changed_endpoints"] == []
+    assert comparison["new_wire_shapes"] == {}
+
+
 def test_snapshot_timestamp_uses_home_assistant_utc_clock() -> None:
     with patch(
         "custom_components.matic_robot.firmware.dt_util.utcnow",
@@ -419,6 +448,23 @@ def test_fingerprint_entry_keeps_only_hashes_sizes_and_wire_shape() -> None:
         "18:2",
         "18:2/17:2",
         "18:2/17:2/2:2",
+    ]
+
+
+def test_pose_fingerprint_recurses_only_through_verified_envelopes() -> None:
+    translation = b"\x00\x00\x80?" * 3
+    payload = b"\x12\x10\x0a\x0e\x0a\x0c" + translation + b"\x1a\x02\x08\x01"
+
+    fingerprint = fingerprint_entry(
+        HermesCollectionEntry(b"", payload), endpoint_name="latest_pose"
+    )
+
+    assert fingerprint["wire_shape"] == [
+        "2:2",
+        "2:2/1:2",
+        "2:2/1:2/1:2",
+        "3:2",
+        "3:2/1:0",
     ]
     rendered = repr(fingerprint)
     assert "private-key" not in rendered

@@ -43,6 +43,7 @@ _LABEL_BACKGROUND = (16, 21, 29, 0xCC)
 _ROBOT_GLOW = (255, 255, 255, 0x44)
 _OPAQUE_ONLY = (0,) * 255 + (255,)
 MAX_FLOOR_PLAN_PAYLOAD_BYTES = 2 * 1024 * 1024
+MAX_FLOOR_PLANS = 64
 MAX_FLOOR_PLAN_ROOMS = 256
 MAX_ROOM_BOUNDARY_POINTS = 4096
 MAX_FLOOR_PLAN_BOUNDARY_POINTS = 65536
@@ -73,13 +74,40 @@ def _rgba(hex_color: str, alpha: int) -> tuple[int, int, int, int]:
 
 
 def decode_floor_plan(payload: bytes) -> FloorPlan:
-    """Decode the current standard partition and its named rooms."""
+    """Decode one unambiguous standard partition and its named rooms."""
+    floor_plans = decode_floor_plans(payload)
+    if len(floor_plans) != 1:
+        raise DecodeError("coverage plan contains multiple mapped floors")
+    return floor_plans[0]
+
+
+def decode_floor_plans(payload: bytes) -> tuple[FloorPlan, ...]:
+    """Decode every bounded standard partition in a multi-floor payload."""
     if len(payload) > MAX_FLOOR_PLAN_PAYLOAD_BYTES:
         raise DecodeError("coverage plan exceeds the byte limit")
     partitions = bytes_fields(payload, 10)
     if not partitions:
         raise DecodeError("coverage plan has no standard partition")
-    partition_map_entry = partitions[0]
+    if len(partitions) > MAX_FLOOR_PLANS:
+        raise DecodeError("coverage plan has too many mapped floors")
+
+    floor_plans: list[FloorPlan] = []
+    total_boundary_points = 0
+    mission_ids: set[int] = set()
+    for partition_map_entry in partitions:
+        floor_plan, boundary_points = _decode_floor_plan_entry(partition_map_entry)
+        if floor_plan.mission_id in mission_ids:
+            raise DecodeError("coverage plan repeats a mapped floor")
+        mission_ids.add(floor_plan.mission_id)
+        total_boundary_points += boundary_points
+        if total_boundary_points > MAX_FLOOR_PLAN_BOUNDARY_POINTS:
+            raise DecodeError("coverage plan has too many boundary points")
+        floor_plans.append(floor_plan)
+    return tuple(floor_plans)
+
+
+def _decode_floor_plan_entry(partition_map_entry: bytes) -> tuple[FloorPlan, int]:
+    """Decode one mission-scoped standard partition entry."""
     mission_id = first_varint(partition_map_entry, 1)
     partition = first_bytes(partition_map_entry, 2)
     partition_id_wire = first_bytes(partition, 1)
@@ -105,8 +133,6 @@ def decode_floor_plan(payload: bytes) -> FloorPlan:
         if len(boundary_wires) > MAX_ROOM_BOUNDARY_POINTS:
             raise DecodeError("coverage plan room has too many boundary points")
         total_boundary_points += len(boundary_wires)
-        if total_boundary_points > MAX_FLOOR_PLAN_BOUNDARY_POINTS:
-            raise DecodeError("coverage plan has too many boundary points")
         boundary = tuple(point(value) for value in boundary_wires)
         if any(
             not math.isfinite(coordinate) or abs(coordinate) > MAX_MAP_COORDINATE
@@ -125,11 +151,14 @@ def decode_floor_plan(payload: bytes) -> FloorPlan:
                 boundary=boundary,
             )
         )
-    return FloorPlan(
-        mission_id=mission_id,
-        partition_protocol_id=uuid_string(partition_id_wire),
-        partition_id_wire=partition_id_wire,
-        rooms=tuple(rooms),
+    return (
+        FloorPlan(
+            mission_id=mission_id,
+            partition_protocol_id=uuid_string(partition_id_wire),
+            partition_id_wire=partition_id_wire,
+            rooms=tuple(rooms),
+        ),
+        total_boundary_points,
     )
 
 

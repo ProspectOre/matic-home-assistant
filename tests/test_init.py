@@ -104,7 +104,7 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     )
     floor_plan = FloorPlan(42, "synthetic-partition", b"partition", ())
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 4:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -163,7 +163,7 @@ async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> Non
         async_add_listener=MagicMock(return_value=remove_listener),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 6:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -274,7 +274,7 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_read(
         async_add_listener=MagicMock(return_value=MagicMock()),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 5:
             slam_map.mission_identity = second_identity
 
@@ -316,7 +316,7 @@ async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
         live_session_verified=False,
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         slam_map.floor_plan_is_current.return_value = True
 
     coordinator = SimpleNamespace(
@@ -349,7 +349,7 @@ async def test_slam_map_transition_rechecks_a_newer_mission_after_refresh(hass) 
     first_request_started = asyncio.Event()
     release_first_request = asyncio.Event()
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         if not first_request_started.is_set():
             first_request_started.set()
             await release_first_request.wait()
@@ -447,7 +447,7 @@ async def test_slam_map_transition_retries_after_live_proof_is_interrupted(
     refresh_started = asyncio.Event()
     release_refresh = asyncio.Event()
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         refresh_started.set()
         await release_refresh.wait()
 
@@ -505,7 +505,7 @@ async def test_slam_map_transition_retries_a_delayed_floor_plan_once(hass) -> No
         mission_identity=SlamMapIdentity("00" * 32, 43),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         if coordinator.async_request_floor_plan_refresh.await_count == 3:
             slam_map.floor_plan_is_current.return_value = True
 
@@ -561,7 +561,7 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
         mission_identity=SlamMapIdentity("00" * 32, 43),
     )
 
-    async def refresh_floor_plan() -> None:
+    async def refresh_floor_plan(_mission_id: int | None = None) -> None:
         coordinator.data.floor_plan = floor_plan
 
     coordinator.async_request_floor_plan_refresh.side_effect = refresh_floor_plan
@@ -924,6 +924,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_config_entry_first_refresh=AsyncMock(),
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
+        async_watch_floor_plan=AsyncMock(),
         data=SimpleNamespace(
             floor_plan=FloorPlan(
                 42,
@@ -968,6 +969,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     map_unsubscribe = MagicMock()
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
+        set_expected_mission_id=MagicMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
         async_add_listener=MagicMock(return_value=map_unsubscribe),
@@ -1032,12 +1034,19 @@ async def test_setup_refreshes_before_forwarding_platforms(
     assert entry.runtime_data.slam_map is slam_map
     assert entry.runtime_data.slam_history is slam_history
     slam_map.async_load.assert_awaited_once()
+    assert slam_map.set_expected_mission_id.call_args_list[0].args == (
+        initial_floor_plan.mission_id if initial_floor_plan is not None else None,
+    )
+    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (
+        setup_floor_plan.mission_id,
+    )
     slam_map.async_add_listener.assert_called_once()
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 4
+    assert entry.async_create_background_task.call_count == 5
     coordinator.async_watch_cues.assert_called_once_with()
+    coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
         entry.runtime_data.firmware_tracker
         is (hass.data[DOMAIN][DATA_FIRMWARE_TRACKER])
@@ -1121,7 +1130,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 7
+    assert entry.async_create_background_task.call_count == 8
     assert plans.async_upgrade_area_bindings.await_count == 5
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
@@ -1231,6 +1240,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     )
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
+        set_expected_mission_id=MagicMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )

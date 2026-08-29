@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 from collections import OrderedDict, defaultdict, deque
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
@@ -34,7 +35,10 @@ MAX_STORED_BYTES = 16 * 1024 * 1024
 STREAM_RETRY_SECONDS = 5
 SAVE_DELAY_SECONDS = 1
 MAP_SETTLE_SECONDS = 3
-MIN_COMPLETE_TILES = 32
+# A valid mapped floor can be physically small. Completeness comes from both
+# independent live layers agreeing on mission and spatial topology, followed by
+# a bounded settle period; floor area is not a correctness signal.
+MIN_COMPLETE_TILES = 1
 MIN_LAYER_OVERLAP = 0.95
 SPATIAL_BUCKETS_PER_AXIS = 8
 MAX_HEALTH_COUNTER = 2**31 - 1
@@ -64,6 +68,8 @@ class SlamMapHealth:
     truncated: bool
     photo_tiles: int
     structure_tiles: int
+    overlapping_tiles: int
+    layer_overlap: float
     dropped_photo_tiles: int
     dropped_structure_tiles: int
     invalid_tiles: int
@@ -131,10 +137,14 @@ class SlamMapStore:
         )
         self._mission_token: str | None = None
         self._mission_id: int | None = None
+        self._expected_mission_id: int | None = None
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
+        self._entry_content_digests: dict[str, bytes] = {}
+        self._structure_content_digests: dict[str, bytes] = {}
         self._revision = 0
         self._last_change = 0.0
+        self._last_topology_change = 0.0
         self._map_complete = False
         # A restored private cache is useful as a bounded local checkpoint, but
         # it is not proof that it describes the robot's location *after this
@@ -173,6 +183,8 @@ class SlamMapStore:
         self._mission_id = loaded.mission_id
         self._entries = loaded.entries
         self._structure_entries = loaded.structure_entries
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._truncated = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
@@ -183,6 +195,7 @@ class SlamMapStore:
         self._closed = False
         self._revision = len(self._entries) + len(self._structure_entries)
         self._last_change = 0.0
+        self._last_topology_change = 0.0
         self._map_complete = not self._truncated and self._has_balanced_layers()
         self._live_photo_seen = False
         self._live_structure_seen = False
@@ -216,7 +229,35 @@ class SlamMapStore:
             return
         self._expire_incomplete_candidates()
         mission_token = tile.mission_token
+        if (
+            self._expected_mission_id is not None
+            and tile.mission_id != self._expected_mission_id
+        ):
+            # The two map subscriptions can advance before the selected-floor
+            # watcher. Retain those already-acknowledged pages in the bounded
+            # candidate cache, but never promote them until floor selection
+            # proves the same mission. A verified active map fails closed while
+            # that possible transition is unresolved.
+            self._stage_candidate(
+                entry,
+                tile,
+                structural=structural,
+                allow_retired=True,
+                blocks_active=(
+                    self._mission_id is not None
+                    and self._mission_id == self._expected_mission_id
+                ),
+            )
+            return
         if self._mission_token is None:
+            # Establishing the explicitly selected mission makes any pages
+            # staged before that first live identity stale. Only candidates
+            # observed after an active mission exists can represent the
+            # map-before-selection transition race handled above.
+            for candidate_token in self._candidates:
+                self._retire_mission(candidate_token)
+            self._candidates.clear()
+            self._cancel_candidate_expiry()
             self._mission_token = mission_token
             self._mission_id = tile.mission_id
         if mission_token != self._mission_token:
@@ -232,9 +273,25 @@ class SlamMapStore:
         if identity_changed:
             self._mission_id = tile.mission_id
         target = self._structure_entries if structural else self._entries
+        content_digests = (
+            self._structure_content_digests
+            if structural
+            else self._entry_content_digests
+        )
         key = _tile_key(tile)
-        changed = target.get(key) != entry
+        previous = target.get(key)
+        content_digest = _tile_content_digest(tile)
+        previous_digest = content_digests.get(key)
+        if previous is not None and previous_digest is None:
+            previous_tile = (
+                decode_slam_structure_tile(previous)
+                if structural
+                else decode_slam_tile(previous)
+            )
+            previous_digest = _tile_content_digest(previous_tile)
+        changed = previous is None or previous_digest != content_digest
         target[key] = entry
+        content_digests[key] = content_digest
         # Once a different mission has been observed, delayed pages from the
         # active token are evidence only for the cached map.  They cannot
         # re-establish that it still represents the robot while a replacement
@@ -248,7 +305,11 @@ class SlamMapStore:
             self._cancel_candidate_refresh_retry()
         if not changed and not identity_changed and not live_session_confirmed:
             return
-        self._content_changed()
+        self._content_changed(
+            topology_changed=(
+                previous is None or identity_changed or live_session_confirmed
+            )
+        )
 
     def _stage_candidate(
         self,
@@ -256,10 +317,12 @@ class SlamMapStore:
         tile: SlamTile | SlamStructureTile,
         *,
         structural: bool,
+        allow_retired: bool = False,
+        blocks_active: bool = True,
     ) -> None:
         """Wait for both independent map layers before changing missions."""
         mission_token = tile.mission_token
-        if mission_token in self._retired_missions:
+        if mission_token in self._retired_missions and not allow_retired:
             return
         candidate = self._candidates.get(mission_token)
         if candidate is None:
@@ -273,6 +336,7 @@ class SlamMapStore:
                 entries={},
                 structure_entries={},
                 mission_id=tile.mission_id,
+                blocks_active=blocks_active,
             )
             self._candidates[mission_token] = candidate
         else:
@@ -286,14 +350,15 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
-        missing_layer = not target
         target[_tile_key(tile)] = entry
         # A new candidate, or a late counterpart for an expired candidate,
         # makes the active map unsafe until this candidate is classified.  A
         # further page from an already-expired one-sided stream does not start
         # another indefinite pause; its retained page remains available for a
         # future independent counterpart instead.
-        if candidate.blocks_active or missing_layer:
+        if blocks_active:
+            candidate.blocks_active = True
+        if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()
             self._invalidate_live_session()
         self._enforce_candidate_bounds(candidate)
@@ -342,7 +407,10 @@ class SlamMapStore:
 
     def _candidate_can_promote(self, candidate: _MissionCandidate) -> bool:
         """Return whether no newer unclassified candidate outranks ``candidate``."""
-        return not any(
+        return (
+            self._expected_mission_id is None
+            or candidate.mission_id == self._expected_mission_id
+        ) and not any(
             pending.blocks_active and pending.generation > candidate.generation
             for pending in self._candidates.values()
         )
@@ -504,6 +572,8 @@ class SlamMapStore:
         self._mission_id = candidate.mission_id
         self._entries = candidate.entries
         self._structure_entries = candidate.structure_entries
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._truncated = candidate.truncated
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
@@ -534,12 +604,14 @@ class SlamMapStore:
                 candidate.dropped_structure_tiles, dropped_structure
             )
 
-    def _content_changed(self) -> None:
+    def _content_changed(self, *, topology_changed: bool = True) -> None:
         """Apply bounds and publish one content revision."""
         self._enforce_bounds()
         self._revision += 1
         self._last_change = monotonic()
-        self._map_complete = False
+        if topology_changed:
+            self._last_topology_change = self._last_change
+            self._map_complete = False
         self._schedule_save()
         self._notify_listeners()
 
@@ -607,6 +679,27 @@ class SlamMapStore:
             self._listeners.discard(listener)
 
         return remove_listener
+
+    @callback
+    def set_expected_mission_id(self, mission_id: int | None) -> None:
+        """Bind live map ingestion to the robot-selected mapped floor."""
+        if self._expected_mission_id == mission_id:
+            return
+        self._expected_mission_id = mission_id
+        self._cancel_candidate_expiry()
+        self._cancel_candidate_refresh_retry()
+        self._candidates = OrderedDict(
+            (token, candidate)
+            for token, candidate in self._candidates.items()
+            if mission_id is not None and candidate.mission_id == mission_id
+        )
+        # A mapped floor can become current again later in the same HA session.
+        # Explicit robot selection makes those pages authoritative, rather than
+        # delayed evidence from the previously selected floor.
+        self._retired_missions.clear()
+        self._invalidate_live_session()
+        self._promote_latest_complete_candidate()
+        self._schedule_candidate_expiry()
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
         """Return all currently valid tiles for local rendering."""
@@ -683,7 +776,9 @@ class SlamMapStore:
             return True
         if not self._has_balanced_layers():
             return False
-        self._map_complete = monotonic() - self._last_change >= MAP_SETTLE_SECONDS
+        self._map_complete = (
+            monotonic() - self._last_topology_change >= MAP_SETTLE_SECONDS
+        )
         return self._map_complete
 
     @property
@@ -691,6 +786,7 @@ class SlamMapStore:
         """Return bounded operational health without exposing map content."""
         complete = self.map_complete
         stream_state = self._combined_stream_state()
+        overlapping_tiles, layer_overlap = self._layer_overlap()
         if self._truncated:
             state: MapHealthState = "truncated"
         elif stream_state == "retrying" or self._invalid_tiles:
@@ -707,6 +803,8 @@ class SlamMapStore:
             truncated=self._truncated,
             photo_tiles=len(self._entries),
             structure_tiles=len(self._structure_entries),
+            overlapping_tiles=overlapping_tiles,
+            layer_overlap=layer_overlap,
             dropped_photo_tiles=self._dropped_photo_tiles,
             dropped_structure_tiles=self._dropped_structure_tiles,
             invalid_tiles=self._invalid_tiles,
@@ -730,9 +828,16 @@ class SlamMapStore:
         structure_count = len(self._structure_entries)
         if min(photo_count, structure_count) < MIN_COMPLETE_TILES:
             return False
-        overlap = len(self._entries.keys() & self._structure_entries.keys())
-        coverage = overlap / max(photo_count, structure_count)
+        _overlap, coverage = self._layer_overlap()
         return coverage >= MIN_LAYER_OVERLAP
+
+    def _layer_overlap(self) -> tuple[int, float]:
+        """Return content-free cross-layer page-grid coverage."""
+        largest_layer = max(len(self._entries), len(self._structure_entries))
+        if largest_layer == 0:
+            return 0, 0.0
+        overlap = len(self._entries.keys() & self._structure_entries.keys())
+        return overlap, overlap / largest_layer
 
     async def async_remove(self) -> None:
         """Erase the private map cache when the robot entry is removed."""
@@ -743,6 +848,8 @@ class SlamMapStore:
         self._collection_client = None
         self._entries.clear()
         self._structure_entries.clear()
+        self._entry_content_digests.clear()
+        self._structure_content_digests.clear()
         self._candidates.clear()
         self._retired_missions.clear()
         self._candidate_generation = 0
@@ -752,6 +859,7 @@ class SlamMapStore:
         self._mission_id = None
         self._revision += 1
         self._last_change = monotonic()
+        self._last_topology_change = self._last_change
         self._map_complete = False
         self._truncated = False
         self._dropped_photo_tiles = 0
@@ -794,6 +902,12 @@ class SlamMapStore:
             self._dropped_structure_tiles = _increment_by(
                 self._dropped_structure_tiles, dropped_structure
             )
+        for key in self._entry_content_digests.keys() - self._entries.keys():
+            self._entry_content_digests.pop(key)
+        for key in (
+            self._structure_content_digests.keys() - self._structure_entries.keys()
+        ):
+            self._structure_content_digests.pop(key)
 
     def _record_invalid(self) -> None:
         self._invalid_tiles = _increment(self._invalid_tiles)
@@ -1107,6 +1221,21 @@ def _increment(value: int) -> int:
 
 def _increment_by(value: int, amount: int) -> int:
     return min(MAX_HEALTH_COUNTER, value + max(0, amount))
+
+
+def _tile_content_digest(tile: SlamTile | SlamStructureTile) -> bytes:
+    """Identify decoded map content while ignoring opaque wire metadata."""
+    digest = hashlib.sha256()
+    if isinstance(tile, SlamTile):
+        digest.update(b"photo\0")
+        digest.update(tile.floor_rgba)
+        digest.update(tile.surface_bits)
+        digest.update(tile.rgb_data)
+    else:
+        digest.update(b"structure\0")
+        digest.update(tile.occupancy)
+        digest.update(tile.semantics)
+    return digest.digest()
 
 
 def _tile_key(tile: SlamTile | SlamStructureTile) -> str:

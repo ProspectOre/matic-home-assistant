@@ -11,6 +11,7 @@ from functools import partial
 from time import monotonic
 from typing import Any, cast
 
+from google.protobuf.message import DecodeError
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import ConfigEntryAuthFailed
@@ -28,6 +29,7 @@ from .client.exceptions import (
     InvalidRobotCertificateError,
     MaticError,
 )
+from .client.mission import decode_mission_client_state
 from .client.models import (
     CuesVoiceStatus,
     FloorPlan,
@@ -96,6 +98,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self.firmware_tracker = firmware_tracker
         self._cached_info: RobotInfo | None = None
         self._cached_floor_plan: FloorPlan | None = None
+        self._verified_floor_mission_id: int | None = None
         self._cached_telemetry: RobotTelemetry | None = None
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
@@ -129,6 +132,45 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 raise
             except MaticError as err:
                 _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
+            await asyncio.sleep(retry_delay)
+            retry_delay = min(retry_delay * 2, 60)
+
+    async def async_watch_floor_plan(self) -> None:
+        """Refresh floor geometry when the robot changes displayed mission."""
+        retry_delay = 1
+        while True:
+            try:
+                states_received = 0
+                async for entry in self.client.async_subscribe_collection_entries(
+                    "displayed_mission"
+                ):
+                    try:
+                        mission_state = decode_mission_client_state(entry.value)
+                    except DecodeError:
+                        continue
+                    active_floor = mission_state.active_floor
+                    if active_floor is None:
+                        continue
+                    states_received += 1
+                    if states_received > 1:
+                        retry_delay = 1
+                    floor_plan = self.data.floor_plan if self.data is not None else None
+                    if (
+                        floor_plan is not None
+                        and floor_plan.mission_id == active_floor.mission_id
+                        and floor_plan.mapped_floors == mission_state.mapped_floors
+                    ):
+                        continue
+                    # This stream is the robot's immediate localization signal.
+                    # A previously verified map identity may only be a replayed
+                    # scene at the dock, so it cannot override this newer state.
+                    self._verified_floor_mission_id = None
+                    self._map_refresh_due = 0.0
+                    await self.async_request_refresh()
+            except asyncio.CancelledError:
+                raise
+            except MaticError as err:
+                _LOGGER.debug("Matic floor subscription interrupted: %s", err)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
@@ -378,7 +420,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         ):
             return self._cached_floor_plan
         try:
-            floor_plan = await self.client.async_get_floor_plan()
+            floor_plan = await self.client.async_get_floor_plan(
+                expected_mission_id=self._verified_floor_mission_id
+            )
             self._cached_floor_plan = floor_plan
             self._map_refresh_due = now + MAP_UPDATE_INTERVAL_SECONDS
             return floor_plan
@@ -419,7 +463,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._force_full_refresh = True
         await self.async_request_refresh()
 
-    async def async_request_floor_plan_refresh(self) -> None:
+    async def async_request_floor_plan_refresh(
+        self, expected_mission_id: int | None = None
+    ) -> None:
         """Refresh the active floor plan after a verified SLAM mission change.
 
         A robot can localize onto another mapped floor between normal map
@@ -427,6 +473,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         a prior floor plan long enough to make a newly observed SLAM mission
         look like an unresolved transition.
         """
+        if expected_mission_id is not None:
+            self._verified_floor_mission_id = expected_mission_id
         self._map_refresh_due = 0.0
         await self.async_request_refresh()
 

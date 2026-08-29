@@ -143,6 +143,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             )
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
+        slam_map.set_expected_mission_id(
+            coordinator.data.floor_plan.mission_id
+            if coordinator.data.floor_plan is not None
+            else None
+        )
         slam_history = SlamHistoryStore(hass, entry.entry_id)
         await slam_history.async_load()
         entry.runtime_data = MaticRuntimeData(
@@ -158,6 +163,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             hass,
             coordinator.async_watch_cues(),
             f"{DOMAIN} Cues state collector",
+        )
+        entry.async_create_background_task(
+            hass,
+            coordinator.async_watch_floor_plan(),
+            f"{DOMAIN} displayed floor collector",
         )
         _schedule_native_reconciliation_recovery(
             hass,
@@ -225,6 +235,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         def _async_sync_area_issue() -> None:
             nonlocal area_binding_upgrade_in_progress
             floor_plan = coordinator.data.floor_plan
+            slam_map.set_expected_mission_id(
+                floor_plan.mission_id if floor_plan is not None else None
+            )
             if (
                 area_binding_upgrade_pending
                 and not area_binding_upgrade_in_progress

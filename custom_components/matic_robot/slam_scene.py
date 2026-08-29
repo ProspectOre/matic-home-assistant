@@ -109,11 +109,14 @@ def _runtime_for_entry(hass: HomeAssistant, entry_id: str) -> MaticRuntimeData |
     return cast("MaticConfigEntry", entry).runtime_data
 
 
+type _SceneKey = tuple[int, SlamMapIdentity | None, FloorPlan | None]
+
+
 @dataclass(frozen=True, slots=True)
 class _CachedScene:
     """One compact payload retained only in process memory."""
 
-    key: tuple[object, ...]
+    key: _SceneKey
     payload: bytes
     etag: str
     revision: int
@@ -124,7 +127,7 @@ class _CachedScene:
 class _SceneGeneration:
     """A privacy-safe transport generation for one private scene identity."""
 
-    key: tuple[object, ...]
+    key: _SceneKey
     revision: int
 
 
@@ -171,11 +174,15 @@ class MaticSlamSceneView(HomeAssistantView):
     def current_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
         """Return a monotonic revision covering SLAM and floor-plan changes."""
         key = _scene_snapshot_key(runtime)
+        return self._revision_for_key(entry_id, key)
+
+    def _revision_for_key(self, entry_id: str, key: _SceneKey) -> int:
+        """Return a monotonic transport revision for one captured scene key."""
         current = self._generations.get(entry_id)
         if current is not None and current.key == key:
             return current.revision
         revision = max(
-            runtime.slam_map.revision,
+            key[0],
             current.revision + 1 if current is not None else 0,
         )
         self._generations[entry_id] = _SceneGeneration(key, revision)
@@ -255,11 +262,16 @@ class MaticSlamSceneView(HomeAssistantView):
                     or _runtime_for_entry(hass, entry_id) is not runtime
                 ):
                     return None
-                if not _scene_snapshot_is_current(
-                    runtime, map_revision, identity, floor_plan
+                if not _scene_snapshot_is_publishable(
+                    runtime, identity, floor_plan, floor_plan_coherent
                 ):
                     continue
-                scene_revision = self.current_revision(entry_id, runtime)
+                # The encoded bytes represent the captured key, not a newer
+                # same-mission pixel refinement that may have arrived while a
+                # large scene was encoded. Publish this coherent point-in-time
+                # snapshot; the next request will observe and encode the newer
+                # key without starving the current request.
+                scene_revision = self._revision_for_key(entry_id, key)
                 cached = _CachedScene(
                     key,
                     encoded.payload,
@@ -415,10 +427,13 @@ class MaticSlamDeltaView(HomeAssistantView):
                     revision=current.revision,
                 )
             )
-        if (
-            _runtime_for_entry(hass, entry_id) is not runtime
-            or not bool(getattr(runtime.slam_map, "live_session_verified", True))
-            or self._scene_view.current_revision(entry_id, runtime) != current.revision
+        if _runtime_for_entry(
+            hass, entry_id
+        ) is not runtime or not _scene_snapshot_is_publishable(
+            runtime,
+            current.key[1],
+            current.key[2],
+            current.floor_plan_coherent,
         ):
             return web.Response(
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
@@ -470,12 +485,22 @@ class MaticSlamHistoryView(HomeAssistantView):
             else None
         )
         current_snapshots = _mission_history(runtime) if floor_plan_coherent else ()
+        floor_labels = (
+            {floor.mission_token: floor.label for floor in floor_plan.mapped_floors}
+            if floor_plan is not None
+            else {}
+        )
         floors = [
             {
                 "id": "current",
                 "active": True,
                 "read_only": False,
                 "live_available": floor_plan_coherent,
+                "label": (
+                    floor_plan.floor_label
+                    if floor_plan_coherent and floor_plan is not None
+                    else None
+                ),
                 "snapshots": _history_metadata(entry_id, current_snapshots),
             }
         ]
@@ -493,6 +518,7 @@ class MaticSlamHistoryView(HomeAssistantView):
                     "active": False,
                     "read_only": True,
                     "ordinal": saved_ordinal,
+                    "label": floor_labels.get(mission_token),
                     "snapshots": _history_metadata(entry_id, mission_snapshots),
                 }
             )
@@ -684,9 +710,28 @@ class MaticSlamCatalogView(HomeAssistantView):
             if runtime is None:
                 continue
             health = runtime.slam_map.health
-            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(
-                runtime.coordinator.data.floor_plan
+            floor_plan = runtime.coordinator.data.floor_plan
+            mapped_floors = floor_plan.mapped_floors if floor_plan is not None else ()
+            selected_floor_ordinal = next(
+                (
+                    index
+                    for index, floor in enumerate(mapped_floors, start=1)
+                    if floor_plan is not None
+                    and floor.mission_id == floor_plan.mission_id
+                ),
+                None,
             )
+            map_identity = runtime.slam_map.mission_identity
+            map_floor_ordinal = next(
+                (
+                    index
+                    for index, floor in enumerate(mapped_floors, start=1)
+                    if map_identity is not None
+                    and floor.mission_id == map_identity.mission_id
+                ),
+                None,
+            )
+            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
             entries.append(
                 {
                     "entry_id": entry.entry_id,
@@ -707,6 +752,8 @@ class MaticSlamCatalogView(HomeAssistantView):
                     if self._scene_view is not None
                     else runtime.slam_map.revision,
                     "map_floor_coherent": floor_plan_coherent,
+                    "selected_floor_ordinal": selected_floor_ordinal,
+                    "map_floor_ordinal": map_floor_ordinal,
                     "map_session_verified": getattr(
                         runtime.slam_map,
                         "live_session_verified",
@@ -717,6 +764,8 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "map_truncated": health.truncated,
                     "cached_tiles": health.photo_tiles,
                     "structural_tiles": health.structure_tiles,
+                    "overlapping_tiles": health.overlapping_tiles,
+                    "layer_overlap": round(health.layer_overlap, 4),
                     "dropped_photo_tiles": health.dropped_photo_tiles,
                     "dropped_structure_tiles": health.dropped_structure_tiles,
                     "invalid_tiles": health.invalid_tiles,
@@ -986,14 +1035,30 @@ def _scene_snapshot_is_current(
     floor_plan: FloorPlan | None,
 ) -> bool:
     """Return whether an encoded snapshot still matches live map identity."""
-    return (
-        runtime.slam_map.revision == revision
-        and runtime.slam_map.mission_identity == identity
-        and runtime.coordinator.data.floor_plan == floor_plan
+    return runtime.slam_map.revision == revision and _scene_snapshot_is_publishable(
+        runtime,
+        identity,
+        floor_plan,
+        runtime.slam_map.floor_plan_is_current(floor_plan),
     )
 
 
-def _scene_snapshot_key(runtime: MaticRuntimeData) -> tuple[object, ...]:
+def _scene_snapshot_is_publishable(
+    runtime: MaticRuntimeData,
+    identity: SlamMapIdentity | None,
+    floor_plan: FloorPlan | None,
+    floor_plan_coherent: bool,
+) -> bool:
+    """Return whether a captured point-in-time scene remains safe to publish."""
+    return (
+        bool(getattr(runtime.slam_map, "live_session_verified", True))
+        and runtime.slam_map.mission_identity == identity
+        and runtime.coordinator.data.floor_plan == floor_plan
+        and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent
+    )
+
+
+def _scene_snapshot_key(runtime: MaticRuntimeData) -> _SceneKey:
     """Return the complete private identity of the currently renderable scene."""
     return (
         runtime.slam_map.revision,

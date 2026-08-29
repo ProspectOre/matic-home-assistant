@@ -25,6 +25,7 @@ from custom_components.matic_robot.area_binding import (
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
+    MappedFloor,
     RobotPose,
     Room,
 )
@@ -75,6 +76,8 @@ def _floor_plan() -> FloorPlan:
                 ((0.0, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
             ),
         ),
+        "Main floor",
+        (MappedFloor(1, "Main floor", "synthetic-token"),),
     )
 
 
@@ -102,6 +105,8 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             truncated=False,
             photo_tiles=2,
             structure_tiles=1,
+            overlapping_tiles=1,
+            layer_overlap=0.5,
             dropped_photo_tiles=0,
             dropped_structure_tiles=0,
             invalid_tiles=0,
@@ -322,10 +327,32 @@ async def test_scene_generation_covers_both_multi_floor_transition_orders(
     assert len(_scene_metadata(response.body)["rooms"]) == 1
 
 
-@pytest.mark.parametrize("change", ["revision", "floor"])
-async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
-    change: str,
-) -> None:
+async def test_scene_publishes_captured_snapshot_during_same_mission_churn() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    async def mutate_during_encode(target):
+        encoded = target()
+        runtime.slam_map.revision = 8
+        return encoded
+
+    hass.async_add_executor_job.side_effect = mutate_during_encode
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.OK
+    assert hass.async_add_executor_job.await_count == 1
+    assert view._cache["entry"].key == (
+        7,
+        runtime.slam_map.mission_identity,
+        runtime.coordinator.data.floor_plan,
+    )
+    assert response.headers["X-Matic-Revision"] == "7"
+    assert view.current_revision("entry", runtime) == 8
+
+
+async def test_scene_retries_when_floor_changes_during_encoding() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
@@ -336,12 +363,7 @@ async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
         encoded = target()
         calls += 1
         if calls == 1:
-            if change == "revision":
-                runtime.slam_map.revision = 8
-            else:
-                runtime.coordinator.data.floor_plan = replace(
-                    _floor_plan(), mission_id=2
-                )
+            runtime.coordinator.data.floor_plan = replace(_floor_plan(), mission_id=2)
         return encoded
 
     hass.async_add_executor_job.side_effect = mutate_during_first_encode
@@ -357,14 +379,17 @@ async def test_scene_serves_coherent_snapshot_when_live_identity_changes(
     )
 
 
-async def test_scene_fails_closed_during_continuous_identity_updates() -> None:
+async def test_scene_fails_closed_during_continuous_floor_updates() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     view = MaticSlamSceneView()
 
     async def mutate_every_encode(target):
         encoded = target()
-        runtime.slam_map.revision += 1
+        runtime.coordinator.data.floor_plan = replace(
+            runtime.coordinator.data.floor_plan,
+            mission_id=runtime.coordinator.data.floor_plan.mission_id + 1,
+        )
         return encoded
 
     hass.async_add_executor_job.side_effect = mutate_every_encode
@@ -376,7 +401,7 @@ async def test_scene_fails_closed_during_continuous_identity_updates() -> None:
     assert second.status == HTTPStatus.CONFLICT
     assert hass.async_add_executor_job.await_count == 4
     assert view._cache == {}
-    assert runtime.slam_map.revision == 11
+    assert runtime.coordinator.data.floor_plan.mission_id == 5
 
 
 async def test_scene_revision_advances_when_room_metadata_changes() -> None:
@@ -490,7 +515,9 @@ async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -
     responses = await asyncio.gather(*requests)
 
     assert [response.status for response in responses] == [HTTPStatus.OK] * 24
-    assert hass.async_add_executor_job.await_count == 2
+    assert hass.async_add_executor_job.await_count == 1
+    assert {response.headers["X-Matic-Revision"] for response in responses} == {"7"}
+    assert view.current_revision("entry", runtime) == 8
 
 
 async def test_scene_waiter_reuses_cache_if_revision_returns() -> None:
@@ -836,12 +863,16 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "history_floor_count": 0,
                 "map_revision": 7,
                 "map_floor_coherent": True,
+                "selected_floor_ordinal": 1,
+                "map_floor_ordinal": 1,
                 "map_session_verified": True,
                 "map_health": "ready",
                 "map_complete": True,
                 "map_truncated": False,
                 "cached_tiles": 2,
                 "structural_tiles": 1,
+                "overlapping_tiles": 1,
+                "layer_overlap": 0.5,
                 "dropped_photo_tiles": 0,
                 "dropped_structure_tiles": 0,
                 "invalid_tiles": 0,
@@ -858,6 +889,16 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
+    assert empty_entry["selected_floor_ordinal"] == 1
+    assert empty_entry["map_floor_ordinal"] is None
+
+    runtime.coordinator.data.floor_plan = None
+    empty_plan = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
+    assert empty_plan_entry["selected_floor_ordinal"] is None
+    assert empty_plan_entry["map_floor_ordinal"] is None
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
@@ -1297,6 +1338,35 @@ async def test_delta_view_discards_delta_after_live_session_invalidates() -> Non
     assert response.status == HTTPStatus.NOT_FOUND
 
 
+async def test_delta_view_publishes_during_same_mission_revision_churn() -> None:
+    """Pixel refinements cannot starve an already coherent point-in-time delta."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    scene_view = MaticSlamSceneView()
+    assert (await scene_view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    runtime.slam_map.revision = 8
+    runtime.slam_map.entries.return_value = (
+        synthetic_slam_entry(page_x=0, page_y=0, surface_height=8),
+    )
+
+    async def refine_after_delta(target):
+        result = target()
+        if getattr(target, "func", None) is encode_slam_scene_delta:
+            runtime.slam_map.revision = 9
+        return result
+
+    hass.async_add_executor_job.side_effect = refine_after_delta
+
+    response = await MaticSlamDeltaView(scene_view).get(
+        _request(hass, path="/?since=7"), "entry"
+    )
+
+    assert response.status == HTTPStatus.OK
+    assert response.content_type == "application/vnd.matic.slam-delta"
+    assert response.headers["X-Matic-Revision"] == "8"
+    assert scene_view.current_revision("entry", runtime) == 9
+
+
 async def test_delta_view_waits_bounds_query_and_handles_unload() -> None:
     runtime = _runtime()
     entry = _entry(runtime)
@@ -1451,6 +1521,14 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         point_count=512,
         mission_token="1" * 64,
     )
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan,
+        floor_label="Main",
+        mapped_floors=(
+            MappedFloor(1, "Main", current_token),
+            MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+        ),
+    )
     runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
     runtime.slam_history.catalog.return_value = (snapshot, saved_snapshot)
     runtime.slam_history.catalogs_by_mission.return_value = (
@@ -1488,6 +1566,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 "active": True,
                 "read_only": False,
                 "live_available": True,
+                "label": "Main",
                 "snapshots": [
                     {
                         "id": snapshot.snapshot_id,
@@ -1506,6 +1585,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                 "active": False,
                 "read_only": True,
                 "ordinal": 1,
+                "label": "Workshop",
                 "snapshots": [
                     {
                         "id": saved_snapshot.snapshot_id,
@@ -1556,6 +1636,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         "active": True,
         "read_only": False,
         "live_available": False,
+        "label": None,
         "snapshots": [],
     }
     assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [

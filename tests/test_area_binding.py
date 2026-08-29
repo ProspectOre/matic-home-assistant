@@ -32,7 +32,7 @@ from custom_components.matic_robot.area_binding import (
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
 )
-from custom_components.matic_robot.client.models import FloorPlan, Room
+from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
 
 
@@ -1360,6 +1360,222 @@ def test_area_issue_sync_preserves_unknown_state_and_clears_verified_state() -> 
         create.assert_not_called()
 
 
+def test_area_issue_sync_ignores_areas_bound_to_other_mapped_floors() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(
+            MappedFloor(42, "Main", "1" * 64),
+            MappedFloor(84, "Workshop", "2" * 64),
+        ),
+    )
+    other = replace(_floor_plan(), mission_id=84)
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+        ) as create,
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert (
+            async_sync_custom_area_issue(
+                hass,
+                "entry",
+                {"active": _area(active), "other": _area(other)},
+                active,
+            )
+            == 0
+        )
+
+    create.assert_not_called()
+    delete.assert_called_once_with(hass, DOMAIN, custom_area_issue_id("entry"))
+
+
+def test_area_issue_sync_repairs_areas_bound_to_retired_missions() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(MappedFloor(42, "Main", "1" * 64),),
+    )
+    retired = replace(_floor_plan(), mission_id=84)
+    with patch(
+        "custom_components.matic_robot.area_binding.ir.async_create_issue"
+    ) as create:
+        assert (
+            async_sync_custom_area_issue(
+                hass, "entry", {"retired": _area(retired)}, active
+            )
+            == 1
+        )
+
+    create.assert_called_once()
+
+
+def test_area_issue_sync_removes_retired_floor_scoped_issue() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(MappedFloor(42, "Main", "1" * 64),),
+    )
+    retired = replace(_floor_plan(), mission_id=84)
+    retired_issue_id = area_binding_module._custom_area_issue_id_for_mission(
+        "entry", 84
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_get",
+            return_value=MagicMock(issues={(DOMAIN, retired_issue_id): MagicMock()}),
+        ),
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+        ) as create,
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert (
+            async_sync_custom_area_issue(
+                hass, "entry", {"retired": _area(retired)}, active
+            )
+            == 1
+        )
+
+    create.assert_called_once()
+    delete.assert_called_once_with(hass, DOMAIN, retired_issue_id)
+
+
+def test_area_issue_sync_preserves_current_floor_scoped_issue_keys() -> None:
+    hass = MagicMock()
+    active = replace(
+        _floor_plan(),
+        mapped_floors=(
+            MappedFloor(42, "Main", "1" * 64),
+            MappedFloor(84, "Workshop", "2" * 64),
+        ),
+    )
+    secondary = replace(_floor_plan(), mission_id=84)
+    legacy_id = custom_area_issue_id("entry")
+    secondary_issue_id = area_binding_module._custom_area_issue_id_for_mission(
+        "entry", 84
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_get",
+            return_value=MagicMock(
+                issues={
+                    (DOMAIN, legacy_id): MagicMock(),
+                    (DOMAIN, secondary_issue_id): MagicMock(),
+                }
+            ),
+        ),
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert (
+            async_sync_custom_area_issue(
+                hass,
+                "entry",
+                {"primary": _area(active), "secondary": _area(secondary)},
+                active,
+            )
+            == 0
+        )
+
+    delete.assert_called_once_with(hass, DOMAIN, legacy_id)
+
+
+def test_area_issue_sync_preserves_primary_issue_on_secondary_floor() -> None:
+    hass = MagicMock()
+    mapped_floors = (
+        MappedFloor(42, "Main", "1" * 64),
+        MappedFloor(84, "Workshop", "2" * 64),
+    )
+    secondary = replace(_floor_plan(), mission_id=84, mapped_floors=mapped_floors)
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+        ) as create,
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert (
+            async_sync_custom_area_issue(hass, "entry", {"primary": _area()}, secondary)
+            == 0
+        )
+
+    create.assert_not_called()
+    delete.assert_called_once()
+    assert delete.call_args.args[:2] == (hass, DOMAIN)
+    assert delete.call_args.args[2] != custom_area_issue_id("entry")
+
+
+def test_area_issue_sync_reuses_legacy_key_for_primary_floor_change() -> None:
+    hass = MagicMock()
+    original = _floor_plan()
+    active = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.0, 0.0), (2.1, 0.0), (2.1, 1.5), (0.0, 1.5)),
+            ),
+            original.rooms[1],
+        ),
+        mapped_floors=(
+            MappedFloor(42, "Main", "1" * 64),
+            MappedFloor(84, "Workshop", "2" * 64),
+        ),
+    )
+    with patch(
+        "custom_components.matic_robot.area_binding.ir.async_create_issue"
+    ) as create:
+        assert (
+            async_sync_custom_area_issue(
+                hass, "entry", {"primary": _area(original)}, active
+            )
+            == 1
+        )
+
+    create.assert_called_once()
+    assert create.call_args.args == (hass, DOMAIN, custom_area_issue_id("entry"))
+
+
+def test_area_issue_sync_scopes_secondary_floor_change() -> None:
+    hass = MagicMock()
+    original = replace(_floor_plan(), mission_id=84)
+    active = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.0, 0.0), (2.1, 0.0), (2.1, 1.5), (0.0, 1.5)),
+            ),
+            original.rooms[1],
+        ),
+        mapped_floors=(
+            MappedFloor(42, "Main", "1" * 64),
+            MappedFloor(84, "Workshop", "2" * 64),
+        ),
+    )
+    with patch(
+        "custom_components.matic_robot.area_binding.ir.async_create_issue"
+    ) as create:
+        assert (
+            async_sync_custom_area_issue(
+                hass, "entry", {"secondary": _area(original)}, active
+            )
+            == 1
+        )
+
+    create.assert_called_once()
+    assert create.call_args.args[:2] == (hass, DOMAIN)
+    assert create.call_args.args[2] != custom_area_issue_id("entry")
+    assert "entry" not in create.call_args.args[2]
+
+
 def test_delete_custom_area_issue_uses_the_private_stable_key() -> None:
     hass = MagicMock()
     with patch(
@@ -1368,3 +1584,31 @@ def test_delete_custom_area_issue_uses_the_private_stable_key() -> None:
         async_delete_custom_area_issue(hass, "entry")
 
     delete.assert_called_once_with(hass, DOMAIN, custom_area_issue_id("entry"))
+
+
+def test_delete_custom_area_issue_withdraws_floor_scoped_keys() -> None:
+    hass = MagicMock()
+    legacy_id = custom_area_issue_id("entry")
+    scoped_id = f"{legacy_id}_abcdef012345"
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_get",
+            return_value=MagicMock(
+                issues={
+                    (DOMAIN, legacy_id): MagicMock(),
+                    (DOMAIN, scoped_id): MagicMock(),
+                    ("other", f"{legacy_id}_other"): MagicMock(),
+                }
+            ),
+        ),
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        async_delete_custom_area_issue(hass, "entry")
+
+    assert delete.call_count == 2
+    assert {call.args for call in delete.call_args_list} == {
+        (hass, DOMAIN, legacy_id),
+        (hass, DOMAIN, scoped_id),
+    }

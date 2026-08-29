@@ -113,6 +113,114 @@ async def test_slam_map_store_revalidates_a_persisted_map_before_live_use(hass) 
     assert restored.revision == restored_revision + 1
 
 
+async def test_slam_map_store_follows_the_explicit_selected_floor(hass) -> None:
+    """Saved-floor snapshot order cannot override the robot-selected mission."""
+    store = SlamMapStore(hass, "selected-floor-entry")
+    store.set_expected_mission_id(2)
+
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.mission_identity is None
+
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+
+    store.set_expected_mission_id(1)
+    assert not store.live_session_verified
+    await store.async_add(synthetic_slam_entry(mission_id=2, page_x=8))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2, page_x=8))
+    assert store.mission_identity.mission_id == 2
+    assert not store.live_session_verified
+
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert store.live_session_verified
+
+    # Returning to a formerly retired floor is valid only after both fresh
+    # layers prove it again.
+    store.set_expected_mission_id(2)
+    assert not store.live_session_verified
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    assert not store.live_session_verified
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+    store.set_expected_mission_id(2)
+    assert store.live_session_verified
+
+
+async def test_slam_map_store_preserves_new_floor_pages_until_selection_updates(
+    hass,
+) -> None:
+    """Acknowledged map pages survive the map-before-selection stream race."""
+    store = SlamMapStore(hass, "selection-catch-up-entry")
+    store.set_expected_mission_id(1)
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.live_session_verified
+
+    new_photo = synthetic_slam_entry(mission_id=2)
+    new_structure = synthetic_structure_entry(mission_id=2)
+    new_token = (await store.async_add(new_photo)).mission_token
+    await store.async_add_structure(new_structure)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert not store.live_session_verified
+    assert tuple(store._candidates[new_token].entries.values()) == (new_photo,)
+    assert tuple(store._candidates[new_token].structure_entries.values()) == (
+        new_structure,
+    )
+
+    store.set_expected_mission_id(2)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+    assert store.entries() == (new_photo,)
+    assert store.structure_entries() == (new_structure,)
+
+
+async def test_slam_map_store_stages_retired_floor_pages_before_return_selection(
+    hass,
+) -> None:
+    """A return floor's acknowledged pages survive selection-watcher lag."""
+    store = SlamMapStore(hass, "return-selection-catch-up-entry")
+    store.set_expected_mission_id(1)
+    first_photo = synthetic_slam_entry(mission_id=1)
+    first_structure = synthetic_structure_entry(mission_id=1)
+    first_token = (await store.async_add(first_photo)).mission_token
+    await store.async_add_structure(first_structure)
+
+    store.set_expected_mission_id(2)
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert first_token in store._retired_missions
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+
+    return_photo = synthetic_slam_entry(mission_id=1, page_x=4)
+    return_structure = synthetic_structure_entry(mission_id=1, page_x=4)
+    await store.async_add(return_photo)
+    await store.async_add_structure(return_structure)
+
+    assert first_token in store._candidates
+    assert not store.live_session_verified
+
+    store.set_expected_mission_id(1)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert store.live_session_verified
+    assert store.entries() == (return_photo,)
+    assert store.structure_entries() == (return_structure,)
+
+
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
     """One new live layer hides the old floor until the replacement is proven."""
     first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())
@@ -766,45 +874,58 @@ async def test_slam_map_store_structure_promotes_mission_and_enforces_bounds(
 async def test_slam_map_store_reports_complete_only_after_balanced_settle(hass) -> None:
     store = SlamMapStore(hass, "complete-entry")
     assert store.map_complete is False
+    photo = synthetic_slam_entry()
+    structure = synthetic_structure_entry()
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=1),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=1
     ):
-        await store.async_add(synthetic_slam_entry())
-        await store.async_add_structure(synthetic_structure_entry())
+        await store.async_add(photo)
+        await store.async_add_structure(structure)
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=2),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=2
     ):
+        refined_photo = synthetic_slam_entry(surface_height=8)
+        await store.async_add(refined_photo)
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=5),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=5
     ):
         assert store.map_complete is True
 
+    # Firmware can replay a page with changing unknown protobuf metadata even
+    # though every decoded pixel/voxel is identical. That must not invalidate a
+    # settled scene or advance its content revision.
+    revision = store.revision
+    wire_metadata = b"\x98\x06\x01"
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=6
+    ):
+        await store.async_add(
+            replace(refined_photo, value=refined_photo.value + wire_metadata)
+        )
+        await store.async_add_structure(
+            replace(structure, value=structure.value + wire_metadata)
+        )
+    assert store.revision == revision
+    assert store.map_complete is True
+
     await store.async_add(synthetic_slam_entry(page_x=3))
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=6),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=6
     ):
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch("custom_components.matic_robot.slam_map_store.monotonic", return_value=7),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=7
     ):
         await store.async_add_structure(synthetic_structure_entry(page_x=3))
         assert store.map_complete is False
 
-    with (
-        patch("custom_components.matic_robot.slam_map_store.MIN_COMPLETE_TILES", 1),
-        patch(
-            "custom_components.matic_robot.slam_map_store.monotonic", return_value=11
-        ),
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=11
     ):
         assert store.map_complete is True
         assert store.health.state == "ready"
@@ -826,6 +947,8 @@ async def test_slam_map_store_requires_spatial_layer_overlap(hass) -> None:
         ),
     ):
         assert store.map_complete is False
+        assert store.health.overlapping_tiles == 0
+        assert store.health.layer_overlap == 0.0
         assert store.health.state == "incomplete"
 
 

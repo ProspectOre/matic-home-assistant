@@ -102,12 +102,25 @@ def async_sync_custom_area_issue(
     except OverflowError, TypeError, ValueError:
         return None
 
-    stale_count = sum(
-        not isinstance(area, Mapping)
-        or area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT
+    mapped_missions = tuple(floor.mission_id for floor in floor_plan.mapped_floors)
+    primary_mission = mapped_missions[0] if mapped_missions else floor_plan.mission_id
+    assigned_missions = tuple(
+        _area_repair_mission(area, mapped_missions, primary_mission)
         for area in areas.values()
     )
-    issue_id = custom_area_issue_id(entry_id)
+    stale_count = sum(
+        assigned_mission == floor_plan.mission_id
+        and (
+            not isinstance(area, Mapping)
+            or area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT
+        )
+        for area, assigned_mission in zip(
+            areas.values(), assigned_missions, strict=True
+        )
+    )
+    issue_id = _custom_area_floor_issue_id(
+        entry_id, floor_plan.mission_id, primary_mission
+    )
     if stale_count:
         ir.async_create_issue(
             hass,
@@ -122,13 +135,90 @@ def async_sync_custom_area_issue(
         )
     else:
         ir.async_delete_issue(hass, DOMAIN, issue_id)
+    # A deleted area cannot leave a hidden secondary-floor issue behind. Do
+    # not otherwise touch inactive-floor issues: their dismissal and lifecycle
+    # must survive carrying the robot to another mapped floor.
+    represented_missions = set(assigned_missions)
+    for mission_id in mapped_missions:
+        if mission_id in {primary_mission, floor_plan.mission_id} or (
+            mission_id in represented_missions
+        ):
+            continue
+        ir.async_delete_issue(
+            hass,
+            DOMAIN,
+            _custom_area_issue_id_for_mission(entry_id, mission_id),
+        )
+    valid_issue_ids = {
+        _custom_area_issue_id_for_mission(entry_id, mission_id)
+        for mission_id in mapped_missions
+        if mission_id != primary_mission
+    }
+    legacy_id = custom_area_issue_id(entry_id)
+    for existing_issue_id in _existing_custom_area_issue_ids(hass, entry_id):
+        if existing_issue_id == legacy_id or existing_issue_id in valid_issue_ids:
+            continue
+        ir.async_delete_issue(hass, DOMAIN, existing_issue_id)
     return stale_count
 
 
+def _area_repair_mission(
+    area: object, mapped_missions: tuple[int, ...], primary_mission: int
+) -> int:
+    """Assign malformed, retired, and valid areas to one stable repair floor."""
+    if isinstance(area, Mapping):
+        binding = area.get("map_binding")
+        if isinstance(binding, Mapping) and _valid_saved_binding(binding):
+            mission_id = binding["mission_id"]
+            assert isinstance(mission_id, int) and not isinstance(mission_id, bool)
+            if mission_id in mapped_missions:
+                return mission_id
+    return primary_mission
+
+
+def _custom_area_issue_id_for_mission(entry_id: str, mission_id: int) -> str:
+    """Return a private stable Repair key for one non-primary mapped floor."""
+    floor_digest = hashlib.sha256(
+        b"matic-custom-area-floor-v1\0"
+        + entry_id.encode()
+        + b"\0"
+        + str(mission_id).encode()
+    ).hexdigest()[:12]
+    return f"{custom_area_issue_id(entry_id)}_{floor_digest}"
+
+
+def _custom_area_floor_issue_id(
+    entry_id: str, mission_id: int, primary_mission: int
+) -> str:
+    """Preserve the legacy primary-floor key and scope every other floor."""
+    if mission_id == primary_mission:
+        return custom_area_issue_id(entry_id)
+    return _custom_area_issue_id_for_mission(entry_id, mission_id)
+
+
+def _existing_custom_area_issue_ids(hass: HomeAssistant, entry_id: str) -> set[str]:
+    """Return this entry's privacy-safe legacy and floor-scoped issue keys."""
+    legacy_id = custom_area_issue_id(entry_id)
+    registry_issues = getattr(ir.async_get(hass), "issues", {})
+    return {
+        issue_id
+        for domain, issue_id in registry_issues
+        if domain == DOMAIN
+        and (issue_id == legacy_id or issue_id.startswith(f"{legacy_id}_"))
+    }
+
+
 @callback
-def async_delete_custom_area_issue(hass: HomeAssistant, entry_id: str) -> None:
+def async_delete_custom_area_issue(
+    hass: HomeAssistant,
+    entry_id: str,
+) -> None:
     """Delete the stale-area Repair when its config entry is removed."""
-    ir.async_delete_issue(hass, DOMAIN, custom_area_issue_id(entry_id))
+    legacy_id = custom_area_issue_id(entry_id)
+    issue_ids = _existing_custom_area_issue_ids(hass, entry_id)
+    issue_ids.add(legacy_id)
+    for issue_id in issue_ids:
+        ir.async_delete_issue(hass, DOMAIN, issue_id)
 
 
 def custom_area_issue_id(entry_id: str) -> str:

@@ -1190,6 +1190,7 @@ test.describe("map studio", () => {
               active: true,
               read_only: false,
               live_available: floorCoherent,
+              label: "Main",
               snapshots: floorCoherent ? [currentSnapshot] : [],
             },
             {
@@ -1197,6 +1198,7 @@ test.describe("map studio", () => {
               active: false,
               read_only: true,
               ordinal: 1,
+              label: "Workshop",
               snapshots: floorCoherent
                 ? [savedSnapshot]
                 : [savedSnapshot, currentSnapshot],
@@ -1222,11 +1224,24 @@ test.describe("map studio", () => {
     }));
 
     const studio = await loadStudio(page);
+    const validUnicodeLabel = `${"😀".repeat(43)}${"A".repeat(84)}`;
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      validUnicodeLabel,
+    )).toBe(validUnicodeLabel);
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      "😀".repeat(129),
+    )).toBeUndefined();
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      "😀".repeat(100),
+    )).toBeUndefined();
     const floorSelect = studio.locator(".floor-select");
     await expect(floorSelect).toBeVisible();
     await expect(floorSelect.locator("option")).toHaveText([
-      "Live map · robot location",
-      "Saved map 1 · read only",
+      "Main · robot location",
+      "Workshop · read only",
     ]);
     await studio.locator(".timeline-summary").click();
     await floorSelect.selectOption("saved-1");
@@ -1234,7 +1249,7 @@ test.describe("map studio", () => {
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Saved floor room");
     await expect(studio.locator(".room-label")).toHaveText(["Saved floor room"]);
-    await expect(studio.locator(".status")).toContainText("Saved map 1");
+    await expect(studio.locator(".status")).toContainText("Workshop");
     await expect(studio.locator(".status")).toContainText("read only");
     await expect(studio.locator(".timeline-live")).toBeHidden();
     await expect(studio.locator(".cleaning-plans")).toBeDisabled();
