@@ -233,8 +233,30 @@ class SlamMapStore:
             self._expected_mission_id is not None
             and tile.mission_id != self._expected_mission_id
         ):
+            # The two map subscriptions can advance before the selected-floor
+            # watcher. Retain those already-acknowledged pages in the bounded
+            # candidate cache, but never promote them until floor selection
+            # proves the same mission. A verified active map fails closed while
+            # that possible transition is unresolved.
+            self._stage_candidate(
+                entry,
+                tile,
+                structural=structural,
+                blocks_active=(
+                    self._mission_id is not None
+                    and self._mission_id == self._expected_mission_id
+                ),
+            )
             return
         if self._mission_token is None:
+            # Establishing the explicitly selected mission makes any pages
+            # staged before that first live identity stale. Only candidates
+            # observed after an active mission exists can represent the
+            # map-before-selection transition race handled above.
+            for candidate_token in self._candidates:
+                self._retire_mission(candidate_token)
+            self._candidates.clear()
+            self._cancel_candidate_expiry()
             self._mission_token = mission_token
             self._mission_id = tile.mission_id
         if mission_token != self._mission_token:
@@ -294,6 +316,7 @@ class SlamMapStore:
         tile: SlamTile | SlamStructureTile,
         *,
         structural: bool,
+        blocks_active: bool = True,
     ) -> None:
         """Wait for both independent map layers before changing missions."""
         mission_token = tile.mission_token
@@ -311,6 +334,7 @@ class SlamMapStore:
                 entries={},
                 structure_entries={},
                 mission_id=tile.mission_id,
+                blocks_active=blocks_active,
             )
             self._candidates[mission_token] = candidate
         else:
@@ -324,14 +348,15 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
-        missing_layer = not target
         target[_tile_key(tile)] = entry
         # A new candidate, or a late counterpart for an expired candidate,
         # makes the active map unsafe until this candidate is classified.  A
         # further page from an already-expired one-sided stream does not start
         # another indefinite pause; its retained page remains available for a
         # future independent counterpart instead.
-        if candidate.blocks_active or missing_layer:
+        if blocks_active:
+            candidate.blocks_active = True
+        if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()
             self._invalidate_live_session()
         self._enforce_candidate_bounds(candidate)
@@ -380,7 +405,10 @@ class SlamMapStore:
 
     def _candidate_can_promote(self, candidate: _MissionCandidate) -> bool:
         """Return whether no newer unclassified candidate outranks ``candidate``."""
-        return not any(
+        return (
+            self._expected_mission_id is None
+            or candidate.mission_id == self._expected_mission_id
+        ) and not any(
             pending.blocks_active and pending.generation > candidate.generation
             for pending in self._candidates.values()
         )
@@ -658,12 +686,18 @@ class SlamMapStore:
         self._expected_mission_id = mission_id
         self._cancel_candidate_expiry()
         self._cancel_candidate_refresh_retry()
-        self._candidates.clear()
+        self._candidates = OrderedDict(
+            (token, candidate)
+            for token, candidate in self._candidates.items()
+            if mission_id is not None and candidate.mission_id == mission_id
+        )
         # A mapped floor can become current again later in the same HA session.
         # Explicit robot selection makes those pages authoritative, rather than
         # delayed evidence from the previously selected floor.
         self._retired_missions.clear()
         self._invalidate_live_session()
+        self._promote_latest_complete_candidate()
+        self._schedule_candidate_expiry()
 
     def decoded_tiles(self) -> tuple[SlamTile, ...]:
         """Return all currently valid tiles for local rendering."""

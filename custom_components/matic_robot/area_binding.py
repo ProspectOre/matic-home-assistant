@@ -149,6 +149,16 @@ def async_sync_custom_area_issue(
             DOMAIN,
             _custom_area_issue_id_for_mission(entry_id, mission_id),
         )
+    valid_issue_ids = {
+        _custom_area_issue_id_for_mission(entry_id, mission_id)
+        for mission_id in mapped_missions
+        if mission_id != primary_mission
+    }
+    legacy_id = custom_area_issue_id(entry_id)
+    for existing_issue_id in _existing_custom_area_issue_ids(hass, entry_id):
+        if existing_issue_id == legacy_id or existing_issue_id in valid_issue_ids:
+            continue
+        ir.async_delete_issue(hass, DOMAIN, existing_issue_id)
     return stale_count
 
 
@@ -186,6 +196,18 @@ def _custom_area_floor_issue_id(
     return _custom_area_issue_id_for_mission(entry_id, mission_id)
 
 
+def _existing_custom_area_issue_ids(hass: HomeAssistant, entry_id: str) -> set[str]:
+    """Return this entry's privacy-safe legacy and floor-scoped issue keys."""
+    legacy_id = custom_area_issue_id(entry_id)
+    registry_issues = getattr(ir.async_get(hass), "issues", {})
+    return {
+        issue_id
+        for domain, issue_id in registry_issues
+        if domain == DOMAIN
+        and (issue_id == legacy_id or issue_id.startswith(f"{legacy_id}_"))
+    }
+
+
 @callback
 def async_delete_custom_area_issue(
     hass: HomeAssistant,
@@ -193,13 +215,7 @@ def async_delete_custom_area_issue(
 ) -> None:
     """Delete the stale-area Repair when its config entry is removed."""
     legacy_id = custom_area_issue_id(entry_id)
-    registry_issues = getattr(ir.async_get(hass), "issues", {})
-    issue_ids = {
-        issue_id
-        for domain, issue_id in registry_issues
-        if domain == DOMAIN
-        and (issue_id == legacy_id or issue_id.startswith(f"{legacy_id}_"))
-    }
+    issue_ids = _existing_custom_area_issue_ids(hass, entry_id)
     issue_ids.add(legacy_id)
     for issue_id in issue_ids:
         ir.async_delete_issue(hass, DOMAIN, issue_id)

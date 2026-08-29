@@ -1224,6 +1224,19 @@ test.describe("map studio", () => {
     }));
 
     const studio = await loadStudio(page);
+    const validUnicodeLabel = `${"😀".repeat(43)}${"A".repeat(84)}`;
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      validUnicodeLabel,
+    )).toBe(validUnicodeLabel);
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      "😀".repeat(129),
+    )).toBeUndefined();
+    expect(await page.evaluate(
+      (label) => window.__studio._validFloorLabel(label),
+      "😀".repeat(100),
+    )).toBeUndefined();
     const floorSelect = studio.locator(".floor-select");
     await expect(floorSelect).toBeVisible();
     await expect(floorSelect.locator("option")).toHaveText([

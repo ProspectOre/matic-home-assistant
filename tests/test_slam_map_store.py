@@ -154,6 +154,38 @@ async def test_slam_map_store_follows_the_explicit_selected_floor(hass) -> None:
     assert store.live_session_verified
 
 
+async def test_slam_map_store_preserves_new_floor_pages_until_selection_updates(
+    hass,
+) -> None:
+    """Acknowledged map pages survive the map-before-selection stream race."""
+    store = SlamMapStore(hass, "selection-catch-up-entry")
+    store.set_expected_mission_id(1)
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    assert store.live_session_verified
+
+    new_photo = synthetic_slam_entry(mission_id=2)
+    new_structure = synthetic_structure_entry(mission_id=2)
+    new_token = (await store.async_add(new_photo)).mission_token
+    await store.async_add_structure(new_structure)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert not store.live_session_verified
+    assert tuple(store._candidates[new_token].entries.values()) == (new_photo,)
+    assert tuple(store._candidates[new_token].structure_entries.values()) == (
+        new_structure,
+    )
+
+    store.set_expected_mission_id(2)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+    assert store.live_session_verified
+    assert store.entries() == (new_photo,)
+    assert store.structure_entries() == (new_structure,)
+
+
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
     """One new live layer hides the old floor until the replacement is proven."""
     first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())

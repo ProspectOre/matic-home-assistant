@@ -772,7 +772,12 @@ class MaticMapStudio extends HTMLElement {
   _validFloorLabel(value) {
     if (typeof value !== "string") return undefined;
     const label = value.trim();
-    if (!label || label.length > 128 || /[\u0000-\u001f\u007f]/.test(label)) {
+    if (
+      !label
+      || Array.from(label).length > 128
+      || new TextEncoder().encode(label).length > 256
+      || /[\u0000-\u001f\u007f]/.test(label)
+    ) {
       return undefined;
     }
     return label;
