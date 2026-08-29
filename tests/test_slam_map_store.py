@@ -186,6 +186,41 @@ async def test_slam_map_store_preserves_new_floor_pages_until_selection_updates(
     assert store.structure_entries() == (new_structure,)
 
 
+async def test_slam_map_store_stages_retired_floor_pages_before_return_selection(
+    hass,
+) -> None:
+    """A return floor's acknowledged pages survive selection-watcher lag."""
+    store = SlamMapStore(hass, "return-selection-catch-up-entry")
+    store.set_expected_mission_id(1)
+    first_photo = synthetic_slam_entry(mission_id=1)
+    first_structure = synthetic_structure_entry(mission_id=1)
+    first_token = (await store.async_add(first_photo)).mission_token
+    await store.async_add_structure(first_structure)
+
+    store.set_expected_mission_id(2)
+    await store.async_add(synthetic_slam_entry(mission_id=2))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=2))
+    assert first_token in store._retired_missions
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 2
+
+    return_photo = synthetic_slam_entry(mission_id=1, page_x=4)
+    return_structure = synthetic_structure_entry(mission_id=1, page_x=4)
+    await store.async_add(return_photo)
+    await store.async_add_structure(return_structure)
+
+    assert first_token in store._candidates
+    assert not store.live_session_verified
+
+    store.set_expected_mission_id(1)
+
+    assert store.mission_identity is not None
+    assert store.mission_identity.mission_id == 1
+    assert store.live_session_verified
+    assert store.entries() == (return_photo,)
+    assert store.structure_entries() == (return_structure,)
+
+
 async def test_slam_map_store_pauses_live_use_on_a_pending_new_mission(hass) -> None:
     """One new live layer hides the old floor until the replacement is proven."""
     first_plan = FloorPlan(0x1234ABCD, "first", b"first", ())

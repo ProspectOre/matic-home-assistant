@@ -242,6 +242,7 @@ class SlamMapStore:
                 entry,
                 tile,
                 structural=structural,
+                allow_retired=True,
                 blocks_active=(
                     self._mission_id is not None
                     and self._mission_id == self._expected_mission_id
@@ -316,11 +317,12 @@ class SlamMapStore:
         tile: SlamTile | SlamStructureTile,
         *,
         structural: bool,
+        allow_retired: bool = False,
         blocks_active: bool = True,
     ) -> None:
         """Wait for both independent map layers before changing missions."""
         mission_token = tile.mission_token
-        if mission_token in self._retired_missions:
+        if mission_token in self._retired_missions and not allow_retired:
             return
         candidate = self._candidates.get(mission_token)
         if candidate is None:
