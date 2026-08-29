@@ -23,7 +23,7 @@ from .const import DOMAIN, EVENT_FIRMWARE_ANALYZED, EVENT_FIRMWARE_CHANGED
 STORAGE_VERSION = 1
 STORAGE_KEY = f"{DOMAIN}.firmware"
 MAX_HISTORY = 52
-ANALYSIS_VERSION = 1
+ANALYSIS_VERSION = 2
 
 # Length-delimited values are opaque unless their message nesting has direct
 # protocol evidence. Root fields are safe to fingerprint on every bounded
@@ -42,6 +42,13 @@ WIRE_SHAPE_NESTED_PATHS: dict[str, tuple[tuple[int, ...], ...]] = {
         (5, 1),
     ),
 }
+
+# Pose envelopes are deliberately decoded only far enough to correlate a live
+# position with a floor mission. Their optional field presence depends on the
+# robot's localization state, so a one-value firmware sweep cannot treat added
+# pose paths as durable release capabilities. Transport availability still
+# participates in compatibility drift below.
+WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS = frozenset({"latest_pose"})
 
 
 class FirmwareTracker:
@@ -330,7 +337,17 @@ def _compare_snapshots(
         if previous_endpoints.get(name) != current_endpoints.get(name)
     )
     new_wire_shapes: dict[str, list[str]] = {}
+    wire_shapes_comparable = previous.get(
+        "analysis_version"
+    ) is not None and previous.get("analysis_version") == current.get(
+        "analysis_version"
+    )
     for name in sorted(previous_endpoints.keys() & current_endpoints.keys()):
+        if (
+            not wire_shapes_comparable
+            or name in WIRE_SHAPE_CANDIDATE_EXCLUDED_ENDPOINTS
+        ):
+            continue
         previous_shapes = _endpoint_wire_shapes(previous_endpoints[name])
         current_shapes = _endpoint_wire_shapes(current_endpoints[name])
         # An old snapshot or an opaque/non-protobuf payload establishes no

@@ -38,6 +38,7 @@ from custom_components.matic_robot.client.models import (
     Room,
 )
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     CleaningPlanManager,
@@ -1640,7 +1641,7 @@ async def test_firmware_snapshot_persists_safe_full_endpoint_sweep() -> None:
         response = await _registered_handler(services, "firmware_snapshot")(call)
 
     assert response["endpoint_count"] == len(HERMES_ENDPOINTS)
-    assert response["analysis_version"] == 1
+    assert response["analysis_version"] == ANALYSIS_VERSION
     assert response["populated_endpoints"] == len(HERMES_ENDPOINTS) - 2
     assert response["empty_endpoints"] == 1
     assert response["failed_endpoints"] == 1

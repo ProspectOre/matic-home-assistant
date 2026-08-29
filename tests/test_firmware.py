@@ -401,6 +401,35 @@ def test_snapshot_comparison_separates_availability_from_content() -> None:
     assert _compatibility_status(None, unchanged) == "current"
 
 
+def test_analyzer_upgrade_does_not_create_wire_shape_candidates() -> None:
+    previous = _snapshot("v168.11", wire_shapes=["1:2"])
+    previous["analysis_version"] = ANALYSIS_VERSION - 1
+    current = _snapshot("v169.0", wire_shapes=["1:2", "18:2", "18:2/17:2"])
+
+    comparison = _compare_snapshots(previous, current)
+
+    assert comparison["firmware_changed"] is True
+    assert comparison["wire_shape_changed_endpoints"] == []
+    assert comparison["new_wire_shapes"] == {}
+
+
+def test_pose_shape_variation_is_not_a_firmware_capability_candidate() -> None:
+    previous = _snapshot("v168.11", wire_shapes=["2:2"])
+    current = _snapshot("v169.0", wire_shapes=["2:2", "2:2/1:2"])
+    for snapshot in (previous, current):
+        endpoint = snapshot["endpoints"][0]
+        assert isinstance(endpoint, dict)
+        endpoint["name"] = "latest_pose"
+
+    comparison = _compare_snapshots(previous, current)
+
+    assert comparison["firmware_changed"] is True
+    assert comparison["changed_endpoints"] == []
+    assert comparison["content_changed_endpoints"] == ["latest_pose"]
+    assert comparison["wire_shape_changed_endpoints"] == []
+    assert comparison["new_wire_shapes"] == {}
+
+
 def test_snapshot_timestamp_uses_home_assistant_utc_clock() -> None:
     with patch(
         "custom_components.matic_robot.firmware.dt_util.utcnow",
