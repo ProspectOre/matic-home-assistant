@@ -106,6 +106,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const second = machine.begin("entry", "floor-b", "mission-b", 2);
       const advanced = machine.advance(second, 3);
       const ready = module.createGalleryState("ready");
+      const degraded = { ...ready, coherence: "degraded" };
       const transition = module.createGalleryState("transition");
       return {
         firstRejected: !machine.accepts(first),
@@ -116,6 +117,12 @@ test.describe("Map Studio v0.4 foundation", () => {
           pose: module.canShowExactPose(ready),
           edit: module.canEditCoordinates(ready),
           motion: module.canStartMotion(ready),
+        },
+        degraded: {
+          show: module.canShowLiveMap(degraded),
+          pose: module.canShowExactPose(degraded),
+          edit: module.canEditCoordinates(degraded),
+          motion: module.canStartMotion(degraded),
         },
         transition: {
           show: module.canShowLiveMap(transition),
@@ -131,6 +138,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       secondSuperseded: true,
       advancedAccepted: true,
       ready: { show: true, pose: true, edit: true, motion: true },
+      degraded: { show: true, pose: true, edit: false, motion: false },
       transition: { show: false, pose: false, edit: false, motion: false },
     });
   });
