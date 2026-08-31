@@ -124,6 +124,7 @@ export class EffectController {
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
       robotLabel: projection.robotLabel,
+      robots: projection.robots,
       locale: projection.language,
     });
     if (projection.userKey !== this.#preferenceUser) {
@@ -131,6 +132,7 @@ export class EffectController {
       const preferences = this.#preferences.load(projection.userKey);
       this.#store.patch({
         view: preferences.view,
+        appearance: preferences.appearance,
         labelsVisible: preferences.labels,
         quality: preferences.quality,
         cameras: preferences.cameras,
@@ -273,8 +275,8 @@ export class EffectController {
       if (controller.signal.aborted || this.#disposed) return;
       const requested = this.#panel?.config?.entry_id;
       const requestedEntry = typeof requested === "string" ? requested : null;
-      let selected = entries.find((entry) => entry.entryId === requestedEntry)
-        || entries.find((entry) => entry.entryId === this.#projection?.entryKey)
+      let selected = entries.find((entry) => entry.entryId === this.#projection?.entryKey)
+        || entries.find((entry) => entry.entryId === requestedEntry)
         || entries[0]
         || null;
       const currentEntry = this.#store.value.resources.entry;

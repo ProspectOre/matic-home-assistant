@@ -245,6 +245,25 @@ export class GestureController {
     if (event.key === "+" || event.key === "=") this.#renderer.zoomAt(1.25);
     else if (event.key === "-") this.#renderer.zoomAt(0.8);
     else if (event.key === "0") this.#renderer.fit();
+    else if (event.key === "[") this.#renderer.orbitBy(-52, 0);
+    else if (event.key === "]") this.#renderer.orbitBy(52, 0);
+    else if (event.key === "PageUp") this.#renderer.orbitBy(0, -30);
+    else if (event.key === "PageDown") this.#renderer.orbitBy(0, 30);
+    else if (event.key.toLocaleLowerCase() === "d"
+      && this.#callbacks.state().workflow === "draw") {
+      this.#host.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-draw-tool", tool: "paint" },
+        bubbles: true,
+        composed: true,
+      }));
+    } else if (event.key.toLocaleLowerCase() === "e"
+      && this.#callbacks.state().workflow === "draw") {
+      this.#host.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-draw-tool", tool: "erase" },
+        bubbles: true,
+        composed: true,
+      }));
+    }
     else if (event.key === "ArrowLeft") this.#renderer.panBy(30, 0);
     else if (event.key === "ArrowRight") this.#renderer.panBy(-30, 0);
     else if (event.key === "ArrowUp") this.#renderer.panBy(0, 30);

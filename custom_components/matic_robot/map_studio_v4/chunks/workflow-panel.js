@@ -1,4 +1,4 @@
-import{i as v,v as b,w as o,x as c,y as g,z as f}from"./chunk.js";var p=[{value:"vacuum",label:"Vacuum"},{value:"mop",label:"Mop"},{value:"vacuum_and_mop",label:"Vacuum and mop"}],m=[{value:"quick",label:"Quick"},{value:"standard",label:"Optimal"},{value:"heavy_duty",label:"Heavy duty"}],n=d=>d.currentTarget.value,u=d=>d.currentTarget.checked,h=class extends g{constructor(){super(...arguments);this.state=v()}static{this.properties={state:{attribute:!1}}}static{this.styles=b`
+import{A as f,i as v,v as g,w as o,x as c,y as b,z as $}from"./chunk.js";var p=["vacuum","mop","vacuum_and_mop"],h=["quick","standard","heavy_duty"],l=d=>d.currentTarget.value,m=d=>d.currentTarget.checked,u=class extends b{constructor(){super(...arguments);this.state=v()}static{this.properties={state:{attribute:!1},localize:{attribute:!1}}}static{this.styles=g`
     :host { display: block; min-inline-size: 0; }
     * { box-sizing: border-box; }
     button, input, select { font: inherit; }
@@ -93,93 +93,93 @@ import{i as v,v as b,w as o,x as c,y as g,z as f}from"./chunk.js";var p=[{value:
     @media (forced-colors: active) {
       .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] { outline: 2px solid Highlight; }
     }
-  `}#e(t){this.dispatchEvent(new CustomEvent(f,{detail:t,bubbles:!0,composed:!0}))}#a(){return this.state.notice?o`
+  `}#e(e,a,s){return $(this.localize,e,a,s)}#s(e){return e==="vacuum"?this.#e("vacuum","Vacuum"):e==="mop"?this.#e("mop","Mop"):this.#e("vacuum_and_mop","Vacuum + mop")}#o(e){return e==="quick"?this.#e("quick","Quick"):e==="standard"?this.#e("standard","Optimal"):this.#e("heavy_duty","Heavy Duty")}#t(e){this.dispatchEvent(new CustomEvent(f,{detail:e,bubbles:!0,composed:!0}))}#i(){return this.state.notice?o`
       <div class="notice" data-tone=${this.state.notice.tone} role=${this.state.notice.tone==="error"?"alert":"status"}>
         ${this.state.notice.text}
       </div>
-    `:c}#t(t,a,r){return t==="loading"||t==="idle"?o`<div class="loading" role="status">Loading…</div>`:t==="error"?o`<div class="problem" role="alert">This workspace is unavailable right now. ${a==="request-failed"?"Try again shortly.":"Return to the live map and retry."}</div>`:t==="empty"?o`<div class="empty">Nothing saved yet.</div>`:r}#s(){let t=this.state.resources.plans;return this.#t(t.status,t.problem,o`
+    `:c}#a(e,a,s){return e==="loading"||e==="idle"?o`<div class="loading" role="status">${this.#e("map_loading","Loading\u2026")}</div>`:e==="error"?o`<div class="problem" role="alert">${this.#e("v4_workspace_unavailable","This workspace is unavailable right now.")} ${a==="request-failed"?this.#e("v4_try_again","Try again shortly."):this.#e("v4_return_live_retry","Return to the live map and retry.")}</div>`:e==="empty"?o`<div class="empty">${this.#e("v4_nothing_saved","Nothing saved yet.")}</div>`:s}#l(){let e=this.state.resources.plans;return this.#a(e.status,e.problem,o`
       <div class="stack">
-        <div class="list" role="group" aria-label="Rooms to clean">
-          ${(t.value?.rooms||[]).map(a=>{let r=this.state.selection.roomIds.includes(a.roomId);return o`
+        <div class="list" role="group" aria-label=${this.#e("v4_rooms_to_clean","Rooms to clean")}>
+          ${(e.value?.rooms||[]).map(a=>{let s=this.state.selection.roomIds.includes(a.roomId);return o`
               <label class="room">
                 <input
                   type="checkbox"
-                  .checked=${r}
-                  @change=${()=>this.#e({type:"toggle-room",roomId:a.roomId})}
+                  .checked=${s}
+                  @change=${()=>this.#t({type:"toggle-room",roomId:a.roomId})}
                 >
                 <span>${a.name}</span>
               </label>
             `})}
         </div>
         <div class="split">
-          <label class="field">Cleaning
+          <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
             <select
               .value=${this.state.selection.cleaningMode}
-              @change=${a=>this.#e({type:"patch-room-settings",cleaningMode:n(a)})}
-            >${p.map(a=>o`<option value=${a.value}>${a.label}</option>`)}</select>
+              @change=${a=>this.#t({type:"patch-room-settings",cleaningMode:l(a)})}
+            >${p.map(a=>o`<option value=${a}>${this.#s(a)}</option>`)}</select>
           </label>
-          <label class="field">Coverage
+          <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
             <select
               .value=${this.state.selection.coverageSetting}
-              @change=${a=>this.#e({type:"patch-room-settings",coverageSetting:n(a)})}
-            >${m.map(a=>o`<option value=${a.value}>${a.label}</option>`)}</select>
+              @change=${a=>this.#t({type:"patch-room-settings",coverageSetting:l(a)})}
+            >${h.map(a=>o`<option value=${a}>${this.#o(a)}</option>`)}</select>
           </label>
         </div>
-        <p class="subtle">Select rooms here or directly on the map. The map and list stay in sync.</p>
-        ${this.#a()}
+        <p class="subtle">${this.#e("v4_room_selection_hint","Select rooms here or directly on the map. The map and list stay in sync.")}</p>
+        ${this.#i()}
       </div>
-    `)}#l(t){let a=this.state.planDraft.rooms,e=a.find(l=>l.roomId===t)?a.filter(l=>l.roomId!==t):[...a,{roomId:t,cleaningMode:"vacuum",coverageSetting:"standard"}];this.#e({type:"patch-plan-draft",patch:{rooms:e}})}#o(t,a){let r=this.state.planDraft.rooms.map((e,l)=>l===t?{...e,...a}:e);this.#e({type:"patch-plan-draft",patch:{rooms:r}})}#r(t,a){let r=t+a,e=[...this.state.planDraft.rooms];if(r<0||r>=e.length)return;let[l]=e.splice(t,1);l&&(e.splice(r,0,l),this.#e({type:"patch-plan-draft",patch:{rooms:e}}))}#i(){let t=this.state.resources.plans,a=t.value,r=this.state.planDraft;return this.#t(t.status,t.problem,o`
+    `)}#c(e){let a=this.state.planDraft.rooms,t=a.find(r=>r.roomId===e)?a.filter(r=>r.roomId!==e):[...a,{roomId:e,cleaningMode:"vacuum",coverageSetting:"standard"}];this.#t({type:"patch-plan-draft",patch:{rooms:t}})}#r(e,a){let s=this.state.planDraft.rooms.map((t,r)=>r===e?{...t,...a}:t);this.#t({type:"patch-plan-draft",patch:{rooms:s}})}#n(e,a){let s=e+a,t=[...this.state.planDraft.rooms];if(s<0||s>=t.length)return;let[r]=t.splice(e,1);r&&(t.splice(s,0,r),this.#t({type:"patch-plan-draft",patch:{rooms:t}}))}#d(){let e=this.state.resources.plans,a=e.value,s=this.state.planDraft;return this.#a(e.status,e.problem,o`
       <div class="stack">
         <div class="split">
-          <label class="field">Saved plan
+          <label class="field">${this.#e("v4_saved_plan","Saved plan")}
             <select
               .value=${this.state.selection.planId||""}
-              @change=${e=>this.#e({type:"select-plan",planId:n(e)||null})}
+              @change=${t=>this.#t({type:"select-plan",planId:l(t)||null})}
             >
-              <option value="">New plan</option>
-              ${(a?.plans||[]).map(e=>o`<option value=${e.id}>${e.name}</option>`)}
+              <option value="">${this.#e("plan_new","New plan")}</option>
+              ${(a?.plans||[]).map(t=>o`<option value=${t.id}>${t.name}</option>`)}
             </select>
           </label>
-          <button class="list-button" type="button" @click=${()=>this.#e({type:"select-plan",planId:null})}>＋ New plan</button>
+          <button class="list-button" type="button" @click=${()=>this.#t({type:"select-plan",planId:null})}>＋ ${this.#e("plan_new","New plan")}</button>
         </div>
-        <label class="field">Plan name
+        <label class="field">${this.#e("plan_name","Plan name")}
           <input
             maxlength="128"
             autocomplete="off"
-            .value=${r.name}
-            @input=${e=>this.#e({type:"patch-plan-draft",patch:{name:n(e)}})}
+            .value=${s.name}
+            @input=${t=>this.#t({type:"patch-plan-draft",patch:{name:l(t)}})}
           >
         </label>
         <div class="split">
-          <label class="field">Run order
+          <label class="field">${this.#e("plan_run_behavior","Run order")}
             <select
-              .value=${r.runBehavior}
-              @change=${e=>this.#e({type:"patch-plan-draft",patch:{runBehavior:n(e)==="ordered"?"ordered":"intelligent"}})}
+              .value=${s.runBehavior}
+              @change=${t=>this.#t({type:"patch-plan-draft",patch:{runBehavior:l(t)==="ordered"?"ordered":"intelligent"}})}
             >
-              <option value="intelligent">Smart rotation</option>
-              <option value="ordered">Listed order</option>
+              <option value="intelligent">${this.#e("plan_intelligent","Smart rotation")}</option>
+              <option value="ordered">${this.#e("plan_ordered","Listed order")}</option>
             </select>
           </label>
-          <label class="checkbox"><input type="checkbox" .checked=${r.enabled} @change=${e=>this.#e({type:"patch-plan-draft",patch:{enabled:u(e)}})}>Enabled</label>
+          <label class="checkbox"><input type="checkbox" .checked=${s.enabled} @change=${t=>this.#t({type:"patch-plan-draft",patch:{enabled:m(t)}})}>${this.#e("plan_enabled","Enabled")}</label>
         </div>
-        <div class="list" aria-label="Plan rooms">
-          ${(a?.rooms||[]).map(e=>{let l=r.rooms.some(s=>s.roomId===e.roomId);return o`<label class="room"><input type="checkbox" .checked=${l} @change=${()=>this.#l(e.roomId)}><span>${e.name}</span></label>`})}
+        <div class="list" aria-label=${this.#e("plan_rooms","Plan rooms")}>
+          ${(a?.rooms||[]).map(t=>{let r=s.rooms.some(i=>i.roomId===t.roomId);return o`<label class="room"><input type="checkbox" .checked=${r} @change=${()=>this.#c(t.roomId)}><span>${t.name}</span></label>`})}
         </div>
-        ${r.rooms.length?o`
-          <div class="list" aria-label="Room order and settings">
-            ${r.rooms.map((e,l)=>{let s=a?.rooms.find(i=>i.roomId===e.roomId)?.name||"Room";return o`
+        ${s.rooms.length?o`
+          <div class="list" aria-label=${this.#e("v4_room_order_settings","Room order and settings")}>
+            ${s.rooms.map((t,r)=>{let i=a?.rooms.find(n=>n.roomId===t.roomId)?.name||"Room";return o`
                 <div class="plan-room">
                   <div class="plan-room-head">
-                    <strong>${l+1}. ${s}</strong>
-                    <button class="icon-button" type="button" aria-label=${`Move ${s} earlier`} ?disabled=${l===0} @click=${()=>this.#r(l,-1)}>↑</button>
-                    <button class="icon-button" type="button" aria-label=${`Move ${s} later`} ?disabled=${l===r.rooms.length-1} @click=${()=>this.#r(l,1)}>↓</button>
+                    <strong>${r+1}. ${i}</strong>
+                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:i})} ?disabled=${r===0} @click=${()=>this.#n(r,-1)}>↑</button>
+                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:i})} ?disabled=${r===s.rooms.length-1} @click=${()=>this.#n(r,1)}>↓</button>
                   </div>
                   <div class="split">
-                    <label class="field">Cleaning
-                      <select .value=${e.cleaningMode} @change=${i=>this.#o(l,{cleaningMode:n(i)})}>${p.map(i=>o`<option value=${i.value}>${i.label}</option>`)}</select>
+                    <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
+                      <select .value=${t.cleaningMode} @change=${n=>this.#r(r,{cleaningMode:l(n)})}>${p.map(n=>o`<option value=${n}>${this.#s(n)}</option>`)}</select>
                     </label>
-                    <label class="field">Coverage
-                      <select .value=${e.coverageSetting} @change=${i=>this.#o(l,{coverageSetting:n(i)})}>${m.map(i=>o`<option value=${i.value}>${i.label}</option>`)}</select>
+                    <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
+                      <select .value=${t.coverageSetting} @change=${n=>this.#r(r,{coverageSetting:l(n)})}>${h.map(n=>o`<option value=${n}>${this.#o(n)}</option>`)}</select>
                     </label>
                   </div>
                 </div>
@@ -187,129 +187,136 @@ import{i as v,v as b,w as o,x as c,y as g,z as f}from"./chunk.js";var p=[{value:
           </div>
         `:c}
         <details>
-          <summary>Completion options</summary>
+          <summary>${this.#e("v4_completion_options","Completion options")}</summary>
           <div class="stack">
-            <label class="checkbox"><input type="checkbox" .checked=${r.returnToBase} @change=${e=>this.#e({type:"patch-plan-draft",patch:{returnToBase:u(e)}})}>Return to the dock when finished</label>
-            <label class="checkbox"><input type="checkbox" .checked=${r.finishCurrentRoom} @change=${e=>this.#e({type:"patch-plan-draft",patch:{finishCurrentRoom:u(e)}})}>Finish the active room after Stop</label>
-            ${r.finishCurrentRoom?o`<label class="field">Finish threshold · ${r.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(r.finishCurrentRoomThreshold)} @input=${e=>this.#e({type:"patch-plan-draft",patch:{finishCurrentRoomThreshold:Number(n(e))}})}></label>`:c}
+            <label class="checkbox"><input type="checkbox" .checked=${s.returnToBase} @change=${t=>this.#t({type:"patch-plan-draft",patch:{returnToBase:m(t)}})}>${this.#e("plan_return_to_base","Return to the dock when finished")}</label>
+            <label class="checkbox"><input type="checkbox" .checked=${s.finishCurrentRoom} @change=${t=>this.#t({type:"patch-plan-draft",patch:{finishCurrentRoom:m(t)}})}>${this.#e("plan_finish_room","Finish the active room after Stop")}</label>
+            ${s.finishCurrentRoom?o`<label class="field">${this.#e("plan_threshold","Finish threshold")} · ${s.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(s.finishCurrentRoomThreshold)} @input=${t=>this.#t({type:"patch-plan-draft",patch:{finishCurrentRoomThreshold:Number(l(t))}})}></label>`:c}
           </div>
         </details>
         <div class="toolbar">
-          ${r.id?o`
+          ${s.id?o`
             <button
               class="danger"
               type="button"
-              aria-label="Delete plan"
-              @click=${()=>this.#e({type:"open-dialog",dialog:"confirmDeletePlan"})}
-            >Delete</button>
+              aria-label=${this.#e("plan_delete","Delete plan")}
+              @click=${()=>this.#t({type:"open-dialog",dialog:"confirmDeletePlan"})}
+            >${this.#e("plan_delete","Delete")}</button>
           `:c}
         </div>
-        ${this.#a()}
+        ${this.#i()}
       </div>
-    `)}#n(){let t=this.state.resources.areas;return o`
+    `)}#p(){let e=this.state.resources.areas;return o`
       <div class="stack">
-        <matic-precision-controls-v4 .state=${this.state}></matic-precision-controls-v4>
-        <p class="subtle">Paint only on mapped floor. Zoom and pan never change the saved outline.</p>
-        ${this.#t(t.status,t.problem,o`
-          <div class="list" aria-label="Saved custom areas">
-            <button class="list-button" type="button" @click=${()=>this.#e({type:"select-area",areaId:null})}>＋ New outline</button>
-            ${(t.value?.areas||[]).map(a=>o`
-              <button class="list-button" type="button" @click=${()=>{this.#e({type:"select-area",areaId:a.id}),this.#e({type:"open-workflow",workflow:"areaReview"})}}>
+        <matic-precision-controls-v4 .state=${this.state} .localize=${this.localize}></matic-precision-controls-v4>
+        <p class="subtle">${this.#e("v4_draw_floor_hint","Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
+        <div class="toolbar">
+          <button
+            type="button"
+            ?disabled=${this.state.draw.circles.length===0}
+            @click=${()=>this.#t({type:"clear-draft"})}
+          >${this.#e("clear","Clear")}</button>
+        </div>
+        ${this.#a(e.status,e.problem,o`
+          <div class="list" aria-label=${this.#e("area_workspace_title","Saved custom areas")}>
+            <button class="list-button" type="button" @click=${()=>this.#t({type:"select-area",areaId:null})}>＋ ${this.#e("area_new","New outline")}</button>
+            ${(e.value?.areas||[]).map(a=>o`
+              <button class="list-button" type="button" @click=${()=>{this.#t({type:"select-area",areaId:a.id}),this.#t({type:"open-workflow",workflow:"areaReview"})}}>
                 <span>${a.name}</span>
-                <small>${a.status==="current"?"Ready":"Review"}</small>
+                <small>${a.status==="current"?this.#e("area_workspace_ready","Ready"):this.#e("v4_review","Review")}</small>
               </button>
             `)}
           </div>
         `)}
       </div>
-    `}#c(){let t=this.state.areaDraft,a=t.canRebind||t.status==="review",r=t.status==="stale"||t.status==="unknown";return o`
+    `}#h(){let e=this.state.areaDraft,a=e.canRebind||e.status==="review",s=e.status==="stale"||e.status==="unknown";return o`
       <div class="stack">
-        ${a?o`<div class="notice" data-tone="warning" role="status">Review the saved outline on this current map, then confirm it.</div>`:c}
-        ${r?o`<div class="problem" role="alert">This outline no longer matches the current room map. Redraw it before saving.</div>`:c}
-        <label class="field">Area name
-          <input maxlength="128" autocomplete="off" .value=${t.name} @input=${e=>this.#e({type:"patch-area-draft",patch:{name:n(e)}})}>
+        ${a?o`<div class="notice" data-tone="warning" role="status">${this.#e("area_review_required","Review the saved outline on this current map, then confirm it.")}</div>`:c}
+        ${s?o`<div class="problem" role="alert">${this.#e("area_redraw_required","This outline no longer matches the current room map. Redraw it before saving.")}</div>`:c}
+        <label class="field">${this.#e("area_name","Area name")}
+          <input maxlength="128" autocomplete="off" .value=${e.name} @input=${t=>this.#t({type:"patch-area-draft",patch:{name:l(t)}})}>
         </label>
         <div class="split">
-          <label class="field">Cleaning
-            <select .value=${t.cleaningMode} @change=${e=>this.#e({type:"patch-area-draft",patch:{cleaningMode:n(e)}})}>${p.map(e=>o`<option value=${e.value}>${e.label}</option>`)}</select>
+          <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
+            <select .value=${e.cleaningMode} @change=${t=>this.#t({type:"patch-area-draft",patch:{cleaningMode:l(t)}})}>${p.map(t=>o`<option value=${t}>${this.#s(t)}</option>`)}</select>
           </label>
-          <label class="field">Coverage
-            <select .value=${t.coverageSetting} @change=${e=>this.#e({type:"patch-area-draft",patch:{coverageSetting:n(e)}})}>${m.map(e=>o`<option value=${e.value}>${e.label}</option>`)}</select>
+          <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
+            <select .value=${e.coverageSetting} @change=${t=>this.#t({type:"patch-area-draft",patch:{coverageSetting:l(t)}})}>${h.map(t=>o`<option value=${t}>${this.#o(t)}</option>`)}</select>
           </label>
         </div>
-        <p class="subtle">${this.state.draw.circles.length} map-space marks. The outline stays private and floor-bound.</p>
+        <p class="subtle">${this.#e("v4_private_marks","{count} map-space marks. The outline stays private and floor-bound.",{count:this.state.draw.circles.length})}</p>
         <div class="toolbar">
-          <button type="button" @click=${()=>this.#e({type:"open-workflow",workflow:"draw"})}>Edit outline</button>
-          ${t.id?o`
+          <button type="button" @click=${()=>this.#t({type:"open-workflow",workflow:"draw"})}>${this.#e("v4_edit_outline","Edit outline")}</button>
+          ${e.id?o`
             <button
               class="danger"
               type="button"
-              aria-label="Delete area"
-              @click=${()=>this.#e({type:"open-dialog",dialog:"confirmDeleteArea"})}
-            >Delete</button>
+              aria-label=${this.#e("area_delete","Delete area")}
+              @click=${()=>this.#t({type:"open-dialog",dialog:"confirmDeleteArea"})}
+            >${this.#e("area_delete","Delete")}</button>
           `:c}
         </div>
-        ${this.#a()}
+        ${this.#i()}
       </div>
-    `}#d(){let t=this.state.resources.history,a=t.value,r=a?.floors.find(s=>s.id===this.state.selection.floorId)||a?.floors.find(s=>s.active)||a?.floors[0],e=r?.snapshots||[],l=this.state.selection.historyId?Math.max(0,e.findIndex(s=>s.id===this.state.selection.historyId)):e.length;return this.#t(t.status,t.problem,o`
+    `}#m(){let e=this.state.resources.history,a=e.value,s=a?.floors.find(i=>i.id===this.state.selection.floorId)||a?.floors.find(i=>i.active)||a?.floors[0],t=s?.snapshots||[],r=this.state.selection.historyId?Math.max(0,t.findIndex(i=>i.id===this.state.selection.historyId)):t.length;return this.#a(e.status,e.problem,o`
       <div class="stack">
         ${(a?.floors.length||0)>1?o`
-          <div class="list" role="listbox" aria-label="Mapped floors">
-            ${(a?.floors||[]).map((s,i)=>o`
+          <div class="list" role="listbox" aria-label=${this.#e("v4_mapped_floors","Mapped floors")}>
+            ${(a?.floors||[]).map((i,n)=>o`
               <button
                 class="floor"
                 type="button"
                 role="option"
-                aria-selected=${String(s.id===r?.id)}
-                aria-pressed=${String(s.id===r?.id)}
-                @click=${()=>this.#e({type:"set-floor",floorId:s.id})}
+                aria-selected=${String(i.id===s?.id)}
+                aria-pressed=${String(i.id===s?.id)}
+                @click=${()=>this.#t({type:"set-floor",floorId:i.id})}
               >
-                <span>${s.label||(s.active?"Current floor":`Saved floor ${s.ordinal??i}`)}</span>
-                <small>${s.active?"Live":"Read only"}</small>
+                <span>${i.label||(i.active?this.#e("v4_current_floor","Current floor"):this.#e("v4_saved_floor","Saved floor {number}",{number:i.ordinal??n}))}</span>
+                <small>${i.active?this.#e("map_timeline_live_action","Live"):this.#e("v4_read_only","Read only")}</small>
               </button>
             `)}
           </div>
         `:c}
         <div class="timeline">
-          <label class="field">Map timeline
+          <label class="field">${this.#e("map_timeline_label","Map timeline")}
             <input
               type="range"
               min="0"
-              max=${String(e.length)}
+              max=${String(t.length)}
               step="1"
-              .value=${String(l)}
-              ?disabled=${!e.length}
-              @input=${s=>{let i=Number(n(s));this.#e({type:"set-history",historyId:i===e.length?null:e[i]?.id||null})}}
+              .value=${String(r)}
+              ?disabled=${!t.length}
+              @input=${i=>{let n=Number(l(i));this.#t({type:"set-history",historyId:n===t.length?null:t[n]?.id||null})}}
             >
           </label>
           <div class="list">
-            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${()=>this.#e({type:"set-history",historyId:null})}><span>Live</span><small>Current</small></button>
-            ${e.map((s,i)=>o`
-              <button class="snapshot" type="button" aria-current=${String(s.id===this.state.selection.historyId)} @click=${()=>this.#e({type:"set-history",historyId:s.id})}>
-                <span>${this.#p(s.createdAt)}</span><small>${i+1} of ${e.length}</small>
+            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${()=>this.#t({type:"set-history",historyId:null})}><span>${this.#e("map_timeline_live_action","Live")}</span><small>${this.#e("v4_current","Current")}</small></button>
+            ${t.map((i,n)=>o`
+              <button class="snapshot" type="button" aria-current=${String(i.id===this.state.selection.historyId)} @click=${()=>this.#t({type:"set-history",historyId:i.id})}>
+                <span>${this.#u(i.createdAt)}</span><small>${n+1} of ${t.length}</small>
               </button>
             `)}
           </div>
         </div>
-        <p class="subtle">Saved maps are floor-scoped and never show a live robot position.</p>
+        <p class="subtle">${this.#e("v4_history_privacy","Saved maps are floor-scoped and never show a live robot position.")}</p>
       </div>
-    `)}#p(t){try{return new Intl.DateTimeFormat(this.state.locale,{dateStyle:"medium",timeStyle:"short"}).format(new Date(t))}catch{return"Saved map"}}#m(){let t=this.state.resources.entry;return o`
+    `)}#u(e){try{return new Intl.DateTimeFormat(this.state.locale,{dateStyle:"medium",timeStyle:"short"}).format(new Date(e))}catch{return this.#e("v4_saved_map","Saved map")}}#v(){let e=this.state.resources.entry;return o`
       <div class="stack">
-        <p class="subtle">This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.</p>
+        <p class="subtle">${this.#e("v4_support_privacy","This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.")}</p>
         <dl class="diagnostics">
-          <dt>Connection</dt><dd>${this.state.host.connected?"Connected":"Offline"}</dd>
-          <dt>Map state</dt><dd>${this.state.coherence}</dd>
-          <dt>Floor verified</dt><dd>${this.state.map.floorCoherent?"Yes":"No"}</dd>
-          <dt>Session verified</dt><dd>${this.state.map.sessionVerified?"Yes":"No"}</dd>
-          <dt>Map complete</dt><dd>${this.state.map.complete?"Yes":"No"}</dd>
-          <dt>Map health</dt><dd>${t?.health||"Unknown"}</dd>
-          <dt>Blocked by</dt><dd>${t?.mapBlockReason?.replaceAll("_"," ")||"Nothing"}</dd>
-          <dt>Startup map check</dt><dd>${t?.bootstrapState?.replaceAll("_"," ")||"Unknown"}</dd>
-          <dt>Startup photo layer</dt><dd>${t?.bootstrapPhotoSeen?"Seen":"Not seen"}</dd>
-          <dt>Startup structure layer</dt><dd>${t?.bootstrapStructureSeen?"Seen":"Not seen"}</dd>
-          <dt>Startup failures</dt><dd>${t?.bootstrapFailures||0}</dd>
-          <dt>Stream failures</dt><dd>${t?.streamFailures||0}</dd>
-          <dt>Saved floor count</dt><dd>${this.state.floor.classifiedCount}</dd>
+          <dt>${this.#e("v4_connection","Connection")}</dt><dd>${this.state.host.connected?this.#e("v4_connected","Connected"):this.#e("v4_offline","Offline")}</dd>
+          <dt>${this.#e("v4_map_state","Map state")}</dt><dd>${this.state.coherence}</dd>
+          <dt>${this.#e("v4_floor_verified","Floor verified")}</dt><dd>${this.state.map.floorCoherent?this.#e("v4_yes","Yes"):this.#e("v4_no","No")}</dd>
+          <dt>${this.#e("v4_session_verified","Session verified")}</dt><dd>${this.state.map.sessionVerified?this.#e("v4_yes","Yes"):this.#e("v4_no","No")}</dd>
+          <dt>${this.#e("v4_map_complete","Map complete")}</dt><dd>${this.state.map.complete?this.#e("v4_yes","Yes"):this.#e("v4_no","No")}</dd>
+          <dt>${this.#e("v4_map_health","Map health")}</dt><dd>${e?.health||this.#e("v4_unknown","Unknown")}</dd>
+          <dt>${this.#e("v4_blocked_by","Blocked by")}</dt><dd>${e?.mapBlockReason?.replaceAll("_"," ")||this.#e("v4_nothing","Nothing")}</dd>
+          <dt>${this.#e("v4_startup_map","Startup map check")}</dt><dd>${e?.bootstrapState?.replaceAll("_"," ")||this.#e("v4_unknown","Unknown")}</dd>
+          <dt>${this.#e("v4_startup_photo","Startup photo layer")}</dt><dd>${e?.bootstrapPhotoSeen?this.#e("v4_seen","Seen"):this.#e("v4_not_seen","Not seen")}</dd>
+          <dt>${this.#e("v4_startup_structure","Startup structure layer")}</dt><dd>${e?.bootstrapStructureSeen?this.#e("v4_seen","Seen"):this.#e("v4_not_seen","Not seen")}</dd>
+          <dt>${this.#e("v4_startup_failures","Startup failures")}</dt><dd>${e?.bootstrapFailures||0}</dd>
+          <dt>${this.#e("v4_stream_failures","Stream failures")}</dt><dd>${e?.streamFailures||0}</dd>
+          <dt>${this.#e("v4_saved_floor_count","Saved floor count")}</dt><dd>${this.state.floor.classifiedCount}</dd>
         </dl>
       </div>
-    `}render(){switch(this.state.workflow){case"rooms":return this.#s();case"plan":return this.#i();case"draw":return this.#n();case"areaReview":return this.#c();case"history":return this.#d();case"support":return this.#m();case"none":return c}}};customElements.get("matic-map-workflow-v4")||customElements.define("matic-map-workflow-v4",h);export{h as MaticMapWorkflowV4};
+    `}render(){switch(this.state.workflow){case"rooms":return this.#l();case"plan":return this.#d();case"draw":return this.#p();case"areaReview":return this.#h();case"history":return this.#m();case"support":return this.#v();case"none":return c}}};customElements.get("matic-map-workflow-v4")||customElements.define("matic-map-workflow-v4",u);export{u as MaticMapWorkflowV4};

@@ -1,10 +1,11 @@
-import type { CameraPreference, MapQuality, MapView } from "./contracts";
+import type { CameraPreference, MapAppearance, MapQuality, MapView } from "./contracts";
 
-export type { CameraPreference, MapQuality, MapView } from "./contracts";
+export type { CameraPreference, MapAppearance, MapQuality, MapView } from "./contracts";
 
 export interface MapPreferences {
   readonly version: 4;
   readonly view: MapView;
+  readonly appearance: MapAppearance;
   readonly labels: boolean;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
@@ -13,6 +14,7 @@ export interface MapPreferences {
 const defaults = (): MapPreferences => ({
   version: 4,
   view: "top",
+  appearance: "photo",
   labels: true,
   quality: "auto",
   cameras: {},
@@ -70,6 +72,9 @@ export const parsePreferences = (value: unknown): MapPreferences => {
   return {
     version: 4,
     view,
+    appearance: raw.appearance === "rooms" || raw.appearance === "photo"
+      ? raw.appearance
+      : fallback.appearance,
     labels: typeof raw.labels === "boolean" ? raw.labels : fallback.labels,
     quality,
     cameras,

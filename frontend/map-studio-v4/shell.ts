@@ -2,6 +2,7 @@ import { LitElement, css, html, nothing } from "lit";
 import type { PropertyValues } from "lit";
 
 import type {
+  Localize,
   PrimaryAction,
   WorkspaceIntent,
   WorkspaceState,
@@ -13,18 +14,21 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import "./precision-controls";
+import { translate } from "./localize";
 import {
   initialWorkspaceState,
   selectPausedSecondaryAction,
   selectPrimaryAction,
 } from "./state";
 
-const statusCopy = (state: WorkspaceState): { readonly title: string; readonly detail: string } => {
-  if (!state.host.connected) return { title: "Reconnecting", detail: "Home Assistant is offline" };
-  if (!state.host.administrator) return { title: "Access required", detail: "Administrator only" };
-  if (state.host.robotCount === 0) return { title: "No robot", detail: "Set up a Matic robot" };
-  if (!state.host.robotConnected) return { title: "Robot offline", detail: "Last verified map · read only" };
-  if (state.activity === "problem") return { title: "Needs attention", detail: "Check the robot" };
+const statusCopy = (state: WorkspaceState, localize?: Localize): { readonly title: string; readonly detail: string } => {
+  const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
+    translate(localize, key, fallback, placeholders);
+  if (!state.host.connected) return { title: t("v4_reconnecting", "Reconnecting"), detail: t("v4_ha_offline", "Home Assistant is offline") };
+  if (!state.host.administrator) return { title: t("v4_access_required", "Access required"), detail: t("v4_admin_only", "Administrator only") };
+  if (state.host.robotCount === 0) return { title: t("v4_no_robot_short", "No robot"), detail: t("v4_set_up_robot", "Set up a Matic robot") };
+  if (!state.host.robotConnected) return { title: t("v4_robot_offline", "Robot offline"), detail: t("v4_last_map_read_only", "Last verified map · read only") };
+  if (state.activity === "problem") return { title: t("v4_needs_attention", "Needs attention"), detail: t("v4_check_robot", "Check the robot") };
   if (state.dataMode === "history") {
     const floor = state.resources.history.value?.floors.find(
       (candidate) => candidate.id === state.selection.floorId,
@@ -34,40 +38,45 @@ const statusCopy = (state: WorkspaceState): { readonly title: string; readonly d
     ) ?? -1;
     const count = floor?.snapshots.length ?? 0;
     return {
-      title: "Saved map",
-      detail: position >= 0 ? `Read only · ${position + 1} of ${count}` : "Read only",
+      title: t("v4_saved_map", "Saved map"),
+      detail: position >= 0
+        ? t("v4_read_only_position", "Read only · {position} of {count}", { position: position + 1, count })
+        : t("v4_read_only", "Read only"),
     };
   }
   if (state.coherence === "verifying" || state.coherence === "booting") {
-    return { title: "Locating", detail: "Finding the current map" };
+    return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map") };
   }
-  if (state.activity === "cleaning") return { title: "Cleaning", detail: "Cleaning in progress" };
-  if (state.activity === "paused") return { title: "Paused", detail: "Cleaning can resume" };
-  if (state.activity === "returning") return { title: "Returning", detail: "Going to the dock" };
-  if (state.activity === "stopping") return { title: "Stopping", detail: "Waiting for the robot" };
-  const battery = state.batteryPercent === null ? "Ready" : `${state.batteryPercent}% battery`;
-  return { title: state.activity === "docked" ? "Docked" : "Ready", detail: battery };
+  if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: t("v4_cleaning_progress", "Cleaning in progress") };
+  if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: t("v4_can_resume", "Cleaning can resume") };
+  if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: t("v4_going_dock", "Going to the dock") };
+  if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot") };
+  const battery = state.batteryPercent === null
+    ? t("v4_ready", "Ready")
+    : t("v4_battery", "{percent}% battery", { percent: state.batteryPercent });
+  return { title: state.activity === "docked" ? t("v4_docked", "Docked") : t("v4_ready", "Ready"), detail: battery };
 };
 
-const workflowCopy = (state: WorkspaceState): {
+const workflowCopy = (state: WorkspaceState, localize?: Localize): {
   readonly title: string;
   readonly description: string;
 } => {
+  const t = (key: string, fallback: string): string => translate(localize, key, fallback);
   switch (state.workflow) {
     case "rooms":
-      return { title: "Choose rooms", description: "Select on the map or from the list." };
+      return { title: t("v4_choose_rooms", "Choose rooms"), description: t("v4_choose_rooms_detail", "Select on the map or from the list.") };
     case "draw":
-      return { title: "Draw an area", description: "Paint on the verified map, then review the details." };
+      return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Paint on the verified map, then review the details.") };
     case "plan":
-      return { title: "Plan", description: "Review rooms and cleaning settings." };
+      return { title: t("v4_plan", "Plan"), description: t("v4_plan_detail", "Review rooms and cleaning settings.") };
     case "areaReview":
-      return { title: "Area details", description: "Name the area and choose cleaning settings." };
+      return { title: t("area_details", "Area details"), description: t("area_details_hint", "Name the area and choose cleaning settings.") };
     case "history":
-      return { title: "Map history", description: "Saved maps are floor-scoped and read only." };
+      return { title: t("v4_map_history", "Map history"), description: t("v4_map_history_detail", "Saved maps are floor-scoped and read only.") };
     case "support":
-      return { title: "Map support", description: "Private geometry is never included." };
+      return { title: t("v4_map_support", "Map support"), description: t("v4_map_support_detail", "Private geometry is never included.") };
     case "none":
-      return { title: "Clean", description: "Start with a saved plan, rooms, or an area." };
+      return { title: t("v4_clean", "Clean"), description: t("v4_clean_detail", "Start with a saved plan, rooms, or an area.") };
   }
 };
 
@@ -81,46 +90,47 @@ interface DialogPresentation {
   readonly action: "discard" | "delete-plan" | "delete-area" | "stop" | null;
 }
 
-const dialogCopy = (dialog: WorkspaceState["dialog"]): DialogPresentation | null => {
+const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize): DialogPresentation | null => {
+  const t = (key: string, fallback: string): string => translate(localize, key, fallback);
   switch (dialog) {
     case "discardDraft":
       return {
-        title: "Discard this area?",
-        detail: "The outline has not been saved. You can keep drawing or discard it.",
-        cancelLabel: "Keep drawing",
-        confirmLabel: "Discard",
+        title: t("v4_discard_area", "Discard this area?"),
+        detail: t("v4_discard_area_detail", "The outline has not been saved. You can keep drawing or discard it."),
+        cancelLabel: t("v4_keep_drawing", "Keep drawing"),
+        confirmLabel: t("v4_discard", "Discard"),
         action: "discard",
       };
     case "confirmDeletePlan":
       return {
-        title: "Delete this plan?",
-        detail: "This removes the saved plan from Home Assistant. The robot will not move.",
-        cancelLabel: "Cancel",
-        confirmLabel: "Delete plan",
+        title: t("v4_delete_plan", "Delete this plan?"),
+        detail: t("v4_delete_plan_detail", "This removes the saved plan from Home Assistant. The robot will not move."),
+        cancelLabel: t("v4_cancel", "Cancel"),
+        confirmLabel: t("plan_delete", "Delete plan"),
         action: "delete-plan",
       };
     case "confirmDeleteArea":
       return {
-        title: "Delete this area?",
-        detail: "This removes the saved outline from Home Assistant. The robot will not move.",
-        cancelLabel: "Cancel",
-        confirmLabel: "Delete area",
+        title: t("v4_delete_area", "Delete this area?"),
+        detail: t("v4_delete_area_detail", "This removes the saved outline from Home Assistant. The robot will not move."),
+        cancelLabel: t("v4_cancel", "Cancel"),
+        confirmLabel: t("area_delete", "Delete area"),
         action: "delete-area",
       };
     case "confirmStop":
       return {
-        title: "Stop cleaning?",
-        detail: "The robot may take a moment to settle before another action is available.",
-        cancelLabel: "Keep cleaning",
-        confirmLabel: "Stop",
+        title: t("v4_stop_cleaning", "Stop cleaning?"),
+        detail: t("v4_stop_cleaning_detail", "The robot may take a moment to settle before another action is available."),
+        cancelLabel: t("v4_keep_cleaning", "Keep cleaning"),
+        confirmLabel: t("v4_stop", "Stop"),
         action: "stop",
       };
     case "error":
       return {
-        title: "Something went wrong",
-        detail: "No action was started. Close this message and try again when the map is ready.",
-        cancelLabel: "Close",
-        confirmLabel: "Close",
+        title: t("v4_error", "Something went wrong"),
+        detail: t("v4_error_detail", "No action was started. Close this message and try again when the map is ready."),
+        cancelLabel: t("v4_close", "Close"),
+        confirmLabel: t("v4_close", "Close"),
         action: null,
       };
     case null:
@@ -139,10 +149,12 @@ const deepActiveElement = (root: Document | ShadowRoot = document): HTMLElement 
 export class MaticMapShellV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    localize: { attribute: false },
     _measuredNarrow: { state: true },
     _sheetOffset: { state: true },
     _workflowReady: { state: true },
     _overflowOpen: { state: true },
+    _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
   };
 
@@ -193,6 +205,14 @@ export class MaticMapShellV4 extends LitElement {
       cursor: pointer;
     }
 
+    select.robot-switcher {
+      max-inline-size: 11rem;
+      padding-inline: 0.55rem;
+      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
+      background: var(--card-background-color, #fff);
+      text-overflow: ellipsis;
+    }
+
     .title {
       overflow: hidden;
       min-inline-size: 0;
@@ -232,6 +252,23 @@ export class MaticMapShellV4 extends LitElement {
       cursor: pointer;
     }
     .overflow-menu button:hover { background: var(--secondary-background-color, #f3f6f7); }
+    .overflow-field {
+      display: grid;
+      gap: 0.25rem;
+      padding: 0.45rem 0.75rem;
+      color: var(--secondary-text-color, #60717c);
+      font-size: 0.72rem;
+      font-weight: 650;
+    }
+    .overflow-field select {
+      min-block-size: 2.5rem;
+      padding-inline: 0.55rem;
+      border: 1px solid var(--divider-color, rgb(60 75 85 / 18%));
+      border-radius: 0.55rem;
+      color: var(--primary-text-color, #1f2933);
+      background: var(--card-background-color, #fff);
+      font: inherit;
+    }
 
     .header-state {
       display: inline-flex;
@@ -351,6 +388,8 @@ export class MaticMapShellV4 extends LitElement {
       z-index: 9;
       inset-block-start: 4.2rem;
       inset-inline-end: 0.75rem;
+      display: flex;
+      gap: 0.4rem;
     }
 
     .precision-chip {
@@ -475,10 +514,16 @@ export class MaticMapShellV4 extends LitElement {
   `;
 
   state: WorkspaceState = initialWorkspaceState();
+  localize?: Localize;
+
+  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+    return translate(this.localize, key, fallback, placeholders);
+  }
   protected _measuredNarrow = false;
   protected _sheetOffset = 0;
   protected _workflowReady = false;
   protected _overflowOpen = false;
+  protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "peek";
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
@@ -486,6 +531,10 @@ export class MaticMapShellV4 extends LitElement {
   #precisionLauncher: HTMLElement | null = null;
   #dialogLauncher: HTMLElement | null = null;
   #pendingWorkflow: Workflow | null = null;
+
+  readonly #fullscreenChange = (): void => {
+    this._browserFullscreen = document.fullscreenElement === this.renderRoot.querySelector(".app");
+  };
 
   readonly #outsidePointer = (event: PointerEvent): void => {
     if (!this._overflowOpen) return;
@@ -502,6 +551,7 @@ export class MaticMapShellV4 extends LitElement {
     });
     this.#resizeObserver.observe(this);
     window.addEventListener("pointerdown", this.#outsidePointer, true);
+    document.addEventListener("fullscreenchange", this.#fullscreenChange);
     this.#sheetResizeObserver = new ResizeObserver(([entry]) => {
       if (!entry) return;
       const next = Math.ceil(entry.target.getBoundingClientRect().height);
@@ -516,6 +566,7 @@ export class MaticMapShellV4 extends LitElement {
     this.#sheetResizeObserver = null;
     this.#observedSheet = null;
     window.removeEventListener("pointerdown", this.#outsidePointer, true);
+    document.removeEventListener("fullscreenchange", this.#fullscreenChange);
     super.disconnectedCallback();
   }
 
@@ -645,10 +696,16 @@ export class MaticMapShellV4 extends LitElement {
     }));
   }
 
-  #overflowAction(id: "support" | "classic"): void {
+  #overflowAction(id: "support" | "classic" | "fullscreen"): void {
     this._overflowOpen = false;
     if (id === "support") {
       this.#workflow("support");
+      return;
+    }
+    if (id === "fullscreen") {
+      const app = this.renderRoot.querySelector<HTMLElement>(".app");
+      if (document.fullscreenElement) void document.exitFullscreen();
+      else void app?.requestFullscreen();
       return;
     }
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
@@ -695,6 +752,19 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #primaryButton(action: PrimaryAction, className = "primary-action") {
+    const labels: Readonly<Record<string, [string, string]>> = {
+      stop: ["v4_stop", "Stop"],
+      resume: ["v4_resume", "Resume"],
+      "review-area": ["v4_review_details", "Review details"],
+      "save-area": ["area_save", "Save area"],
+      "run-area": ["area_run", "Clean area"],
+      "save-plan": ["plan_save", "Save plan"],
+      "run-plan": ["plan_run", "Run plan"],
+    };
+    const translated = labels[action.id];
+    const label = action.id === "clean-rooms"
+      ? action.label
+      : translated ? this.#t(translated[0], translated[1]) : action.label;
     return html`
       <button
         class=${`${className} ${action.kind === "danger" ? "danger" : ""}`}
@@ -702,35 +772,35 @@ export class MaticMapShellV4 extends LitElement {
         ?disabled=${!action.enabled}
         title=${action.reason ?? ""}
         @click=${() => this.#action(action)}
-      >${action.label}</button>
+      >${label}</button>
     `;
   }
 
   #workflowBody(state: WorkspaceState) {
     if (state.workflow === "none") return html`
       <div class="quick-actions">
-        <button type="button" @click=${() => this.#workflow("rooms")}>Rooms</button>
-        <button type="button" @click=${() => this.#workflow("draw")}>Draw area</button>
-        <button type="button" @click=${() => this.#workflow("plan")}>Plans</button>
-        <button type="button" @click=${() => this.#workflow("history")}>History</button>
+        <button type="button" @click=${() => this.#workflow("rooms")}>${this.#t("map_rooms", "Rooms")}</button>
+        <button type="button" @click=${() => this.#workflow("draw")}>${this.#t("v4_draw_area", "Draw area")}</button>
+        <button type="button" @click=${() => this.#workflow("plan")}>${this.#t("cleaning_workspace_plans", "Plans")}</button>
+        <button type="button" @click=${() => this.#workflow("history")}>${this.#t("map_timeline_history", "History")}</button>
       </div>
     `;
-    if (!this._workflowReady) return html`<div role="status">Loading workspace…</div>`;
-    return html`<matic-map-workflow-v4 .state=${state}></matic-map-workflow-v4>`;
+    if (!this._workflowReady) return html`<div role="status">${this.#t("v4_loading_workspace", "Loading workspace…")}</div>`;
+    return html`<matic-map-workflow-v4 .state=${state} .localize=${this.localize}></matic-map-workflow-v4>`;
   }
 
   protected override render() {
     const state = this.state;
     const narrow = state.narrowHint || this._measuredNarrow;
-    const status = statusCopy(state);
-    const workflow = workflowCopy(state);
+    const status = statusCopy(state, this.localize);
+    const workflow = workflowCopy(state, this.localize);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
     const secondary = selectPausedSecondaryAction(state);
     const compactPrecision = state.workflow === "draw" && (narrow || state.fullMap);
     const locatingInFullMap = state.fullMap
       && (state.coherence === "verifying" || state.coherence === "booting");
     const navigationBack = state.workflow !== "none" || state.fullMap || state.precisionOpen;
-    const dialog = dialogCopy(state.dialog);
+    const dialog = dialogCopy(state.dialog, this.localize);
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}`} @keydown=${this.#keyboard}>
         <div class="app">
@@ -738,12 +808,22 @@ export class MaticMapShellV4 extends LitElement {
             <button
               class="nav"
               type="button"
-              aria-label=${navigationBack ? "Back" : "Open navigation"}
+              aria-label=${navigationBack ? this.#t("v4_back", "Back") : this.#t("v4_open_navigation", "Open navigation")}
               @click=${this.#navigation}
             >${navigationBack ? "←" : "☰"}</button>
-            <h1 class="title">Matic Map</h1>
+            <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
             ${state.host.robotCount > 1 ? html`
-              <button class="robot-switcher" type="button">${state.robotLabel} ▾</button>
+              <select
+                class="robot-switcher"
+                aria-label=${this.#t("v4_choose_robot", "Choose robot")}
+                .value=${state.selection.entryId || ""}
+                @change=${(event: Event) => this.#intent({
+                  type: "select-entry",
+                  entryId: (event.currentTarget as HTMLSelectElement).value,
+                })}
+              >${state.robots.map((robot) => html`
+                <option value=${robot.entryId}>${robot.label}</option>
+              `)}</select>
             ` : nothing}
             <span class="spacer"></span>
             <span class="header-state">${status.title}</span>
@@ -751,14 +831,29 @@ export class MaticMapShellV4 extends LitElement {
               <button
                 class="overflow"
                 type="button"
-                aria-label="More map options"
+                aria-label=${this.#t("map_more", "More map options")}
                 aria-expanded=${String(this._overflowOpen)}
                 @click=${() => { this._overflowOpen = !this._overflowOpen; }}
               >⋮</button>
               ${this._overflowOpen ? html`
                 <div class="overflow-menu" role="menu">
-                  <button role="menuitem" type="button" @click=${() => this.#overflowAction("support")}>Map support</button>
-                  <button role="menuitem" type="button" @click=${() => this.#overflowAction("classic")}>Use classic Map Studio</button>
+                  <label class="overflow-field">${this.#t("map_quality_label", "Scene detail")}
+                    <select
+                      .value=${state.quality}
+                      @change=${(event: Event) => this.#intent({
+                        type: "set-quality",
+                        quality: (event.currentTarget as HTMLSelectElement).value as WorkspaceState["quality"],
+                      })}
+                    >
+                      <option value="auto">${this.#t("map_quality_auto", "Auto detail")}</option>
+                      <option value="efficient">${this.#t("map_quality_efficient", "Efficient")}</option>
+                      <option value="balanced">${this.#t("map_quality_balanced", "Balanced")}</option>
+                      <option value="maximum">${this.#t("map_quality_maximum", "Maximum")}</option>
+                    </select>
+                  </label>
+                  <button role="menuitem" type="button" @click=${() => this.#overflowAction("fullscreen")}>${this._browserFullscreen ? this.#t("exit_fullscreen", "Exit full screen") : this.#t("expand_map", "Browser full screen")}</button>
+                  <button role="menuitem" type="button" @click=${() => this.#overflowAction("support")}>${this.#t("v4_map_support", "Map support")}</button>
+                  <button role="menuitem" type="button" @click=${() => this.#overflowAction("classic")}>${this.#t("v4_use_classic", "Use classic Map Studio")}</button>
                 </div>
               ` : nothing}
             </div>
@@ -771,6 +866,7 @@ export class MaticMapShellV4 extends LitElement {
                   ? `--map-sheet-offset:${this._sheetOffset}px`
                   : "--map-sheet-offset:0px"}
                 .state=${state}
+                .localize=${this.localize}
               ></matic-map-canvas-v4>
             </div>
 
@@ -782,8 +878,14 @@ export class MaticMapShellV4 extends LitElement {
                   aria-expanded=${String(state.precisionOpen)}
                   @click=${this.#togglePrecision}
                 >${state.draw.zoomPercent}% · ${state.draw.brushMeters.toFixed(2)} m</button>
+                <button
+                  class="precision-chip"
+                  type="button"
+                  ?disabled=${state.draw.circles.length === 0}
+                  @click=${() => this.#intent({ type: "clear-draft" })}
+                >${this.#t("clear", "Clear")}</button>
                 ${state.precisionOpen ? html`
-                  <matic-precision-controls-v4 compact .state=${state}></matic-precision-controls-v4>
+                  <matic-precision-controls-v4 compact .state=${state} .localize=${this.localize}></matic-precision-controls-v4>
                 ` : nothing}
               </div>
             ` : nothing}
@@ -812,7 +914,7 @@ export class MaticMapShellV4 extends LitElement {
               <button
                 class="sheet-toggle"
                 type="button"
-                aria-label=${`Map workspace, ${this._sheetDetent} height`}
+                aria-label=${this.#t("v4_workspace_height", "Map workspace, {height} height", { height: this._sheetDetent })}
                 aria-expanded=${String(this._sheetDetent !== "peek")}
                 @click=${this.#cycleSheet}
               >

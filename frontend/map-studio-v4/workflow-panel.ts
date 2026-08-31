@@ -5,22 +5,14 @@ import type {
   CoverageSetting,
   PlanRoom,
 } from "./backend-contracts";
-import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import "./precision-controls";
 import { initialWorkspaceState } from "./state";
+import { translate } from "./localize";
 
-const modes: readonly { readonly value: CleaningMode; readonly label: string }[] = [
-  { value: "vacuum", label: "Vacuum" },
-  { value: "mop", label: "Mop" },
-  { value: "vacuum_and_mop", label: "Vacuum and mop" },
-];
-
-const coverage: readonly { readonly value: CoverageSetting; readonly label: string }[] = [
-  { value: "quick", label: "Quick" },
-  { value: "standard", label: "Optimal" },
-  { value: "heavy_duty", label: "Heavy duty" },
-];
+const modes: readonly CleaningMode[] = ["vacuum", "mop", "vacuum_and_mop"];
+const coverage: readonly CoverageSetting[] = ["quick", "standard", "heavy_duty"];
 
 const eventValue = (event: Event): string => (event.currentTarget as HTMLInputElement).value;
 const eventChecked = (event: Event): boolean => (event.currentTarget as HTMLInputElement).checked;
@@ -28,6 +20,7 @@ const eventChecked = (event: Event): boolean => (event.currentTarget as HTMLInpu
 export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    localize: { attribute: false },
   };
 
   static override styles = css`
@@ -128,6 +121,23 @@ export class MaticMapWorkflowV4 extends LitElement {
   `;
 
   state: WorkspaceState = initialWorkspaceState();
+  localize?: Localize;
+
+  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+    return translate(this.localize, key, fallback, placeholders);
+  }
+
+  #modeLabel(mode: CleaningMode): string {
+    if (mode === "vacuum") return this.#t("vacuum", "Vacuum");
+    if (mode === "mop") return this.#t("mop", "Mop");
+    return this.#t("vacuum_and_mop", "Vacuum + mop");
+  }
+
+  #coverageLabel(value: CoverageSetting): string {
+    if (value === "quick") return this.#t("quick", "Quick");
+    if (value === "standard") return this.#t("standard", "Optimal");
+    return this.#t("heavy_duty", "Heavy Duty");
+  }
 
   #intent(intent: WorkspaceIntent): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_INTENT_EVENT, {
@@ -146,9 +156,9 @@ export class MaticMapWorkflowV4 extends LitElement {
   }
 
   #resource(status: string, problem: string | null, body: unknown) {
-    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">Loading…</div>`;
-    if (status === "error") return html`<div class="problem" role="alert">This workspace is unavailable right now. ${problem === "request-failed" ? "Try again shortly." : "Return to the live map and retry."}</div>`;
-    if (status === "empty") return html`<div class="empty">Nothing saved yet.</div>`;
+    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${this.#t("map_loading", "Loading…")}</div>`;
+    if (status === "error") return html`<div class="problem" role="alert">${this.#t("v4_workspace_unavailable", "This workspace is unavailable right now.")} ${problem === "request-failed" ? this.#t("v4_try_again", "Try again shortly.") : this.#t("v4_return_live_retry", "Return to the live map and retry.")}</div>`;
+    if (status === "empty") return html`<div class="empty">${this.#t("v4_nothing_saved", "Nothing saved yet.")}</div>`;
     return body;
   }
 
@@ -156,7 +166,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     const plans = this.state.resources.plans;
     return this.#resource(plans.status, plans.problem, html`
       <div class="stack">
-        <div class="list" role="group" aria-label="Rooms to clean">
+        <div class="list" role="group" aria-label=${this.#t("v4_rooms_to_clean", "Rooms to clean")}>
           ${(plans.value?.rooms || []).map((room) => {
             const checked = this.state.selection.roomIds.includes(room.roomId);
             return html`
@@ -172,26 +182,26 @@ export class MaticMapWorkflowV4 extends LitElement {
           })}
         </div>
         <div class="split">
-          <label class="field">Cleaning
+          <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
             <select
               .value=${this.state.selection.cleaningMode}
               @change=${(event: Event) => this.#intent({
                 type: "patch-room-settings",
                 cleaningMode: eventValue(event) as CleaningMode,
               })}
-            >${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+            >${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
           </label>
-          <label class="field">Coverage
+          <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
             <select
               .value=${this.state.selection.coverageSetting}
               @change=${(event: Event) => this.#intent({
                 type: "patch-room-settings",
                 coverageSetting: eventValue(event) as CoverageSetting,
               })}
-            >${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+            >${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
-        <p class="subtle">Select rooms here or directly on the map. The map and list stay in sync.</p>
+        <p class="subtle">${this.#t("v4_room_selection_hint", "Select rooms here or directly on the map. The map and list stay in sync.")}</p>
         ${this.#notice()}
       </div>
     `);
@@ -229,18 +239,18 @@ export class MaticMapWorkflowV4 extends LitElement {
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         <div class="split">
-          <label class="field">Saved plan
+          <label class="field">${this.#t("v4_saved_plan", "Saved plan")}
             <select
               .value=${this.state.selection.planId || ""}
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
             >
-              <option value="">New plan</option>
+              <option value="">${this.#t("plan_new", "New plan")}</option>
               ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.name}</option>`) }
             </select>
           </label>
-          <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ New plan</button>
+          <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ ${this.#t("plan_new", "New plan")}</button>
         </div>
-        <label class="field">Plan name
+        <label class="field">${this.#t("plan_name", "Plan name")}
           <input
             maxlength="128"
             autocomplete="off"
@@ -249,7 +259,7 @@ export class MaticMapWorkflowV4 extends LitElement {
           >
         </label>
         <div class="split">
-          <label class="field">Run order
+          <label class="field">${this.#t("plan_run_behavior", "Run order")}
             <select
               .value=${draft.runBehavior}
               @change=${(event: Event) => this.#intent({
@@ -257,35 +267,35 @@ export class MaticMapWorkflowV4 extends LitElement {
                 patch: { runBehavior: eventValue(event) === "ordered" ? "ordered" : "intelligent" },
               })}
             >
-              <option value="intelligent">Smart rotation</option>
-              <option value="ordered">Listed order</option>
+              <option value="intelligent">${this.#t("plan_intelligent", "Smart rotation")}</option>
+              <option value="ordered">${this.#t("plan_ordered", "Listed order")}</option>
             </select>
           </label>
-          <label class="checkbox"><input type="checkbox" .checked=${draft.enabled} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { enabled: eventChecked(event) } })}>Enabled</label>
+          <label class="checkbox"><input type="checkbox" .checked=${draft.enabled} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { enabled: eventChecked(event) } })}>${this.#t("plan_enabled", "Enabled")}</label>
         </div>
-        <div class="list" aria-label="Plan rooms">
+        <div class="list" aria-label=${this.#t("plan_rooms", "Plan rooms")}>
           ${(catalog?.rooms || []).map((room) => {
             const checked = draft.rooms.some((candidate) => candidate.roomId === room.roomId);
             return html`<label class="room"><input type="checkbox" .checked=${checked} @change=${() => this.#togglePlanRoom(room.roomId)}><span>${room.name}</span></label>`;
           })}
         </div>
         ${draft.rooms.length ? html`
-          <div class="list" aria-label="Room order and settings">
+          <div class="list" aria-label=${this.#t("v4_room_order_settings", "Room order and settings")}>
             ${draft.rooms.map((room, index) => {
               const label = catalog?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name || "Room";
               return html`
                 <div class="plan-room">
                   <div class="plan-room-head">
                     <strong>${index + 1}. ${label}</strong>
-                    <button class="icon-button" type="button" aria-label=${`Move ${label} earlier`} ?disabled=${index === 0} @click=${() => this.#movePlanRoom(index, -1)}>↑</button>
-                    <button class="icon-button" type="button" aria-label=${`Move ${label} later`} ?disabled=${index === draft.rooms.length - 1} @click=${() => this.#movePlanRoom(index, 1)}>↓</button>
+                    <button class="icon-button" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${() => this.#movePlanRoom(index, -1)}>↑</button>
+                    <button class="icon-button" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${() => this.#movePlanRoom(index, 1)}>↓</button>
                   </div>
                   <div class="split">
-                    <label class="field">Cleaning
-                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+                    <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
-                    <label class="field">Coverage
-                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+                    <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
                 </div>
@@ -294,11 +304,11 @@ export class MaticMapWorkflowV4 extends LitElement {
           </div>
         ` : nothing}
         <details>
-          <summary>Completion options</summary>
+          <summary>${this.#t("v4_completion_options", "Completion options")}</summary>
           <div class="stack">
-            <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>Return to the dock when finished</label>
-            <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>Finish the active room after Stop</label>
-            ${draft.finishCurrentRoom ? html`<label class="field">Finish threshold · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
+            <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
+            <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
+            ${draft.finishCurrentRoom ? html`<label class="field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
           </div>
         </details>
         <div class="toolbar">
@@ -306,9 +316,9 @@ export class MaticMapWorkflowV4 extends LitElement {
             <button
               class="danger"
               type="button"
-              aria-label="Delete plan"
+              aria-label=${this.#t("plan_delete", "Delete plan")}
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeletePlan" })}
-            >Delete</button>
+            >${this.#t("plan_delete", "Delete")}</button>
           ` : nothing}
         </div>
         ${this.#notice()}
@@ -320,18 +330,25 @@ export class MaticMapWorkflowV4 extends LitElement {
     const areas = this.state.resources.areas;
     return html`
       <div class="stack">
-        <matic-precision-controls-v4 .state=${this.state}></matic-precision-controls-v4>
-        <p class="subtle">Paint only on mapped floor. Zoom and pan never change the saved outline.</p>
+        <matic-precision-controls-v4 .state=${this.state} .localize=${this.localize}></matic-precision-controls-v4>
+        <p class="subtle">${this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
+        <div class="toolbar">
+          <button
+            type="button"
+            ?disabled=${this.state.draw.circles.length === 0}
+            @click=${() => this.#intent({ type: "clear-draft" })}
+          >${this.#t("clear", "Clear")}</button>
+        </div>
         ${this.#resource(areas.status, areas.problem, html`
-          <div class="list" aria-label="Saved custom areas">
-            <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ New outline</button>
+          <div class="list" aria-label=${this.#t("area_workspace_title", "Saved custom areas")}>
+            <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ ${this.#t("area_new", "New outline")}</button>
             ${(areas.value?.areas || []).map((area) => html`
               <button class="list-button" type="button" @click=${() => {
                 this.#intent({ type: "select-area", areaId: area.id });
                 this.#intent({ type: "open-workflow", workflow: "areaReview" });
               }}>
                 <span>${area.name}</span>
-                <small>${area.status === "current" ? "Ready" : "Review"}</small>
+                <small>${area.status === "current" ? this.#t("area_workspace_ready", "Ready") : this.#t("v4_review", "Review")}</small>
               </button>
             `)}
           </div>
@@ -346,29 +363,29 @@ export class MaticMapWorkflowV4 extends LitElement {
     const stale = draft.status === "stale" || draft.status === "unknown";
     return html`
       <div class="stack">
-        ${needsReview ? html`<div class="notice" data-tone="warning" role="status">Review the saved outline on this current map, then confirm it.</div>` : nothing}
-        ${stale ? html`<div class="problem" role="alert">This outline no longer matches the current room map. Redraw it before saving.</div>` : nothing}
-        <label class="field">Area name
+        ${needsReview ? html`<div class="notice" data-tone="warning" role="status">${this.#t("area_review_required", "Review the saved outline on this current map, then confirm it.")}</div>` : nothing}
+        ${stale ? html`<div class="problem" role="alert">${this.#t("area_redraw_required", "This outline no longer matches the current room map. Redraw it before saving.")}</div>` : nothing}
+        <label class="field">${this.#t("area_name", "Area name")}
           <input maxlength="128" autocomplete="off" .value=${draft.name} @input=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { name: eventValue(event) } })}>
         </label>
         <div class="split">
-          <label class="field">Cleaning
-            <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+          <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+            <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
           </label>
-          <label class="field">Coverage
-            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+          <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
-        <p class="subtle">${this.state.draw.circles.length} map-space marks. The outline stays private and floor-bound.</p>
+        <p class="subtle">${this.#t("v4_private_marks", "{count} map-space marks. The outline stays private and floor-bound.", { count: this.state.draw.circles.length })}</p>
         <div class="toolbar">
-          <button type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>Edit outline</button>
+          <button type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
           ${draft.id ? html`
             <button
               class="danger"
               type="button"
-              aria-label="Delete area"
+              aria-label=${this.#t("area_delete", "Delete area")}
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeleteArea" })}
-            >Delete</button>
+            >${this.#t("area_delete", "Delete")}</button>
           ` : nothing}
         </div>
         ${this.#notice()}
@@ -389,7 +406,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         ${(catalog?.floors.length || 0) > 1 ? html`
-          <div class="list" role="listbox" aria-label="Mapped floors">
+          <div class="list" role="listbox" aria-label=${this.#t("v4_mapped_floors", "Mapped floors")}>
             ${(catalog?.floors || []).map((candidate, index) => html`
               <button
                 class="floor"
@@ -399,14 +416,16 @@ export class MaticMapWorkflowV4 extends LitElement {
                 aria-pressed=${String(candidate.id === floor?.id)}
                 @click=${() => this.#intent({ type: "set-floor", floorId: candidate.id })}
               >
-                <span>${candidate.label || (candidate.active ? "Current floor" : `Saved floor ${candidate.ordinal ?? index}`)}</span>
-                <small>${candidate.active ? "Live" : "Read only"}</small>
+                <span>${candidate.label || (candidate.active
+                  ? this.#t("v4_current_floor", "Current floor")
+                  : this.#t("v4_saved_floor", "Saved floor {number}", { number: candidate.ordinal ?? index }))}</span>
+                <small>${candidate.active ? this.#t("map_timeline_live_action", "Live") : this.#t("v4_read_only", "Read only")}</small>
               </button>
             `)}
           </div>
         ` : nothing}
         <div class="timeline">
-          <label class="field">Map timeline
+          <label class="field">${this.#t("map_timeline_label", "Map timeline")}
             <input
               type="range"
               min="0"
@@ -421,7 +440,7 @@ export class MaticMapWorkflowV4 extends LitElement {
             >
           </label>
           <div class="list">
-            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>Live</span><small>Current</small></button>
+            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${this.#t("map_timeline_live_action", "Live")}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
               <button class="snapshot" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
                 <span>${this.#formatTime(snapshot.createdAt)}</span><small>${index + 1} of ${snapshots.length}</small>
@@ -429,7 +448,7 @@ export class MaticMapWorkflowV4 extends LitElement {
             `)}
           </div>
         </div>
-        <p class="subtle">Saved maps are floor-scoped and never show a live robot position.</p>
+        <p class="subtle">${this.#t("v4_history_privacy", "Saved maps are floor-scoped and never show a live robot position.")}</p>
       </div>
     `);
   }
@@ -438,7 +457,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     try {
       return new Intl.DateTimeFormat(this.state.locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
     } catch {
-      return "Saved map";
+      return this.#t("v4_saved_map", "Saved map");
     }
   }
 
@@ -446,21 +465,21 @@ export class MaticMapWorkflowV4 extends LitElement {
     const entry = this.state.resources.entry;
     return html`
       <div class="stack">
-        <p class="subtle">This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.</p>
+        <p class="subtle">${this.#t("v4_support_privacy", "This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.")}</p>
         <dl class="diagnostics">
-          <dt>Connection</dt><dd>${this.state.host.connected ? "Connected" : "Offline"}</dd>
-          <dt>Map state</dt><dd>${this.state.coherence}</dd>
-          <dt>Floor verified</dt><dd>${this.state.map.floorCoherent ? "Yes" : "No"}</dd>
-          <dt>Session verified</dt><dd>${this.state.map.sessionVerified ? "Yes" : "No"}</dd>
-          <dt>Map complete</dt><dd>${this.state.map.complete ? "Yes" : "No"}</dd>
-          <dt>Map health</dt><dd>${entry?.health || "Unknown"}</dd>
-          <dt>Blocked by</dt><dd>${entry?.mapBlockReason?.replaceAll("_", " ") || "Nothing"}</dd>
-          <dt>Startup map check</dt><dd>${entry?.bootstrapState?.replaceAll("_", " ") || "Unknown"}</dd>
-          <dt>Startup photo layer</dt><dd>${entry?.bootstrapPhotoSeen ? "Seen" : "Not seen"}</dd>
-          <dt>Startup structure layer</dt><dd>${entry?.bootstrapStructureSeen ? "Seen" : "Not seen"}</dd>
-          <dt>Startup failures</dt><dd>${entry?.bootstrapFailures || 0}</dd>
-          <dt>Stream failures</dt><dd>${entry?.streamFailures || 0}</dd>
-          <dt>Saved floor count</dt><dd>${this.state.floor.classifiedCount}</dd>
+          <dt>${this.#t("v4_connection", "Connection")}</dt><dd>${this.state.host.connected ? this.#t("v4_connected", "Connected") : this.#t("v4_offline", "Offline")}</dd>
+          <dt>${this.#t("v4_map_state", "Map state")}</dt><dd>${this.state.coherence}</dd>
+          <dt>${this.#t("v4_floor_verified", "Floor verified")}</dt><dd>${this.state.map.floorCoherent ? this.#t("v4_yes", "Yes") : this.#t("v4_no", "No")}</dd>
+          <dt>${this.#t("v4_session_verified", "Session verified")}</dt><dd>${this.state.map.sessionVerified ? this.#t("v4_yes", "Yes") : this.#t("v4_no", "No")}</dd>
+          <dt>${this.#t("v4_map_complete", "Map complete")}</dt><dd>${this.state.map.complete ? this.#t("v4_yes", "Yes") : this.#t("v4_no", "No")}</dd>
+          <dt>${this.#t("v4_map_health", "Map health")}</dt><dd>${entry?.health || this.#t("v4_unknown", "Unknown")}</dd>
+          <dt>${this.#t("v4_blocked_by", "Blocked by")}</dt><dd>${entry?.mapBlockReason?.replaceAll("_", " ") || this.#t("v4_nothing", "Nothing")}</dd>
+          <dt>${this.#t("v4_startup_map", "Startup map check")}</dt><dd>${entry?.bootstrapState?.replaceAll("_", " ") || this.#t("v4_unknown", "Unknown")}</dd>
+          <dt>${this.#t("v4_startup_photo", "Startup photo layer")}</dt><dd>${entry?.bootstrapPhotoSeen ? this.#t("v4_seen", "Seen") : this.#t("v4_not_seen", "Not seen")}</dd>
+          <dt>${this.#t("v4_startup_structure", "Startup structure layer")}</dt><dd>${entry?.bootstrapStructureSeen ? this.#t("v4_seen", "Seen") : this.#t("v4_not_seen", "Not seen")}</dd>
+          <dt>${this.#t("v4_startup_failures", "Startup failures")}</dt><dd>${entry?.bootstrapFailures || 0}</dd>
+          <dt>${this.#t("v4_stream_failures", "Stream failures")}</dt><dd>${entry?.streamFailures || 0}</dd>
+          <dt>${this.#t("v4_saved_floor_count", "Saved floor count")}</dt><dd>${this.state.floor.classifiedCount}</dd>
         </dl>
       </div>
     `;

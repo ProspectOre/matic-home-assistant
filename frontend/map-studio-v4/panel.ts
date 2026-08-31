@@ -20,6 +20,7 @@ import {
 } from "./preferences";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
+import { translate } from "./localize";
 
 export class MaticMapPanelV4 extends LitElement {
   static override properties = {
@@ -29,6 +30,7 @@ export class MaticMapPanelV4 extends LitElement {
     panel: { attribute: false },
     _workspace: { state: true },
     _classic: { state: true },
+    entryOverride: { state: true },
   };
 
   hass?: HassLike;
@@ -37,6 +39,7 @@ export class MaticMapPanelV4 extends LitElement {
   panel?: PanelLike;
   protected _workspace: WorkspaceState = initialWorkspaceState();
   protected _classic = false;
+  entryOverride: string | null = null;
 
   readonly #adapter = new HassAdapter();
   readonly #store = new WorkspaceStore(this._workspace);
@@ -86,6 +89,7 @@ export class MaticMapPanelV4 extends LitElement {
     const preferences: MapPreferences = {
       version: 4,
       view: state.view,
+      appearance: state.appearance,
       labels: state.labelsVisible,
       quality: state.quality,
       cameras: state.cameras,
@@ -97,8 +101,8 @@ export class MaticMapPanelV4 extends LitElement {
   }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
-    if (changed.has("hass") || changed.has("panel")) {
-      const projection = this.#adapter.project(this.hass, this.panel);
+    if (changed.has("hass") || changed.has("panel") || changed.has("entryOverride")) {
+      const projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
       if (projection !== this.#projection) {
         this.#projection = projection;
         const coherence = !projection.host.connected
@@ -118,6 +122,7 @@ export class MaticMapPanelV4 extends LitElement {
             && projection.host.robotCount > 0
             && this.#store.value.fullMap,
           robotLabel: projection.robotLabel,
+          robots: projection.robots,
           locale: projection.language,
         });
       }
@@ -142,6 +147,11 @@ export class MaticMapPanelV4 extends LitElement {
     }
     if (intent.type === "set-floor") {
       void this.#effects?.selectFloor(intent.floorId);
+      return;
+    }
+    if (intent.type === "select-entry") {
+      if (!this._workspace.robots.some((robot) => robot.entryId === intent.entryId)) return;
+      this.entryOverride = intent.entryId;
       return;
     }
     if (intent.type === "set-history") {
@@ -226,7 +236,7 @@ export class MaticMapPanelV4 extends LitElement {
           matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
         </style>
         <div class="classic">
-          <button class="return-v4" type="button" @click=${this.#useV4}>Use Map Studio 0.4</button>
+          <button class="return-v4" type="button" @click=${this.#useV4}>${translate(this.hass?.localize, "v4_use_new", "Use Map Studio 0.4")}</button>
           <matic-map-panel-v0-3-1></matic-map-panel-v0-3-1>
         </div>
       `;
@@ -234,6 +244,7 @@ export class MaticMapPanelV4 extends LitElement {
     return html`
       <matic-map-shell-v4
         .state=${this._workspace}
+        .localize=${this.hass?.localize}
         @matic-workspace-intent=${this.#intent}
         @matic-workspace-action=${this.#action}
       ></matic-map-shell-v4>

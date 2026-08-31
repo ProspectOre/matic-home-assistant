@@ -56,7 +56,11 @@ export class HassAdapter {
   #signature = "";
   #projection: HassProjection | null = null;
 
-  project(hass: HassLike | undefined, panel: PanelLike | undefined): HassProjection {
+  project(
+    hass: HassLike | undefined,
+    panel: PanelLike | undefined,
+    preferredEntry: string | null = null,
+  ): HassProjection {
     const states = hass?.states ?? {};
     const panelEntry = panel?.config?.entry_id;
     const requestedEntry = typeof panelEntry === "string" ? panelEntry : null;
@@ -64,13 +68,16 @@ export class HassAdapter {
     let selectedVacuum: HassEntityLike | null = null;
     let selectedVacuumEntityId: string | null = null;
     let selectedEntryKey: string | null = null;
+    const robots = new Map<string, { readonly entryId: string; readonly label: string }>();
 
     for (const [entityId, entity] of Object.entries(states)) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
       entryKeys.add(entryKey);
       if (!entityId.startsWith("vacuum.")) continue;
-      if (!selectedVacuum || (requestedEntry && entryKey === requestedEntry)) {
+      robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
+      const requested = preferredEntry || requestedEntry;
+      if (!selectedVacuum || (requested && entryKey === requested)) {
         selectedVacuum = entity;
         selectedVacuumEntityId = entityId;
         selectedEntryKey = entryKey;
@@ -92,6 +99,8 @@ export class HassAdapter {
     const language = hass?.selectedLanguage || hass?.language || "en";
     const userKey = safeUserKey(hass?.user?.id);
     const robotLabel = safeRobotLabel(selectedVacuum?.attributes?.friendly_name);
+    const robotChoices = [...robots.values()].sort((left, right) =>
+      left.label.localeCompare(right.label, language, { sensitivity: "base" }));
     const signature = [
       host.connected,
       host.administrator,
@@ -104,6 +113,7 @@ export class HassAdapter {
       selectedVacuumEntityId ?? "none",
       selectedEntryKey ?? "none",
       robotLabel,
+      robotChoices.map((robot) => `${robot.entryId}:${robot.label}`).join(","),
     ].join("|");
 
     if (signature === this.#signature && this.#projection) {
@@ -119,6 +129,7 @@ export class HassAdapter {
       vacuumEntityId: selectedVacuumEntityId,
       entryKey: selectedEntryKey,
       robotLabel,
+      robots: robotChoices,
     };
     return this.#projection;
   }

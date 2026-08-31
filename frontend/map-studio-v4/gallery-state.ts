@@ -31,6 +31,7 @@ const verified = (): WorkspaceState => ({
   coherence: "current",
   activity: "docked",
   batteryPercent: 92,
+  robots: [{ entryId: "synthetic-entry", label: "Matic robot" }],
   host: {
     connected: true,
     administrator: true,
@@ -165,7 +166,14 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
         map: { ...state.map, available: false, exactPose: false },
       };
     case "multi-robot":
-      return { ...state, host: { ...state.host, robotCount: 2 } };
+      return {
+        ...state,
+        host: { ...state.host, robotCount: 2 },
+        robots: [
+          { entryId: "synthetic-entry", label: "Matic robot" },
+          { entryId: "synthetic-entry-two", label: "Second robot" },
+        ],
+      };
   }
 };
 

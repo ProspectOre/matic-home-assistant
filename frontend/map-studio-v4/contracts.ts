@@ -15,6 +15,13 @@ export type CoherenceState =
 export type DataMode = "live" | "history";
 export type MapView = "three" | "top";
 export type MapQuality = "auto" | "efficient" | "balanced" | "maximum";
+export type MapAppearance = "photo" | "rooms";
+export type Localize = (key: string, placeholders?: Record<string, unknown>) => string;
+
+export interface RobotChoice {
+  readonly entryId: string;
+  readonly label: string;
+}
 
 export interface CameraPreference {
   readonly yaw: number;
@@ -161,6 +168,7 @@ export interface WorkspaceState {
   readonly dialog: DialogKind | null;
   readonly narrowHint: boolean;
   readonly view: MapView;
+  readonly appearance: MapAppearance;
   readonly labelsVisible: boolean;
   readonly quality: MapQuality;
   readonly cameras: Readonly<Partial<Record<MapView, CameraPreference>>>;
@@ -176,6 +184,7 @@ export interface WorkspaceState {
   readonly areaDraft: AreaDraft;
   readonly notice: WorkspaceNotice | null;
   readonly robotLabel: string;
+  readonly robots: readonly RobotChoice[];
   readonly locale: string;
 }
 
@@ -189,6 +198,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "set-narrow-hint"; readonly value: boolean }
   | { readonly type: "set-view"; readonly view: MapView }
+  | { readonly type: "set-appearance"; readonly appearance: MapAppearance }
   | { readonly type: "set-quality"; readonly quality: MapQuality }
   | {
       readonly type: "set-camera";
@@ -212,6 +222,7 @@ export type WorkspaceIntent =
   | { readonly type: "set-draw-tool"; readonly tool: DrawTool }
   | { readonly type: "mark-draft"; readonly strokeDelta: number }
   | { readonly type: "undo-draft" }
+  | { readonly type: "clear-draft" }
   | { readonly type: "discard-draft" }
   | {
       readonly type: "set-draft-circles";
@@ -227,6 +238,7 @@ export type WorkspaceIntent =
       readonly coverageSetting?: CoverageSetting;
     }
   | { readonly type: "set-floor"; readonly floorId: string }
+  | { readonly type: "select-entry"; readonly entryId: string }
   | { readonly type: "set-history"; readonly historyId: string | null }
   | { readonly type: "select-plan"; readonly planId: string | null }
   | { readonly type: "select-area"; readonly areaId: string | null }
@@ -285,6 +297,7 @@ export interface HassProjection {
   readonly vacuumEntityId: string | null;
   readonly entryKey: string | null;
   readonly robotLabel: string;
+  readonly robots: readonly RobotChoice[];
 }
 
 export interface PanelLike {

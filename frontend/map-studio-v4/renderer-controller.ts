@@ -516,6 +516,10 @@ export class RendererController {
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
     if (!scene || !this.#program || !this.#vertexArray) return;
+    if (this.#state?.view === "top" && this.#state.appearance === "rooms") {
+      this.#renderedPoints = 0;
+      return;
+    }
     gl.useProgram(this.#program);
     gl.bindVertexArray(this.#vertexArray);
     gl.uniformMatrix4fv(this.#viewProjection, false, this.#matrix);
@@ -587,7 +591,8 @@ export class RendererController {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
     if (!scene || !state) return;
-    if (this.#mode === "canvas2d" && this.#fallbackCanvas) {
+    if (this.#mode === "canvas2d" && this.#fallbackCanvas
+      && !(state.view === "top" && state.appearance === "rooms")) {
       const zoom = this.#homeTop / this.#camera.distance;
       const width = bounds.width * zoom;
       const height = bounds.height * zoom;
@@ -596,7 +601,7 @@ export class RendererController {
       context.drawImage(this.#fallbackCanvas, offsetX, offsetY, width, height);
     }
     const selectedNames = this.#selectedRoomNames(state);
-    if (state.labelsVisible) {
+    if (state.labelsVisible || (state.view === "top" && state.appearance === "rooms")) {
       context.lineWidth = 1.5;
       context.font = "600 12px system-ui, sans-serif";
       context.textAlign = "center";
@@ -605,7 +610,11 @@ export class RendererController {
       for (const room of scene.metadata.rooms) {
         const selected = selectedNames.has(room.name.toLocaleLowerCase());
         context.strokeStyle = selected ? "#0678ce" : "rgba(75, 92, 105, .7)";
-        context.fillStyle = selected ? "rgba(6, 120, 206, .16)" : "rgba(255, 255, 255, .04)";
+        context.fillStyle = selected
+          ? "rgba(6, 120, 206, .26)"
+          : state.view === "top" && state.appearance === "rooms"
+            ? "rgba(231, 238, 242, .94)"
+            : "rgba(255, 255, 255, .04)";
         context.beginPath();
         const step = Math.max(1, Math.ceil(room.boundary.length / 512));
         let started = false;
@@ -623,6 +632,7 @@ export class RendererController {
           context.fill();
           context.stroke();
         }
+        if (!state.labelsVisible) continue;
         const center = this.#projectCell(room.center[0], room.center[1], 1);
         if (!center) continue;
         const textWidth = context.measureText(room.name).width;

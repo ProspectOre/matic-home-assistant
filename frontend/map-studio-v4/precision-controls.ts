@@ -5,15 +5,18 @@ import {
   DRAW_BRUSH_MIN_METERS,
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
+  type Localize,
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { initialWorkspaceState } from "./state";
+import { translate } from "./localize";
 
 export class MaticPrecisionControlsV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    localize: { attribute: false },
     compact: { type: Boolean, reflect: true },
   };
 
@@ -90,6 +93,11 @@ export class MaticPrecisionControlsV4 extends LitElement {
 
   state: WorkspaceState = initialWorkspaceState();
   compact = false;
+  localize?: Localize;
+
+  #t(key: string, fallback: string): string {
+    return translate(this.localize, key, fallback);
+  }
 
   #intent(intent: WorkspaceIntent): void {
     this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
@@ -110,13 +118,13 @@ export class MaticPrecisionControlsV4 extends LitElement {
   protected override render() {
     const { draw } = this.state;
     return html`
-      <div class="controls" aria-label="Drawing precision">
+      <div class="controls" aria-label=${this.#t("v4_drawing_precision", "Drawing precision")}>
         <div class="row">
-          <label for="zoom">Map zoom</label>
+          <label for="zoom">${this.#t("v4_map_zoom", "Map zoom")}</label>
           <div class="stepper">
             <button
               type="button"
-              aria-label="Zoom out"
+              aria-label=${this.#t("zoom_out", "Zoom out")}
               @click=${() => this.#intent({ type: "step-zoom", factor: 0.8 })}
             >−</button>
             <span class="number">
@@ -129,24 +137,24 @@ export class MaticPrecisionControlsV4 extends LitElement {
                 step="1"
                 .value=${String(draw.zoomPercent)}
                 @change=${(event: Event) => this.#numeric(event, "zoom")}
-                aria-label="Map zoom percent"
+                aria-label=${this.#t("v4_map_zoom_percent", "Map zoom percent")}
               />
               <span class="unit">%</span>
             </span>
             <button
               type="button"
-              aria-label="Zoom in"
+              aria-label=${this.#t("zoom_in", "Zoom in")}
               @click=${() => this.#intent({ type: "step-zoom", factor: 1.25 })}
             >+</button>
           </div>
         </div>
 
         <div class="row">
-          <label for="brush">Brush width</label>
+          <label for="brush">${this.#t("brush_size", "Brush width")}</label>
           <div class="stepper">
             <button
               type="button"
-              aria-label="Narrower brush"
+              aria-label=${this.#t("v4_narrower_brush", "Narrower brush")}
               @click=${() => this.#intent({
                 type: "set-brush",
                 value: draw.brushMeters / 1.25,
@@ -162,13 +170,13 @@ export class MaticPrecisionControlsV4 extends LitElement {
                 step="0.01"
                 .value=${draw.brushMeters.toFixed(2)}
                 @change=${(event: Event) => this.#numeric(event, "brush")}
-                aria-label="Brush width in meters"
+                aria-label=${this.#t("v4_brush_width_meters", "Brush width in meters")}
               />
               <span class="unit">m</span>
             </span>
             <button
               type="button"
-              aria-label="Wider brush"
+              aria-label=${this.#t("v4_wider_brush", "Wider brush")}
               @click=${() => this.#intent({
                 type: "set-brush",
                 value: draw.brushMeters * 1.25,
@@ -176,7 +184,7 @@ export class MaticPrecisionControlsV4 extends LitElement {
             >+</button>
           </div>
         </div>
-        <p class="hint">Strokes follow the verified map resolution. Zoom changes the view, not the saved outline.</p>
+        <p class="hint">${this.#t("v4_precision_hint", "Strokes follow the verified map resolution. Zoom changes the view, not the saved outline.")}</p>
       </div>
     `;
   }

@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing } from "lit";
 import type { PropertyValues } from "lit";
 
-import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { GestureController } from "./gesture-controller";
 import { RendererController, type RendererDiagnostics } from "./renderer-controller";
 import {
@@ -10,24 +10,35 @@ import {
   initialWorkspaceState,
   mapScale,
 } from "./state";
+import { translate } from "./localize";
 
 export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
 export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
 
-const describeMap = (state: WorkspaceState): string => {
-  if (!canShowLiveMap(state)) return "The current private map is not available.";
+const describeMap = (state: WorkspaceState, localize?: Localize): string => {
+  const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
+    translate(localize, key, fallback, placeholders);
+  if (!canShowLiveMap(state)) return t("v4_private_map_unavailable", "The current private map is not available.");
   if (state.dataMode === "history") {
-    return `Saved read-only map for ${state.floor.displayName}. Live robot position is hidden.`;
+    return t(
+      "v4_saved_map_description",
+      "Saved read-only map for {floor}. Live robot position is hidden.",
+      { floor: state.floor.displayName },
+    );
   }
   const pose = canShowExactPose(state)
-    ? "The robot position is verified."
-    : "The robot position is not shown.";
-  return `Live map for ${state.floor.displayName}. ${pose}`;
+    ? t("v4_robot_position_verified", "The robot position is verified.")
+    : t("v4_robot_position_hidden", "The robot position is not shown.");
+  return t("v4_live_map_description", "Live map for {floor}. {pose}", {
+    floor: state.floor.displayName,
+    pose,
+  });
 };
 
 export class MaticMapCanvasV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
+    localize: { attribute: false },
   };
 
   static override styles = css`
@@ -65,6 +76,8 @@ export class MaticMapCanvasV4 extends LitElement {
     .floor-chip,
     .map-tools,
     .view-switch,
+    .appearance-switch,
+    .camera-steps,
     .draw-tools,
     .map-scale,
     .map-message {
@@ -112,6 +125,8 @@ export class MaticMapCanvasV4 extends LitElement {
 
     .map-tools button,
     .view-switch button,
+    .appearance-switch button,
+    .camera-steps button,
     .draw-tools button {
       border: 0;
       color: inherit;
@@ -130,6 +145,7 @@ export class MaticMapCanvasV4 extends LitElement {
 
     .map-tools button[aria-pressed="true"],
     .view-switch button[aria-pressed="true"],
+    .appearance-switch button[aria-pressed="true"],
     .draw-tools button[aria-checked="true"] {
       color: var(--primary-color, #0678ce);
       background: color-mix(in srgb, var(--primary-color, #0678ce) 11%, transparent);
@@ -142,6 +158,36 @@ export class MaticMapCanvasV4 extends LitElement {
       grid-template-columns: 1fr 1fr;
       padding: 0.18rem;
       border-radius: 0.75rem;
+    }
+
+    .appearance-switch,
+    .camera-steps {
+      position: absolute;
+      z-index: 4;
+      inset-block-start: 7.2rem;
+      inset-inline-end: 0.75rem;
+      display: grid;
+      padding: 0.18rem;
+      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
+      border-radius: 0.75rem;
+      background: var(--card-background-color, rgb(255 255 255 / 96%));
+      box-shadow: 0 5px 18px rgb(31 41 51 / 12%);
+    }
+
+    .appearance-switch { grid-template-columns: 1fr 1fr; }
+    .camera-steps { grid-template-columns: repeat(2, 2.75rem); }
+
+    .appearance-switch button,
+    .camera-steps button {
+      min-inline-size: 2.75rem;
+      min-block-size: 2.75rem;
+      border: 0;
+      border-radius: 0.58rem;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+      font-size: 0.76rem;
+      font-weight: 700;
     }
 
     .view-switch button {
@@ -340,9 +386,14 @@ export class MaticMapCanvasV4 extends LitElement {
   `;
 
   state: WorkspaceState = initialWorkspaceState();
+  localize?: Localize;
   #fullMapLauncher: HTMLElement | null = null;
   #renderer: RendererController | null = null;
   #gestures: GestureController | null = null;
+
+  #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
+    return translate(this.localize, key, fallback, placeholders);
+  }
 
   protected override firstUpdated(): void {
     const root = this.renderRoot.querySelector<HTMLElement>(".map-root");
@@ -350,7 +401,18 @@ export class MaticMapCanvasV4 extends LitElement {
     const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas");
     if (!root || !scene || !overlay) return;
     this.#renderer = new RendererController(scene, overlay, {
-      onCamera: (_camera, zoomPercent, origin) => {
+      onCamera: (camera, zoomPercent, origin) => {
+        this.#intent({
+          type: "set-camera",
+          view: this.state.workflow === "draw" ? "top" : this.state.view,
+          camera: {
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+            zoom: zoomPercent / 100,
+            targetX: camera.targetX,
+            targetZ: camera.targetZ,
+          },
+        });
         if (this.state.workflow === "draw" && zoomPercent !== this.state.draw.zoomPercent) {
           this.#intent({
             type: "set-zoom",
@@ -413,6 +475,10 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#intent({ type: this.state.fullMap ? "exit-full-map" : "enter-full-map" });
   }
 
+  #orbit(horizontal: number, vertical: number): void {
+    this.#renderer?.orbitBy(horizontal, vertical);
+  }
+
   #keyboard(event: KeyboardEvent): void {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Escape") {
@@ -435,28 +501,28 @@ export class MaticMapCanvasV4 extends LitElement {
 
   #message(): { readonly title: string; readonly detail: string } | null {
     if (!this.state.host.connected) {
-      return { title: "Reconnecting", detail: "The verified map is read only until Home Assistant reconnects." };
+      return { title: this.#t("v4_reconnecting", "Reconnecting"), detail: this.#t("v4_reconnecting_detail", "The verified map is read only until Home Assistant reconnects.") };
     }
     if (!this.state.host.administrator) {
-      return { title: "Administrator access required", detail: "Private map data is hidden." };
+      return { title: this.#t("v4_admin_required", "Administrator access required"), detail: this.#t("v4_private_map_hidden", "Private map data is hidden.") };
     }
     if (this.state.host.robotCount === 0) {
-      return { title: "No Matic robot set up", detail: "Set up a robot before opening its map." };
+      return { title: this.#t("v4_no_robot", "No Matic robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
     }
     if (!this.state.host.robotConnected) {
-      return { title: "Robot offline", detail: "The last verified map stays read only and has no live position." };
+      return { title: this.#t("v4_robot_offline", "Robot offline"), detail: this.#t("v4_robot_offline_detail", "The last verified map stays read only and has no live position.") };
     }
     if (this.state.coherence === "verifying" || this.state.coherence === "booting") {
-      return { title: "Locating the current map", detail: "Map controls will return after the floor is verified." };
+      return { title: this.#t("v4_locating_map", "Locating the current map"), detail: this.#t("v4_locating_map_detail", "Map controls will return after the floor is verified.") };
     }
     if (!this.state.map.available && this.state.resources.scene.status === "loading") {
-      return { title: "Loading the verified map", detail: "The current floor is verified. The private scene is still preparing." };
+      return { title: this.#t("v4_loading_verified_map", "Loading the verified map"), detail: this.#t("v4_loading_verified_map_detail", "The current floor is verified. The private scene is still preparing.") };
     }
     if (!this.state.map.available) {
-      return { title: "Map unavailable", detail: "The private scene is not ready. No map data is shown until it is verified." };
+      return { title: this.#t("v4_map_unavailable", "Map unavailable"), detail: this.#t("v4_map_unavailable_detail", "The private scene is not ready. No map data is shown until it is verified.") };
     }
     if (this.state.activity === "problem") {
-      return { title: "Robot needs attention", detail: "Check the robot before starting another task." };
+      return { title: this.#t("v4_robot_attention", "Robot needs attention"), detail: this.#t("v4_robot_attention_detail", "Check the robot before starting another task.") };
     }
     return null;
   }
@@ -473,7 +539,7 @@ export class MaticMapCanvasV4 extends LitElement {
         class="map-root"
         tabindex="0"
         role="application"
-        aria-label=${describeMap(state)}
+        aria-label=${describeMap(state, this.localize)}
         data-full-map=${String(state.fullMap)}
         data-workflow=${state.workflow}
         @keydown=${this.#keyboard}
@@ -482,11 +548,11 @@ export class MaticMapCanvasV4 extends LitElement {
           <button
             class="floor-chip"
             type="button"
-            aria-label="Choose floor"
+            aria-label=${this.#t("v4_choose_floor", "Choose floor")}
             @click=${() => this.#intent({ type: "open-workflow", workflow: "history" })}
           >
             <span>${state.floor.displayName}</span>
-            ${state.floor.readOnly ? html`<small>Saved · read only</small>` : nothing}
+            ${state.floor.readOnly ? html`<small>${this.#t("v4_saved_read_only", "Saved · read only")}</small>` : nothing}
           </button>
         ` : nothing}
 
@@ -495,21 +561,21 @@ export class MaticMapCanvasV4 extends LitElement {
             <button type="button" @click=${() => {
               this.#renderer?.fit();
               this.#intent({ type: "fit-map" });
-            }}>Fit</button>
+            }}>${this.#t("map_home_view", "Fit")}</button>
             <button
               class="labels"
               type="button"
               aria-pressed=${String(state.labelsVisible)}
               @click=${() => this.#intent({ type: "toggle-labels" })}
-            >Labels</button>
+            >${this.#t("map_labels", "Labels")}</button>
           ` : nothing}
           <button
             class="full-map"
             type="button"
-            aria-label="Full map"
+            aria-label=${this.#t("v4_full_map", "Full map")}
             aria-pressed=${String(state.fullMap)}
             @click=${this.#toggleFullMap}
-          >${state.fullMap ? "Close" : "Full map"}</button>
+          >${state.fullMap ? this.#t("v4_close", "Close") : this.#t("v4_full_map", "Full map")}</button>
         </nav>` : nothing}
 
         ${state.workflow !== "draw" && showScene ? html`
@@ -518,12 +584,36 @@ export class MaticMapCanvasV4 extends LitElement {
               type="button"
               aria-pressed=${String(state.view === "three")}
               @click=${() => this.#intent({ type: "set-view", view: "three" })}
-            >3D</button>
+            >${this.#t("map_view_3d", "3D")}</button>
             <button
               type="button"
               aria-pressed=${String(state.view === "top")}
               @click=${() => this.#intent({ type: "set-view", view: "top" })}
-            >2D</button>
+            >${this.#t("map_view_top", "2D")}</button>
+          </div>
+        ` : nothing}
+
+        ${state.view === "top" && showScene ? html`
+          <div class="appearance-switch" aria-label=${this.#t("map_style_label", "2D map style")}>
+            <button
+              type="button"
+              aria-pressed=${String(state.appearance === "photo")}
+              @click=${() => this.#intent({ type: "set-appearance", appearance: "photo" })}
+            >${this.#t("map_style_photo", "Photo")}</button>
+            <button
+              type="button"
+              aria-pressed=${String(state.appearance === "rooms")}
+              @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
+            >${this.#t("map_view_rooms", "Rooms")}</button>
+          </div>
+        ` : nothing}
+
+        ${state.view === "three" && showScene ? html`
+          <div class="camera-steps" role="toolbar" aria-label=${this.#t("map_camera_controls", "Map camera controls")}>
+            <button type="button" aria-label=${this.#t("map_rotate_left", "Rotate left")} aria-keyshortcuts="[" @click=${() => this.#orbit(-52, 0)}>↶</button>
+            <button type="button" aria-label=${this.#t("map_tilt_down", "Lower viewing angle")} aria-keyshortcuts="PageDown" @click=${() => this.#orbit(0, 30)}>⌄</button>
+            <button type="button" aria-label=${this.#t("map_tilt_up", "Raise viewing angle")} aria-keyshortcuts="PageUp" @click=${() => this.#orbit(0, -30)}>⌃</button>
+            <button type="button" aria-label=${this.#t("map_rotate_right", "Rotate right")} aria-keyshortcuts="]" @click=${() => this.#orbit(52, 0)}>↷</button>
           </div>
         ` : nothing}
 
@@ -550,19 +640,19 @@ export class MaticMapCanvasV4 extends LitElement {
                 aria-checked=${String(state.draw.tool === tool)}
                 data-tool=${tool}
                 @click=${() => this.#intent({ type: "set-draw-tool", tool })}
-              >${tool === "paint" ? "✎ Paint" : tool === "erase" ? "⌫ Erase" : "✥ Pan"}</button>
+              >${tool === "paint" ? `✎ ${this.#t("area_paint", "Paint")}` : tool === "erase" ? `⌫ ${this.#t("area_erase", "Erase")}` : `✥ ${this.#t("move_map", "Move map")}`}</button>
             `)}
             <button
               type="button"
               ?disabled=${state.draw.strokeCount === 0}
               @click=${() => this.#intent({ type: "undo-draft" })}
-            >↶ Undo</button>
+            >↶ ${this.#t("undo", "Undo")}</button>
             <button
               type="button"
               ?disabled=${state.draw.redo.length === 0}
               @click=${() => this.#intent({ type: "redo-draft" })}
-            >↷ Redo</button>
-            <button type="button" @click=${() => this.#action("review-area")}>✓ Done</button>
+            >↷ ${this.#t("redo", "Redo")}</button>
+            <button type="button" @click=${() => this.#action("review-area")}>✓ ${this.#t("done_editing", "Done editing")}</button>
           </div>
         ` : nothing}
 
@@ -573,7 +663,7 @@ export class MaticMapCanvasV4 extends LitElement {
           </div>
         ` : nothing}
         <div class="sr-only" aria-live="polite" aria-atomic="true">
-          ${describeMap(state)}
+          ${describeMap(state, this.localize)}
         </div>
       </section>
     `;

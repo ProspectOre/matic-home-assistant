@@ -397,6 +397,113 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(drawTools.y + drawTools.height).toBeLessThanOrEqual(sheet.y + 1);
   });
 
+  test("restores classic display controls without compromising the map-first shell", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+
+    await gallery.getByRole("complementary").getByRole("button", { name: "Rooms", exact: true }).click();
+    await gallery.getByRole("button", { name: "2D", exact: true }).click();
+    await gallery.getByRole("button", { name: "Rooms", exact: true }).last().click();
+    await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
+
+    await gallery.getByRole("button", { name: "More map options" }).click();
+    await gallery.getByLabel("Scene detail").selectOption("maximum");
+    await expect.poll(async () => (await snapshot(page)).quality).toBe("maximum");
+
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    await gallery.getByRole("button", { name: "Rotate right" }).click();
+    await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null)
+      .not.toBeNull();
+  });
+
+  test("clears a drawn area reversibly and exposes official cleaning-mode wording", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    const before = await snapshot(page);
+    expect(before.draw.circles.length).toBeGreaterThan(0);
+
+    await gallery.getByRole("button", { name: "Clear", exact: true }).click();
+    await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBe(0);
+    await gallery.getByRole("button", { name: /Undo/ }).click();
+    await expect.poll(async () => (await snapshot(page)).draw.circles.length)
+      .toBe(before.draw.circles.length);
+
+    await gallery.evaluate((element) => element.setScenario("rooms"));
+    await expect.poll(async () => (await snapshot(page)).workflow).toBe("rooms");
+    await expect(gallery.getByLabel("Cleaning system").first()).toBeVisible();
+    const mode = gallery.getByLabel("Cleaning mode").first();
+    await expect(mode.locator("option")).toHaveText(["Quick", "Optimal", "Heavy Duty"]);
+  });
+
+  test("selects a requested robot deterministically", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const module = await import("/map_studio_v4/index.js");
+      const adapter = new module.HassAdapter();
+      const hass = {
+        connected: true,
+        language: "en",
+        user: { id: "user", is_admin: true },
+        states: {
+          "vacuum.first": { state: "docked", attributes: { matic_entry_id: "entry-a", friendly_name: "First" } },
+          "vacuum.second": { state: "idle", attributes: { matic_entry_id: "entry-b", friendly_name: "Second" } },
+        },
+      };
+      const first = adapter.project(hass, undefined, "entry-a");
+      const second = adapter.project(hass, undefined, "entry-b");
+      return {
+        first: [first.entryKey, first.robotLabel],
+        second: [second.entryKey, second.robotLabel],
+        robots: second.robots.map((robot) => robot.label),
+      };
+    });
+    expect(result).toEqual({
+      first: ["entry-a", "First"],
+      second: ["entry-b", "Second"],
+      robots: ["First", "Second"],
+    });
+  });
+
+  test("routes v0.4 copy through Home Assistant localization", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.evaluate((element) => {
+      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.localize = (key) => key.endsWith("map_studio_title") ? "Mapa Matic" : key;
+      shell.requestUpdate();
+    });
+    await expect(gallery.getByRole("heading", { name: "Mapa Matic" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Full map" })).toBeVisible();
+  });
+
+  test("keeps the mobile map usable in RTL", async ({ page }) => {
+    await page.setViewportSize({ width: 320, height: 740 });
+    await page.goto("/");
+    await page.evaluate(() => { document.documentElement.dir = "rtl"; });
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate((tag) => {
+      const gallery = document.createElement(tag);
+      gallery.controls = false;
+      gallery.scenario = "draw";
+      gallery.narrow = true;
+      document.body.style.margin = "0";
+      document.body.append(gallery);
+    }, GALLERY_TAG);
+    const gallery = page.locator(GALLERY_TAG);
+    await expect(gallery.getByRole("button", { name: "Clear" })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= 320)).toBe(true);
+  });
+
+  test("keeps native browser fullscreen as an optional secondary control", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate(() => {
+      window.__v4FullscreenRequested = false;
+      Element.prototype.requestFullscreen = async function requestFullscreen() {
+        window.__v4FullscreenRequested = this.classList.contains("app");
+      };
+    });
+    await gallery.getByRole("button", { name: "More map options" }).click();
+    await gallery.getByRole("menuitem", { name: "Browser full screen" }).click();
+    expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
+  });
+
   test("projects unrelated Home Assistant updates without service calls", async ({ page }) => {
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });

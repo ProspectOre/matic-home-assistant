@@ -58,6 +58,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   dialog: null,
   narrowHint: false,
   view: "top",
+  appearance: "photo",
   labelsVisible: true,
   quality: "auto",
   cameras: {},
@@ -134,6 +135,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   },
   notice: null,
   robotLabel: "Matic robot",
+  robots: [],
   locale: "en",
 });
 
@@ -169,6 +171,8 @@ export const reduceWorkspace = (
       return { ...state, narrowHint: intent.value };
     case "set-view":
       return { ...state, view: intent.view };
+    case "set-appearance":
+      return { ...state, appearance: intent.appearance };
     case "set-quality":
       return { ...state, quality: intent.quality };
     case "set-camera":
@@ -233,6 +237,15 @@ export const reduceWorkspace = (
         strokeCount: Math.max(0, state.draw.strokeCount - 1),
       });
     }
+    case "clear-draft":
+      if (!state.draw.circles.length) return state;
+      return updateDraw(state, {
+        circles: [],
+        undo: [...state.draw.undo.slice(-99), state.draw.circles],
+        redo: [],
+        dirty: true,
+        strokeCount: state.draw.strokeCount + 1,
+      });
     case "redo-draft": {
       const next = state.draw.redo.at(-1);
       if (!next) return state;
@@ -301,6 +314,8 @@ export const reduceWorkspace = (
           historyId: null,
         },
       };
+    case "select-entry":
+      return state;
     case "set-history":
       return {
         ...state,
