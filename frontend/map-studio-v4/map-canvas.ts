@@ -7,6 +7,7 @@ import { RendererController, type RendererDiagnostics } from "./renderer-control
 import {
   canShowExactPose,
   canShowLiveMap,
+  initialWorkspaceState,
   mapScale,
 } from "./state";
 
@@ -338,7 +339,7 @@ export class MaticMapCanvasV4 extends LitElement {
     }
   `;
 
-  state!: WorkspaceState;
+  state: WorkspaceState = initialWorkspaceState();
   #fullMapLauncher: HTMLElement | null = null;
   #renderer: RendererController | null = null;
   #gestures: GestureController | null = null;

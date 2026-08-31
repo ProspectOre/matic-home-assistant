@@ -84,6 +84,19 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ panelV4: true, galleryV4: true, panelV3: false });
   });
 
+  test("upgrades a pre-existing shell without a blank first render", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    await page.goto("/");
+    await page.evaluate(() => {
+      document.body.innerHTML = "<matic-map-shell-v4></matic-map-shell-v4>";
+    });
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+
+    await expect(page.locator("matic-map-shell-v4")).toContainText("Matic Map");
+    expect(errors).toEqual([]);
+  });
+
   test("rejects stale coherence generations and fails closed", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {

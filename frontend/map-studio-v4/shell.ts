@@ -14,6 +14,7 @@ import {
 import "./map-canvas";
 import "./precision-controls";
 import {
+  initialWorkspaceState,
   selectPausedSecondaryAction,
   selectPrimaryAction,
 } from "./state";
@@ -473,7 +474,7 @@ export class MaticMapShellV4 extends LitElement {
     }
   `;
 
-  state!: WorkspaceState;
+  state: WorkspaceState = initialWorkspaceState();
   protected _measuredNarrow = false;
   protected _sheetOffset = 0;
   protected _workflowReady = false;

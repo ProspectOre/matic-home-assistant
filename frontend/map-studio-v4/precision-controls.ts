@@ -9,6 +9,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
+import { initialWorkspaceState } from "./state";
 
 export class MaticPrecisionControlsV4 extends LitElement {
   static override properties = {
@@ -87,7 +88,7 @@ export class MaticPrecisionControlsV4 extends LitElement {
     }
   `;
 
-  state!: WorkspaceState;
+  state: WorkspaceState = initialWorkspaceState();
   compact = false;
 
   #intent(intent: WorkspaceIntent): void {

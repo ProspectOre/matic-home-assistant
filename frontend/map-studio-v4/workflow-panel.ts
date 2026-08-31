@@ -8,6 +8,7 @@ import type {
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import "./precision-controls";
+import { initialWorkspaceState } from "./state";
 
 const modes: readonly { readonly value: CleaningMode; readonly label: string }[] = [
   { value: "vacuum", label: "Vacuum" },
@@ -126,7 +127,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     }
   `;
 
-  state!: WorkspaceState;
+  state: WorkspaceState = initialWorkspaceState();
 
   #intent(intent: WorkspaceIntent): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_INTENT_EVENT, {

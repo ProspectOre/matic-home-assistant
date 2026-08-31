@@ -1,4 +1,4 @@
-import{v,w as o,x as c,y as b,z as g}from"./chunk.js";var p=[{value:"vacuum",label:"Vacuum"},{value:"mop",label:"Mop"},{value:"vacuum_and_mop",label:"Vacuum and mop"}],m=[{value:"quick",label:"Quick"},{value:"standard",label:"Optimal"},{value:"heavy_duty",label:"Heavy duty"}],n=d=>d.currentTarget.value,u=d=>d.currentTarget.checked,h=class extends b{static{this.properties={state:{attribute:!1}}}static{this.styles=v`
+import{i as v,v as b,w as o,x as c,y as g,z as f}from"./chunk.js";var p=[{value:"vacuum",label:"Vacuum"},{value:"mop",label:"Mop"},{value:"vacuum_and_mop",label:"Vacuum and mop"}],m=[{value:"quick",label:"Quick"},{value:"standard",label:"Optimal"},{value:"heavy_duty",label:"Heavy duty"}],n=d=>d.currentTarget.value,u=d=>d.currentTarget.checked,h=class extends g{constructor(){super(...arguments);this.state=v()}static{this.properties={state:{attribute:!1}}}static{this.styles=b`
     :host { display: block; min-inline-size: 0; }
     * { box-sizing: border-box; }
     button, input, select { font: inherit; }
@@ -93,7 +93,7 @@ import{v,w as o,x as c,y as b,z as g}from"./chunk.js";var p=[{value:"vacuum",lab
     @media (forced-colors: active) {
       .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] { outline: 2px solid Highlight; }
     }
-  `}#e(t){this.dispatchEvent(new CustomEvent(g,{detail:t,bubbles:!0,composed:!0}))}#a(){return this.state.notice?o`
+  `}#e(t){this.dispatchEvent(new CustomEvent(f,{detail:t,bubbles:!0,composed:!0}))}#a(){return this.state.notice?o`
       <div class="notice" data-tone=${this.state.notice.tone} role=${this.state.notice.tone==="error"?"alert":"status"}>
         ${this.state.notice.text}
       </div>
