@@ -626,24 +626,58 @@ export class EffectController {
         void this.refreshCatalog(true);
         return;
       }
+      const state = this.#store.value;
+      const previousPose = state.resources.pose.value;
+      const canRetainVerifiedPose = Boolean(state.map.exactPose
+        && previousPose?.position
+        && previousPose.mapSessionKey === currentEntry.mapSessionKey);
+      if (pose.position === null
+        && pose.freshness === "coordinator_fallback"
+        && canRetainVerifiedPose) {
+        // A transient direct-pose failure must not make the marker blink. The
+        // coordinator fallback can briefly lack a point while the same
+        // floor/session remains verified, so keep the last verified point and
+        // retry on the next one-second tick. Session changes still clear the
+        // marker through the identity check above.
+        this.#store.patch({
+          resources: {
+            ...state.resources,
+            pose: resource("ready", previousPose),
+          },
+        });
+        return;
+      }
       this.#store.patch({
         resources: {
-          ...this.#store.value.resources,
+          ...state.resources,
           pose: resource("ready", pose),
         },
         map: {
-          ...this.#store.value.map,
-          exactPose: pose.position !== null && pose.freshness === "live",
+          ...state.map,
+          // A coordinator fallback is still an exact robot coordinate after
+          // the endpoint has bound it to this verified floor and map session.
+          // Freshness controls how quickly the point advances, not whether it
+          // is safe to render.
+          exactPose: pose.position !== null,
         },
       });
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
+      const state = this.#store.value;
+      const previousPose = state.resources.pose.value;
+      const canRetainVerifiedPose = Boolean(state.map.exactPose
+        && previousPose?.position
+        && previousPose.mapSessionKey === state.resources.entry?.mapSessionKey);
       this.#store.patch({
         resources: {
-          ...this.#store.value.resources,
-          pose: resource("error", null, problemCode(error, "pose-unavailable")),
+          ...state.resources,
+          pose: resource(
+            "error",
+            canRetainVerifiedPose ? previousPose : null,
+            problemCode(error, "pose-unavailable"),
+          ),
         },
-        map: { ...this.#store.value.map, exactPose: false },
+        map: { ...state.map, exactPose: canRetainVerifiedPose },
       });
     } finally {
       this.#release("pose", controller);

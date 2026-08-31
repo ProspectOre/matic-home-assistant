@@ -433,6 +433,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     let deltaRequests = 0;
     let failNextDelta = false;
     let poseSessionKey = "a".repeat(64);
+    let posePosition = [10, 12];
+    let poseFreshness = "live";
+    let poseRequests = 0;
+    let failNextPose = false;
     let releaseFirstDelta;
     const firstDeltaGate = new Promise((resolve) => { releaseFirstDelta = resolve; });
     const catalogEntry = () => ({
@@ -516,19 +520,26 @@ test.describe("Map Studio v0.4 foundation", () => {
         },
       });
     });
-    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({
-        position: [10, 12],
-        source: "latest_pose",
-        revision: catalogRevision + 100,
-        pose_revision: 1,
-        map_floor_coherent: true,
-        pose_freshness: "live",
-        map_session_key: poseSessionKey,
-      }),
-    }));
+    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => {
+      poseRequests += 1;
+      if (failNextPose) {
+        failNextPose = false;
+        return route.fulfill({ status: 503, body: "temporary" });
+      }
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          position: posePosition,
+          source: posePosition ? "latest_pose" : "current_area",
+          revision: catalogRevision + 100,
+          pose_revision: poseRequests,
+          map_floor_coherent: true,
+          pose_freshness: poseFreshness,
+          map_session_key: poseSessionKey,
+        }),
+      });
+    });
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -605,6 +616,35 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
+    poseFreshness = "coordinator_fallback";
+    posePosition = [11, 13];
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return {
+        exactPose: state.map.exactPose,
+        freshness: state.resources.pose.value?.freshness,
+        position: state.resources.pose.value?.position,
+      };
+    }), { timeout: 5_000 }).toEqual({
+      exactPose: true,
+      freshness: "coordinator_fallback",
+      position: [11, 13],
+    });
+    posePosition = null;
+    const requestsBeforeMissingFallback = poseRequests;
+    await expect.poll(() => poseRequests, { timeout: 5_000 })
+      .toBeGreaterThan(requestsBeforeMissingFallback);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
+    })).toEqual({ exactPose: true, position: [11, 13] });
+    failNextPose = true;
+    const requestsBeforeFailure = poseRequests;
+    await expect.poll(() => poseRequests, { timeout: 5_000 }).toBeGreaterThan(requestsBeforeFailure);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
+    })).toEqual({ exactPose: true, position: [11, 13] });
     poseSessionKey = "b".repeat(64);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().map.exactPose), { timeout: 5_000 }).toBe(false);
