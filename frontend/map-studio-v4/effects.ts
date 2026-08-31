@@ -51,6 +51,12 @@ const entryMissionKey = (entry: MapEntry): string => [
   entry.mapSessionVerified ? "verified" : "unverified",
 ].join(":");
 
+const entryBoundaryKey = (entry: MapEntry): string => [
+  entry.entryId,
+  entryFloorKey(entry),
+  entryMissionKey(entry),
+].join("|");
+
 const entryIdentity = (entry: MapEntry): string => [
   entry.entryId,
   entryFloorKey(entry),
@@ -259,13 +265,16 @@ export class EffectController {
   }
 
   #beginLiveGeneration(entry: MapEntry): void {
-    this.#abortResources(["catalog"]);
     const previousStamp = this.#coherence.current();
     const previousState = this.#store.value;
-    const retainedScene = previousStamp
+    const sameLiveBoundary = Boolean(previousStamp
       && previousStamp.entryKey === entry.entryId
       && previousStamp.floorKey === entryFloorKey(entry)
-      && previousStamp.missionKey === entryMissionKey(entry)
+      && previousStamp.missionKey === entryMissionKey(entry));
+    this.#abortResources(sameLiveBoundary
+      ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
+      : ["catalog"]);
+    const retainedScene = sameLiveBoundary
       ? previousState.resources.scene.value
       : null;
     const stamp = this.#coherence.begin(
@@ -288,8 +297,8 @@ export class EffectController {
         scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", null),
         history: resource("loading", state.resources.history.value),
-        plans: resource("idle", null),
-        areas: resource("idle", null),
+        plans: sameLiveBoundary ? state.resources.plans : resource("idle", null),
+        areas: sameLiveBoundary ? state.resources.areas : resource("idle", null),
       },
       map: {
         available: coherent && retainedScene !== null,
@@ -308,9 +317,9 @@ export class EffectController {
         entryId: entry.entryId,
         floorId: "current",
         historyId: null,
-        roomIds: [],
-        planId: null,
-        areaId: null,
+        roomIds: sameLiveBoundary ? state.selection.roomIds : [],
+        planId: sameLiveBoundary ? state.selection.planId : null,
+        areaId: sameLiveBoundary ? state.selection.areaId : null,
       },
     });
     void this.#loadHistory(entry, stamp);
@@ -674,15 +683,16 @@ export class EffectController {
 
   async loadPlans(): Promise<void> {
     const entry = this.#store.value.resources.entry;
-    const stamp = this.#coherence.current();
-    if (!entry || !stamp || !canEditCoordinates(this.#store.value)) return;
+    if (!entry || !this.#coherence.current() || !canEditCoordinates(this.#store.value)) return;
+    const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
       resources: { ...this.#store.value.resources, plans: resource("loading", null) },
     });
     try {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
-      if (!this.#coherence.accepts(stamp)) return;
+      const currentEntry = this.#store.value.resources.entry;
+      if (!currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       this.#store.patch({
         resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
         selection: {
@@ -692,7 +702,8 @@ export class EffectController {
       });
       this.selectPlan(plans.selectedPlan || plans.plans[0]?.id || null);
     } catch (error) {
-      if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
+      const currentEntry = this.#store.value.resources.entry;
+      if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
@@ -739,21 +750,25 @@ export class EffectController {
 
   async loadAreas(): Promise<void> {
     const entry = this.#store.value.resources.entry;
-    const stamp = this.#coherence.current();
-    if (!entry || !stamp || !canEditCoordinates(this.#store.value)) return;
+    if (!entry || !this.#coherence.current() || !canEditCoordinates(this.#store.value)) return;
+    const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("areas");
     this.#store.patch({
       resources: { ...this.#store.value.resources, areas: resource("loading", null) },
     });
     try {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
-      if (!this.#coherence.accepts(stamp) || areas.sceneUrl !== entry.sceneUrl) return;
+      const currentEntry = this.#store.value.resources.entry;
+      if (!currentEntry
+        || entryBoundaryKey(currentEntry) !== boundary
+        || areas.sceneUrl !== currentEntry.sceneUrl) return;
       this.#store.patch({
         resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
       });
       this.selectArea(areas.areas[0]?.id || null);
     } catch (error) {
-      if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
+      const currentEntry = this.#store.value.resources.entry;
+      if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,

@@ -552,6 +552,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     let sceneRequests = 0;
     let releaseSecond;
     const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+    let plansRequests = 0;
+    let releasePlans;
+    const plansGate = new Promise((resolve) => { releasePlans = resolve; });
     const entry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
@@ -616,6 +619,15 @@ test.describe("Map Studio v0.4 foundation", () => {
         floors: [{ id: "current", active: true, read_only: false, live_available: true, snapshots: [] }],
       }),
     }));
+    await page.route("**/api/matic_robot/plans/synthetic-entry", async (route) => {
+      plansRequests += 1;
+      await plansGate;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ rooms: [{ room_id: "room-1", name: "Room" }], plans: [], selected_plan: null }),
+      });
+    });
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
     await page.evaluate(async () => {
@@ -639,8 +651,22 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     await expect.poll(async () => page.evaluate(() =>
       window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(1);
+    await page.evaluate(() => {
+      const shell = window.__retainedScene.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "open-workflow", workflow: "rooms" },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect.poll(() => plansRequests).toBe(1);
     revision = 2;
     await expect.poll(() => sceneRequests, { timeout: 10_000 }).toBe(2);
+    releasePlans();
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__retainedScene.getWorkspaceSnapshot();
+      return { workflow: state.workflow, plans: state.resources.plans.status };
+    })).toEqual({ workflow: "rooms", plans: "ready" });
     expect(await page.evaluate(() => {
       const state = window.__retainedScene.getWorkspaceSnapshot();
       return {
