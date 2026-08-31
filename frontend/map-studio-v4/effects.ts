@@ -348,20 +348,19 @@ export class EffectController {
     const sameResourceBoundary = Boolean(previousEntry
       && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
     const coherent = entry.mapFloorCoherent && entry.mapSessionVerified;
-    const sameVerifiedSession = Boolean(previousEntry
-      && sameResourceBoundary
-      && coherent
-      && previousEntry.mapFloorCoherent
-      && previousEntry.mapSessionVerified
-      && entryMissionKey(previousEntry) === entryMissionKey(entry));
     this.#abortResources(sameResourceBoundary
       ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
       : ["catalog"]);
     const retainedScene = sameResourceBoundary
       ? previousState.resources.scene.value
       : null;
-    const retainedPose = sameVerifiedSession && previousState.map.exactPose
-      ? previousState.resources.pose.value
+    const previousPose = previousState.resources.pose.value;
+    const retainedPose = sameResourceBoundary
+      && coherent
+      && entry.mapSessionKey !== null
+      && previousPose?.position
+      && previousPose.mapSessionKey === entry.mapSessionKey
+      ? previousPose
       : null;
     const stamp = this.#coherence.begin(
       entry.entryId,
@@ -459,20 +458,26 @@ export class EffectController {
         }, 250);
         return;
       }
+      const state = this.#store.value;
+      const pose = state.resources.pose.value;
+      const retainsVerifiedPose = state.resources.scene.value !== null
+        && entry.mapSessionKey !== null
+        && pose?.position !== null
+        && pose?.mapSessionKey === entry.mapSessionKey;
       this.#store.patch({
         coherence: "degraded",
         resources: {
-          ...this.#store.value.resources,
+          ...state.resources,
           scene: resource(
             "error",
-            this.#store.value.resources.scene.value,
+            state.resources.scene.value,
             problemCode(error, "scene-unavailable"),
           ),
         },
         map: {
-          ...this.#store.value.map,
-          available: this.#store.value.resources.scene.value !== null,
-          exactPose: false,
+          ...state.map,
+          available: state.resources.scene.value !== null,
+          exactPose: retainsVerifiedPose,
         },
       });
     } finally {
