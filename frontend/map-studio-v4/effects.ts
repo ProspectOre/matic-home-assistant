@@ -71,6 +71,12 @@ const entryManagedLock = (entry: MapEntry): boolean =>
   || entry.nativeReconciliationPending
   || entry.nativeSessionActive === true;
 
+const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boolean =>
+  left.entryKey === right.entryKey
+  && left.generation === right.generation
+  && left.floorKey === right.floorKey
+  && left.missionKey === right.missionKey;
+
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 
@@ -92,6 +98,8 @@ export class EffectController {
   #poseTimer: number | null = null;
   #settleTimer: number | null = null;
   #catalogLoading = false;
+  #poseLoading = false;
+  #poseQueued = false;
   #entryIdentity = "";
   #deltaGeneration = 0;
   #preferenceUser = "";
@@ -510,13 +518,11 @@ export class EffectController {
               ...state.resources,
               entry,
               scene: resource("ready", scene),
-              pose: resource("loading", state.resources.pose.value),
             },
             map: {
               ...state.map,
               available: true,
               floorCoherent: true,
-              exactPose: false,
             },
           });
           void this.#loadPose(entry, stamp);
@@ -582,11 +588,18 @@ export class EffectController {
   }
 
   async #loadPose(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (this.#poseLoading) {
+      this.#poseQueued = true;
+      return;
+    }
+    this.#poseLoading = true;
     const controller = this.#controller("pose");
     try {
       const pose = await this.#backend.pose(entry.poseUrl, controller.signal);
-      if (!this.#coherence.accepts(stamp)
-        || pose.revision !== stamp.revision
+      const current = this.#coherence.current();
+      if (!current
+        || !sameCoherenceGeneration(stamp, current)
+        || pose.revision > current.revision
         || !pose.floorCoherent) return;
       this.#store.patch({
         resources: {
@@ -609,6 +622,13 @@ export class EffectController {
       });
     } finally {
       this.#release("pose", controller);
+      this.#poseLoading = false;
+      if (this.#poseQueued && !this.#disposed) {
+        this.#poseQueued = false;
+        const latestEntry = this.#store.value.resources.entry;
+        const latestStamp = this.#coherence.current();
+        if (latestEntry && latestStamp) void this.#loadPose(latestEntry, latestStamp);
+      }
     }
   }
 

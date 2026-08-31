@@ -430,6 +430,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     let fullSceneRequests = 0;
     let deltaRequests = 0;
     let failNextDelta = false;
+    let releaseFirstDelta;
+    const firstDeltaGate = new Promise((resolve) => { releaseFirstDelta = resolve; });
     const catalogEntry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
@@ -481,6 +483,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return route.fulfill({ status: 503, body: "temporary" });
       }
       if (deltaRequests === 1) {
+        await firstDeltaGate;
         catalogRevision = 2;
         return route.fulfill({
           status: 200,
@@ -507,8 +510,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       status: 200,
       contentType: "application/json",
       body: JSON.stringify({
-        position: null,
-        source: "current_area",
+        position: [10, 12],
+        source: "latest_pose",
         revision: catalogRevision,
         pose_revision: 1,
         map_floor_coherent: true,
@@ -554,10 +557,29 @@ test.describe("Map Studio v0.4 foundation", () => {
       window.__deltaPanel = panel;
     });
 
+    await expect.poll(async () => page.evaluate(() =>
+      window.__deltaPanel.getWorkspaceSnapshot().map.exactPose)).toBe(true);
+    await page.evaluate(() => {
+      window.__poseStayedExact = new Promise((resolve) => {
+        const deadline = performance.now() + 750;
+        let stayedExact = true;
+        const sample = () => {
+          const state = window.__deltaPanel.getWorkspaceSnapshot();
+          if ((state.resources.scene.value?.revision || 0) >= 2 && !state.map.exactPose) {
+            stayedExact = false;
+          }
+          if (performance.now() >= deadline) resolve(stayedExact);
+          else requestAnimationFrame(sample);
+        };
+        sample();
+      });
+    });
+    releaseFirstDelta();
     await expect.poll(async () => page.evaluate(() => {
       const scene = window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value;
       return { revision: scene?.revision, room: scene?.metadata.rooms[0]?.name };
     })).toEqual({ revision: 2, room: "Updated room" });
+    expect(await page.evaluate(() => window.__poseStayedExact)).toBe(true);
     expect(fullSceneRequests).toBe(1);
     expect(deltaRequests).toBeGreaterThanOrEqual(1);
     failNextDelta = true;
