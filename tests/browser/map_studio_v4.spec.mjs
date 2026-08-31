@@ -715,6 +715,32 @@ test.describe("Map Studio v0.4 foundation", () => {
     releaseSecond();
     await expect.poll(async () => page.evaluate(() =>
       window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(2);
+    await page.evaluate(() => {
+      window.__retainedScene.hass = { ...window.__retainedScene.hass, connected: false };
+    });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__retainedScene.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        available: state.map.available,
+        exactPose: state.map.exactPose,
+        workflow: state.workflow,
+        plans: state.resources.plans.status,
+        revision: state.resources.scene.value?.revision,
+      };
+    })).toEqual({
+      coherence: "degraded",
+      available: true,
+      exactPose: false,
+      workflow: "rooms",
+      plans: "ready",
+      revision: 2,
+    });
+    await page.evaluate(() => {
+      window.__retainedScene.hass = { ...window.__retainedScene.hass, connected: true };
+    });
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().coherence), { timeout: 10_000 }).toBe("current");
   });
 
   test("keeps one stable loading surface while a timed-out scene build is rejoined", async ({ page }) => {

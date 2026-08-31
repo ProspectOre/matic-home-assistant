@@ -72,6 +72,7 @@ const entryManagedLock = (entry: MapEntry): boolean =>
   || entry.nativeSessionActive === true;
 
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
+const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
@@ -95,6 +96,7 @@ export class EffectController {
   #deltaGeneration = 0;
   #preferenceUser = "";
   #disposed = false;
+  #hostConnected = true;
 
   constructor(store: WorkspaceStore, backend: MaticBackend) {
     this.#store = store;
@@ -103,6 +105,8 @@ export class EffectController {
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
+    const wasConnected = this.#hostConnected;
+    this.#hostConnected = projection.host.connected;
     this.#projection = projection;
     this.#panel = panel;
     this.#store.patch({
@@ -122,14 +126,43 @@ export class EffectController {
         cameras: preferences.cameras,
       });
     }
-    if (!projection.host.connected
-      || !projection.host.administrator
-      || projection.host.robotCount === 0) {
+    if (!projection.host.administrator) {
       this.#stopPolling();
-      this.#clearPrivate(projection.host.administrator ? "map-unavailable" : "access-required");
+      this.#clearPrivate("access-required");
+      return;
+    }
+    if (!projection.host.connected) {
+      this.#stopPolling();
+      const state = this.#store.value;
+      const retainedScene = state.resources.scene.value;
+      this.#store.patch({
+        coherence: retainedScene ? "degraded" : "unavailable",
+        resources: {
+          ...state.resources,
+          pose: resource("idle", null),
+        },
+        map: {
+          ...state.map,
+          available: retainedScene !== null,
+          exactPose: false,
+        },
+        notice: retainedScene ? { tone: "warning", text: RECONNECT_NOTICE } : state.notice,
+      });
+      return;
+    }
+    if (projection.host.robotCount === 0) {
+      this.#stopPolling();
+      this.#clearPrivate("map-unavailable");
       return;
     }
     this.#startPolling();
+    if (!wasConnected) {
+      if (this.#store.value.notice?.text === RECONNECT_NOTICE) {
+        this.#store.patch({ notice: null });
+      }
+      void this.refreshCatalog(true);
+      return;
+    }
     if (this.#store.value.resources.catalog.status === "idle"
       || (projection.entryKey && projection.entryKey !== this.#store.value.selection.entryId)) {
       void this.refreshCatalog(true);
