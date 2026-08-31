@@ -437,6 +437,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     let poseFreshness = "live";
     let poseRequests = 0;
     let failNextPose = false;
+    let holdNextFullScene = false;
+    let releaseHeldFullScene;
+    const heldFullSceneGate = new Promise((resolve) => { releaseHeldFullScene = resolve; });
     let releaseFirstDelta;
     const firstDeltaGate = new Promise((resolve) => { releaseFirstDelta = resolve; });
     const catalogEntry = () => ({
@@ -476,9 +479,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         body: JSON.stringify({ entries: [entry] }),
       });
     });
-    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", (route) => {
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
       fullSceneRequests += 1;
       fullScenePreferCached.push(route.request().headers()["x-matic-prefer-cached"]);
+      if (holdNextFullScene) await heldFullSceneGate;
       return route.fulfill({
         status: 200,
         body: catalogRevision === 1 ? initial : updated,
@@ -645,6 +649,26 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [11, 13] });
+    holdNextFullScene = true;
+    catalogRevision = 3;
+    await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(3);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return {
+        exactPose: state.map.exactPose,
+        pose: state.resources.pose.value?.position,
+        sceneRevision: state.resources.scene.value?.revision,
+        sceneStatus: state.resources.scene.status,
+      };
+    })).toEqual({
+      exactPose: true,
+      pose: [11, 13],
+      sceneRevision: 2,
+      sceneStatus: "loading",
+    });
+    releaseHeldFullScene();
+    await expect.poll(async () => page.evaluate(() =>
+      window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
     poseSessionKey = "b".repeat(64);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().map.exactPose), { timeout: 5_000 }).toBe(false);

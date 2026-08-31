@@ -347,11 +347,21 @@ export class EffectController {
     const previousEntry = previousState.resources.entry;
     const sameResourceBoundary = Boolean(previousEntry
       && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
+    const coherent = entry.mapFloorCoherent && entry.mapSessionVerified;
+    const sameVerifiedSession = Boolean(previousEntry
+      && sameResourceBoundary
+      && coherent
+      && previousEntry.mapFloorCoherent
+      && previousEntry.mapSessionVerified
+      && entryMissionKey(previousEntry) === entryMissionKey(entry));
     this.#abortResources(sameResourceBoundary
       ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
       : ["catalog"]);
     const retainedScene = sameResourceBoundary
       ? previousState.resources.scene.value
+      : null;
+    const retainedPose = sameVerifiedSession && previousState.map.exactPose
+      ? previousState.resources.pose.value
       : null;
     const stamp = this.#coherence.begin(
       entry.entryId,
@@ -359,7 +369,6 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
-    const coherent = entry.mapFloorCoherent && entry.mapSessionVerified;
     const degraded = entry.health === "problem" || entry.health === "limited";
     const state = this.#store.value;
     this.#store.patch({
@@ -371,7 +380,7 @@ export class EffectController {
         ...state.resources,
         entry,
         scene: resource(coherent ? "loading" : "idle", retainedScene),
-        pose: resource(coherent ? "loading" : "idle", null),
+        pose: resource(coherent ? "loading" : "idle", retainedPose),
         history: resource("loading", state.resources.history.value),
         plans: sameResourceBoundary ? state.resources.plans : resource("idle", null),
         areas: sameResourceBoundary ? state.resources.areas : resource("idle", null),
@@ -381,7 +390,7 @@ export class EffectController {
         complete: entry.mapComplete && !entry.mapTruncated,
         floorCoherent: entry.mapFloorCoherent,
         sessionVerified: entry.mapSessionVerified,
-        exactPose: false,
+        exactPose: coherent && retainedPose !== null,
       },
       floor: {
         classifiedCount: Math.max(1, entry.historyFloorCount),
