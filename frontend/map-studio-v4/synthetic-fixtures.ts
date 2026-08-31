@@ -7,6 +7,8 @@ import type {
   SceneModel,
 } from "./backend-contracts";
 
+const SYNTHETIC_MAP_SESSION_KEY = "a".repeat(64);
+
 const rooms = [
   { roomId: "room-a", name: "Kitchen", boundary: [[0.5, 0.5], [4, 0.5], [4, 3], [0.5, 3]] as const },
   { roomId: "room-b", name: "Living room", boundary: [[4.2, 0.5], [8.5, 0.5], [8.5, 3.4], [4.2, 3.4]] as const },
@@ -102,6 +104,7 @@ export const syntheticEntry = (): MapEntry => ({
   mapRevision: 7,
   mapFloorCoherent: true,
   mapSessionVerified: true,
+  mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
   mapBlockReason: null,
   runnerLocked: false,
   stopSettlePending: false,
@@ -192,5 +195,6 @@ export const syntheticPose = (): PoseModel => ({
   revision: 7,
   poseRevision: 4,
   floorCoherent: true,
+  mapSessionKey: SYNTHETIC_MAP_SESSION_KEY,
   freshness: "live",
 });

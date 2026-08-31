@@ -24,6 +24,7 @@ export interface MapEntry {
   readonly mapRevision: number;
   readonly mapFloorCoherent: boolean;
   readonly mapSessionVerified: boolean;
+  readonly mapSessionKey: string | null;
   readonly mapBlockReason: MapBlockReason;
   readonly runnerLocked: boolean;
   readonly stopSettlePending: boolean;
@@ -77,6 +78,7 @@ export interface PoseModel {
   readonly revision: number;
   readonly poseRevision: number;
   readonly floorCoherent: boolean;
+  readonly mapSessionKey: string | null;
   readonly freshness: "live" | "coordinator_fallback" | "unavailable";
 }
 
@@ -227,6 +229,13 @@ const nullableBoolean = (value: unknown, code: string): boolean | null => {
   return booleanValue(value, code);
 };
 
+const mapSessionKey = (value: unknown): string | null => {
+  if (value === null || value === undefined) return null;
+  const key = boundedString(value, 64, "invalid-map-session-key");
+  if (!/^[0-9a-f]{64}$/u.test(key)) throw new ContractError("invalid-map-session-key");
+  return key;
+};
+
 const blockReason = (value: unknown): MapBlockReason => {
   if (value === null || value === undefined) return null;
   if (
@@ -296,6 +305,7 @@ export const parseCatalog = (value: unknown): readonly MapEntry[] => {
       mapRevision,
       mapFloorCoherent: booleanValue(entry.map_floor_coherent, "invalid-floor-coherence"),
       mapSessionVerified: booleanValue(entry.map_session_verified, "invalid-session-state"),
+      mapSessionKey: mapSessionKey(entry.map_session_key),
       mapBlockReason: blockReason(entry.map_block_reason),
       runnerLocked: booleanValue(entry.runner_locked, "invalid-runner-lock"),
       stopSettlePending: booleanValue(entry.stop_settle_pending, "invalid-stop-settle"),
@@ -512,6 +522,7 @@ export const parsePose = (value: unknown): PoseModel => {
     revision: boundedInteger(payload.revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-revision"),
     poseRevision: boundedInteger(payload.pose_revision, 0, Number.MAX_SAFE_INTEGER, "invalid-pose-sequence"),
     floorCoherent: booleanValue(payload.map_floor_coherent, "invalid-pose-floor"),
+    mapSessionKey: mapSessionKey(payload.map_session_key),
     freshness,
   };
 };

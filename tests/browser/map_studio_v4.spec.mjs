@@ -430,6 +430,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     let fullSceneRequests = 0;
     let deltaRequests = 0;
     let failNextDelta = false;
+    let poseSessionKey = "a".repeat(64);
     let releaseFirstDelta;
     const firstDeltaGate = new Promise((resolve) => { releaseFirstDelta = resolve; });
     const catalogEntry = () => ({
@@ -443,6 +444,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_revision: catalogRevision,
       map_floor_coherent: true,
       map_session_verified: true,
+      map_session_key: "a".repeat(64),
       runner_locked: false,
       stop_settle_pending: false,
       active_plan: false,
@@ -512,10 +514,11 @@ test.describe("Map Studio v0.4 foundation", () => {
       body: JSON.stringify({
         position: [10, 12],
         source: "latest_pose",
-        revision: catalogRevision,
+        revision: catalogRevision + 100,
         pose_revision: 1,
         map_floor_coherent: true,
         pose_freshness: "live",
+        map_session_key: poseSessionKey,
       }),
     }));
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
@@ -586,6 +589,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(() => fullSceneRequests).toBe(2);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
+    poseSessionKey = "b".repeat(64);
+    await expect.poll(async () => page.evaluate(() =>
+      window.__deltaPanel.getWorkspaceSnapshot().map.exactPose), { timeout: 5_000 }).toBe(false);
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 
@@ -611,6 +617,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       map_revision: revision,
       map_floor_coherent: true,
       map_session_verified: sessionVerified,
+      map_session_key: sessionVerified ? "a".repeat(64) : null,
       runner_locked: false,
       stop_settle_pending: false,
       active_plan: false,
@@ -654,6 +661,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         pose_revision: revision,
         map_floor_coherent: true,
         pose_freshness: "live",
+        map_session_key: "a".repeat(64),
       }),
     }));
     await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
@@ -790,6 +798,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         map_revision: 1,
         map_floor_coherent: true,
         map_session_verified: true,
+        map_session_key: "a".repeat(64),
         runner_locked: false,
         stop_settle_pending: false,
         active_plan: false,
@@ -856,6 +865,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               pose_revision: 1,
               map_floor_coherent: true,
               pose_freshness: "live",
+              map_session_key: "a".repeat(64),
             }), { status: 200, headers: { "Content-Type": "application/json" } });
           }
           if (path === entry.history_url) {
@@ -922,6 +932,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         map_revision: 1,
         map_floor_coherent: true,
         map_session_verified: true,
+        map_session_key: "a".repeat(64),
         runner_locked: false,
         stop_settle_pending: false,
         active_plan: false,
@@ -975,6 +986,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               pose_revision: 1,
               map_floor_coherent: true,
               pose_freshness: "live",
+              map_session_key: "a".repeat(64),
             }), { status: 200, headers: { "Content-Type": "application/json" } });
           }
           if (path === entry.history_url) {
@@ -1037,6 +1049,7 @@ test.describe("Map Studio v0.4 foundation", () => {
               map_revision: 7,
               map_floor_coherent: true,
               map_session_verified: true,
+              map_session_key: "a".repeat(64),
               runner_locked: true,
               stop_settle_pending: false,
               active_plan: false,

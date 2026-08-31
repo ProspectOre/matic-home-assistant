@@ -6,6 +6,7 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
+from hashlib import sha256
 from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -51,6 +52,7 @@ from custom_components.matic_robot.slam_scene import (
     MaticSlamHistoryView,
     MaticSlamPoseView,
     MaticSlamSceneView,
+    _map_session_key,
     areas_api_url,
     delta_api_url,
     history_api_url,
@@ -160,6 +162,14 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             async_delete_area=AsyncMock(),
         ),
     )
+
+
+def _browser_session_key(runtime: SimpleNamespace) -> str:
+    identity = runtime.slam_map.mission_identity
+    assert identity is not None
+    return sha256(
+        b"matic-map-session-v1\0" + identity.mission_token.encode("ascii")
+    ).hexdigest()
 
 
 def _hass(entry) -> SimpleNamespace:
@@ -771,6 +781,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
+        "map_session_key": _browser_session_key(runtime),
     }
     assert json.loads(cached.body)["pose_age_seconds"] == 0.25
     runtime.client.async_get_pose.assert_awaited_once()
@@ -785,6 +796,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     assert fallback_payload["position"] is None
     assert fallback_payload["source"] == "current_area"
     assert fallback_payload["pose_freshness"] == "coordinator_fallback"
+    assert fallback_payload["map_session_key"] == _browser_session_key(fallback_runtime)
 
     unavailable_runtime = _runtime(pose=False)
     unavailable_runtime.coordinator.data.floor_plan = None
@@ -799,6 +811,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
+        "map_session_key": None,
     }
 
 
@@ -955,6 +968,7 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "selected_floor_ordinal": 1,
                 "map_floor_ordinal": 1,
                 "map_session_verified": True,
+                "map_session_key": _browser_session_key(runtime),
                 "map_block_reason": None,
                 "runner_locked": False,
                 "stop_settle_pending": False,
@@ -1013,12 +1027,14 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     assert "private-session" not in blocked_response.text
 
     runtime.slam_map.mission_identity = None
+    assert _map_session_key(runtime) is None
     empty_identity = await MaticSlamCatalogView(
         "/matic_robot/test/room-plan-editor.js"
     ).get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
+    assert empty_entry["map_session_key"] is None
     assert empty_entry["map_block_reason"] == "map_session_unverified"
     assert empty_entry["selected_floor_ordinal"] == 1
     assert empty_entry["map_floor_ordinal"] is None

@@ -62,6 +62,18 @@ PRIVATE_NO_STORE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 
+_MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
+
+
+def _map_session_key(runtime: MaticRuntimeData) -> str | None:
+    """Return a browser-safe identity for one verified SLAM coordinate frame."""
+    identity = runtime.slam_map.mission_identity
+    if identity is None:
+        return None
+    return sha256(
+        _MAP_SESSION_KEY_DOMAIN + identity.mission_token.encode("ascii")
+    ).hexdigest()
+
 
 def scene_api_url(entry_id: str) -> str:
     """Return the authenticated scene URL for one config entry."""
@@ -733,6 +745,9 @@ class MaticSlamPoseView(HomeAssistantView):
                 "pose_revision": cached.revision,
                 "pose_age_seconds": round(max(0.0, monotonic() - cached.fetched_at), 3),
                 "pose_freshness": cached.freshness,
+                "map_session_key": (
+                    _map_session_key(runtime) if floor_plan_coherent else None
+                ),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )
@@ -831,6 +846,9 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "selected_floor_ordinal": selected_floor_ordinal,
                     "map_floor_ordinal": map_floor_ordinal,
                     "map_session_verified": session_verified,
+                    "map_session_key": (
+                        _map_session_key(runtime) if session_verified else None
+                    ),
                     "map_block_reason": map_block_reason,
                     "runner_locked": runtime.cleaning_plans.lock(
                         serial_number

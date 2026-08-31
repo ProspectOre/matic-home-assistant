@@ -49,6 +49,7 @@ const entryFloorKey = (entry: MapEntry): string => [
 const entryMissionKey = (entry: MapEntry): string => [
   entry.mapFloorOrdinal ?? "none",
   entry.mapSessionVerified ? "verified" : "unverified",
+  entry.mapSessionKey ?? "no-session",
 ].join(":");
 
 const entryBoundaryKey = (entry: MapEntry): string => [
@@ -598,10 +599,20 @@ export class EffectController {
     try {
       const pose = await this.#backend.pose(entry.poseUrl, controller.signal);
       const current = this.#coherence.current();
+      const currentEntry = this.#store.value.resources.entry;
       if (!current
         || !sameCoherenceGeneration(stamp, current)
-        || pose.revision > current.revision
+        || !currentEntry
         || !pose.floorCoherent) return;
+      if (pose.mapSessionKey === null
+        || pose.mapSessionKey !== currentEntry.mapSessionKey) {
+        this.#store.patch({
+          map: { ...this.#store.value.map, exactPose: false },
+        });
+        this.#entryIdentity = "";
+        void this.refreshCatalog(true);
+        return;
+      }
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
