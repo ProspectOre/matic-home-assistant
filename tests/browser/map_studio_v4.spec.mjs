@@ -416,6 +416,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     let catalogRevision = 1;
     let fullSceneRequests = 0;
     let deltaRequests = 0;
+    let failNextDelta = false;
     const catalogEntry = () => ({
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
@@ -451,17 +452,21 @@ test.describe("Map Studio v0.4 foundation", () => {
       fullSceneRequests += 1;
       return route.fulfill({
         status: 200,
-        body: initial,
+        body: catalogRevision === 1 ? initial : updated,
         headers: {
           "Content-Type": "application/vnd.matic.slam-scene",
-          "X-Matic-Revision": "1",
+          "X-Matic-Revision": String(catalogRevision),
           "X-Matic-Floor-Coherent": "1",
-          ETag: '"scene-1"',
+          ETag: `"scene-${catalogRevision}"`,
         },
       });
     });
     await page.route("**/api/matic_robot/slam_delta/synthetic-entry?since=*", async (route) => {
       deltaRequests += 1;
+      if (failNextDelta) {
+        failNextDelta = false;
+        return route.fulfill({ status: 503, body: "temporary" });
+      }
       if (deltaRequests === 1) {
         catalogRevision = 2;
         return route.fulfill({
@@ -542,6 +547,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ revision: 2, room: "Updated room" });
     expect(fullSceneRequests).toBe(1);
     expect(deltaRequests).toBeGreaterThanOrEqual(1);
+    failNextDelta = true;
+    await expect.poll(() => fullSceneRequests).toBe(2);
+    await expect.poll(async () => page.evaluate(() =>
+      window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 

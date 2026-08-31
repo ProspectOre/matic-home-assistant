@@ -71,6 +71,8 @@ const entryManagedLock = (entry: MapEntry): boolean =>
   || entry.nativeReconciliationPending
   || entry.nativeSessionActive === true;
 
+const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
+
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
   if (floor.active) return "Current floor";
@@ -363,12 +365,14 @@ export class EffectController {
         || response.revision !== stamp.revision
         || !response.floorCoherent
         || !response.scene) return;
+      const state = this.#store.value;
       this.#store.patch({
         resources: {
-          ...this.#store.value.resources,
+          ...state.resources,
           scene: resource("ready", response.scene),
         },
-        map: { ...this.#store.value.map, available: true },
+        map: { ...state.map, available: true },
+        notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE ? null : state.notice,
       });
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
@@ -498,7 +502,7 @@ export class EffectController {
         coherence: "degraded",
         notice: {
           tone: "warning",
-          text: "Live map updates paused while the current map is rechecked.",
+          text: LIVE_MAP_RECHECK_NOTICE,
         },
         map: { ...this.#store.value.map, exactPose: false },
       });
