@@ -17,6 +17,7 @@ import {
 import { BackendError, MaticBackend } from "./backend";
 import {
   canEditCoordinates,
+  canReadFloorResources,
   canStartMotion,
   CoherenceMachine,
   WorkspaceStore,
@@ -831,7 +832,7 @@ export class EffectController {
 
   async loadPlans(): Promise<void> {
     const entry = this.#store.value.resources.entry;
-    if (!entry || !this.#coherence.current() || !canEditCoordinates(this.#store.value)) return;
+    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
@@ -898,7 +899,7 @@ export class EffectController {
 
   async loadAreas(): Promise<void> {
     const entry = this.#store.value.resources.entry;
-    if (!entry || !this.#coherence.current() || !canEditCoordinates(this.#store.value)) return;
+    if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("areas");
     this.#store.patch({

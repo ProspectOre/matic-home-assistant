@@ -924,9 +924,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(1);
     expect(await page.evaluate(() =>
       window.__retainedScene.getWorkspaceSnapshot().map.complete)).toBe(false);
-    mapComplete = true;
-    await expect.poll(async () => page.evaluate(() =>
-      window.__retainedScene.getWorkspaceSnapshot().map.complete), { timeout: 10_000 }).toBe(true);
     await page.evaluate(() => {
       const shell = window.__retainedScene.shadowRoot.querySelector("matic-map-shell-v4");
       shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
@@ -936,6 +933,18 @@ test.describe("Map Studio v0.4 foundation", () => {
       }));
     });
     await expect.poll(() => plansRequests).toBe(1);
+    expect(await page.evaluate(() => {
+      const state = window.__retainedScene.getWorkspaceSnapshot();
+      return {
+        complete: state.map.complete,
+        workflow: state.workflow,
+        plans: state.resources.plans.status,
+        selectedRooms: state.selection.roomIds.length,
+      };
+    })).toEqual({ complete: false, workflow: "rooms", plans: "loading", selectedRooms: 0 });
+    mapComplete = true;
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().map.complete), { timeout: 10_000 }).toBe(true);
     sessionVerified = false;
     await expect.poll(async () => page.evaluate(() => {
       const state = window.__retainedScene.getWorkspaceSnapshot();

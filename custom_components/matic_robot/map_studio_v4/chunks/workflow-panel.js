@@ -1,4 +1,4 @@
-import{A as f,i as v,v as g,w as o,x as c,y as b,z as $}from"./chunk.js";var p=["vacuum","mop","vacuum_and_mop"],h=["quick","standard","heavy_duty"],l=d=>d.currentTarget.value,m=d=>d.currentTarget.checked,u=class extends b{constructor(){super(...arguments);this.state=v()}static{this.properties={state:{attribute:!1},localize:{attribute:!1}}}static{this.styles=g`
+import{A as $,B as f,i as v,w as g,x as o,y as c,z as b}from"./chunk.js";var p=["vacuum","mop","vacuum_and_mop"],h=["quick","standard","heavy_duty"],l=d=>d.currentTarget.value,m=d=>d.currentTarget.checked,u=class extends b{constructor(){super(...arguments);this.state=v()}static{this.properties={state:{attribute:!1},localize:{attribute:!1}}}static{this.styles=g`
     :host { display: block; min-inline-size: 0; }
     * { box-sizing: border-box; }
     button, input, select { font: inherit; }

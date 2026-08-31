@@ -495,6 +495,20 @@ export const canEditCoordinates = (state: WorkspaceState): boolean =>
   && state.host.robotConnected
   && !state.floor.readOnly;
 
+/**
+ * Floor-scoped metadata is safe to fetch before the rendered scene is fully
+ * complete. Keep this read capability separate from coordinate edits and
+ * motion, which continue to require canEditCoordinates/canStartMotion.
+ */
+export const canReadFloorResources = (state: WorkspaceState): boolean =>
+  canShowLiveMap(state)
+  && state.coherence === "current"
+  && state.map.floorCoherent
+  && state.map.sessionVerified
+  && state.host.connected
+  && state.host.robotConnected
+  && !state.floor.readOnly;
+
 export const canStartMotion = (state: WorkspaceState): boolean =>
   canEditCoordinates(state)
   && !state.managedLock
