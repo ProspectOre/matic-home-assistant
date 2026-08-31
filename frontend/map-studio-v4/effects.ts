@@ -565,7 +565,6 @@ export class EffectController {
           tone: "warning",
           text: LIVE_MAP_RECHECK_NOTICE,
         },
-        map: { ...this.#store.value.map, exactPose: false },
       });
       this.#entryIdentity = "";
       void this.refreshCatalog(true);

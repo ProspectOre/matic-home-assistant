@@ -437,6 +437,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     let poseFreshness = "live";
     let poseRequests = 0;
     let failNextPose = false;
+    let holdDeltaRecoveryScene = false;
+    let releaseDeltaRecoveryScene;
+    const deltaRecoverySceneGate = new Promise((resolve) => { releaseDeltaRecoveryScene = resolve; });
     let holdNextFullScene = false;
     let releaseHeldFullScene;
     const heldFullSceneGate = new Promise((resolve) => { releaseHeldFullScene = resolve; });
@@ -482,6 +485,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
       fullSceneRequests += 1;
       fullScenePreferCached.push(route.request().headers()["x-matic-prefer-cached"]);
+      if (holdDeltaRecoveryScene && fullSceneRequests === 2) await deltaRecoverySceneGate;
       if (holdNextFullScene) await heldFullSceneGate;
       return route.fulfill({
         status: 200,
@@ -615,8 +619,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
     })).toEqual({ revision: 2, exactPose: true });
     expect(fullSceneRequests).toBe(1);
+    holdDeltaRecoveryScene = true;
     failNextDelta = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
+    })).toEqual({ exactPose: true, position: [10, 12] });
+    releaseDeltaRecoveryScene();
     expect(fullScenePreferCached).toEqual(["1", "1"]);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().notice)).toBe(null);
