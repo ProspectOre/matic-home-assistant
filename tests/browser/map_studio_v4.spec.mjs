@@ -660,6 +660,18 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();
       return { exactPose: state.map.exactPose, position: state.resources.pose.value?.position };
     })).toEqual({ exactPose: true, position: [11, 13] });
+    poseFreshness = "live";
+    const requestsBeforeMissingLivePose = poseRequests;
+    await expect.poll(() => poseRequests, { timeout: 5_000 })
+      .toBeGreaterThan(requestsBeforeMissingLivePose);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return {
+        exactPose: state.map.exactPose,
+        freshness: state.resources.pose.value?.freshness,
+        position: state.resources.pose.value?.position,
+      };
+    })).toEqual({ exactPose: true, freshness: "coordinator_fallback", position: [11, 13] });
     failNextPose = true;
     const requestsBeforeFailure = poseRequests;
     await expect.poll(() => poseRequests, { timeout: 5_000 }).toBeGreaterThan(requestsBeforeFailure);

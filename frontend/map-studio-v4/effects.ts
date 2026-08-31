@@ -644,14 +644,13 @@ export class EffectController {
       const canRetainVerifiedPose = Boolean(state.map.exactPose
         && previousPose?.position
         && previousPose.mapSessionKey === currentEntry.mapSessionKey);
-      if (pose.position === null
-        && pose.freshness === "coordinator_fallback"
-        && canRetainVerifiedPose) {
-        // A transient direct-pose failure must not make the marker blink. The
-        // coordinator fallback can briefly lack a point while the same
-        // floor/session remains verified, so keep the last verified point and
-        // retry on the next one-second tick. Session changes still clear the
-        // marker through the identity check above.
+      if (pose.position === null && canRetainVerifiedPose) {
+        // A successful pose read can still briefly contain no coordinate while
+        // the robot relocalizes or crosses an internal room boundary. Keep the
+        // last verified point for the same floor/session instead of blinking
+        // the marker off, then retry on the next one-second tick. A first load
+        // without a point, a floor change, or a session change still clears it
+        // through the identity checks above.
         this.#store.patch({
           resources: {
             ...state.resources,
