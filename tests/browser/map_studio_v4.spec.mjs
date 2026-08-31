@@ -427,6 +427,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const updated = syntheticScene("Updated room", 24);
     const delta = syntheticDelta(initial, updated, 1, 2);
     let catalogRevision = 1;
+    let catalogRequests = 0;
     let fullSceneRequests = 0;
     const fullScenePreferCached = [];
     let deltaRequests = 0;
@@ -461,11 +462,16 @@ test.describe("Map Studio v0.4 foundation", () => {
       stream_state: "connected",
       stream_failures: 0,
     });
-    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
-      status: 200,
-      contentType: "application/json",
-      body: JSON.stringify({ entries: [catalogEntry()] }),
-    }));
+    await page.route("**/api/matic_robot/slam_entries", (route) => {
+      catalogRequests += 1;
+      const entry = catalogEntry();
+      if (catalogRequests === 2) entry.map_revision = 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ entries: [entry] }),
+      });
+    });
     await page.route("**/api/matic_robot/slam_scene/synthetic-entry", (route) => {
       fullSceneRequests += 1;
       fullScenePreferCached.push(route.request().headers()["x-matic-prefer-cached"]);
@@ -588,6 +594,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(fullSceneRequests).toBe(1);
     expect(fullScenePreferCached).toEqual(["1"]);
     expect(deltaRequests).toBeGreaterThanOrEqual(1);
+    await expect.poll(() => catalogRequests, { timeout: 7_000 }).toBeGreaterThanOrEqual(2);
+    expect(await page.evaluate(() => {
+      const state = window.__deltaPanel.getWorkspaceSnapshot();
+      return { revision: state.resources.scene.value?.revision, exactPose: state.map.exactPose };
+    })).toEqual({ revision: 2, exactPose: true });
+    expect(fullSceneRequests).toBe(1);
     failNextDelta = true;
     await expect.poll(() => fullSceneRequests).toBe(2);
     expect(fullScenePreferCached).toEqual(["1", "1"]);

@@ -273,10 +273,23 @@ export class EffectController {
       if (controller.signal.aborted || this.#disposed) return;
       const requested = this.#panel?.config?.entry_id;
       const requestedEntry = typeof requested === "string" ? requested : null;
-      const selected = entries.find((entry) => entry.entryId === requestedEntry)
+      let selected = entries.find((entry) => entry.entryId === requestedEntry)
         || entries.find((entry) => entry.entryId === this.#projection?.entryKey)
         || entries[0]
         || null;
+      const currentEntry = this.#store.value.resources.entry;
+      if (selected
+        && currentEntry
+        && entryBoundaryKey(selected) === entryBoundaryKey(currentEntry)
+        && entryFloorKey(selected) === entryFloorKey(currentEntry)
+        && entryMissionKey(selected) === entryMissionKey(currentEntry)
+        && selected.mapRevision < currentEntry.mapRevision) {
+        // A catalog request can capture the retained scene revision while the
+        // delta request beside it finishes a newer verified scene. Never let
+        // that older response roll the live workspace backward and hide the
+        // precise pose; the next catalog poll will observe the new cache.
+        selected = { ...selected, mapRevision: currentEntry.mapRevision };
+      }
       this.#store.patch({
         managedLock: selected ? entryManagedLock(selected) : false,
         resources: {
