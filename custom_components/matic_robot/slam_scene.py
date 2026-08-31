@@ -209,6 +209,23 @@ class MaticSlamSceneView(HomeAssistantView):
         key = _scene_snapshot_key(runtime)
         return self._revision_for_key(entry_id, key)
 
+    def available_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
+        """Return the newest safe scene a newly opened panel can receive now."""
+        key = _scene_snapshot_key(runtime)
+        cached = self._cache.get(entry_id)
+        if cached is not None and _scene_snapshot_is_publishable(
+            runtime,
+            cached.key[1],
+            cached.key[2],
+            cached.floor_plan_coherent,
+        ):
+            # Advertise the scene that a newly opened panel can receive now.
+            # A live map revision may advance much faster than its expensive
+            # binary encoder. The delta request will join the background build
+            # and advance from this safe base without blanking the workspace.
+            return cached.revision
+        return self._revision_for_key(entry_id, key)
+
     def _revision_for_key(self, entry_id: str, key: _SceneKey) -> int:
         """Return a monotonic transport revision for one captured scene key."""
         current = self._generations.get(entry_id)
@@ -234,6 +251,8 @@ class MaticSlamSceneView(HomeAssistantView):
         hass: HomeAssistant,
         entry_id: str,
         runtime: MaticRuntimeData,
+        *,
+        allow_stale: bool = False,
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
         if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
@@ -258,6 +277,17 @@ class MaticSlamSceneView(HomeAssistantView):
             )
             self._tasks[entry_id] = task
             task.add_done_callback(partial(self._scene_task_done, entry_id))
+        if (
+            allow_stale
+            and cached is not None
+            and _scene_snapshot_is_publishable(
+                runtime,
+                cached.key[1],
+                cached.key[2],
+                cached.floor_plan_coherent,
+            )
+        ):
+            return cached
         try:
             return await asyncio.shield(task)
         except asyncio.CancelledError:
@@ -363,7 +393,12 @@ class MaticSlamSceneView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            cached = await self.async_scene(hass, entry_id, runtime)
+            cached = await self.async_scene(
+                hass,
+                entry_id,
+                runtime,
+                allow_stale=request.headers.get("X-Matic-Prefer-Cached") == "1",
+            )
         except DecodeError:
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
@@ -837,7 +872,7 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "history_floor_count": len(
                         runtime.slam_history.catalogs_by_mission()
                     ),
-                    "map_revision": self._scene_view.current_revision(
+                    "map_revision": self._scene_view.available_revision(
                         entry.entry_id, runtime
                     )
                     if self._scene_view is not None

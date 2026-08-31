@@ -186,10 +186,15 @@ def _request(
     hass,
     *,
     etag: str | None = None,
+    prefer_cached: bool = False,
     admin: bool = True,
     path: str = "/",
 ):
-    headers = {"If-None-Match": etag} if etag is not None else None
+    headers = {}
+    if etag is not None:
+        headers["If-None-Match"] = etag
+    if prefer_cached:
+        headers["X-Matic-Prefer-Cached"] = "1"
     request = make_mocked_request("GET", path, headers=headers, app={KEY_HASS: hass})
     request["hass_user"] = SimpleNamespace(is_admin=admin)
     return request
@@ -540,6 +545,46 @@ async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -
     assert hass.async_add_executor_job.await_count == 1
     assert {response.headers["X-Matic-Revision"] for response in responses} == {"7"}
     assert view.current_revision("entry", runtime) == 8
+
+
+async def test_scene_view_serves_safe_cache_while_new_revision_encodes() -> None:
+    """A reopened panel gets the last verified scene while its delta is built."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    first = await view.get(_request(hass), "entry")
+    assert first.headers["X-Matic-Revision"] == "7"
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_encode(target):
+        started.set()
+        await release.wait()
+        return target()
+
+    hass.async_add_executor_job.side_effect = delayed_encode
+    runtime.slam_map.revision = 8
+
+    reopened = await view.get(_request(hass, prefer_cached=True), "entry")
+    await started.wait()
+
+    assert reopened.status == HTTPStatus.OK
+    assert reopened.headers["X-Matic-Revision"] == "7"
+    assert view.current_revision("entry", runtime) == 8
+    assert view.available_revision("entry", runtime) == 7
+    assert "entry" in view._tasks
+
+    task = view._tasks["entry"]
+    release.set()
+    completed = await task
+    await asyncio.sleep(0)
+
+    assert completed is not None
+    assert completed.revision == 8
+    assert view.current_revision("entry", runtime) == 8
+    assert view.available_revision("entry", runtime) == 8
+    assert hass.async_add_executor_job.await_count == 2
 
 
 async def test_scene_build_survives_a_cancelled_http_waiter() -> None:

@@ -164,6 +164,7 @@ export class MaticBackend {
     etag?: string | null,
   ): Promise<SceneResponse> {
     const headers = new Headers({ Accept: "application/vnd.matic.slam-scene" });
+    if (source === "live") headers.set("X-Matic-Prefer-Cached", "1");
     if (etag) headers.set("If-None-Match", etag);
     const response = await this.#request(path, { headers }, REQUEST_TIMEOUTS.scene, signal);
     const revision = responseRevision(response, expectedRevision);
