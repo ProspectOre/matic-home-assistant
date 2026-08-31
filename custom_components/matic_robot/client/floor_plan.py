@@ -365,11 +365,11 @@ def resolve_robot_map_position(
     commanded room before the robot crosses its boundary, so it must not veto
     a stronger geometric pose. Callers establish mission/floor coherence.
 
-    A robot can legitimately travel through an unpartitioned gap between room
-    polygons. Keep that exact pose while it remains inside the verified floor
-    plan's bounded coordinate frame; requiring membership in one room makes the
-    marker blink at every doorway and corridor gap. Never invent coordinates
-    from ``current_area``.
+    A robot can legitimately travel through an unpartitioned gap, along an
+    exterior wall, or onto a dock outside the room polygons. Room partitions
+    therefore cannot define the valid pose envelope. Once callers have proven
+    the active SLAM mission and floor-plan identity match, keep every finite,
+    protocol-bounded pose. Never invent coordinates from ``current_area``.
     """
     del current_area
     if floor_plan is None or not floor_plan.rooms:
@@ -379,14 +379,9 @@ def resolve_robot_map_position(
     )
     if not valid_boundaries:
         return None
-    all_points = [point for boundary in valid_boundaries for point in boundary]
-    min_x = min(point[0] for point in all_points)
-    max_x = max(point[0] for point in all_points)
-    min_y = min(point[1] for point in all_points)
-    max_y = max(point[1] for point in all_points)
     if pose is None or not all(math.isfinite(value) for value in (pose.x, pose.y)):
         return None
-    if not (min_x <= pose.x <= max_x and min_y <= pose.y <= max_y):
+    if abs(pose.x) > MAX_MAP_COORDINATE or abs(pose.y) > MAX_MAP_COORDINATE:
         return None
     return pose.x, pose.y, "exact_pose"
 

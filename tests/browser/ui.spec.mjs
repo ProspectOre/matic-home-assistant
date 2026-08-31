@@ -2867,7 +2867,7 @@ test.describe("map studio", () => {
     });
     await expect.poll(() => studio.locator(".zoom-slider").getAttribute("max"))
       .not.toBe("400");
-    const zoomRange = await studio.evaluate((element) => {
+    const readZoomRange = () => studio.evaluate((element) => {
       const root = element.shadowRoot;
       const slider = root.querySelector(".zoom-slider");
       return {
@@ -2876,6 +2876,13 @@ test.describe("map studio", () => {
         label: root.querySelector(".zoom-value").textContent,
       };
     });
+    await expect.poll(async () => {
+      const value = await readZoomRange();
+      return value.maximum > 400
+        && value.value === value.maximum
+        && value.label === `${value.maximum}%`;
+    }).toBe(true);
+    const zoomRange = await readZoomRange();
     expect(zoomRange.maximum).toBeGreaterThan(400);
     expect(zoomRange.value).toBe(zoomRange.maximum);
     expect(zoomRange.label).toBe(`${zoomRange.maximum}%`);
