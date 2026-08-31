@@ -357,17 +357,17 @@ def resolve_robot_map_position(
     pose: RobotPose | None,
     current_area: str | None,
 ) -> tuple[float, float, str] | None:
-    """Return only a room-coherent exact pose for a positional map marker.
+    """Return only a current-floor exact pose for a positional map marker.
 
     The robot's current-area label proves room presence, not a point inside the
     room. Rendering that label at the polygon center creates a stationary dot
-    that looks exact while the robot moves. Conversely, accepting any finite
-    pose inside the floor's bounding box can put a stale or mismatched pose in
-    a different room. Require the point to be inside a mapped room and, when
-    the firmware reports a current area, require those two room identities to
-    agree. A disagreement degrades to room-only presence instead of drawing a
-    confidently wrong marker.
+    that looks exact while the robot moves. The label can also advance to the
+    commanded room before the robot crosses its boundary, so it must not veto
+    a stronger geometric pose. Callers establish mission/floor coherence;
+    here, require the finite point to lie inside any room on that verified
+    floor and never invent coordinates from ``current_area``.
     """
+    del current_area
     if floor_plan is None or not floor_plan.rooms:
         return None
     all_points = [point for room in floor_plan.rooms for point in room.boundary]
@@ -385,11 +385,6 @@ def resolve_robot_map_position(
         if _point_in_polygon((pose.x, pose.y), room.boundary)
     )
     if not containing_rooms:
-        return None
-    area_key = _room_name_key(current_area)
-    if area_key is not None and not any(
-        _room_name_key(room.name) == area_key for room in containing_rooms
-    ):
         return None
     return pose.x, pose.y, "exact_pose"
 

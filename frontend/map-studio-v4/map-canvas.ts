@@ -448,8 +448,11 @@ export class MaticMapCanvasV4 extends LitElement {
     if (this.state.coherence === "verifying" || this.state.coherence === "booting") {
       return { title: "Locating the current map", detail: "Map controls will return after the floor is verified." };
     }
+    if (!this.state.map.available && this.state.resources.scene.status === "loading") {
+      return { title: "Loading the verified map", detail: "The current floor is verified. The private scene is still preparing." };
+    }
     if (!this.state.map.available) {
-      return { title: "Map unavailable", detail: "This browser cannot show the private map right now." };
+      return { title: "Map unavailable", detail: "The private scene is not ready. No map data is shown until it is verified." };
     }
     if (this.state.activity === "problem") {
       return { title: "Robot needs attention", detail: "Check the robot before starting another task." };

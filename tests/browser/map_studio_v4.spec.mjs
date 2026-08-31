@@ -559,6 +559,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const second = syntheticScene("Updated room", 24);
     let revision = 1;
     let mapComplete = false;
+    let sessionVerified = true;
     let sceneRequests = 0;
     let releaseSecond;
     const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
@@ -574,7 +575,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       plans_url: "/api/matic_robot/plans/synthetic-entry",
       map_revision: revision,
       map_floor_coherent: true,
-      map_session_verified: true,
+      map_session_verified: sessionVerified,
       runner_locked: false,
       stop_settle_pending: false,
       active_plan: false,
@@ -675,9 +676,17 @@ test.describe("Map Studio v0.4 foundation", () => {
       }));
     });
     await expect.poll(() => plansRequests).toBe(1);
+    sessionVerified = false;
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__retainedScene.getWorkspaceSnapshot();
+      return { coherence: state.coherence, plans: state.resources.plans.status };
+    }), { timeout: 10_000 }).toEqual({ coherence: "verifying", plans: "loading" });
+    releasePlans();
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
+    sessionVerified = true;
     revision = 2;
     await expect.poll(() => sceneRequests, { timeout: 10_000 }).toBe(2);
-    releasePlans();
     await expect.poll(async () => page.evaluate(() => {
       const state = window.__retainedScene.getWorkspaceSnapshot();
       return { workflow: state.workflow, plans: state.resources.plans.status };

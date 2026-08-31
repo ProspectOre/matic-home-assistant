@@ -53,8 +53,8 @@ const entryMissionKey = (entry: MapEntry): string => [
 
 const entryBoundaryKey = (entry: MapEntry): string => [
   entry.entryId,
-  entryFloorKey(entry),
-  entryMissionKey(entry),
+  entry.selectedFloorOrdinal ?? "none",
+  entry.mapFloorOrdinal ?? "none",
 ].join("|");
 
 const entryIdentity = (entry: MapEntry): string => [
@@ -287,16 +287,14 @@ export class EffectController {
   }
 
   #beginLiveGeneration(entry: MapEntry): void {
-    const previousStamp = this.#coherence.current();
     const previousState = this.#store.value;
-    const sameLiveBoundary = Boolean(previousStamp
-      && previousStamp.entryKey === entry.entryId
-      && previousStamp.floorKey === entryFloorKey(entry)
-      && previousStamp.missionKey === entryMissionKey(entry));
-    this.#abortResources(sameLiveBoundary
+    const previousEntry = previousState.resources.entry;
+    const sameResourceBoundary = Boolean(previousEntry
+      && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
+    this.#abortResources(sameResourceBoundary
       ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
       : ["catalog"]);
-    const retainedScene = sameLiveBoundary
+    const retainedScene = sameResourceBoundary
       ? previousState.resources.scene.value
       : null;
     const stamp = this.#coherence.begin(
@@ -319,8 +317,8 @@ export class EffectController {
         scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", null),
         history: resource("loading", state.resources.history.value),
-        plans: sameLiveBoundary ? state.resources.plans : resource("idle", null),
-        areas: sameLiveBoundary ? state.resources.areas : resource("idle", null),
+        plans: sameResourceBoundary ? state.resources.plans : resource("idle", null),
+        areas: sameResourceBoundary ? state.resources.areas : resource("idle", null),
       },
       map: {
         available: coherent && retainedScene !== null,
@@ -339,9 +337,9 @@ export class EffectController {
         entryId: entry.entryId,
         floorId: "current",
         historyId: null,
-        roomIds: sameLiveBoundary ? state.selection.roomIds : [],
-        planId: sameLiveBoundary ? state.selection.planId : null,
-        areaId: sameLiveBoundary ? state.selection.areaId : null,
+        roomIds: sameResourceBoundary ? state.selection.roomIds : [],
+        planId: sameResourceBoundary ? state.selection.planId : null,
+        areaId: sameResourceBoundary ? state.selection.areaId : null,
       },
     });
     void this.#loadHistory(entry, stamp);

@@ -191,7 +191,7 @@ def test_robot_position_requires_exact_coordinates_and_tracks_room_presence() ->
     assert fallback_marker == without_marker
 
 
-def test_robot_position_rejects_a_pose_in_a_different_reported_room() -> None:
+def test_robot_position_prefers_verified_geometry_over_reported_room() -> None:
     floor_plan = FloorPlan(
         1,
         "partition",
@@ -209,9 +209,13 @@ def test_robot_position_rejects_a_pose_in_a_different_reported_room() -> None:
     )
     conflicting_pose = RobotPose(4, 1, 0)
 
-    assert resolve_robot_map_position(floor_plan, conflicting_pose, "Office") is None
+    assert resolve_robot_map_position(floor_plan, conflicting_pose, "Office") == (
+        4,
+        1,
+        "exact_pose",
+    )
     assert robot_location_source(floor_plan, conflicting_pose, "Office") == (
-        "current_area"
+        "exact_pose"
     )
     assert resolve_robot_map_position(
         floor_plan, conflicting_pose, "the Living room"
