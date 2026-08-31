@@ -68,10 +68,19 @@ _MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
 def _map_session_key(runtime: MaticRuntimeData) -> str | None:
     """Return a browser-safe identity for one verified SLAM coordinate frame."""
     identity = runtime.slam_map.mission_identity
-    if identity is None:
+    floor_plan = runtime.coordinator.data.floor_plan
+    if (
+        identity is None
+        or identity.mission_id is None
+        or floor_plan is None
+        or floor_plan.mission_id != identity.mission_id
+    ):
         return None
     return sha256(
-        _MAP_SESSION_KEY_DOMAIN + identity.mission_token.encode("ascii")
+        _MAP_SESSION_KEY_DOMAIN
+        + str(identity.mission_id).encode("ascii")
+        + b"\0"
+        + floor_plan.partition_id_wire
     ).hexdigest()
 
 

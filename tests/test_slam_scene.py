@@ -6,7 +6,6 @@ import asyncio
 import json
 from dataclasses import replace
 from datetime import UTC, datetime
-from hashlib import sha256
 from http import HTTPStatus
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -165,11 +164,37 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
 
 
 def _browser_session_key(runtime: SimpleNamespace) -> str:
+    key = _map_session_key(runtime)
+    assert key is not None
+    return key
+
+
+def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
+    runtime = _runtime()
+    original = _map_session_key(runtime)
     identity = runtime.slam_map.mission_identity
+    assert original is not None
     assert identity is not None
-    return sha256(
-        b"matic-map-session-v1\0" + identity.mission_token.encode("ascii")
-    ).hexdigest()
+
+    runtime.slam_map.mission_identity = SlamMapIdentity(
+        "replacement-stream-token",
+        identity.mission_id,
+    )
+    assert _map_session_key(runtime) == original
+
+    floor_plan = runtime.coordinator.data.floor_plan
+    assert floor_plan is not None
+    runtime.coordinator.data.floor_plan = replace(
+        floor_plan,
+        partition_id_wire=b"replacement-partition",
+    )
+    assert _map_session_key(runtime) != original
+
+    runtime.coordinator.data.floor_plan = replace(
+        floor_plan,
+        mission_id=floor_plan.mission_id + 1,
+    )
+    assert _map_session_key(runtime) is None
 
 
 def _hass(entry) -> SimpleNamespace:
