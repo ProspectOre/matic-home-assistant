@@ -545,6 +545,115 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 
+  test("retains a verified same-floor scene while a new revision is built", async ({ page }) => {
+    const first = syntheticScene("Current room", 10);
+    const second = syntheticScene("Updated room", 24);
+    let revision = 1;
+    let sceneRequests = 0;
+    let releaseSecond;
+    const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
+    const entry = () => ({
+      entry_id: "synthetic-entry",
+      scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
+      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
+      history_url: "/api/matic_robot/slam_history/synthetic-entry",
+      areas_url: "/api/matic_robot/areas/synthetic-entry",
+      plans_url: "/api/matic_robot/plans/synthetic-entry",
+      map_revision: revision,
+      map_floor_coherent: true,
+      map_session_verified: true,
+      runner_locked: false,
+      stop_settle_pending: false,
+      active_plan: false,
+      native_reconciliation_pending: false,
+      native_session_active: false,
+      map_complete: true,
+      map_truncated: false,
+      selected_floor_ordinal: 1,
+      map_floor_ordinal: 1,
+      history_count: 0,
+      history_floor_count: 1,
+      map_health: "ready",
+      stream_state: "connected",
+      stream_failures: 0,
+    });
+    await page.route("**/api/matic_robot/slam_entries", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({ entries: [entry()] }),
+    }));
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
+      sceneRequests += 1;
+      if (sceneRequests > 1) await secondGate;
+      return route.fulfill({
+        status: 200,
+        body: sceneRequests === 1 ? first : second,
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Revision": String(sceneRequests === 1 ? 1 : 2),
+          "X-Matic-Floor-Coherent": "1",
+        },
+      });
+    });
+    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        position: null,
+        source: "current_area",
+        revision,
+        pose_revision: revision,
+        map_floor_coherent: true,
+        pose_freshness: "live",
+      }),
+    }));
+    await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        entry_id: "synthetic-entry",
+        live_available: true,
+        floors: [{ id: "current", active: true, read_only: false, live_available: true, snapshots: [] }],
+      }),
+    }));
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async () => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "synthetic-user", is_admin: true },
+        states: {
+          "vacuum.synthetic": {
+            state: "docked",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+          },
+        },
+        fetchWithAuth: (path, init) => fetch(path, init),
+      };
+      document.body.append(panel);
+      window.__retainedScene = panel;
+    });
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(1);
+    revision = 2;
+    await expect.poll(() => sceneRequests, { timeout: 10_000 }).toBe(2);
+    expect(await page.evaluate(() => {
+      const state = window.__retainedScene.getWorkspaceSnapshot();
+      return {
+        available: state.map.available,
+        status: state.resources.scene.status,
+        retainedRevision: state.resources.scene.value?.revision,
+      };
+    })).toEqual({ available: true, status: "loading", retainedRevision: 1 });
+    releaseSecond();
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(2);
+  });
+
   test("keeps one stable loading surface while a timed-out scene build is rejoined", async ({ page }) => {
     const scene = syntheticScene("Stable room", 18);
     await page.addInitScript(() => {
@@ -683,6 +792,108 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.samples.some((sample) => sample.scene === "loading")).toBe(true);
     expect(result.samples.some((sample) => sample.scene === "error")).toBe(false);
     expect(result.samples.some((sample) => sample.available && sample.scene !== "ready")).toBe(false);
+  });
+
+  test("returns a direct room clean to base instead of using the managed-plan stop", async ({ page }) => {
+    const scene = syntheticScene("Direct room", 18);
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async (sceneBytes) => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const calls = [];
+      const entry = {
+        entry_id: "synthetic-entry",
+        scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
+        pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
+        history_url: "/api/matic_robot/slam_history/synthetic-entry",
+        areas_url: "/api/matic_robot/areas/synthetic-entry",
+        plans_url: "/api/matic_robot/plans/synthetic-entry",
+        map_revision: 1,
+        map_floor_coherent: true,
+        map_session_verified: true,
+        runner_locked: false,
+        stop_settle_pending: false,
+        active_plan: false,
+        native_reconciliation_pending: false,
+        native_session_active: false,
+        map_complete: true,
+        map_truncated: false,
+        selected_floor_ordinal: 1,
+        map_floor_ordinal: 1,
+        history_count: 0,
+        history_floor_count: 1,
+        map_health: "ready",
+        stream_state: "connected",
+        stream_failures: 0,
+      };
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      const hass = {
+        connected: true,
+        language: "en",
+        user: { id: "synthetic-user", is_admin: true },
+        states: {
+          "vacuum.synthetic": {
+            state: "cleaning",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+          },
+        },
+        callService: async (...args) => { calls.push(args); },
+        fetchWithAuth: async (path) => {
+          if (path === "/api/matic_robot/slam_entries") {
+            return new Response(JSON.stringify({ entries: [entry] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          if (path === entry.scene_url) {
+            return new Response(new Uint8Array(sceneBytes), {
+              status: 200,
+              headers: {
+                "Content-Type": "application/vnd.matic.slam-scene",
+                "X-Matic-Revision": "1",
+                "X-Matic-Floor-Coherent": "1",
+              },
+            });
+          }
+          if (path === entry.pose_url) {
+            return new Response(JSON.stringify({
+              position: null,
+              source: "current_area",
+              revision: 1,
+              pose_revision: 1,
+              map_floor_coherent: true,
+              pose_freshness: "live",
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+          if (path === entry.history_url) {
+            return new Response(JSON.stringify({
+              entry_id: "synthetic-entry",
+              live_available: true,
+              floors: [{ id: "current", active: true, read_only: false, live_available: true, snapshots: [] }],
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+          return new Response("", { status: 404 });
+        },
+      };
+      panel.hass = hass;
+      document.body.append(panel);
+      window.__directStop = { panel, calls };
+    }, [...scene]);
+
+    await expect.poll(async () => page.evaluate(() =>
+      window.__directStop.panel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+    await page.evaluate(() => {
+      const shell = window.__directStop.panel.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.dispatchEvent(new CustomEvent("matic-workspace-action", {
+        detail: { id: "stop" },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect.poll(async () => page.evaluate(() => window.__directStop.calls.length)).toBe(1);
+    expect(await page.evaluate(() => window.__directStop.calls[0].slice(0, 2)))
+      .toEqual(["vacuum", "return_to_base"]);
   });
 
   test("fails motion closed when the private catalog reports managed work", async ({ page }) => {

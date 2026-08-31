@@ -260,6 +260,14 @@ export class EffectController {
 
   #beginLiveGeneration(entry: MapEntry): void {
     this.#abortResources(["catalog"]);
+    const previousStamp = this.#coherence.current();
+    const previousState = this.#store.value;
+    const retainedScene = previousStamp
+      && previousStamp.entryKey === entry.entryId
+      && previousStamp.floorKey === entryFloorKey(entry)
+      && previousStamp.missionKey === entryMissionKey(entry)
+      ? previousState.resources.scene.value
+      : null;
     const stamp = this.#coherence.begin(
       entry.entryId,
       entryFloorKey(entry),
@@ -277,14 +285,14 @@ export class EffectController {
       resources: {
         ...state.resources,
         entry,
-        scene: resource(coherent ? "loading" : "idle", null),
+        scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", null),
         history: resource("loading", state.resources.history.value),
         plans: resource("idle", null),
         areas: resource("idle", null),
       },
       map: {
-        available: false,
+        available: coherent && retainedScene !== null,
         complete: entry.mapComplete && !entry.mapTruncated,
         floorCoherent: entry.mapFloorCoherent,
         sessionVerified: entry.mapSessionVerified,
@@ -359,9 +367,17 @@ export class EffectController {
         coherence: "degraded",
         resources: {
           ...this.#store.value.resources,
-          scene: resource("error", null, problemCode(error, "scene-unavailable")),
+          scene: resource(
+            "error",
+            this.#store.value.resources.scene.value,
+            problemCode(error, "scene-unavailable"),
+          ),
         },
-        map: { ...this.#store.value.map, available: false, exactPose: false },
+        map: {
+          ...this.#store.value.map,
+          available: this.#store.value.resources.scene.value !== null,
+          exactPose: false,
+        },
       });
     } finally {
       this.#release("scene", controller);
@@ -862,7 +878,12 @@ export class EffectController {
   async executeAction(id: string): Promise<void> {
     switch (id) {
       case "stop":
-        await this.#motion("matic_robot", "stop_intelligent_cleaning", {});
+        if (this.#store.value.resources.entry?.activePlan
+          || this.#store.value.resources.entry?.runnerLocked) {
+          await this.#motion("matic_robot", "stop_intelligent_cleaning", {});
+        } else {
+          await this.#motion("vacuum", "return_to_base", {});
+        }
         return;
       case "resume":
         await this.#motion("vacuum", "start", {});
@@ -928,7 +949,8 @@ export class EffectController {
   async #motion(domain: string, service: string, data: Readonly<Record<string, unknown>>): Promise<void> {
     const state = this.#store.value;
     const entityId = this.#projection?.vacuumEntityId;
-    const stopping = service === "stop_intelligent_cleaning";
+    const stopping = service === "stop_intelligent_cleaning"
+      || (domain === "vacuum" && service === "return_to_base");
     const stopAllowed = stopping
       && state.command === "idle"
       && (state.activity === "cleaning" || state.activity === "paused" || state.activity === "returning");
