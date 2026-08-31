@@ -10,6 +10,7 @@ skipped. No network or browser is involved.
 
 from __future__ import annotations
 
+import gzip
 import json
 import re
 import shutil
@@ -28,6 +29,24 @@ _EDITOR_PATH = Path(frontend.__file__).with_name("room_plan_editor.js")
 _JS = _EDITOR_PATH.read_text(encoding="utf-8")
 _STUDIO_PATH = Path(frontend.__file__).with_name("matic_map_studio.js")
 _STUDIO_JS = _STUDIO_PATH.read_text(encoding="utf-8")
+_STUDIO_V4_DIRECTORY = Path(frontend.__file__).with_name("map_studio_v4")
+_STUDIO_V4_PATH = _STUDIO_V4_DIRECTORY / "index.js"
+_STUDIO_V4_JS = "\n".join(
+    path.read_text(encoding="utf-8")
+    for path in sorted(_STUDIO_V4_DIRECTORY.rglob("*.js"))
+)
+
+
+def _studio_v4_tree_hash() -> str:
+    digest = sha256()
+    for path in sorted(_STUDIO_V4_DIRECTORY.rglob("*")):
+        if not path.is_file():
+            continue
+        digest.update(path.relative_to(_STUDIO_V4_DIRECTORY).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:12]
 
 
 def test_registers_ha_selector_for_python_selector_type() -> None:
@@ -112,6 +131,9 @@ def test_static_path_serves_the_editor_file() -> None:
     assert Path(frontend.__file__).with_name("room_plan_editor.js") == _EDITOR_PATH
     assert frontend.MATIC_MAP_STUDIO_PATH.endswith(".js")
     assert Path(frontend.__file__).with_name("matic_map_studio.js") == _STUDIO_PATH
+    assert frontend.MATIC_MAP_STUDIO_V4_PATH.endswith(".js")
+    assert frontend.MATIC_MAP_STUDIO_V4_DIRECTORY == _STUDIO_V4_DIRECTORY
+    assert _STUDIO_V4_PATH.exists()
 
 
 def test_nested_select_change_does_not_escape_as_the_editor_value() -> None:
@@ -372,6 +394,9 @@ def test_map_panel_has_accessible_reduced_motion_and_health_status() -> None:
     assert "map_truncated" in panel
     assert "stream_failures" in panel
     assert "stream_state" in panel
+    assert "MATIC_WORKFLOW_REQUEST_TIMEOUT_MS" in _STUDIO_JS
+    assert "area editor module timed out" in panel
+    assert "Custom areas took too long to load. Close and try again." in panel
 
 
 def test_map_panel_uses_private_catalog_and_bounded_quality_sampling() -> None:
@@ -418,13 +443,30 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     assert 'customElements.get("matic-map-panel-v0-3-0")' in _STUDIO_JS
     assert 'customElements.get("matic-map-panel-v0-3-1")' in _STUDIO_JS
 
+    studio_v4_expected = _studio_v4_tree_hash()
+    assert frontend.MATIC_MAP_STUDIO_V4_VERSION == studio_v4_expected
+    assert studio_v4_expected in frontend.MATIC_MAP_STUDIO_V4_PATH
+    assert 'customElements.get("matic-map-panel-v0-4-0")' in _STUDIO_V4_JS
+    assert 'customElements.get("matic-map-studio-gallery-v0-4-0")' in _STUDIO_V4_JS
+
+
+def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
+    """Keep the v0.4 initial route safe and within its private bundle budget."""
+    initial_paths = [_STUDIO_V4_PATH, _STUDIO_V4_DIRECTORY / "chunks" / "chunk.js"]
+    initial_bytes = b"".join(path.read_bytes() for path in initial_paths)
+    assert len(gzip.compress(initial_bytes, mtime=0)) <= 90 * 1024
+    assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
+    assert 'from"lit"' not in _STUDIO_V4_JS
+    assert "https://" not in _STUDIO_V4_JS
+    assert frontend.MATIC_MAP_PANEL_ELEMENT == "matic-map-panel-v0-4-0"
+
 
 def test_node_syntax_check() -> None:
     """Gate the module through ``node --check`` when node is available."""
     node = shutil.which("node")
     if node is None:
         pytest.skip("node is not available on PATH")
-    for path in (_EDITOR_PATH, _STUDIO_PATH):
+    for path in (_EDITOR_PATH, _STUDIO_PATH, *_STUDIO_V4_DIRECTORY.rglob("*.js")):
         result = subprocess.run(
             [node, "--check", str(path)],
             capture_output=True,

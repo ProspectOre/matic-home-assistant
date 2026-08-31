@@ -1,6 +1,6 @@
 import { createReadStream } from "node:fs";
 import { createServer } from "node:http";
-import { dirname, join } from "node:path";
+import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
@@ -28,7 +28,12 @@ const server = createServer((request, response) => {
       : "ok");
     return;
   }
-  const file = scripts.get(path);
+  let file = scripts.get(path);
+  if (path.startsWith("/map_studio_v4/")) {
+    const root = join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4");
+    const candidate = normalize(join(root, path.slice("/map_studio_v4/".length)));
+    if (candidate === root || candidate.startsWith(`${root}${sep}`)) file = candidate;
+  }
   if (!file) {
     response.writeHead(404, { "Content-Type": "text/plain" });
     response.end("not found");

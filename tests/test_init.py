@@ -861,7 +861,8 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         DATA_SLAM_SCENE_VIEW,
         MANIFEST_VERSION,
         MATIC_MAP_PANEL_ELEMENT,
-        MATIC_MAP_STUDIO_PATH,
+        MATIC_MAP_STUDIO_V4_PATH,
+        MATIC_MAP_STUDIO_V4_ROOT_PATH,
         ROOM_PLAN_EDITOR_PATH,
         ROOM_PLAN_EDITOR_VERSION,
     )
@@ -874,12 +875,17 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert ROOM_PLAN_EDITOR_VERSION in ROOM_PLAN_EDITOR_PATH
+    registered_paths = {
+        config.url_path
+        for config in hass.http.async_register_static_paths.await_args.args[0]
+    }
+    assert MATIC_MAP_STUDIO_V4_ROOT_PATH in registered_paths
     assert ROOM_PLAN_EDITOR_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     assert panel.require_admin is True
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
-    assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_PATH
+    assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
 
 
 @pytest.mark.parametrize("native_history_error", [False, True])
@@ -970,6 +976,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
+        async_prime=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
         async_add_listener=MagicMock(return_value=map_unsubscribe),
@@ -1011,6 +1018,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
+    slam_map.async_prime.assert_awaited_once_with(client)
     assert plans.async_upgrade_area_bindings.await_count == 2
     assert plans.async_upgrade_area_bindings.await_args_list[0].args == (
         "synthetic-serial",
@@ -1241,6 +1249,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
+        async_prime=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )

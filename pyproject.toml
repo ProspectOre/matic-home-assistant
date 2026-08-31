@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "matic-home-assistant"
-version = "0.3.12"
+version = "0.4.0b1"
 description = "Unofficial local-only Home Assistant integration for Matic robot vacuums"
 readme = "README.md"
 license = "MIT"
@@ -56,6 +56,8 @@ include = ["custom_components*"]
   "manifest.json",
   "quality_scale.yaml",
   "*.js",
+  "map_studio_v4/*.js",
+  "map_studio_v4/chunks/*.js",
   "client/matic_intermediate_ca.pem",
   "client/proto/*.proto",
   "services.yaml",

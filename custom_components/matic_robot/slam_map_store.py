@@ -57,6 +57,7 @@ MapHealthState = Literal[
     "empty", "collecting", "incomplete", "ready", "truncated", "degraded"
 ]
 MapStreamState = Literal["idle", "connecting", "connected", "retrying"]
+MapBootstrapState = Literal["not_started", "running", "complete", "partial", "failed"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -75,6 +76,10 @@ class SlamMapHealth:
     invalid_tiles: int
     stream_state: MapStreamState
     stream_failures: int
+    bootstrap_state: MapBootstrapState
+    bootstrap_photo_seen: bool
+    bootstrap_structure_seen: bool
+    bootstrap_failures: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -161,6 +166,10 @@ class SlamMapStore:
             "map_integrated": "idle",
         }
         self._stream_failures = 0
+        self._bootstrap_state: MapBootstrapState = "not_started"
+        self._bootstrap_photo_seen = False
+        self._bootstrap_structure_seen = False
+        self._bootstrap_failures = 0
         self._listeners: set[Callable[[], None]] = set()
         self._candidates: OrderedDict[str, _MissionCandidate] = OrderedDict()
         self._retired_missions: deque[str] = deque(maxlen=MAX_RETIRED_MISSIONS)
@@ -199,6 +208,10 @@ class SlamMapStore:
         self._map_complete = not self._truncated and self._has_balanced_layers()
         self._live_photo_seen = False
         self._live_structure_seen = False
+        self._bootstrap_state = "not_started"
+        self._bootstrap_photo_seen = False
+        self._bootstrap_structure_seen = False
+        self._bootstrap_failures = 0
         if loaded.dirty:
             self._schedule_save()
         self._notify_listeners()
@@ -644,6 +657,67 @@ class SlamMapStore:
             if self._collection_client is client:
                 self._collection_client = None
 
+    async def async_prime(self, client: MaticHermesClient) -> None:
+        """Seed both map layers before relying on long-lived subscriptions.
+
+        Some Hermes servers acknowledge a fresh subscription without replaying
+        the retained first page.  A bounded tracked snapshot makes a new HA
+        install converge without waiting for the robot to publish another map
+        update, while the normal collectors continue to fetch the rest.
+        """
+        if self._closed:
+            return
+        self._bootstrap_state = "running"
+        self._bootstrap_photo_seen = False
+        self._bootstrap_structure_seen = False
+        self._bootstrap_failures = 0
+        self._notify_listeners()
+        try:
+            results = await asyncio.gather(
+                client.async_get_tracked_collection_entries(
+                    "map_compressed_rgb", limit=1
+                ),
+                client.async_get_tracked_collection_entries("map_integrated", limit=1),
+                return_exceptions=True,
+            )
+        except asyncio.CancelledError:
+            self._bootstrap_state = "not_started"
+            self._notify_listeners()
+            raise
+        if self._closed:
+            return
+        for index, (result, structural) in enumerate(
+            zip(results, (False, True), strict=True)
+        ):
+            if isinstance(result, asyncio.CancelledError):
+                self._bootstrap_state = "not_started"
+                self._notify_listeners()
+                raise result
+            if isinstance(result, BaseException):
+                self._bootstrap_failures += 1
+                continue
+            layer_seen = False
+            for entry in result:
+                try:
+                    if structural:
+                        await self.async_add_structure(entry)
+                    else:
+                        await self.async_add(entry)
+                    layer_seen = True
+                except DecodeError:
+                    self._record_invalid()
+            if index == 0:
+                self._bootstrap_photo_seen = layer_seen
+            else:
+                self._bootstrap_structure_seen = layer_seen
+        if self._bootstrap_failures == 0:
+            self._bootstrap_state = "complete"
+        elif self._bootstrap_failures == len(results):
+            self._bootstrap_state = "failed"
+        else:
+            self._bootstrap_state = "partial"
+        self._notify_listeners()
+
     async def _async_collect_collection(
         self, client: MaticHermesClient, name: str, structural: bool
     ) -> None:
@@ -810,6 +884,10 @@ class SlamMapStore:
             invalid_tiles=self._invalid_tiles,
             stream_state=stream_state,
             stream_failures=self._stream_failures,
+            bootstrap_state=self._bootstrap_state,
+            bootstrap_photo_seen=self._bootstrap_photo_seen,
+            bootstrap_structure_seen=self._bootstrap_structure_seen,
+            bootstrap_failures=self._bootstrap_failures,
         )
 
     def _combined_stream_state(self) -> MapStreamState:

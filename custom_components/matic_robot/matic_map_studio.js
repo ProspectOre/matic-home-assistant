@@ -4,11 +4,12 @@ const MATIC_SCENE_MAX_POINTS = 1500000;
 const MATIC_MAP_CATALOG_URL = "/api/matic_robot/slam_entries";
 const MATIC_MAP_PREFERENCES_VERSION = 3;
 const MATIC_CATALOG_REQUEST_TIMEOUT_MS = 10000;
-const MATIC_SCENE_REQUEST_TIMEOUT_MS = 20000;
+const MATIC_SCENE_REQUEST_TIMEOUT_MS = 60000;
 const MATIC_DELTA_REQUEST_TIMEOUT_MS = 30000;
 const MATIC_HISTORY_REQUEST_TIMEOUT_MS = 15000;
 const MATIC_POSE_REQUEST_TIMEOUT_MS = 10000;
 const MATIC_FALLBACK_IMAGE_TIMEOUT_MS = 15000;
+const MATIC_WORKFLOW_REQUEST_TIMEOUT_MS = 15000;
 const MATIC_MAP_QUALITY_BUDGETS = Object.freeze({
   efficient: 300000,
   balanced: 750000,
@@ -1596,6 +1597,8 @@ class MaticMapStudio extends HTMLElement {
       this._sceneIdentity = `stable-live:${snapshot.id}`;
       this._sceneRevision = snapshot.revision;
       this._sceneEtag = response.headers.get("ETag") || undefined;
+      this._robot = undefined;
+      this._setPoseStatus("unavailable");
       this._stableLiveSnapshotId = snapshot.id;
       this._stableLiveSourceIdentity = requestKey;
       this._stableLiveSourceUrl = state?.attributes?.scene_url;
@@ -1875,8 +1878,12 @@ class MaticMapStudio extends HTMLElement {
     this._setLoading(true);
     const controller = new AbortController();
     this._sceneAbortController = controller;
+    let timedOut = false;
     const timeout = window.setTimeout(
-      () => controller.abort(),
+      () => {
+        timedOut = true;
+        controller.abort();
+      },
       MATIC_SCENE_REQUEST_TIMEOUT_MS,
     );
     try {
@@ -1927,7 +1934,13 @@ class MaticMapStudio extends HTMLElement {
       if (!this.isConnected) return;
       const superseded = this._latestSceneKey !== requestKey
         || (controller.signal.aborted && this._pendingSceneRefresh);
-      if (
+      if (timedOut && !superseded) {
+        // The server keeps one shared large-map build alive after this HTTP
+        // waiter ends. Rejoin it without replacing the current canvas with an
+        // error/fallback frame.
+        this._pendingSceneRefresh = true;
+        if (this._scene) this._showRetainedScene();
+      } else if (
         !superseded
         && this._scene
         && (
@@ -1969,13 +1982,13 @@ class MaticMapStudio extends HTMLElement {
         this._sceneRequestUrl = undefined;
       }
       this._sceneLoading = false;
-      this._setLoading(false);
       if (this._pendingSceneRefresh && this.isConnected) {
         const pendingForce = this._pendingSceneForce;
         this._pendingSceneRefresh = false;
         this._pendingSceneForce = false;
-        this._fetchScene(this._latestSceneState || state, pendingForce);
+        void this._fetchScene(this._latestSceneState || state, pendingForce);
       }
+      if (!this._sceneLoading) this._setLoading(false);
     }
   }
 
@@ -1999,6 +2012,12 @@ class MaticMapStudio extends HTMLElement {
       !this._scene
       || (sceneUrl !== this._sceneUrl && !this._isStableLiveScene(state))
     ) return;
+    if (this._isStableLiveScene(state)) {
+      this._robot = undefined;
+      this._setPoseStatus("unavailable");
+      this._requestRender();
+      return;
+    }
     this._poseLoading = true;
     this._poseRequestUrl = url;
     const controller = new AbortController();
@@ -2027,6 +2046,7 @@ class MaticMapStudio extends HTMLElement {
       if (
         controller.signal.aborted
         || this._latestPoseState?.attributes?.pose_url !== url
+        || this._isStableLiveScene(state)
         || (
           sceneUrl !== this._sceneUrl
           && !this._isStableLiveScene(state)
@@ -3659,8 +3679,30 @@ class MaticMapStudio extends HTMLElement {
         throw error;
       });
     }
-    await this._areaEditorModulePromise;
-    await customElements.whenDefined("ha-selector-matic-area");
+    const modulePromise = this._areaEditorModulePromise;
+    const readyPromise = (async () => {
+      await modulePromise;
+      await customElements.whenDefined("ha-selector-matic-area");
+    })();
+    let timeout;
+    try {
+      await Promise.race([
+        readyPromise,
+        new Promise((_, reject) => {
+          timeout = window.setTimeout(
+            () => reject(new Error("area editor module timed out")),
+            MATIC_WORKFLOW_REQUEST_TIMEOUT_MS,
+          );
+        }),
+      ]);
+    } catch (error) {
+      if (this._areaEditorModulePromise === modulePromise) {
+        this._areaEditorModulePromise = undefined;
+      }
+      throw error;
+    } finally {
+      window.clearTimeout(timeout);
+    }
   }
 
   _closeAreasWorkspace() {
@@ -4072,6 +4114,11 @@ class MaticMapStudio extends HTMLElement {
     this._areasAbortController?.abort();
     const controller = new AbortController();
     this._areasAbortController = controller;
+    let timedOut = false;
+    const timeout = window.setTimeout(() => {
+      timedOut = true;
+      controller.abort();
+    }, MATIC_WORKFLOW_REQUEST_TIMEOUT_MS);
     this._setAreaWorkspaceStatus(
       this._localize("area_workspace_loading", "Loading custom cleaning areas…"),
     );
@@ -4103,13 +4150,22 @@ class MaticMapStudio extends HTMLElement {
         ),
       );
     } catch (error) {
-      if (error?.name === "AbortError") return;
+      if (error?.name === "AbortError" && !timedOut) return;
       this._clearAreaWorkspace();
       this._setAreaWorkspaceStatus(
-        this._localize("area_workspace_unavailable", "Custom cleaning areas are unavailable"),
+        timedOut
+          ? this._localize(
+            "area_workspace_timeout",
+            "Custom areas took too long to load. Close and try again.",
+          )
+          : this._localize(
+            "area_workspace_unavailable",
+            "Custom cleaning areas are unavailable",
+          ),
         "error",
       );
     } finally {
+      window.clearTimeout(timeout);
       if (this._areasAbortController === controller) {
         this._areasAbortController = undefined;
       }

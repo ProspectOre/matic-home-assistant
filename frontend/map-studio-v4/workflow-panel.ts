@@ -1,0 +1,489 @@
+import { LitElement, css, html, nothing } from "lit";
+
+import type {
+  CleaningMode,
+  CoverageSetting,
+  PlanRoom,
+} from "./backend-contracts";
+import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
+import "./precision-controls";
+
+const modes: readonly { readonly value: CleaningMode; readonly label: string }[] = [
+  { value: "vacuum", label: "Vacuum" },
+  { value: "mop", label: "Mop" },
+  { value: "vacuum_and_mop", label: "Vacuum and mop" },
+];
+
+const coverage: readonly { readonly value: CoverageSetting; readonly label: string }[] = [
+  { value: "quick", label: "Quick" },
+  { value: "standard", label: "Optimal" },
+  { value: "heavy_duty", label: "Heavy duty" },
+];
+
+const eventValue = (event: Event): string => (event.currentTarget as HTMLInputElement).value;
+const eventChecked = (event: Event): boolean => (event.currentTarget as HTMLInputElement).checked;
+
+export class MaticMapWorkflowV4 extends LitElement {
+  static override properties = {
+    state: { attribute: false },
+  };
+
+  static override styles = css`
+    :host { display: block; min-inline-size: 0; }
+    * { box-sizing: border-box; }
+    button, input, select { font: inherit; }
+    button, select, input[type="checkbox"] { cursor: pointer; }
+    .stack { display: grid; gap: 0.7rem; }
+    .subtle { margin: 0; color: var(--secondary-text-color, #687984); font-size: 0.76rem; line-height: 1.45; }
+    .loading, .empty, .problem, .notice {
+      padding: 0.75rem;
+      border-radius: 0.7rem;
+      background: var(--secondary-background-color, #f3f6f7);
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+    .problem, .notice[data-tone="error"] {
+      color: var(--error-color, #b3261e);
+      background: color-mix(in srgb, var(--error-color, #b3261e) 9%, transparent);
+    }
+    .notice[data-tone="success"] {
+      color: var(--success-color, #218653);
+      background: color-mix(in srgb, var(--success-color, #218653) 10%, transparent);
+    }
+    .notice[data-tone="warning"] {
+      color: var(--warning-color, #8a5b00);
+      background: color-mix(in srgb, var(--warning-color, #8a5b00) 11%, transparent);
+    }
+    .field { display: grid; gap: 0.3rem; font-size: 0.76rem; font-weight: 650; }
+    .field input, .field select {
+      inline-size: 100%;
+      min-block-size: 2.75rem;
+      padding-inline: 0.7rem;
+      border: 1px solid var(--divider-color, #c3ccd1);
+      border-radius: 0.65rem;
+      color: var(--primary-text-color, #263238);
+      background: var(--card-background-color, #fff);
+    }
+    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+    .list { display: grid; gap: 0.45rem; }
+    .list-button, .room, .plan-room, .floor, .snapshot {
+      min-block-size: 2.75rem;
+      border: 1px solid var(--divider-color, #d1d8dc);
+      border-radius: 0.7rem;
+      color: inherit;
+      background: var(--secondary-background-color, #f5f7f8);
+    }
+    .list-button, .floor, .snapshot {
+      display: flex;
+      align-items: center;
+      gap: 0.55rem;
+      inline-size: 100%;
+      padding: 0.55rem 0.7rem;
+      text-align: start;
+    }
+    .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] {
+      border-color: var(--primary-color, #0678ce);
+      background: color-mix(in srgb, var(--primary-color, #0678ce) 9%, transparent);
+    }
+    .room { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.6rem; padding: 0.5rem 0.65rem; }
+    .room input { inline-size: 1.2rem; block-size: 1.2rem; }
+    .plan-room { display: grid; gap: 0.5rem; padding: 0.65rem; }
+    .plan-room-head { display: flex; align-items: center; gap: 0.4rem; min-inline-size: 0; }
+    .plan-room-head strong { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
+    .icon-button {
+      min-inline-size: 2.75rem;
+      min-block-size: 2.75rem;
+      border: 0;
+      border-radius: 0.6rem;
+      color: inherit;
+      background: transparent;
+    }
+    .toolbar { display: flex; flex-wrap: wrap; gap: 0.45rem; }
+    .toolbar button {
+      min-block-size: 2.75rem;
+      padding-inline: 0.75rem;
+      border: 1px solid var(--divider-color, #c3ccd1);
+      border-radius: 0.65rem;
+      color: inherit;
+      background: var(--card-background-color, #fff);
+    }
+    .toolbar .danger { color: var(--error-color, #b3261e); border-color: currentColor; }
+    .toolbar .primary { color: white; border-color: var(--primary-color, #0678ce); background: var(--primary-color, #0678ce); }
+    .checkbox { display: flex; align-items: center; gap: 0.5rem; min-block-size: 2.75rem; font-size: 0.76rem; font-weight: 650; }
+    .checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
+    .floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: var(--secondary-text-color, #687984); }
+    .timeline { display: grid; gap: 0.55rem; }
+    .timeline input[type="range"] { inline-size: 100%; min-block-size: 2.75rem; }
+    .diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem 0.7rem; margin: 0; font-size: 0.75rem; }
+    .diagnostics dt { color: var(--secondary-text-color, #687984); }
+    .diagnostics dd { margin: 0; font-weight: 650; }
+    details { border-block-start: 1px solid var(--divider-color, #d1d8dc); padding-block-start: 0.65rem; }
+    summary { min-block-size: 2.75rem; cursor: pointer; font-size: 0.78rem; font-weight: 650; }
+    @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
+    @media (forced-colors: active) {
+      .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] { outline: 2px solid Highlight; }
+    }
+  `;
+
+  state!: WorkspaceState;
+
+  #intent(intent: WorkspaceIntent): void {
+    this.dispatchEvent(new CustomEvent(WORKSPACE_INTENT_EVENT, {
+      detail: intent,
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  #notice() {
+    return this.state.notice ? html`
+      <div class="notice" data-tone=${this.state.notice.tone} role=${this.state.notice.tone === "error" ? "alert" : "status"}>
+        ${this.state.notice.text}
+      </div>
+    ` : nothing;
+  }
+
+  #resource(status: string, problem: string | null, body: unknown) {
+    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">Loading…</div>`;
+    if (status === "error") return html`<div class="problem" role="alert">This workspace is unavailable right now. ${problem === "request-failed" ? "Try again shortly." : "Return to the live map and retry."}</div>`;
+    if (status === "empty") return html`<div class="empty">Nothing saved yet.</div>`;
+    return body;
+  }
+
+  #rooms() {
+    const plans = this.state.resources.plans;
+    return this.#resource(plans.status, plans.problem, html`
+      <div class="stack">
+        <div class="list" role="group" aria-label="Rooms to clean">
+          ${(plans.value?.rooms || []).map((room) => {
+            const checked = this.state.selection.roomIds.includes(room.roomId);
+            return html`
+              <label class="room">
+                <input
+                  type="checkbox"
+                  .checked=${checked}
+                  @change=${() => this.#intent({ type: "toggle-room", roomId: room.roomId })}
+                >
+                <span>${room.name}</span>
+              </label>
+            `;
+          })}
+        </div>
+        <div class="split">
+          <label class="field">Cleaning
+            <select
+              .value=${this.state.selection.cleaningMode}
+              @change=${(event: Event) => this.#intent({
+                type: "patch-room-settings",
+                cleaningMode: eventValue(event) as CleaningMode,
+              })}
+            >${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+          </label>
+          <label class="field">Coverage
+            <select
+              .value=${this.state.selection.coverageSetting}
+              @change=${(event: Event) => this.#intent({
+                type: "patch-room-settings",
+                coverageSetting: eventValue(event) as CoverageSetting,
+              })}
+            >${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+          </label>
+        </div>
+        <p class="subtle">Select rooms here or directly on the map. The map and list stay in sync.</p>
+        ${this.#notice()}
+      </div>
+    `);
+  }
+
+  #togglePlanRoom(roomId: string): void {
+    const current = this.state.planDraft.rooms;
+    const existing = current.find((room) => room.roomId === roomId);
+    const rooms = existing
+      ? current.filter((room) => room.roomId !== roomId)
+      : [...current, { roomId, cleaningMode: "vacuum", coverageSetting: "standard" } satisfies PlanRoom];
+    this.#intent({ type: "patch-plan-draft", patch: { rooms } });
+  }
+
+  #patchPlanRoom(index: number, patch: Partial<PlanRoom>): void {
+    const rooms = this.state.planDraft.rooms.map((room, candidate) =>
+      candidate === index ? { ...room, ...patch } : room);
+    this.#intent({ type: "patch-plan-draft", patch: { rooms } });
+  }
+
+  #movePlanRoom(index: number, delta: number): void {
+    const next = index + delta;
+    const rooms = [...this.state.planDraft.rooms];
+    if (next < 0 || next >= rooms.length) return;
+    const [room] = rooms.splice(index, 1);
+    if (!room) return;
+    rooms.splice(next, 0, room);
+    this.#intent({ type: "patch-plan-draft", patch: { rooms } });
+  }
+
+  #plans() {
+    const resource = this.state.resources.plans;
+    const catalog = resource.value;
+    const draft = this.state.planDraft;
+    return this.#resource(resource.status, resource.problem, html`
+      <div class="stack">
+        <div class="split">
+          <label class="field">Saved plan
+            <select
+              .value=${this.state.selection.planId || ""}
+              @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
+            >
+              <option value="">New plan</option>
+              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.name}</option>`) }
+            </select>
+          </label>
+          <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ New plan</button>
+        </div>
+        <label class="field">Plan name
+          <input
+            maxlength="128"
+            autocomplete="off"
+            .value=${draft.name}
+            @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { name: eventValue(event) } })}
+          >
+        </label>
+        <div class="split">
+          <label class="field">Run order
+            <select
+              .value=${draft.runBehavior}
+              @change=${(event: Event) => this.#intent({
+                type: "patch-plan-draft",
+                patch: { runBehavior: eventValue(event) === "ordered" ? "ordered" : "intelligent" },
+              })}
+            >
+              <option value="intelligent">Smart rotation</option>
+              <option value="ordered">Listed order</option>
+            </select>
+          </label>
+          <label class="checkbox"><input type="checkbox" .checked=${draft.enabled} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { enabled: eventChecked(event) } })}>Enabled</label>
+        </div>
+        <div class="list" aria-label="Plan rooms">
+          ${(catalog?.rooms || []).map((room) => {
+            const checked = draft.rooms.some((candidate) => candidate.roomId === room.roomId);
+            return html`<label class="room"><input type="checkbox" .checked=${checked} @change=${() => this.#togglePlanRoom(room.roomId)}><span>${room.name}</span></label>`;
+          })}
+        </div>
+        ${draft.rooms.length ? html`
+          <div class="list" aria-label="Room order and settings">
+            ${draft.rooms.map((room, index) => {
+              const label = catalog?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name || "Room";
+              return html`
+                <div class="plan-room">
+                  <div class="plan-room-head">
+                    <strong>${index + 1}. ${label}</strong>
+                    <button class="icon-button" type="button" aria-label=${`Move ${label} earlier`} ?disabled=${index === 0} @click=${() => this.#movePlanRoom(index, -1)}>↑</button>
+                    <button class="icon-button" type="button" aria-label=${`Move ${label} later`} ?disabled=${index === draft.rooms.length - 1} @click=${() => this.#movePlanRoom(index, 1)}>↓</button>
+                  </div>
+                  <div class="split">
+                    <label class="field">Cleaning
+                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+                    </label>
+                    <label class="field">Coverage
+                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+                    </label>
+                  </div>
+                </div>
+              `;
+            })}
+          </div>
+        ` : nothing}
+        <details>
+          <summary>Completion options</summary>
+          <div class="stack">
+            <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>Return to the dock when finished</label>
+            <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>Finish the active room after Stop</label>
+            ${draft.finishCurrentRoom ? html`<label class="field">Finish threshold · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
+          </div>
+        </details>
+        <div class="toolbar">
+          ${draft.id ? html`
+            <button
+              class="danger"
+              type="button"
+              aria-label="Delete plan"
+              @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeletePlan" })}
+            >Delete</button>
+          ` : nothing}
+        </div>
+        ${this.#notice()}
+      </div>
+    `);
+  }
+
+  #draw() {
+    const areas = this.state.resources.areas;
+    return html`
+      <div class="stack">
+        <matic-precision-controls-v4 .state=${this.state}></matic-precision-controls-v4>
+        <p class="subtle">Paint only on mapped floor. Zoom and pan never change the saved outline.</p>
+        ${this.#resource(areas.status, areas.problem, html`
+          <div class="list" aria-label="Saved custom areas">
+            <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ New outline</button>
+            ${(areas.value?.areas || []).map((area) => html`
+              <button class="list-button" type="button" @click=${() => {
+                this.#intent({ type: "select-area", areaId: area.id });
+                this.#intent({ type: "open-workflow", workflow: "areaReview" });
+              }}>
+                <span>${area.name}</span>
+                <small>${area.status === "current" ? "Ready" : "Review"}</small>
+              </button>
+            `)}
+          </div>
+        `)}
+      </div>
+    `;
+  }
+
+  #areaReview() {
+    const draft = this.state.areaDraft;
+    const needsReview = draft.canRebind || draft.status === "review";
+    const stale = draft.status === "stale" || draft.status === "unknown";
+    return html`
+      <div class="stack">
+        ${needsReview ? html`<div class="notice" data-tone="warning" role="status">Review the saved outline on this current map, then confirm it.</div>` : nothing}
+        ${stale ? html`<div class="problem" role="alert">This outline no longer matches the current room map. Redraw it before saving.</div>` : nothing}
+        <label class="field">Area name
+          <input maxlength="128" autocomplete="off" .value=${draft.name} @input=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { name: eventValue(event) } })}>
+        </label>
+        <div class="split">
+          <label class="field">Cleaning
+            <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode.value}>${mode.label}</option>`)}</select>
+          </label>
+          <label class="field">Coverage
+            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option.value}>${option.label}</option>`)}</select>
+          </label>
+        </div>
+        <p class="subtle">${this.state.draw.circles.length} map-space marks. The outline stays private and floor-bound.</p>
+        <div class="toolbar">
+          <button type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>Edit outline</button>
+          ${draft.id ? html`
+            <button
+              class="danger"
+              type="button"
+              aria-label="Delete area"
+              @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeleteArea" })}
+            >Delete</button>
+          ` : nothing}
+        </div>
+        ${this.#notice()}
+      </div>
+    `;
+  }
+
+  #history() {
+    const resource = this.state.resources.history;
+    const catalog = resource.value;
+    const floor = catalog?.floors.find((candidate) => candidate.id === this.state.selection.floorId)
+      || catalog?.floors.find((candidate) => candidate.active)
+      || catalog?.floors[0];
+    const snapshots = floor?.snapshots || [];
+    const position = this.state.selection.historyId
+      ? Math.max(0, snapshots.findIndex((snapshot) => snapshot.id === this.state.selection.historyId))
+      : snapshots.length;
+    return this.#resource(resource.status, resource.problem, html`
+      <div class="stack">
+        ${(catalog?.floors.length || 0) > 1 ? html`
+          <div class="list" role="listbox" aria-label="Mapped floors">
+            ${(catalog?.floors || []).map((candidate, index) => html`
+              <button
+                class="floor"
+                type="button"
+                role="option"
+                aria-selected=${String(candidate.id === floor?.id)}
+                aria-pressed=${String(candidate.id === floor?.id)}
+                @click=${() => this.#intent({ type: "set-floor", floorId: candidate.id })}
+              >
+                <span>${candidate.label || (candidate.active ? "Current floor" : `Saved floor ${candidate.ordinal ?? index}`)}</span>
+                <small>${candidate.active ? "Live" : "Read only"}</small>
+              </button>
+            `)}
+          </div>
+        ` : nothing}
+        <div class="timeline">
+          <label class="field">Map timeline
+            <input
+              type="range"
+              min="0"
+              max=${String(snapshots.length)}
+              step="1"
+              .value=${String(position)}
+              ?disabled=${!snapshots.length}
+              @input=${(event: Event) => {
+                const index = Number(eventValue(event));
+                this.#intent({ type: "set-history", historyId: index === snapshots.length ? null : snapshots[index]?.id || null });
+              }}
+            >
+          </label>
+          <div class="list">
+            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>Live</span><small>Current</small></button>
+            ${snapshots.map((snapshot, index) => html`
+              <button class="snapshot" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
+                <span>${this.#formatTime(snapshot.createdAt)}</span><small>${index + 1} of ${snapshots.length}</small>
+              </button>
+            `)}
+          </div>
+        </div>
+        <p class="subtle">Saved maps are floor-scoped and never show a live robot position.</p>
+      </div>
+    `);
+  }
+
+  #formatTime(value: string): string {
+    try {
+      return new Intl.DateTimeFormat(this.state.locale, { dateStyle: "medium", timeStyle: "short" }).format(new Date(value));
+    } catch {
+      return "Saved map";
+    }
+  }
+
+  #support() {
+    const entry = this.state.resources.entry;
+    return html`
+      <div class="stack">
+        <p class="subtle">This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.</p>
+        <dl class="diagnostics">
+          <dt>Connection</dt><dd>${this.state.host.connected ? "Connected" : "Offline"}</dd>
+          <dt>Map state</dt><dd>${this.state.coherence}</dd>
+          <dt>Floor verified</dt><dd>${this.state.map.floorCoherent ? "Yes" : "No"}</dd>
+          <dt>Session verified</dt><dd>${this.state.map.sessionVerified ? "Yes" : "No"}</dd>
+          <dt>Map complete</dt><dd>${this.state.map.complete ? "Yes" : "No"}</dd>
+          <dt>Map health</dt><dd>${entry?.health || "Unknown"}</dd>
+          <dt>Blocked by</dt><dd>${entry?.mapBlockReason?.replaceAll("_", " ") || "Nothing"}</dd>
+          <dt>Startup map check</dt><dd>${entry?.bootstrapState?.replaceAll("_", " ") || "Unknown"}</dd>
+          <dt>Startup photo layer</dt><dd>${entry?.bootstrapPhotoSeen ? "Seen" : "Not seen"}</dd>
+          <dt>Startup structure layer</dt><dd>${entry?.bootstrapStructureSeen ? "Seen" : "Not seen"}</dd>
+          <dt>Startup failures</dt><dd>${entry?.bootstrapFailures || 0}</dd>
+          <dt>Stream failures</dt><dd>${entry?.streamFailures || 0}</dd>
+          <dt>Saved floor count</dt><dd>${this.state.floor.classifiedCount}</dd>
+        </dl>
+      </div>
+    `;
+  }
+
+  protected override render() {
+    switch (this.state.workflow) {
+      case "rooms": return this.#rooms();
+      case "plan": return this.#plans();
+      case "draw": return this.#draw();
+      case "areaReview": return this.#areaReview();
+      case "history": return this.#history();
+      case "support": return this.#support();
+      case "none": return nothing;
+    }
+  }
+}
+
+if (!customElements.get("matic-map-workflow-v4")) {
+  customElements.define("matic-map-workflow-v4", MaticMapWorkflowV4);
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "matic-map-workflow-v4": MaticMapWorkflowV4;
+  }
+}

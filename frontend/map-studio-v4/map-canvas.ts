@@ -1,0 +1,587 @@
+import { LitElement, css, html, nothing } from "lit";
+import type { PropertyValues } from "lit";
+
+import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import { GestureController } from "./gesture-controller";
+import { RendererController, type RendererDiagnostics } from "./renderer-controller";
+import {
+  canShowExactPose,
+  canShowLiveMap,
+  mapScale,
+} from "./state";
+
+export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
+export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
+
+const describeMap = (state: WorkspaceState): string => {
+  if (!canShowLiveMap(state)) return "The current private map is not available.";
+  if (state.dataMode === "history") {
+    return `Saved read-only map for ${state.floor.displayName}. Live robot position is hidden.`;
+  }
+  const pose = canShowExactPose(state)
+    ? "The robot position is verified."
+    : "The robot position is not shown.";
+  return `Live map for ${state.floor.displayName}. ${pose}`;
+};
+
+export class MaticMapCanvasV4 extends LitElement {
+  static override properties = {
+    state: { attribute: false },
+  };
+
+  static override styles = css`
+    :host {
+      display: block;
+      min-width: 0;
+      min-height: 0;
+      block-size: 100%;
+      color: var(--primary-text-color, #1f2933);
+    }
+
+    * { box-sizing: border-box; }
+
+    button, input { font: inherit; }
+
+    .map-root {
+      position: relative;
+      overflow: hidden;
+      min-block-size: 22rem;
+      block-size: 100%;
+      outline: none;
+      isolation: isolate;
+      background:
+        radial-gradient(circle at 52% 45%, rgb(255 255 255 / 92%), transparent 42%),
+        var(--secondary-background-color, #edf2f4);
+      touch-action: none;
+      container-type: inline-size;
+    }
+
+    .map-root:focus-visible {
+      outline: 3px solid var(--primary-color, #03a9f4);
+      outline-offset: -3px;
+    }
+
+    .floor-chip,
+    .map-tools,
+    .view-switch,
+    .draw-tools,
+    .map-scale,
+    .map-message {
+      position: absolute;
+      z-index: 4;
+      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
+      background: var(--card-background-color, rgb(255 255 255 / 96%));
+      box-shadow: 0 5px 18px rgb(31 41 51 / 12%);
+    }
+
+    .floor-chip {
+      inset-block-start: 0.75rem;
+      inset-inline-start: 0.75rem;
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      max-inline-size: min(15rem, calc(100% - 11rem));
+      min-block-size: 2.75rem;
+      padding-inline: 0.8rem;
+      border-radius: 1.5rem;
+      font-size: 0.82rem;
+      font-weight: 650;
+    }
+
+    .floor-chip span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .floor-chip small {
+      color: var(--secondary-text-color, #687984);
+      font-weight: 500;
+      white-space: nowrap;
+    }
+
+    .map-tools {
+      inset-block-start: 0.75rem;
+      inset-inline-end: 0.75rem;
+      display: flex;
+      gap: 0.2rem;
+      padding: 0.2rem;
+      border-radius: 0.85rem;
+    }
+
+    .map-tools button,
+    .view-switch button,
+    .draw-tools button {
+      border: 0;
+      color: inherit;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .map-tools button {
+      min-inline-size: 2.75rem;
+      min-block-size: 2.75rem;
+      padding-inline: 0.55rem;
+      border-radius: 0.65rem;
+      font-size: 0.78rem;
+      font-weight: 650;
+    }
+
+    .map-tools button[aria-pressed="true"],
+    .view-switch button[aria-pressed="true"],
+    .draw-tools button[aria-checked="true"] {
+      color: var(--primary-color, #0678ce);
+      background: color-mix(in srgb, var(--primary-color, #0678ce) 11%, transparent);
+    }
+
+    .view-switch {
+      inset-block-start: 4.25rem;
+      inset-inline-end: 0.75rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      padding: 0.18rem;
+      border-radius: 0.75rem;
+    }
+
+    .view-switch button {
+      min-inline-size: 2.75rem;
+      min-block-size: 2.25rem;
+      border-radius: 0.58rem;
+      font-size: 0.76rem;
+      font-weight: 700;
+    }
+
+    .scene-window {
+      position: absolute;
+      inset: 0;
+      overflow: hidden;
+    }
+
+    .scene-window[hidden] { display: none; }
+
+    .scene-canvas,
+    .overlay-canvas {
+      position: absolute;
+      inset: 0;
+      inline-size: 100%;
+      block-size: 100%;
+    }
+
+    .scene-canvas { z-index: 0; }
+    .overlay-canvas { z-index: 1; pointer-events: none; }
+
+    .scene-geometry {
+      position: absolute;
+      inset: 12% 8% 17%;
+      transform: scale(var(--map-zoom));
+      transform-origin: var(--map-origin-x) var(--map-origin-y);
+      transition: transform 120ms ease-out;
+    }
+
+    .scene-geometry svg { inline-size: 100%; block-size: 100%; overflow: visible; }
+    .room { stroke: var(--divider-color, #b5c1c8); stroke-width: 1.5; }
+    .room:nth-child(1) { fill: #dceef2; }
+    .room:nth-child(2) { fill: #e4eaf5; }
+    .room:nth-child(3) { fill: #e9f0df; }
+    .room:nth-child(4) { fill: #f3e5e5; }
+
+    .area-stroke {
+      fill: none;
+      stroke: var(--primary-color, #0678ce);
+      stroke-width: 2.4;
+      stroke-linecap: round;
+      stroke-linejoin: round;
+      opacity: 0.82;
+    }
+
+    .room-labels {
+      position: absolute;
+      inset: 0;
+      z-index: 2;
+      pointer-events: none;
+    }
+
+    .room-label {
+      position: absolute;
+      translate: -50% -50%;
+      padding: 0.25rem 0.45rem;
+      border-radius: 0.4rem;
+      color: var(--primary-text-color, #263238);
+      background: color-mix(in srgb, var(--card-background-color, white) 90%, transparent);
+      box-shadow: 0 2px 8px rgb(31 41 51 / 11%);
+      font-size: 0.72rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .room-label:nth-child(1) { inset-inline-start: 31%; inset-block-start: 36%; }
+    .room-label:nth-child(2) { inset-inline-start: 69%; inset-block-start: 39%; }
+    .room-label:nth-child(3) { inset-inline-start: 36%; inset-block-start: 68%; }
+    .room-label:nth-child(4) { inset-inline-start: 68%; inset-block-start: 68%; }
+
+    .robot {
+      position: absolute;
+      z-index: 3;
+      inset-inline-start: 53%;
+      inset-block-start: 52%;
+      inline-size: 1.15rem;
+      block-size: 1.15rem;
+      translate: -50% -50%;
+      border: 3px solid white;
+      border-radius: 50%;
+      background: var(--primary-color, #0678ce);
+      box-shadow: 0 2px 9px rgb(6 120 206 / 35%);
+    }
+
+    .brush-cursor {
+      position: absolute;
+      z-index: 3;
+      inset-inline-start: 52%;
+      inset-block-start: 49%;
+      inline-size: var(--brush-size);
+      block-size: var(--brush-size);
+      translate: -50% -50%;
+      border: 2px solid var(--primary-color, #0678ce);
+      border-radius: 50%;
+      background: color-mix(in srgb, var(--primary-color, #0678ce) 15%, transparent);
+      pointer-events: none;
+    }
+
+    .map-scale {
+      inset-inline-start: 0.9rem;
+      inset-block-end: calc(5.2rem + var(--map-sheet-offset, 0px));
+      display: grid;
+      justify-items: start;
+      gap: 0.25rem;
+      border: 0;
+      background: transparent;
+      box-shadow: none;
+      color: var(--secondary-text-color, #53636d);
+      font-size: 0.7rem;
+      font-weight: 650;
+    }
+
+    .scale-line {
+      inline-size: var(--scale-width);
+      block-size: 0.42rem;
+      border-inline: 2px solid currentColor;
+      border-block-end: 2px solid currentColor;
+    }
+
+    .draw-tools {
+      inset-inline-start: 50%;
+      inset-block-end: calc(0.75rem + var(--map-sheet-offset, 0px));
+      translate: -50% 0;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(2.75rem, auto));
+      gap: 0.15rem;
+      max-inline-size: calc(100% - 1rem);
+      padding: 0.2rem;
+      border-radius: 0.9rem;
+    }
+
+    .draw-tools button {
+      min-inline-size: 2.75rem;
+      min-block-size: 2.75rem;
+      padding-inline: 0.5rem;
+      border-radius: 0.65rem;
+      font-size: 0.73rem;
+      font-weight: 650;
+      white-space: nowrap;
+    }
+
+    .draw-tools button:disabled { opacity: 0.42; cursor: default; }
+
+    .map-root[data-full-map="true"] .draw-tools { inset-block-end: 5.75rem; }
+    .map-root[data-full-map="true"] .map-scale { inset-block-end: 10rem; }
+
+    .map-message {
+      inset: 50% auto auto 50%;
+      translate: -50% -50%;
+      inline-size: min(22rem, calc(100% - 2rem));
+      padding: 1rem 1.1rem;
+      border-radius: 0.9rem;
+      text-align: center;
+    }
+
+    .map-message strong { display: block; margin-block-end: 0.35rem; }
+    .map-message span { color: var(--secondary-text-color, #687984); font-size: 0.82rem; }
+
+    .sr-only {
+      position: absolute;
+      overflow: hidden;
+      inline-size: 1px;
+      block-size: 1px;
+      margin: -1px;
+      clip: rect(0 0 0 0);
+      white-space: nowrap;
+    }
+
+    @container (max-width: 29rem) {
+      .map-tools .labels { display: none; }
+      .map-tools button { padding-inline: 0.35rem; }
+      .draw-tools { grid-template-columns: repeat(6, 2.75rem); }
+      .draw-tools button { padding: 0; font-size: 0; }
+      .draw-tools button::first-letter { font-size: 1rem; }
+      .floor-chip { max-inline-size: calc(100% - 9.5rem); }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .scene-geometry { transition: none; }
+    }
+
+    @media (forced-colors: active) {
+      .room, .area-stroke, .brush-cursor, .robot { forced-color-adjust: none; }
+      .room { fill: Canvas; stroke: CanvasText; }
+      .area-stroke, .brush-cursor { stroke: Highlight; }
+      .robot { background: Highlight; border-color: Canvas; }
+    }
+  `;
+
+  state!: WorkspaceState;
+  #fullMapLauncher: HTMLElement | null = null;
+  #renderer: RendererController | null = null;
+  #gestures: GestureController | null = null;
+
+  protected override firstUpdated(): void {
+    const root = this.renderRoot.querySelector<HTMLElement>(".map-root");
+    const scene = this.renderRoot.querySelector<HTMLCanvasElement>(".scene-canvas");
+    const overlay = this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas");
+    if (!root || !scene || !overlay) return;
+    this.#renderer = new RendererController(scene, overlay, {
+      onCamera: (_camera, zoomPercent, origin) => {
+        if (this.state.workflow === "draw" && zoomPercent !== this.state.draw.zoomPercent) {
+          this.#intent({
+            type: "set-zoom",
+            value: zoomPercent,
+            ...(origin ? { originX: origin.xPercent, originY: origin.yPercent } : {}),
+          });
+        }
+      },
+      onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
+      onProblem: () => this.#action("renderer-problem"),
+    });
+    this.#gestures = new GestureController(root, this.#renderer, {
+      state: () => this.state,
+      onCircles: (circles, record, previous) => this.#intent({
+        type: "set-draft-circles",
+        circles,
+        record,
+        ...(previous ? { previous } : {}),
+      }),
+      onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
+    });
+    this.#renderer.setState(this.state);
+  }
+
+  override disconnectedCallback(): void {
+    this.#gestures?.dispose();
+    this.#gestures = null;
+    this.#renderer?.dispose();
+    this.#renderer = null;
+    super.disconnectedCallback();
+  }
+
+  protected override updated(changed: PropertyValues<this>): void {
+    if (!changed.has("state")) return;
+    const previous = changed.get("state") as WorkspaceState | undefined;
+    if (previous?.fullMap && !this.state.fullMap && this.#fullMapLauncher) {
+      this.#fullMapLauncher.focus();
+    }
+    this.#renderer?.setState(this.state);
+  }
+
+  #intent(intent: WorkspaceIntent): void {
+    this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
+      detail: intent,
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  #action(id: string): void {
+    this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
+      detail: { id },
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  #toggleFullMap(event: Event): void {
+    this.#fullMapLauncher = event.currentTarget as HTMLElement;
+    this.#intent({ type: this.state.fullMap ? "exit-full-map" : "enter-full-map" });
+  }
+
+  #keyboard(event: KeyboardEvent): void {
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      this.#intent({ type: "dismiss-top-layer" });
+      return;
+    }
+  }
+
+  rendererDiagnostics(): RendererDiagnostics | null {
+    return this.#renderer?.diagnostics() ?? null;
+  }
+
+  canvasIdentity(): { readonly scene: HTMLCanvasElement | null; readonly overlay: HTMLCanvasElement | null } {
+    return {
+      scene: this.renderRoot.querySelector<HTMLCanvasElement>(".scene-canvas"),
+      overlay: this.renderRoot.querySelector<HTMLCanvasElement>(".overlay-canvas"),
+    };
+  }
+
+  #message(): { readonly title: string; readonly detail: string } | null {
+    if (!this.state.host.connected) {
+      return { title: "Reconnecting", detail: "The verified map is read only until Home Assistant reconnects." };
+    }
+    if (!this.state.host.administrator) {
+      return { title: "Administrator access required", detail: "Private map data is hidden." };
+    }
+    if (this.state.host.robotCount === 0) {
+      return { title: "No Matic robot set up", detail: "Set up a robot before opening its map." };
+    }
+    if (!this.state.host.robotConnected) {
+      return { title: "Robot offline", detail: "The last verified map stays read only and has no live position." };
+    }
+    if (this.state.coherence === "verifying" || this.state.coherence === "booting") {
+      return { title: "Locating the current map", detail: "Map controls will return after the floor is verified." };
+    }
+    if (!this.state.map.available) {
+      return { title: "Map unavailable", detail: "This browser cannot show the private map right now." };
+    }
+    if (this.state.activity === "problem") {
+      return { title: "Robot needs attention", detail: "Check the robot before starting another task." };
+    }
+    return null;
+  }
+
+  protected override render() {
+    const state = this.state;
+    const scale = mapScale(state);
+    const message = this.#message();
+    const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
+    const showDraw = state.workflow === "draw" && showScene;
+    const locating = state.coherence === "verifying" || state.coherence === "booting";
+    return html`
+      <section
+        class="map-root"
+        tabindex="0"
+        role="application"
+        aria-label=${describeMap(state)}
+        data-full-map=${String(state.fullMap)}
+        data-workflow=${state.workflow}
+        @keydown=${this.#keyboard}
+      >
+        ${state.floor.classifiedCount > 1 ? html`
+          <button
+            class="floor-chip"
+            type="button"
+            aria-label="Choose floor"
+            @click=${() => this.#intent({ type: "open-workflow", workflow: "history" })}
+          >
+            <span>${state.floor.displayName}</span>
+            ${state.floor.readOnly ? html`<small>Saved · read only</small>` : nothing}
+          </button>
+        ` : nothing}
+
+        ${!locating || state.fullMap ? html`<nav class="map-tools" aria-label="Map tools">
+          ${!locating ? html`
+            <button type="button" @click=${() => {
+              this.#renderer?.fit();
+              this.#intent({ type: "fit-map" });
+            }}>Fit</button>
+            <button
+              class="labels"
+              type="button"
+              aria-pressed=${String(state.labelsVisible)}
+              @click=${() => this.#intent({ type: "toggle-labels" })}
+            >Labels</button>
+          ` : nothing}
+          <button
+            class="full-map"
+            type="button"
+            aria-label="Full map"
+            aria-pressed=${String(state.fullMap)}
+            @click=${this.#toggleFullMap}
+          >${state.fullMap ? "Close" : "Full map"}</button>
+        </nav>` : nothing}
+
+        ${state.workflow !== "draw" && showScene ? html`
+          <div class="view-switch" aria-label="Map view">
+            <button
+              type="button"
+              aria-pressed=${String(state.view === "three")}
+              @click=${() => this.#intent({ type: "set-view", view: "three" })}
+            >3D</button>
+            <button
+              type="button"
+              aria-pressed=${String(state.view === "top")}
+              @click=${() => this.#intent({ type: "set-view", view: "top" })}
+            >2D</button>
+          </div>
+        ` : nothing}
+
+        <div
+          class="scene-window"
+          data-renderer-key="persistent-canvas-v4"
+          ?hidden=${!showScene}
+          aria-hidden="true"
+        >
+          <canvas class="scene-canvas"></canvas>
+          <canvas class="overlay-canvas"></canvas>
+        </div>
+
+        ${showDraw ? html`
+          <div class="map-scale" aria-label=${`Scale ${scale.label}`}>
+            <span class="scale-line" style=${`--scale-width:${scale.pixels}px`}></span>
+            <span>${scale.label}</span>
+          </div>
+          <div class="draw-tools" role="toolbar" aria-label="Draw area tools">
+            ${(["paint", "erase", "pan"] as const).map((tool) => html`
+              <button
+                type="button"
+                role="radio"
+                aria-checked=${String(state.draw.tool === tool)}
+                data-tool=${tool}
+                @click=${() => this.#intent({ type: "set-draw-tool", tool })}
+              >${tool === "paint" ? "✎ Paint" : tool === "erase" ? "⌫ Erase" : "✥ Pan"}</button>
+            `)}
+            <button
+              type="button"
+              ?disabled=${state.draw.strokeCount === 0}
+              @click=${() => this.#intent({ type: "undo-draft" })}
+            >↶ Undo</button>
+            <button
+              type="button"
+              ?disabled=${state.draw.redo.length === 0}
+              @click=${() => this.#intent({ type: "redo-draft" })}
+            >↷ Redo</button>
+            <button type="button" @click=${() => this.#action("review-area")}>✓ Done</button>
+          </div>
+        ` : nothing}
+
+        ${message && !(state.fullMap && (locating || !state.host.administrator)) ? html`
+          <div class="map-message" role="status">
+            <strong>${message.title}</strong>
+            <span>${message.detail}</span>
+          </div>
+        ` : nothing}
+        <div class="sr-only" aria-live="polite" aria-atomic="true">
+          ${describeMap(state)}
+        </div>
+      </section>
+    `;
+  }
+}
+
+if (!customElements.get("matic-map-canvas-v4")) {
+  customElements.define("matic-map-canvas-v4", MaticMapCanvasV4);
+}
+
+declare global {
+  interface HTMLElementTagNameMap {
+    "matic-map-canvas-v4": MaticMapCanvasV4;
+  }
+}

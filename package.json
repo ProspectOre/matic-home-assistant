@@ -2,9 +2,14 @@
   "name": "matic-home-assistant-browser-tests",
   "private": true,
   "scripts": {
+    "build:map-studio-v4": "npm run typecheck:map-studio-v4 && esbuild frontend/map-studio-v4/index.ts --bundle --format=esm --target=es2022 --minify --splitting --legal-comments=eof --outdir=custom_components/matic_robot/map_studio_v4 --entry-names=index --chunk-names=chunks/[name]",
+    "typecheck:map-studio-v4": "tsc --project frontend/map-studio-v4/tsconfig.json --noEmit",
     "test:browser": "playwright test"
   },
   "devDependencies": {
-    "@playwright/test": "1.62.0"
+    "@playwright/test": "1.62.0",
+    "esbuild": "0.28.2",
+    "lit": "3.3.3",
+    "typescript": "7.0.2"
   }
 }

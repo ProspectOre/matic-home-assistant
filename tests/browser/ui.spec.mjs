@@ -1465,7 +1465,7 @@ test.describe("map studio", () => {
     )).toBe("Complete retained room");
     await expect(studio.locator(".status")).toContainText("last complete map");
     await expect(studio.locator(".timeline-live")).toHaveAttribute("aria-pressed", "true");
-    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("exact_pose");
+    expect(await page.evaluate(() => window.__studio._robot)).toBeUndefined();
     expect(await page.evaluate(() => ({
       sceneUrl: window.__studio._sceneUrl,
       stableId: window.__studio._stableLiveSnapshotId,
@@ -1489,6 +1489,7 @@ test.describe("map studio", () => {
     await expect.poll(() => page.evaluate(() =>
       window.__studio._scene?.metadata?.rooms?.[0]?.name,
     )).toBe("Complete current room");
+    await expect.poll(() => page.evaluate(() => window.__studio._robot?.source)).toBe("exact_pose");
     expect(await page.evaluate(() => ({
       sceneUrl: window.__studio._sceneUrl,
       stableId: window.__studio._stableLiveSnapshotId,

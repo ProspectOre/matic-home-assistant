@@ -133,8 +133,20 @@ def _floor_plan() -> FloorPlan:
         partition_protocol_id="partition",
         partition_id_wire=b"partition",
         rooms=(
-            Room("room-1", "Kitchen", "protocol-1", b"one", ((0, 0), (1, 1))),
-            Room("room-2", "Study", "protocol-2", b"two", ((1, 1), (2, 2))),
+            Room(
+                "room-1",
+                "Kitchen",
+                "protocol-1",
+                b"one",
+                ((0, 0), (2, 0), (2, 3), (0, 3)),
+            ),
+            Room(
+                "room-2",
+                "Study",
+                "protocol-2",
+                b"two",
+                ((2, 0), (4, 0), (4, 3), (2, 3)),
+            ),
         ),
     )
 

@@ -40,6 +40,7 @@
     "area_workspace_floor_transition": "Custom areas are paused while the active floor changes",
     "area_workspace_incomplete": "Add a name and paint an area",
     "area_workspace_loading": "Loading custom cleaning areas…",
+    "area_workspace_timeout": "Custom areas took too long to load. Close and try again.",
     "area_workspace_ready": "Ready",
     "area_workspace_redraw": "Redraw required",
     "area_workspace_run_failed": "Robot is unavailable",

@@ -9,7 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from threading import get_ident
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -972,6 +972,140 @@ async def test_slam_map_store_collects_live_pages_and_skips_corruption(hass) -> 
     assert store.tile_count == 1
     assert store.structure_tile_count == 1
     assert store.health.invalid_tiles == 2
+
+
+async def test_slam_map_store_primes_both_layers_from_tracked_snapshots(hass) -> None:
+    """A fresh install seeds a map even when subscriptions do not replay."""
+    store = SlamMapStore(hass, "prime-entry")
+    await store.async_load()
+    calls: list[tuple[str, int]] = []
+
+    async def snapshot(name, *, limit):
+        calls.append((name, limit))
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(), HermesCollectionEntry(b"bad", b"bad"))
+        assert name == "map_integrated"
+        return (
+            synthetic_structure_entry(),
+            HermesCollectionEntry(b"bad-structure", b"bad"),
+        )
+
+    client = SimpleNamespace(async_get_tracked_collection_entries=snapshot)
+
+    await store.async_prime(client)
+
+    assert calls == [("map_compressed_rgb", 1), ("map_integrated", 1)]
+    assert store.tile_count == 1
+    assert store.structure_tile_count == 1
+    assert store.live_session_verified
+    assert store.health.invalid_tiles == 2
+    assert store.health.bootstrap_state == "complete"
+    assert store.health.bootstrap_photo_seen is True
+    assert store.health.bootstrap_structure_seen is True
+    assert store.health.bootstrap_failures == 0
+
+
+async def test_slam_map_store_prime_is_best_effort_on_snapshot_failure(hass) -> None:
+    """A failed seed must leave the long-lived collectors free to retry."""
+    store = SlamMapStore(hass, "prime-failure-entry")
+    await store.async_load()
+
+    async def snapshot(_name, *, limit):
+        assert limit == 1
+        raise CannotConnectError("synthetic disconnect")
+
+    client = SimpleNamespace(async_get_tracked_collection_entries=snapshot)
+
+    await store.async_prime(client)
+
+    assert store.tile_count == 0
+    assert store.structure_tile_count == 0
+    assert not store.live_session_verified
+    assert store.health.bootstrap_state == "failed"
+    assert store.health.bootstrap_photo_seen is False
+    assert store.health.bootstrap_structure_seen is False
+    assert store.health.bootstrap_failures == 2
+
+
+async def test_slam_map_store_prime_reports_one_layer_failure(hass) -> None:
+    store = SlamMapStore(hass, "prime-partial-entry")
+    await store.async_load()
+
+    async def snapshot(name, *, limit):
+        assert limit == 1
+        if name == "map_compressed_rgb":
+            return (synthetic_slam_entry(),)
+        raise CannotConnectError("synthetic structure disconnect")
+
+    client = SimpleNamespace(async_get_tracked_collection_entries=snapshot)
+
+    await store.async_prime(client)
+
+    assert store.health.bootstrap_state == "partial"
+    assert store.health.bootstrap_photo_seen is True
+    assert store.health.bootstrap_structure_seen is False
+    assert store.health.bootstrap_failures == 1
+
+
+async def test_slam_map_store_prime_is_noop_after_shutdown(hass) -> None:
+    store = SlamMapStore(hass, "prime-closed-entry")
+    await store.async_load()
+    await store.async_shutdown()
+    client = SimpleNamespace(async_get_tracked_collection_entries=AsyncMock())
+
+    await store.async_prime(client)
+
+    client.async_get_tracked_collection_entries.assert_not_awaited()
+
+
+async def test_slam_map_store_prime_propagates_cancellation(hass) -> None:
+    store = SlamMapStore(hass, "prime-cancel-entry")
+    await store.async_load()
+    release = asyncio.Event()
+
+    async def snapshot(_name, *, limit):
+        assert limit == 1
+        await release.wait()
+        return ()
+
+    client = SimpleNamespace(async_get_tracked_collection_entries=snapshot)
+    task = asyncio.create_task(store.async_prime(client))
+    await asyncio.sleep(0)
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert store.health.bootstrap_state == "not_started"
+
+    future1 = asyncio.get_running_loop().create_future()
+    future1.set_result(())
+    future2 = asyncio.get_running_loop().create_future()
+    future2.set_result(())
+    client2 = SimpleNamespace(
+        async_get_tracked_collection_entries=MagicMock(side_effect=(future1, future2))
+    )
+    with patch(
+        "custom_components.matic_robot.slam_map_store.asyncio.gather",
+        new=AsyncMock(return_value=[asyncio.CancelledError(), ()]),
+    ):
+        with pytest.raises(asyncio.CancelledError):
+            await store.async_prime(client2)
+
+
+async def test_slam_map_store_prime_stops_if_closed_during_snapshot(hass) -> None:
+    store = SlamMapStore(hass, "prime-race-entry")
+
+    async def snapshot(_name, *, limit):
+        assert limit == 1
+        store._closed = True
+        return ()
+
+    await store.async_load()
+    client = SimpleNamespace(async_get_tracked_collection_entries=snapshot)
+
+    await store.async_prime(client)
+
+    assert store.tile_count == 0
 
 
 @pytest.mark.parametrize("fail_stream", [True, False])

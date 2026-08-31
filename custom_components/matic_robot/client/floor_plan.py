@@ -357,15 +357,17 @@ def resolve_robot_map_position(
     pose: RobotPose | None,
     current_area: str | None,
 ) -> tuple[float, float, str] | None:
-    """Return only a verified exact pose for a positional map marker.
+    """Return only a room-coherent exact pose for a positional map marker.
 
     The robot's current-area label proves room presence, not a point inside the
     room. Rendering that label at the polygon center creates a stationary dot
-    that looks exact while the robot moves, especially after a floor change.
-    Keep ``current_area`` in the signature for callers that also use
-    :func:`robot_location_source`, but never turn it into coordinates here.
+    that looks exact while the robot moves. Conversely, accepting any finite
+    pose inside the floor's bounding box can put a stale or mismatched pose in
+    a different room. Require the point to be inside a mapped room and, when
+    the firmware reports a current area, require those two room identities to
+    agree. A disagreement degrades to room-only presence instead of drawing a
+    confidently wrong marker.
     """
-    del current_area
     if floor_plan is None or not floor_plan.rooms:
         return None
     all_points = [point for room in floor_plan.rooms for point in room.boundary]
@@ -373,14 +375,23 @@ def resolve_robot_map_position(
     max_x = max(point[0] for point in all_points)
     min_y = min(point[1] for point in all_points)
     max_y = max(point[1] for point in all_points)
-    if (
-        pose is not None
-        and all(math.isfinite(value) for value in (pose.x, pose.y))
-        and min_x <= pose.x <= max_x
-        and min_y <= pose.y <= max_y
+    if pose is None or not all(math.isfinite(value) for value in (pose.x, pose.y)):
+        return None
+    if not (min_x <= pose.x <= max_x and min_y <= pose.y <= max_y):
+        return None
+    containing_rooms = tuple(
+        room
+        for room in floor_plan.rooms
+        if _point_in_polygon((pose.x, pose.y), room.boundary)
+    )
+    if not containing_rooms:
+        return None
+    area_key = _room_name_key(current_area)
+    if area_key is not None and not any(
+        _room_name_key(room.name) == area_key for room in containing_rooms
     ):
-        return pose.x, pose.y, "exact_pose"
-    return None
+        return None
+    return pose.x, pose.y, "exact_pose"
 
 
 def robot_location_source(
@@ -409,6 +420,48 @@ def _room_name_key(value: str | None) -> str | None:
         return None
     normalized = " ".join(value.strip().casefold().split()).removeprefix("the ")
     return normalized or None
+
+
+def _point_in_polygon(point: _Point, polygon: Sequence[_Point]) -> bool:
+    """Return whether a finite point lies inside or on a room boundary."""
+    if len(polygon) < 3:
+        return False
+    x, y = point
+    inside = False
+    previous = polygon[-1]
+    for current in polygon:
+        if _point_on_segment(point, previous, current):
+            return True
+        current_x, current_y = current
+        previous_x, previous_y = previous
+        if (current_y > y) != (previous_y > y) and x < (
+            (previous_x - current_x) * (y - current_y) / (previous_y - current_y)
+            + current_x
+        ):
+            inside = not inside
+        previous = current
+    return inside
+
+
+def _point_on_segment(point: _Point, start: _Point, end: _Point) -> bool:
+    """Treat tiny float drift on a room edge as inside the room."""
+    x, y = point
+    start_x, start_y = start
+    end_x, end_y = end
+    length_squared = (end_x - start_x) ** 2 + (end_y - start_y) ** 2
+    if length_squared == 0:
+        return math.hypot(x - start_x, y - start_y) <= 1e-6
+    progress = max(
+        0.0,
+        min(
+            1.0,
+            ((x - start_x) * (end_x - start_x) + (y - start_y) * (end_y - start_y))
+            / length_squared,
+        ),
+    )
+    nearest_x = start_x + progress * (end_x - start_x)
+    nearest_y = start_y + progress * (end_y - start_y)
+    return math.hypot(x - nearest_x, y - nearest_y) <= 1e-6
 
 
 def _layout_room_labels(

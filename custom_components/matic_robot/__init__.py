@@ -148,6 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             if coordinator.data.floor_plan is not None
             else None
         )
+        await slam_map.async_prime(client)
         slam_history = SlamHistoryStore(hass, entry.entry_id)
         await slam_history.async_load()
         entry.runtime_data = MaticRuntimeData(

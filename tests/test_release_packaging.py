@@ -28,7 +28,7 @@ def test_release_versions_and_links_are_consistent() -> None:
     hacs = json.loads((ROOT / "hacs.json").read_text())
     project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
 
-    assert manifest["version"] == "0.3.12"
+    assert manifest["version"] == "0.4.0b1"
     assert project["version"] == manifest["version"]
     assert hacs["homeassistant"] == "2026.7.0"
     assert manifest["documentation"].startswith("https://github.com/")
@@ -379,6 +379,8 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
     assert (INTEGRATION / "services.yaml").exists()
     assert not (INTEGRATION / "www").exists()
     assert (INTEGRATION / "room_plan_editor.js").exists()
+    assert (INTEGRATION / "map_studio_v4" / "index.js").exists()
+    assert (INTEGRATION / "map_studio_v4" / "chunks" / "chunk.js").exists()
 
 
 def test_python_package_includes_home_assistant_runtime_files() -> None:
@@ -396,6 +398,8 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
     assert "client/proto/*.proto" in package_data
     assert "www/*.js" not in package_data
     assert "*.js" in package_data
+    assert "map_studio_v4/*.js" in package_data
+    assert "map_studio_v4/chunks/*.js" in package_data
     assert (INTEGRATION / "manifest.json").exists()
     assert (INTEGRATION / "client" / "matic_intermediate_ca.pem").exists()
 
