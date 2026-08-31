@@ -101,17 +101,22 @@ export class MaticBackend {
     }, timeoutMs);
     try {
       const hass = this.#getHass();
+      // Home Assistant's fetchWithAuth wrapper merges plain header records when it
+      // injects the bearer token. Passing a native Headers instance works with the
+      // browser fetch API but can bypass that merge and produce an unauthenticated
+      // request for binary scene and delta resources.
+      const headers = new Headers(init.headers);
       const requestInit: RequestInit = {
         ...init,
         cache: "no-store",
         credentials: "same-origin",
+        headers: Object.fromEntries(headers.entries()),
         signal: controller.signal,
       };
       if (typeof hass?.fetchWithAuth === "function") {
         return await hass.fetchWithAuth(path, requestInit);
       }
       const token = hass?.auth?.accessToken || hass?.auth?.data?.access_token;
-      const headers = new Headers(init.headers);
       if (token) headers.set("Authorization", `Bearer ${token}`);
       const url = typeof hass?.hassUrl === "function" ? hass.hassUrl(path) : path;
       return await fetch(url, { ...requestInit, headers });

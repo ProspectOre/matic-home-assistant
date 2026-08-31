@@ -598,6 +598,12 @@ test.describe("Map Studio v0.4 foundation", () => {
           },
         },
         fetchWithAuth: async (path, init) => {
+          // Match Home Assistant's live auth boundary: a native Headers object
+          // cannot be merged into the authenticated request, while a plain record
+          // is accepted. This guards scene and delta requests against silent 401s.
+          if (init?.headers instanceof Headers) {
+            return new Response("", { status: 401 });
+          }
           if (path === "/api/matic_robot/slam_entries") {
             return new Response(JSON.stringify({ entries: [entry] }), {
               status: 200,
