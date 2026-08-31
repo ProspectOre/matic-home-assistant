@@ -79,6 +79,7 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
 
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
+const POSE_POLL_INTERVAL_MS = 1_000;
 
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
@@ -190,7 +191,7 @@ export class EffectController {
     if (this.#poseTimer === null) {
       this.#poseTimer = window.setInterval(() => {
         if (document.visibilityState === "visible") void this.refreshPose();
-      }, 2_000);
+      }, POSE_POLL_INTERVAL_MS);
     }
   }
 
