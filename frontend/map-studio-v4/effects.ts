@@ -246,7 +246,27 @@ export class EffectController {
       }
       if (this.#store.value.selection.floorId !== "current" && !force) return;
       const identity = entryIdentity(selected);
-      if (!force && identity === this.#entryIdentity) return;
+      if (!force && identity === this.#entryIdentity) {
+        const state = this.#store.value;
+        const coherent = selected.mapFloorCoherent && selected.mapSessionVerified;
+        const degraded = selected.health === "problem" || selected.health === "limited";
+        this.#store.patch({
+          coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
+          map: {
+            ...state.map,
+            available: coherent && state.resources.scene.value !== null,
+            complete: selected.mapComplete && !selected.mapTruncated,
+            floorCoherent: selected.mapFloorCoherent,
+            sessionVerified: selected.mapSessionVerified,
+            exactPose: coherent ? state.map.exactPose : false,
+          },
+          floor: {
+            ...state.floor,
+            classifiedCount: Math.max(1, selected.historyFloorCount),
+          },
+        });
+        return;
+      }
       this.#entryIdentity = identity;
       this.#beginLiveGeneration(selected);
     } catch (error) {

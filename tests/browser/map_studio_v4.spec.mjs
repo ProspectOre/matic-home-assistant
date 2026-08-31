@@ -549,6 +549,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const first = syntheticScene("Current room", 10);
     const second = syntheticScene("Updated room", 24);
     let revision = 1;
+    let mapComplete = false;
     let sceneRequests = 0;
     let releaseSecond;
     const secondGate = new Promise((resolve) => { releaseSecond = resolve; });
@@ -570,13 +571,13 @@ test.describe("Map Studio v0.4 foundation", () => {
       active_plan: false,
       native_reconciliation_pending: false,
       native_session_active: false,
-      map_complete: true,
+      map_complete: mapComplete,
       map_truncated: false,
       selected_floor_ordinal: 1,
       map_floor_ordinal: 1,
       history_count: 0,
       history_floor_count: 1,
-      map_health: "ready",
+      map_health: mapComplete ? "ready" : "incomplete",
       stream_state: "connected",
       stream_failures: 0,
     });
@@ -651,6 +652,11 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     await expect.poll(async () => page.evaluate(() =>
       window.__retainedScene.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(1);
+    expect(await page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().map.complete)).toBe(false);
+    mapComplete = true;
+    await expect.poll(async () => page.evaluate(() =>
+      window.__retainedScene.getWorkspaceSnapshot().map.complete), { timeout: 10_000 }).toBe(true);
     await page.evaluate(() => {
       const shell = window.__retainedScene.shadowRoot.querySelector("matic-map-shell-v4");
       shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
