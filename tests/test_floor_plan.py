@@ -225,7 +225,11 @@ def test_robot_position_prefers_verified_geometry_over_reported_room() -> None:
         1,
         "exact_pose",
     )
-    assert resolve_robot_map_position(floor_plan, RobotPose(2.5, 1, 0), None) is None
+    assert resolve_robot_map_position(floor_plan, RobotPose(2.5, 1, 0), None) == (
+        2.5,
+        1,
+        "exact_pose",
+    )
     assert resolve_robot_map_position(floor_plan, RobotPose(6, 1, 0), None) is None
 
     duplicate_vertex_plan = FloorPlan(

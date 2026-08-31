@@ -363,14 +363,23 @@ def resolve_robot_map_position(
     room. Rendering that label at the polygon center creates a stationary dot
     that looks exact while the robot moves. The label can also advance to the
     commanded room before the robot crosses its boundary, so it must not veto
-    a stronger geometric pose. Callers establish mission/floor coherence;
-    here, require the finite point to lie inside any room on that verified
-    floor and never invent coordinates from ``current_area``.
+    a stronger geometric pose. Callers establish mission/floor coherence.
+
+    A robot can legitimately travel through an unpartitioned gap between room
+    polygons. Keep that exact pose while it remains inside the verified floor
+    plan's bounded coordinate frame; requiring membership in one room makes the
+    marker blink at every doorway and corridor gap. Never invent coordinates
+    from ``current_area``.
     """
     del current_area
     if floor_plan is None or not floor_plan.rooms:
         return None
-    all_points = [point for room in floor_plan.rooms for point in room.boundary]
+    valid_boundaries = tuple(
+        room.boundary for room in floor_plan.rooms if len(room.boundary) >= 3
+    )
+    if not valid_boundaries:
+        return None
+    all_points = [point for boundary in valid_boundaries for point in boundary]
     min_x = min(point[0] for point in all_points)
     max_x = max(point[0] for point in all_points)
     min_y = min(point[1] for point in all_points)
@@ -378,13 +387,6 @@ def resolve_robot_map_position(
     if pose is None or not all(math.isfinite(value) for value in (pose.x, pose.y)):
         return None
     if not (min_x <= pose.x <= max_x and min_y <= pose.y <= max_y):
-        return None
-    containing_rooms = tuple(
-        room
-        for room in floor_plan.rooms
-        if _point_in_polygon((pose.x, pose.y), room.boundary)
-    )
-    if not containing_rooms:
         return None
     return pose.x, pose.y, "exact_pose"
 
@@ -415,48 +417,6 @@ def _room_name_key(value: str | None) -> str | None:
         return None
     normalized = " ".join(value.strip().casefold().split()).removeprefix("the ")
     return normalized or None
-
-
-def _point_in_polygon(point: _Point, polygon: Sequence[_Point]) -> bool:
-    """Return whether a finite point lies inside or on a room boundary."""
-    if len(polygon) < 3:
-        return False
-    x, y = point
-    inside = False
-    previous = polygon[-1]
-    for current in polygon:
-        if _point_on_segment(point, previous, current):
-            return True
-        current_x, current_y = current
-        previous_x, previous_y = previous
-        if (current_y > y) != (previous_y > y) and x < (
-            (previous_x - current_x) * (y - current_y) / (previous_y - current_y)
-            + current_x
-        ):
-            inside = not inside
-        previous = current
-    return inside
-
-
-def _point_on_segment(point: _Point, start: _Point, end: _Point) -> bool:
-    """Treat tiny float drift on a room edge as inside the room."""
-    x, y = point
-    start_x, start_y = start
-    end_x, end_y = end
-    length_squared = (end_x - start_x) ** 2 + (end_y - start_y) ** 2
-    if length_squared == 0:
-        return math.hypot(x - start_x, y - start_y) <= 1e-6
-    progress = max(
-        0.0,
-        min(
-            1.0,
-            ((x - start_x) * (end_x - start_x) + (y - start_y) * (end_y - start_y))
-            / length_squared,
-        ),
-    )
-    nearest_x = start_x + progress * (end_x - start_x)
-    nearest_y = start_y + progress * (end_y - start_y)
-    return math.hypot(x - nearest_x, y - nearest_y) <= 1e-6
 
 
 def _layout_room_labels(
