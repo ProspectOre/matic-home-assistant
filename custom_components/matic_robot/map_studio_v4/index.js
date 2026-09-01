@@ -216,7 +216,7 @@ import{A as D,B as ze,C as fe,a as Ft,b as Bt,c as qt,d as Wt,e as Kt,f as Y,g a
     .quick-copy { min-inline-size: 0; }
     .quick-copy strong, .quick-copy small { display: block; }
     .quick-copy strong { font-size: 0.82rem; font-weight: 720; }
-    .quick-copy small { margin-block-start: 0.18rem; color: var(--secondary-text-color, #687984); font-size: 0.7rem; line-height: 1.35; }
+    .quick-copy small { margin-block-start: 0.18rem; color: var(--primary-text-color, #263238); font-size: 0.7rem; font-weight: 500; line-height: 1.35; }
     .quick-arrow { color: var(--secondary-text-color, #687984); font-size: 1rem; }
     .room-list { display: grid; gap: 0.5rem; }
     .room-row { display: flex; align-items: center; gap: 0.65rem; padding-inline: 0.8rem; font-size: 0.8rem; }

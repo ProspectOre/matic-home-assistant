@@ -30,6 +30,13 @@ export interface CameraOrigin {
   readonly yPercent: number;
 }
 
+interface ViewportBounds {
+  readonly width: number;
+  readonly height: number;
+  readonly left: number;
+  readonly top: number;
+}
+
 interface RendererCallbacks {
   readonly onCamera?: (
     camera: CameraState,
@@ -188,6 +195,7 @@ export class RendererController {
   #lastFrameMs = 0;
   #slowFrames = 0;
   #qualityScale = 1;
+  #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #disposed = false;
 
   constructor(
@@ -203,7 +211,6 @@ export class RendererController {
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
-      this.#resize();
       this.requestRender();
     });
     this.#resizeObserver.observe(sceneCanvas);
@@ -378,7 +385,7 @@ export class RendererController {
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
     this.#homeThree = this.#radius * 1.72;
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
+    const bounds = this.#measureViewport();
     const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
     this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
     this.fit(false);
@@ -445,8 +452,19 @@ export class RendererController {
     this.#fallbackFrame = null;
   }
 
-  #resize(): void {
+  #measureViewport(): ViewportBounds {
     const bounds = this.#sceneCanvas.getBoundingClientRect();
+    this.#viewport = {
+      width: bounds.width,
+      height: bounds.height,
+      left: bounds.left,
+      top: bounds.top,
+    };
+    return this.#viewport;
+  }
+
+  #resize(): void {
+    const bounds = this.#measureViewport();
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
     const width = Math.max(1, Math.round(bounds.width * ratio));
     const height = Math.max(1, Math.round(bounds.height * ratio));
@@ -459,7 +477,7 @@ export class RendererController {
   }
 
   #cameraMatrix(): Float32Array {
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
+    const bounds = this.#viewport;
     const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
     const horizontal = Math.cos(this.#camera.pitch) * this.#camera.distance;
     const eye = [
@@ -566,7 +584,7 @@ export class RendererController {
     const xNormalized = clipX / clipW;
     const yNormalized = clipY / clipW;
     if (Math.abs(xNormalized) > 1.15 || Math.abs(yNormalized) > 1.15) return null;
-    const bounds = this.#overlayCanvas.getBoundingClientRect();
+    const bounds = this.#viewport;
     return {
       x: (xNormalized * 0.5 + 0.5) * bounds.width,
       y: (-yNormalized * 0.5 + 0.5) * bounds.height,
@@ -587,7 +605,7 @@ export class RendererController {
     const state = this.#state;
     if (!context) return;
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
-    const bounds = this.#overlayCanvas.getBoundingClientRect();
+    const bounds = this.#viewport;
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
     if (!scene || !state) return;
@@ -706,7 +724,7 @@ export class RendererController {
   screenToMap(clientX: number, clientY: number): MapPoint | null {
     const scene = this.#scene;
     if (!scene || !this.#camera.orthographic) return null;
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
+    const bounds = this.#measureViewport();
     if (!bounds.width || !bounds.height) return null;
     const worldPerPixel = this.#camera.distance * 2 / bounds.height;
     const worldX = this.#camera.targetX + (clientX - bounds.left - bounds.width / 2) * worldPerPixel;
@@ -780,7 +798,7 @@ export class RendererController {
   }
 
   panBy(deltaX: number, deltaY: number): void {
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
+    const bounds = this.#viewport;
     const worldPerPixel = this.#camera.distance * 2 / Math.max(1, bounds.height);
     const rightX = Math.cos(this.#camera.yaw);
     const rightZ = -Math.sin(this.#camera.yaw);
@@ -819,7 +837,9 @@ export class RendererController {
 
   #notifyCamera(clientX?: number, clientY?: number): void {
     const home = this.#camera.orthographic ? this.#homeTop : this.#homeThree;
-    const bounds = this.#sceneCanvas.getBoundingClientRect();
+    const bounds = clientX === undefined || clientY === undefined
+      ? this.#viewport
+      : this.#measureViewport();
     const origin = clientX === undefined || clientY === undefined || !bounds.width || !bounds.height
       ? undefined
       : {

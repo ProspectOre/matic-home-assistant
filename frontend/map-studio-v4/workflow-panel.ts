@@ -106,7 +106,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     .toolbar .primary { color: white; border-color: var(--primary-color, #0678ce); background: var(--primary-color, #0678ce); }
     .checkbox { display: flex; align-items: center; gap: 0.5rem; min-block-size: 2.75rem; font-size: 0.76rem; font-weight: 650; }
     .checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
-    .floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: var(--secondary-text-color, #687984); }
+    .floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: var(--primary-text-color, #263238); font-weight: 500; }
     .timeline { display: grid; gap: 0.55rem; }
     .timeline input[type="range"] { inline-size: 100%; min-block-size: 2.75rem; }
     .diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem 0.7rem; margin: 0; font-size: 0.75rem; }

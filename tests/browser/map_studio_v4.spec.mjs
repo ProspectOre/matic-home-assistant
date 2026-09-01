@@ -425,6 +425,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await expect(gallery.getByRole("heading", { name: "Start cleaning" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Choose floor: House" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Plans Run or edit a saved routine/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Custom areas Use or draw a precise outline/ })).toBeVisible();
@@ -434,6 +435,94 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ }).click();
     await expect(gallery.getByRole("heading", { name: "Choose rooms" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Choose rooms", exact: true })).toBeDisabled();
+  });
+
+  test("keeps first-use supporting copy at AA contrast in light and dark themes", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+
+    const contrastRatios = async (selector) => gallery.locator(selector).evaluateAll((elements) => {
+      const channel = (value) => {
+        const normalized = value / 255;
+        return normalized <= 0.04045
+          ? normalized / 12.92
+          : ((normalized + 0.055) / 1.055) ** 2.4;
+      };
+      const luminance = (color) => {
+        const values = color.match(/[\d.]+/g)?.slice(0, 3).map(Number) ?? [0, 0, 0];
+        const rgb = color.startsWith("color(srgb") ? values.map((value) => value * 255) : values;
+        return 0.2126 * channel(rgb[0]) + 0.7152 * channel(rgb[1]) + 0.0722 * channel(rgb[2]);
+      };
+      return elements.map((element) => {
+        const foreground = luminance(getComputedStyle(element).color);
+        const background = luminance(getComputedStyle(element.closest("button")).backgroundColor);
+        return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
+      });
+    });
+
+    expect(Math.min(...await contrastRatios(".quick-copy small"))).toBeGreaterThanOrEqual(4.5);
+    expect(Math.min(...await contrastRatios(".floor-chip"))).toBeGreaterThanOrEqual(4.5);
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    expect(Math.min(...await contrastRatios(".list-button small"))).toBeGreaterThanOrEqual(4.5);
+    await gallery.evaluate((element) => element.setScenario("ready"));
+    await gallery.evaluate((element) => {
+      element.style.setProperty("--card-background-color", "#11181c");
+      element.style.setProperty("--secondary-background-color", "#192126");
+      element.style.setProperty("--primary-text-color", "#f1f5f7");
+      element.style.setProperty("--secondary-text-color", "#a8b5bc");
+      element.style.setProperty("--primary-color", "#42a5f5");
+    });
+    expect(Math.min(...await contrastRatios(".quick-copy small"))).toBeGreaterThanOrEqual(4.5);
+    expect(Math.min(...await contrastRatios(".floor-chip"))).toBeGreaterThanOrEqual(4.5);
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    expect(Math.min(...await contrastRatios(".list-button small"))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("responds within one interaction budget and reads canvas geometry once per frame", async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => {
+      const original = HTMLCanvasElement.prototype.getBoundingClientRect;
+      window.__canvasRectReads = 0;
+      HTMLCanvasElement.prototype.getBoundingClientRect = function measuredBounds() {
+        window.__canvasRectReads += 1;
+        return original.call(this);
+      };
+    });
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async (tag) => {
+      await customElements.whenDefined(tag);
+      const gallery = document.createElement(tag);
+      gallery.controls = false;
+      gallery.scenario = "ready";
+      document.body.style.margin = "0";
+      document.body.append(gallery);
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      window.__canvasRectReads = 0;
+    }, GALLERY_TAG);
+    const gallery = page.locator(GALLERY_TAG);
+
+    const geometryReads = await gallery.evaluate(async (element) => {
+      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
+      const map = shell.shadowRoot.querySelector("matic-map-canvas-v4");
+      window.__canvasRectReads = 0;
+      map.shadowRoot.querySelector(".map-tools button").click();
+      await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      return window.__canvasRectReads;
+    });
+    expect(geometryReads).toBeLessThanOrEqual(2);
+
+    const response = await gallery.evaluate(async (element) => {
+      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
+      const rooms = shell.shadowRoot.querySelector(".quick-actions button");
+      const started = performance.now();
+      rooms.click();
+      await shell.updateComplete;
+      return {
+        duration: performance.now() - started,
+        workflow: element.getWorkspaceSnapshot().workflow,
+      };
+    });
+    expect(response.workflow).toBe("rooms");
+    expect(response.duration).toBeLessThan(100);
   });
 
   test("clears a drawn area reversibly and exposes official cleaning-mode wording", async ({ page }) => {

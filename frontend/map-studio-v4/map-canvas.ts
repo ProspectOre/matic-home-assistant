@@ -98,6 +98,7 @@ export class MaticMapCanvasV4 extends LitElement {
       min-block-size: 2.75rem;
       padding-inline: 0.8rem;
       border-radius: 1.5rem;
+      color: var(--primary-text-color, #1f2933);
       font-size: 0.82rem;
       font-weight: 650;
     }
@@ -549,7 +550,7 @@ export class MaticMapCanvasV4 extends LitElement {
           <button
             class="floor-chip"
             type="button"
-            aria-label=${this.#t("v4_choose_floor", "Choose floor")}
+            aria-label=${`${this.#t("v4_choose_floor", "Choose floor")}: ${state.floor.displayName}`}
             @click=${() => this.#intent({ type: "open-workflow", workflow: "history" })}
           >
             <span>${state.floor.displayName}</span>
