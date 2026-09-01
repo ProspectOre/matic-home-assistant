@@ -297,6 +297,19 @@ test.describe("Map Studio v0.4 foundation", () => {
       .getByRole("button", { name: "Delete plan", exact: true }).click();
     await expect(gallery.getByRole("dialog", { name: "Delete this plan?" })).toHaveCount(0);
     expect(await page.evaluate(() => window.__mapStudioActions)).toEqual(["delete-plan"]);
+
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const galleryElement = document.querySelector(tag);
+      galleryElement.replaceWorkspaceState({
+        ...module.createGalleryState("draw"),
+        workflow: "areaReview",
+      });
+    }, GALLERY_TAG);
+    const deleteArea = gallery.getByRole("button", { name: "Delete area" });
+    await deleteArea.click();
+    await gallery.getByRole("button", { name: "Cancel" }).click();
+    await expect(deleteArea).toBeFocused();
   });
 
   test("preserves Draw state through Full map and restores focus in Escape order", async ({ page }) => {

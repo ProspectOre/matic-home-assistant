@@ -625,13 +625,22 @@ export class MaticMapShellV4 extends LitElement {
         this.#precisionLauncher?.focus();
       }
       if (!previous?.dialog && this.state.dialog) {
-        this.#dialogLauncher = deepActiveElement(this.shadowRoot || document);
+        const active = deepActiveElement(this.shadowRoot || document);
+        if (active?.hasAttribute("data-dialog-launcher")) this.#dialogLauncher = active;
         void this.updateComplete.then(() => {
           this.renderRoot.querySelector<HTMLElement>(".dialog button")?.focus();
         });
       } else if (previous?.dialog && !this.state.dialog) {
-        this.#dialogLauncher?.focus();
+        // Safari does not focus a button on a pointing-device click. Use the
+        // explicit workflow launcher if there was no nested active element.
+        const launcher = this.#dialogLauncher?.isConnected
+          && this.#dialogLauncher.hasAttribute("data-dialog-launcher")
+          ? this.#dialogLauncher
+          : this.#dialogLauncherFor(previous.dialog);
         this.#dialogLauncher = null;
+        void this.updateComplete.then(() => {
+          requestAnimationFrame(() => launcher?.focus({ preventScroll: true }));
+        });
       }
       if (!previous || previous.workflow !== this.state.workflow) {
         this._sheetDetent = "half";
@@ -679,7 +688,17 @@ export class MaticMapShellV4 extends LitElement {
 
   #keepDraft(): void {
     this.#pendingWorkflow = null;
+    this.#dismissDialog();
+  }
+
+  #dismissDialog(): void {
+    const dialog = this.state.dialog;
+    const launcher = dialog && this.#dialogLauncher?.isConnected
+      && this.#dialogLauncher.hasAttribute("data-dialog-launcher")
+      ? this.#dialogLauncher
+      : dialog ? this.#dialogLauncherFor(dialog) : null;
     this.#intent({ type: "dismiss-top-layer" });
+    if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
   #dispatchAction(id: string): void {
@@ -760,6 +779,23 @@ export class MaticMapShellV4 extends LitElement {
     });
   }
 
+  #captureDialogLauncher(event: Event): void {
+    const intent = event as CustomEvent<WorkspaceIntent>;
+    if (intent.detail?.type !== "open-dialog") return;
+    // Safari does not focus a button when it is clicked with a pointing device.
+    // The composed path may be retargeted, so keep only an explicit launcher.
+    const launcher = intent.composedPath().find((candidate) => candidate instanceof HTMLElement
+      && candidate.hasAttribute("data-dialog-launcher"));
+    if (launcher instanceof HTMLElement) this.#dialogLauncher = launcher;
+  }
+
+  #dialogLauncherFor(dialog: NonNullable<WorkspaceState["dialog"]>): HTMLElement | null {
+    const workflow = this.renderRoot.querySelector<HTMLElement>(WORKFLOW_TAG);
+    return workflow?.shadowRoot?.querySelector<HTMLElement>(
+      `[data-dialog-launcher="${dialog}"]`,
+    ) ?? null;
+  }
+
   #keyboard(event: KeyboardEvent): void {
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key !== "Escape") return;
@@ -831,7 +867,11 @@ export class MaticMapShellV4 extends LitElement {
         </button>
       </div>
     `;
-    return html`<${workflowTag} .state=${state} .localize=${this.localize}></${workflowTag}>`;
+    return html`<${workflowTag}
+      .state=${state}
+      .localize=${this.localize}
+      @matic-workspace-intent=${this.#captureDialogLauncher}
+    ></${workflowTag}>`;
   }
 
   protected override render() {
@@ -1057,7 +1097,7 @@ export class MaticMapShellV4 extends LitElement {
                   type="button"
                   @click=${state.dialog === "discardDraft"
                     ? this.#keepDraft
-                    : () => this.#intent({ type: "dismiss-top-layer" })}
+                    : this.#dismissDialog}
                 >${dialog.cancelLabel}</button>
                 ${dialog.action === null ? nothing : html`
                   <button

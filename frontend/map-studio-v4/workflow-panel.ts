@@ -362,6 +362,7 @@ export class MaticMapWorkflowV4 extends LitElement {
               class="danger"
               type="button"
               aria-label=${this.#t("plan_delete", "Delete plan")}
+              data-dialog-launcher="confirmDeletePlan"
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeletePlan" })}
             >${this.#t("plan_delete", "Delete")}</button>
           ` : nothing}
@@ -429,6 +430,7 @@ export class MaticMapWorkflowV4 extends LitElement {
               class="danger"
               type="button"
               aria-label=${this.#t("area_delete", "Delete area")}
+              data-dialog-launcher="confirmDeleteArea"
               @click=${() => this.#intent({ type: "open-dialog", dialog: "confirmDeleteArea" })}
             >${this.#t("area_delete", "Delete")}</button>
           ` : nothing}
