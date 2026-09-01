@@ -220,6 +220,63 @@ export class RendererController {
     return { ...this.#camera };
   }
 
+  #distanceBounds(): { readonly minimum: number; readonly maximum: number } {
+    return {
+      minimum: Math.max(0.2, this.#radius * 0.04),
+      maximum: this.#radius * 8,
+    };
+  }
+
+  #targetBounds(): { readonly x: number; readonly z: number } {
+    const span = this.#scene?.metadata.span;
+    const meters = this.#scene?.metadata.metersPerCell;
+    if (!span || meters === undefined) return { x: this.#radius, z: this.#radius };
+    return {
+      x: Math.max(0.5, span[0] * meters * 0.55),
+      z: Math.max(0.5, span[1] * meters * 0.55),
+    };
+  }
+
+  setCamera(camera: CameraState, notify = true): void {
+    const distance = this.#distanceBounds();
+    const target = this.#targetBounds();
+    this.#camera = {
+      yaw: angle(camera.yaw),
+      pitch: camera.orthographic
+        ? Math.PI / 2 - 0.018
+        : clamp(camera.pitch, 0.18, 1.38),
+      distance: clamp(camera.distance, distance.minimum, distance.maximum),
+      targetX: clamp(camera.targetX, -target.x, target.x),
+      targetZ: clamp(camera.targetZ, -target.z, target.z),
+      orthographic: camera.orthographic,
+    };
+    this.requestRender();
+    if (notify) this.#notifyCamera();
+  }
+
+  cameraAfterPan(camera: CameraState, deltaX: number, deltaY: number): CameraState {
+    const bounds = this.#measureViewport();
+    const worldPerPixel = camera.distance * 1.75 / Math.max(200, bounds.height);
+    const rightX = Math.cos(camera.yaw);
+    const rightZ = -Math.sin(camera.yaw);
+    const forwardX = -Math.sin(camera.yaw);
+    const forwardZ = -Math.cos(camera.yaw);
+    const target = this.#targetBounds();
+    return {
+      ...camera,
+      targetX: clamp(
+        camera.targetX - deltaX * worldPerPixel * rightX + deltaY * worldPerPixel * forwardX,
+        -target.x,
+        target.x,
+      ),
+      targetZ: clamp(
+        camera.targetZ - deltaX * worldPerPixel * rightZ + deltaY * worldPerPixel * forwardZ,
+        -target.z,
+        target.z,
+      ),
+    };
+  }
+
   setState(state: WorkspaceState): void {
     if (this.#disposed) return;
     const previous = this.#state;
@@ -262,7 +319,7 @@ export class RendererController {
         : { yaw: -Math.PI / 4, pitch: 0.82, distance: home, targetX: 0, targetZ: 0, orthographic: false };
     }
     return {
-      yaw: top ? 0 : preference.yaw,
+      yaw: preference.yaw,
       pitch: top ? Math.PI / 2 - 0.018 : preference.pitch,
       distance: clamp(
         home / clamp(preference.zoom, 0.01, 100),
@@ -782,9 +839,10 @@ export class RendererController {
 
   zoomAt(factor: number, clientX?: number, clientY?: number): void {
     const before = clientX === undefined || clientY === undefined ? null : this.screenToMap(clientX, clientY);
+    const distance = this.#distanceBounds();
     this.#camera = {
       ...this.#camera,
-      distance: clamp(this.#camera.distance / factor, Math.max(0.2, this.#radius * 0.04), this.#radius * 8),
+      distance: clamp(this.#camera.distance / factor, distance.minimum, distance.maximum),
     };
     if (before && clientX !== undefined && clientY !== undefined) {
       const after = this.screenToMap(clientX, clientY);
@@ -801,27 +859,7 @@ export class RendererController {
   }
 
   panBy(deltaX: number, deltaY: number): void {
-    const bounds = this.#viewport;
-    const worldPerPixel = this.#camera.distance * 2 / Math.max(1, bounds.height);
-    const rightX = Math.cos(this.#camera.yaw);
-    const rightZ = -Math.sin(this.#camera.yaw);
-    const forwardX = -Math.sin(this.#camera.yaw);
-    const forwardZ = -Math.cos(this.#camera.yaw);
-    this.#camera = {
-      ...this.#camera,
-      targetX: clamp(
-        this.#camera.targetX - deltaX * worldPerPixel * rightX + deltaY * worldPerPixel * forwardX,
-        -this.#radius,
-        this.#radius,
-      ),
-      targetZ: clamp(
-        this.#camera.targetZ - deltaX * worldPerPixel * rightZ + deltaY * worldPerPixel * forwardZ,
-        -this.#radius,
-        this.#radius,
-      ),
-    };
-    this.requestRender();
-    this.#notifyCamera();
+    this.setCamera(this.cameraAfterPan(this.#camera, deltaX, deltaY));
   }
 
   orbitBy(deltaX: number, deltaY: number): void {

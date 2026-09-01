@@ -400,6 +400,98 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   });
 
+  test("separates trackpad pan, mouse-wheel zoom, pinch zoom, and pitch", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const map = gallery.locator(".map-root");
+    await map.focus();
+
+    await map.dispatchEvent("wheel", { deltaX: 32, deltaY: 18, deltaMode: 0 });
+    await expect.poll(async () => Boolean((await snapshot(page)).cameras.three)).toBe(true);
+    const afterTrackpad = (await snapshot(page)).cameras.three;
+    expect(Math.hypot(afterTrackpad.targetX, afterTrackpad.targetZ)).toBeGreaterThan(0.01);
+    expect(afterTrackpad.zoom).toBeCloseTo(1, 2);
+
+    await map.dispatchEvent("wheel", { deltaX: 0, deltaY: -120, deltaMode: 0 });
+    const afterWheel = (await snapshot(page)).cameras.three;
+    expect(afterWheel.zoom).toBeGreaterThan(afterTrackpad.zoom);
+
+    await map.dispatchEvent("wheel", {
+      deltaX: 0,
+      deltaY: -20,
+      deltaMode: 0,
+      ctrlKey: true,
+      clientX: 240,
+      clientY: 210,
+    });
+    const afterPinch = (await snapshot(page)).cameras.three;
+    expect(afterPinch.zoom).toBeGreaterThan(afterWheel.zoom);
+
+    await map.dispatchEvent("wheel", { deltaX: 0, deltaY: 24, deltaMode: 0, altKey: true });
+    const afterPitch = (await snapshot(page)).cameras.three;
+    expect(afterPitch.pitch).not.toBeCloseTo(afterPinch.pitch, 4);
+  });
+
+  test("supports mouse orbit, modifier pan, double-click zoom, and keyboard flight", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const map = gallery.locator(".map-root");
+    const bounds = await map.boundingBox();
+    expect(bounds).not.toBeNull();
+    const centerX = bounds.x + bounds.width * 0.45;
+    const centerY = bounds.y + bounds.height * 0.48;
+
+    await page.mouse.move(centerX, centerY);
+    await page.mouse.down();
+    await page.mouse.move(centerX + 90, centerY + 45, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => Boolean((await snapshot(page)).cameras.three)).toBe(true);
+    const afterOrbit = (await snapshot(page)).cameras.three;
+    expect(afterOrbit.yaw).not.toBeCloseTo(-Math.PI / 4, 3);
+    expect(afterOrbit.pitch).not.toBeCloseTo(0.82, 3);
+
+    await page.keyboard.down("Shift");
+    await page.mouse.move(centerX, centerY);
+    await page.mouse.down();
+    await page.mouse.move(centerX + 70, centerY - 35, { steps: 4 });
+    await page.mouse.up();
+    await page.keyboard.up("Shift");
+    const afterPan = (await snapshot(page)).cameras.three;
+    expect(Math.hypot(
+      afterPan.targetX - afterOrbit.targetX,
+      afterPan.targetZ - afterOrbit.targetZ,
+    )).toBeGreaterThan(0.01);
+    expect(afterPan.yaw).toBeCloseTo(afterOrbit.yaw, 3);
+
+    const zoomBeforeDoubleClick = afterPan.zoom;
+    await page.mouse.dblclick(centerX, centerY);
+    await expect.poll(async () => (await snapshot(page)).cameras.three.zoom)
+      .toBeGreaterThan(zoomBeforeDoubleClick);
+
+    await map.focus();
+    const beforeKeys = (await snapshot(page)).cameras.three;
+    await page.keyboard.press("w");
+    await page.keyboard.press("q");
+    const afterKeys = (await snapshot(page)).cameras.three;
+    expect(Math.hypot(
+      afterKeys.targetX - beforeKeys.targetX,
+      afterKeys.targetZ - beforeKeys.targetZ,
+    )).toBeGreaterThan(0.01);
+    expect(afterKeys.yaw).not.toBeCloseTo(beforeKeys.yaw, 4);
+  });
+
+  test("makes every navigation model discoverable without covering the map permanently", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    const help = gallery.getByRole("button", { name: "Map navigation help" });
+    await help.click();
+    const panel = gallery.getByRole("complementary", { name: "Map navigation help" });
+    await expect(panel).toContainText("Scroll to pan · pinch to zoom · twist to rotate");
+    await expect(panel).toContainText("Shift, middle, or right drag to pan");
+    await expect(panel).toContainText("WASD to move · Q/E or arrows to orbit");
+    await help.press("Escape");
+    await expect(panel).toHaveCount(0);
+  });
+
   test("keeps workflow navigation and Stop together in the inspector", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "cleaning" });
     await gallery.getByRole("button", { name: /Rooms Pick rooms/ }).click();

@@ -1,6 +1,10 @@
 import type { AreaCircle } from "./backend-contracts";
-import type { WorkspaceState } from "./contracts";
-import { RendererController, type MapPoint } from "./renderer-controller";
+import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import {
+  RendererController,
+  type CameraState,
+  type MapPoint,
+} from "./renderer-controller";
 
 interface GestureCallbacks {
   readonly state: () => WorkspaceState;
@@ -19,6 +23,11 @@ interface PointerRecord {
   startY: number;
   x: number;
   y: number;
+  lastX: number;
+  lastY: number;
+  lastTime: number;
+  velocityX: number;
+  velocityY: number;
 }
 
 const distance = (first: PointerRecord, second: PointerRecord): number =>
@@ -38,6 +47,9 @@ const angleDelta = (value: number): number => {
   while (delta < -Math.PI) delta += Math.PI * 2;
   return delta;
 };
+
+const clamp = (value: number, minimum: number, maximum: number): number =>
+  Math.max(minimum, Math.min(maximum, value));
 
 interface SafariGestureEvent extends Event {
   readonly scale: number;
@@ -66,8 +78,11 @@ export class GestureController {
   #pinchDistance = 0;
   #pinchCenter: MapPoint | null = null;
   #pinchAngle = 0;
-  #gestureScale = 1;
+  #pinchCamera: CameraState | null = null;
+  #dragCamera: CameraState | null = null;
+  #gestureCamera: CameraState | null = null;
   #gestureRotation = 0;
+  #motionFrame: number | null = null;
   #navigationUntilRelease = false;
   #touchArmTimer: number | null = null;
   #disposed = false;
@@ -84,6 +99,8 @@ export class GestureController {
     host.addEventListener("gesturestart", this.#gestureStart as EventListener, { passive: false });
     host.addEventListener("gesturechange", this.#gestureChange as EventListener, { passive: false });
     host.addEventListener("gestureend", this.#gestureEnd as EventListener, { passive: false });
+    host.addEventListener("dblclick", this.#doubleClick);
+    host.addEventListener("contextmenu", this.#contextMenu);
     host.addEventListener("keydown", this.#keyDown);
     host.addEventListener("keyup", this.#keyUp);
     host.addEventListener("blur", this.#blur);
@@ -93,6 +110,8 @@ export class GestureController {
     if (this.#disposed || !event.isPrimary && event.pointerType === "mouse") return;
     if (isInteractiveControl(event.target)) return;
     this.#host.focus({ preventScroll: true });
+    this.#cancelMotion();
+    const now = performance.now();
     const pointer: PointerRecord = {
       id: event.pointerId,
       type: event.pointerType,
@@ -100,6 +119,11 @@ export class GestureController {
       startY: event.clientY,
       x: event.clientX,
       y: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      lastTime: now,
+      velocityX: 0,
+      velocityY: 0,
     };
     this.#pointers.set(event.pointerId, pointer);
     this.#host.setPointerCapture?.(event.pointerId);
@@ -110,12 +134,14 @@ export class GestureController {
         this.#callbacks.onCircles(this.#draft, false);
       }
       this.#mode = "pinch";
+      this.#host.classList.add("navigating");
       this.#navigationUntilRelease = true;
       const [first, second] = [...this.#pointers.values()];
       if (first && second) {
         this.#pinchDistance = Math.max(1, distance(first, second));
         this.#pinchCenter = midpoint(first, second);
         this.#pinchAngle = angle(first, second);
+        this.#pinchCamera = this.#renderer.camera;
       }
       event.preventDefault();
       return;
@@ -125,9 +151,11 @@ export class GestureController {
     const navigation = this.#navigationUntilRelease
       || this.#spacePressed
       || event.button === 1
+      || event.button === 2
       || state.draw.tool === "pan";
     if (navigation) {
       this.#mode = "pan";
+      this.#dragCamera = this.#renderer.camera;
     } else if (drawing && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       this.#baseline = cloneCircles(state.draw.circles);
       this.#draft = cloneCircles(state.draw.circles);
@@ -146,7 +174,9 @@ export class GestureController {
       }
     } else {
       this.#mode = state.view === "three" && !event.shiftKey ? "orbit" : "pan";
+      this.#dragCamera = this.#renderer.camera;
     }
+    if (this.#mode === "pan" || this.#mode === "orbit") this.#host.classList.add("navigating");
     event.preventDefault();
   };
 
@@ -157,35 +187,60 @@ export class GestureController {
       this.#renderer.setCursor(map);
       return;
     }
-    const previousX = pointer.x;
-    const previousY = pointer.y;
-    pointer.x = event.clientX;
-    pointer.y = event.clientY;
+    const samples = event.getCoalescedEvents?.() || [];
+    const sample = samples.at(-1) || event;
+    const now = performance.now();
+    const elapsed = Math.max(1, now - pointer.lastTime);
+    const instantaneousX = (sample.clientX - pointer.lastX) / elapsed;
+    const instantaneousY = (sample.clientY - pointer.lastY) / elapsed;
+    pointer.velocityX = pointer.velocityX * 0.62 + instantaneousX * 0.38;
+    pointer.velocityY = pointer.velocityY * 0.62 + instantaneousY * 0.38;
+    pointer.lastX = sample.clientX;
+    pointer.lastY = sample.clientY;
+    pointer.lastTime = now;
+    pointer.x = sample.clientX;
+    pointer.y = sample.clientY;
     if (this.#mode === "pinch" && this.#pointers.size >= 2) {
       const [first, second] = [...this.#pointers.values()];
       if (!first || !second) return;
       const nextDistance = Math.max(1, distance(first, second));
       const nextCenter = midpoint(first, second);
-      this.#renderer.zoomAt(nextDistance / this.#pinchDistance, nextCenter.x, nextCenter.y);
       const nextAngle = angle(first, second);
-      this.#renderer.rotateBy(angleDelta(nextAngle - this.#pinchAngle));
-      if (this.#pinchCenter) {
-        this.#renderer.panBy(nextCenter.x - this.#pinchCenter.x, nextCenter.y - this.#pinchCenter.y);
+      const start = this.#pinchCamera;
+      if (start && this.#pinchCenter) {
+        const transformed: CameraState = {
+          ...start,
+          distance: start.distance * this.#pinchDistance / nextDistance,
+          yaw: start.yaw + angleDelta(nextAngle - this.#pinchAngle),
+          pitch: start.orthographic
+            ? start.pitch
+            : start.pitch - (nextCenter.y - this.#pinchCenter.y) * 0.0035,
+        };
+        this.#renderer.setCamera(this.#renderer.cameraAfterPan(
+          transformed,
+          nextCenter.x - this.#pinchCenter.x,
+          nextCenter.y - this.#pinchCenter.y,
+        ));
       }
-      this.#pinchDistance = nextDistance;
-      this.#pinchCenter = nextCenter;
-      this.#pinchAngle = nextAngle;
       event.preventDefault();
       return;
     }
     if (this.#mode === "paint" || this.#mode === "erase") {
       this.#applyBrush(event.clientX, event.clientY);
     } else if (this.#mode === "pan") {
-      this.#renderer.panBy(event.clientX - previousX, event.clientY - previousY);
+      if (this.#dragCamera) this.#renderer.setCamera(this.#renderer.cameraAfterPan(
+        this.#dragCamera,
+        sample.clientX - pointer.startX,
+        sample.clientY - pointer.startY,
+      ));
     } else if (this.#mode === "orbit") {
-      this.#renderer.orbitBy(event.clientX - previousX, event.clientY - previousY);
+      if (this.#dragCamera) this.#renderer.setCamera({
+        ...this.#dragCamera,
+        yaw: this.#dragCamera.yaw + (sample.clientX - pointer.startX) * 0.0045,
+        pitch: this.#dragCamera.pitch - (sample.clientY - pointer.startY) * 0.004,
+      });
     }
-    const map = this.#renderer.screenToMap(event.clientX, event.clientY);
+    const map = this.#renderer.screenToMap(sample.clientX, sample.clientY);
     this.#renderer.setCursor(map);
     event.preventDefault();
   };
@@ -193,6 +248,7 @@ export class GestureController {
   readonly #pointerUp = (event: PointerEvent): void => {
     const pointer = this.#pointers.get(event.pointerId);
     if (!pointer) return;
+    const completedMode = this.#mode;
     this.#pointers.delete(event.pointerId);
     this.#host.releasePointerCapture?.(event.pointerId);
     this.#cancelTouchArm();
@@ -208,12 +264,28 @@ export class GestureController {
     }
     if (this.#pointers.size === 0) {
       this.#mode = "idle";
+      this.#host.classList.remove("navigating");
       this.#navigationUntilRelease = false;
       this.#pinchCenter = null;
+      this.#pinchCamera = null;
+      this.#dragCamera = null;
       this.#lastMapPoint = null;
+      if ((completedMode === "pan" || completedMode === "orbit")
+        && pointer.type !== "mouse") {
+        this.#startInertia(pointer.velocityX, pointer.velocityY, completedMode);
+      }
     } else if (this.#mode === "pinch") {
       this.#mode = "pan";
       this.#navigationUntilRelease = true;
+      const remaining = this.#pointers.values().next().value as PointerRecord | undefined;
+      if (remaining) {
+        remaining.startX = remaining.x;
+        remaining.startY = remaining.y;
+        remaining.velocityX = 0;
+        remaining.velocityY = 0;
+      }
+      this.#dragCamera = this.#renderer.camera;
+      this.#pinchCamera = null;
     }
     event.preventDefault();
   };
@@ -252,49 +324,70 @@ export class GestureController {
   }
 
   readonly #wheel = (event: WheelEvent): void => {
-    // Safari and Chromium expose a trackpad pinch as a cancelable Ctrl+wheel
-    // gesture. The map owns gestures that start over its canvas; Command/Alt
-    // modifiers remain available to the browser and assistive technology.
-    if (event.metaKey || event.altKey) return;
     if (isInteractiveControl(event.target)) return;
     event.preventDefault();
-    if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.7 && Math.abs(event.deltaX) < 50) {
-      this.#renderer.panBy(-event.deltaX, -event.deltaY);
+    this.#host.focus({ preventScroll: true });
+    this.#cancelMotion();
+    const unit = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+      ? 16
+      : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? Math.max(1, this.#host.clientHeight)
+        : 1;
+    const deltaX = event.deltaX * unit;
+    const deltaY = event.deltaY * unit;
+    if (event.ctrlKey || event.metaKey) {
+      this.#renderer.zoomAt(
+        Math.exp(clamp(-deltaY * 0.008, -0.28, 0.28)),
+        event.clientX,
+        event.clientY,
+      );
       return;
     }
-    this.#renderer.zoomAt(
-      Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)),
-      event.clientX,
-      event.clientY,
-    );
+    if (event.altKey && this.#callbacks.state().view === "three") {
+      this.#renderer.orbitBy(0, clamp(deltaY, -80, 80) * 0.75);
+      return;
+    }
+    const mouseWheel = event.deltaMode !== WheelEvent.DOM_DELTA_PIXEL
+      || (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) >= 50);
+    if (mouseWheel) {
+      this.#renderer.zoomAt(
+        Math.exp(clamp(-deltaY * 0.0025, -0.28, 0.28)),
+        event.clientX,
+        event.clientY,
+      );
+      return;
+    }
+    this.#renderer.panBy(-clamp(deltaX, -80, 80), -clamp(deltaY, -80, 80));
   };
 
   readonly #gestureStart = (event: SafariGestureEvent): void => {
     if (this.#disposed || isInteractiveControl(event.target)) return;
     this.#host.focus({ preventScroll: true });
-    this.#gestureScale = Number.isFinite(event.scale) ? event.scale : 1;
+    this.#cancelMotion();
+    this.#host.classList.add("navigating");
+    this.#gestureCamera = this.#renderer.camera;
     this.#gestureRotation = Number.isFinite(event.rotation) ? event.rotation : 0;
     event.preventDefault();
   };
 
   readonly #gestureChange = (event: SafariGestureEvent): void => {
     if (this.#disposed || isInteractiveControl(event.target)) return;
-    const scale = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : 1;
+    const start = this.#gestureCamera;
+    if (!start || this.#pointers.size >= 2) return;
+    const scale = Number.isFinite(event.scale) && event.scale > 0 ? Math.max(0.1, event.scale) : 1;
     const rotation = Number.isFinite(event.rotation) ? event.rotation : 0;
-    this.#renderer.zoomAt(
-      scale / Math.max(0.01, this.#gestureScale),
-      event.clientX,
-      event.clientY,
-    );
-    this.#renderer.rotateBy((rotation - this.#gestureRotation) * Math.PI / 180);
-    this.#gestureScale = scale;
-    this.#gestureRotation = rotation;
+    this.#renderer.setCamera({
+      ...start,
+      distance: start.distance / scale,
+      yaw: start.yaw + (rotation - this.#gestureRotation) * Math.PI / 180,
+    });
     event.preventDefault();
   };
 
   readonly #gestureEnd = (event: SafariGestureEvent): void => {
-    this.#gestureScale = 1;
+    this.#gestureCamera = null;
     this.#gestureRotation = 0;
+    this.#host.classList.remove("navigating");
     event.preventDefault();
   };
 
@@ -305,32 +398,38 @@ export class GestureController {
       event.preventDefault();
       return;
     }
+    this.#cancelMotion();
+    const state = this.#callbacks.state();
+    const key = event.key.toLocaleLowerCase();
     if (event.key === "+" || event.key === "=") this.#renderer.zoomAt(1.25);
     else if (event.key === "-") this.#renderer.zoomAt(0.8);
     else if (event.key === "0") this.#renderer.fit();
-    else if (event.key === "[") this.#renderer.orbitBy(-52, 0);
-    else if (event.key === "]") this.#renderer.orbitBy(52, 0);
+    else if (key === "3") this.#dispatch({ type: "set-view", view: "three" });
+    else if (key === "t") this.#dispatch({ type: "set-view", view: "top" });
+    else if (event.key === "[") this.#renderer.orbitBy(-40, 0);
+    else if (event.key === "]") this.#renderer.orbitBy(40, 0);
     else if (event.key === "PageUp") this.#renderer.orbitBy(0, -30);
     else if (event.key === "PageDown") this.#renderer.orbitBy(0, 30);
-    else if (event.key.toLocaleLowerCase() === "d"
-      && this.#callbacks.state().workflow === "draw") {
-      this.#host.dispatchEvent(new CustomEvent("matic-workspace-intent", {
-        detail: { type: "set-draw-tool", tool: "paint" },
-        bubbles: true,
-        composed: true,
-      }));
-    } else if (event.key.toLocaleLowerCase() === "e"
-      && this.#callbacks.state().workflow === "draw") {
-      this.#host.dispatchEvent(new CustomEvent("matic-workspace-intent", {
-        detail: { type: "set-draw-tool", tool: "erase" },
-        bubbles: true,
-        composed: true,
-      }));
+    else if (key === "d" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "paint" });
+    else if (key === "e" && state.workflow === "draw") this.#dispatch({ type: "set-draw-tool", tool: "erase" });
+    else if (["arrowleft", "arrowright", "arrowup", "arrowdown"].includes(key)) {
+      if (state.view === "three" && !event.shiftKey) {
+        const horizontal = key === "arrowleft" ? -24 : key === "arrowright" ? 24 : 0;
+        const vertical = key === "arrowup" ? -20 : key === "arrowdown" ? 20 : 0;
+        this.#renderer.orbitBy(horizontal, vertical);
+      } else {
+        const horizontal = key === "arrowleft" ? 30 : key === "arrowright" ? -30 : 0;
+        const vertical = key === "arrowup" ? 30 : key === "arrowdown" ? -30 : 0;
+        this.#renderer.panBy(horizontal, vertical);
+      }
+    } else if (state.workflow !== "draw" && ["w", "a", "s", "d"].includes(key)) {
+      this.#renderer.panBy(
+        key === "a" ? 34 : key === "d" ? -34 : 0,
+        key === "w" ? 34 : key === "s" ? -34 : 0,
+      );
+    } else if (state.workflow !== "draw" && (key === "q" || key === "e")) {
+      this.#renderer.orbitBy(key === "q" ? -30 : 30, 0);
     }
-    else if (event.key === "ArrowLeft") this.#renderer.panBy(30, 0);
-    else if (event.key === "ArrowRight") this.#renderer.panBy(-30, 0);
-    else if (event.key === "ArrowUp") this.#renderer.panBy(0, 30);
-    else if (event.key === "ArrowDown") this.#renderer.panBy(0, -30);
     else return;
     event.preventDefault();
   };
@@ -343,7 +442,52 @@ export class GestureController {
     this.#spacePressed = false;
     this.#cancelTouchArm();
     this.#renderer.setCursor(null);
+    this.#host.classList.remove("navigating");
   };
+
+  readonly #doubleClick = (event: MouseEvent): void => {
+    if (isInteractiveControl(event.target)) return;
+    this.#cancelMotion();
+    this.#renderer.zoomAt(event.shiftKey ? 1 / 1.6 : 1.6, event.clientX, event.clientY);
+    event.preventDefault();
+  };
+
+  readonly #contextMenu = (event: MouseEvent): void => {
+    if (!isInteractiveControl(event.target)) event.preventDefault();
+  };
+
+  #dispatch(intent: WorkspaceIntent): void {
+    this.#host.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+      detail: intent,
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
+  #startInertia(velocityX: number, velocityY: number, mode: "pan" | "orbit"): void {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    let x = clamp(velocityX, -0.55, 0.55);
+    let y = clamp(velocityY, -0.55, 0.55);
+    if (Math.hypot(x, y) < 0.02) return;
+    let last = performance.now();
+    const step = (now: number): void => {
+      const elapsed = Math.min(32, now - last);
+      last = now;
+      if (mode === "orbit") this.#renderer.orbitBy(x * elapsed, y * elapsed);
+      else this.#renderer.panBy(x * elapsed, y * elapsed);
+      const decay = 0.9 ** (elapsed / 16);
+      x *= decay;
+      y *= decay;
+      if (Math.hypot(x, y) >= 0.01) this.#motionFrame = window.requestAnimationFrame(step);
+      else this.#motionFrame = null;
+    };
+    this.#motionFrame = window.requestAnimationFrame(step);
+  }
+
+  #cancelMotion(): void {
+    if (this.#motionFrame !== null) window.cancelAnimationFrame(this.#motionFrame);
+    this.#motionFrame = null;
+  }
 
   #cancelTouchArm(): void {
     if (this.#touchArmTimer !== null) window.clearTimeout(this.#touchArmTimer);
@@ -354,6 +498,7 @@ export class GestureController {
     if (this.#disposed) return;
     this.#disposed = true;
     this.#cancelTouchArm();
+    this.#cancelMotion();
     this.#host.removeEventListener("pointerdown", this.#pointerDown);
     this.#host.removeEventListener("pointermove", this.#pointerMove);
     this.#host.removeEventListener("pointerup", this.#pointerUp);
@@ -362,6 +507,8 @@ export class GestureController {
     this.#host.removeEventListener("gesturestart", this.#gestureStart as EventListener);
     this.#host.removeEventListener("gesturechange", this.#gestureChange as EventListener);
     this.#host.removeEventListener("gestureend", this.#gestureEnd as EventListener);
+    this.#host.removeEventListener("dblclick", this.#doubleClick);
+    this.#host.removeEventListener("contextmenu", this.#contextMenu);
     this.#host.removeEventListener("keydown", this.#keyDown);
     this.#host.removeEventListener("keyup", this.#keyUp);
     this.#host.removeEventListener("blur", this.#blur);

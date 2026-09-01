@@ -64,8 +64,15 @@ export class MaticMapCanvasV4 extends LitElement {
       isolation: isolate;
       background: var(--secondary-background-color, #edf2f4);
       touch-action: none;
+      cursor: grab;
       container-type: inline-size;
     }
+
+    .map-root.navigating { cursor: grabbing; }
+    .map-root[data-workflow="draw"][data-draw-tool="paint"],
+    .map-root[data-workflow="draw"][data-draw-tool="erase"] { cursor: crosshair; }
+    .map-root[data-workflow="draw"][data-draw-tool="pan"] { cursor: grab; }
+    .map-root[data-workflow="draw"][data-draw-tool="pan"].navigating { cursor: grabbing; }
 
     .map-root:focus-visible {
       outline: 3px solid var(--primary-color, #03a9f4);
@@ -94,6 +101,25 @@ export class MaticMapCanvasV4 extends LitElement {
       padding: 0.2rem;
       border-radius: 0.85rem;
     }
+
+    .navigation-help {
+      position: absolute;
+      z-index: 5;
+      inset-block-start: 4.25rem;
+      inset-inline-end: 0.75rem;
+      inline-size: min(22rem, calc(100% - 1.5rem));
+      padding: 0.8rem 0.9rem;
+      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
+      border-radius: 0.8rem;
+      color: var(--primary-text-color, #263238);
+      background: var(--card-background-color, rgb(255 255 255 / 98%));
+      box-shadow: 0 10px 26px rgb(31 41 51 / 18%);
+      font-size: 0.74rem;
+      line-height: 1.45;
+    }
+    .navigation-help dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.65rem; margin: 0; }
+    .navigation-help dt { font-weight: 750; }
+    .navigation-help dd { margin: 0; color: var(--secondary-text-color, #687984); }
 
     .map-tools button,
     .view-switch button,
@@ -362,6 +388,7 @@ export class MaticMapCanvasV4 extends LitElement {
   #fullMapLauncher: HTMLElement | null = null;
   #renderer: RendererController | null = null;
   #gestures: GestureController | null = null;
+  #navigationHelp = false;
 
   #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
     return translate(this.localize, key, fallback, placeholders);
@@ -455,6 +482,11 @@ export class MaticMapCanvasV4 extends LitElement {
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Escape") {
       event.preventDefault();
+      if (this.#navigationHelp) {
+        this.#navigationHelp = false;
+        this.requestUpdate();
+        return;
+      }
       this.#intent({ type: "dismiss-top-layer" });
       return;
     }
@@ -514,6 +546,7 @@ export class MaticMapCanvasV4 extends LitElement {
         aria-label=${describeMap(state, this.localize)}
         data-full-map=${String(state.fullMap)}
         data-workflow=${state.workflow}
+        data-draw-tool=${state.draw.tool}
         @keydown=${this.#keyboard}
       >
         ${!locating || state.fullMap ? html`<nav class="map-tools" aria-label="Map tools">
@@ -528,6 +561,16 @@ export class MaticMapCanvasV4 extends LitElement {
               aria-pressed=${String(state.labelsVisible)}
               @click=${() => this.#intent({ type: "toggle-labels" })}
             >${this.#t("map_labels", "Labels")}</button>
+            <button
+              class="help"
+              type="button"
+              aria-label=${this.#t("v4_navigation_help", "Map navigation help")}
+              aria-expanded=${String(this.#navigationHelp)}
+              @click=${() => {
+                this.#navigationHelp = !this.#navigationHelp;
+                this.requestUpdate();
+              }}
+            >?</button>
           ` : nothing}
           <button
             class="full-map"
@@ -537,6 +580,19 @@ export class MaticMapCanvasV4 extends LitElement {
             @click=${this.#toggleFullMap}
           >${state.fullMap ? this.#t("v4_close", "Close") : this.#t("v4_full_map", "Full map")}</button>
         </nav>` : nothing}
+
+        ${this.#navigationHelp && showScene ? html`
+          <aside class="navigation-help" aria-label=${this.#t("v4_navigation_help", "Map navigation help")}>
+            <dl>
+              <dt>${this.#t("v4_trackpad", "Trackpad")}</dt>
+              <dd>${this.#t("v4_trackpad_help", "Scroll to pan · pinch to zoom · twist to rotate")}</dd>
+              <dt>${this.#t("v4_mouse", "Mouse")}</dt>
+              <dd>${this.#t("v4_mouse_help", "Drag to orbit · Shift, middle, or right drag to pan · wheel to zoom")}</dd>
+              <dt>${this.#t("v4_keyboard", "Keyboard")}</dt>
+              <dd>${this.#t("v4_keyboard_help", "WASD to move · Q/E or arrows to orbit · +/− to zoom · 0 to fit")}</dd>
+            </dl>
+          </aside>
+        ` : nothing}
 
         ${state.workflow !== "draw" && showScene ? html`
           <div class="view-switch" aria-label="Map view">
