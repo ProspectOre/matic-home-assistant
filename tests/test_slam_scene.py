@@ -1782,6 +1782,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         mapped_floors=(
             MappedFloor(1, "Main", current_token),
             MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+            MappedFloor(3, "Annex", "2" * 64),
         ),
     )
     runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
@@ -1854,6 +1855,14 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                     }
                 ],
             },
+            {
+                "id": "saved-2",
+                "active": False,
+                "read_only": True,
+                "ordinal": 2,
+                "label": "Annex",
+                "snapshots": [],
+            },
         ],
     }
     response = await MaticSlamHistorySceneView().get(
@@ -1897,6 +1906,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [
         "saved-1",
         "saved-2",
+        "saved-3",
     ]
 
     with pytest.raises(Unauthorized):

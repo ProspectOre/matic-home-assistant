@@ -847,11 +847,16 @@ export class MaticMapShellV4 extends LitElement {
     const floorChoices = historyFloors.length
       ? historyFloors.map((floor, index) => ({
         id: floor.active ? "current" : floor.id,
-        label: floor.label || (floor.active
+        label: `${floor.label || (floor.active
           ? this.#t("v4_current_floor", "Current floor")
-          : this.#t("v4_saved_floor", "Saved floor {number}", { number: floor.ordinal ?? index + 1 })),
+          : this.#t("v4_saved_floor", "Saved floor {number}", { number: floor.ordinal ?? index + 1 }))}${
+          !floor.active && floor.snapshots.length === 0
+            ? ` · ${this.#t("v4_floor_not_captured", "Visit floor to capture")}`
+            : ""
+        }`,
+        disabled: !floor.active && floor.snapshots.length === 0,
       }))
-      : [{ id: state.selection.floorId, label: state.floor.displayName }];
+      : [{ id: state.selection.floorId, label: state.floor.displayName, disabled: false }];
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}`} @keydown=${this.#keyboard}>
         <div class="app">
@@ -887,7 +892,7 @@ export class MaticMapShellV4 extends LitElement {
                 floorId: (event.currentTarget as HTMLSelectElement).value,
               })}
             >${floorChoices.map((floor) => html`
-              <option value=${floor.id}>${floor.label}</option>
+              <option value=${floor.id} ?disabled=${floor.disabled}>${floor.label}</option>
             `)}</select>
             <span class="spacer"></span>
             <span class="header-state">${status.title}</span>

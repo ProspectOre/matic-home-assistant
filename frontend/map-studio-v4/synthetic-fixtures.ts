@@ -186,6 +186,15 @@ export const syntheticHistory = (): HistoryCatalog => ({
         { id: "saved-one", createdAt: "2026-08-28T11:30:00Z", revision: 3, pointCount: 3_100, sceneUrl: "/synthetic-history-saved" },
       ],
     },
+    {
+      id: "saved-2",
+      active: false,
+      readOnly: true,
+      liveAvailable: false,
+      label: "Annex",
+      ordinal: 3,
+      snapshots: [],
+    },
   ],
 });
 

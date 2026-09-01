@@ -613,14 +613,22 @@ class MaticSlamHistoryView(HomeAssistantView):
                 "snapshots": _history_metadata(entry_id, current_snapshots),
             }
         ]
-        saved_ordinal = 0
-        for (
-            mission_token,
-            mission_snapshots,
-        ) in runtime.slam_history.catalogs_by_mission():
-            if mission_token == current_token:
-                continue
-            saved_ordinal += 1
+        history_by_mission = dict(runtime.slam_history.catalogs_by_mission())
+        saved_missions = [
+            mission_token
+            for mission_token in history_by_mission
+            if mission_token != current_token
+        ]
+        saved_missions.extend(
+            mapped_floor.mission_token
+            for mapped_floor in (
+                floor_plan.mapped_floors if floor_plan is not None else ()
+            )
+            if mapped_floor.mission_token != current_token
+            and mapped_floor.mission_token not in history_by_mission
+        )
+        for saved_ordinal, mission_token in enumerate(saved_missions, start=1):
+            mission_snapshots = history_by_mission.get(mission_token, ())
             floors.append(
                 {
                     "id": f"saved-{saved_ordinal}",

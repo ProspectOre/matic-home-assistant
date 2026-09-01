@@ -456,6 +456,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByLabel("Choose robot")).toBeDisabled();
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeVisible();
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeEnabled();
+    await expect(gallery.getByLabel("Choose floor", { exact: true }).locator("option"))
+      .toHaveText(["House", "Shed", "Annex · Visit floor to capture"]);
+    await expect(gallery.getByLabel("Choose floor", { exact: true }).locator('option[value="saved-2"]'))
+      .toBeDisabled();
     await expect(gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Plans Run or edit a saved routine/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Custom areas Use or draw a precise outline/ })).toBeVisible();

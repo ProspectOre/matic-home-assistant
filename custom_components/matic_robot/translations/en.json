@@ -128,6 +128,7 @@
     "v4_cancel": "Cancel",
     "v4_check_robot": "Check the robot",
     "v4_choose_floor": "Choose floor",
+    "v4_floor_not_captured": "Visit floor to capture",
     "v4_choose_robot": "Choose robot",
     "v4_choose_rooms": "Choose rooms",
     "v4_choose_rooms_detail": "Select on the map or from the list.",
