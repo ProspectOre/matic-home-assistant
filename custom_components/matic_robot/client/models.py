@@ -100,14 +100,17 @@ class RobotOperationalState:
     @property
     def activity(self) -> RobotActivity:
         """Return a conservative high-level state without inventing semantics."""
-        if self.error_codes:
-            return RobotActivity.ERROR
-        if self.paused:
+        if self.paused and not self.error_codes:
             return RobotActivity.PAUSED
         if self.returning:
             return RobotActivity.RETURNING
+        # Firmware can retain a non-blocking warning code while it continues an
+        # accepted cleaning mission.  The active task is the primary HA vacuum
+        # activity; ``error_codes`` remains exposed separately as ``problem``.
         if self.cleaning:
             return RobotActivity.CLEANING
+        if self.error_codes:
+            return RobotActivity.ERROR
         if self.charging:
             return RobotActivity.CHARGING
         if self.charging_idle:

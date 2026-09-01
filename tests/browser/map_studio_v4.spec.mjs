@@ -652,6 +652,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         states: {
           "vacuum.first": { state: "docked", attributes: { matic_entry_id: "entry-a", friendly_name: "First" } },
           "vacuum.second": { state: "idle", attributes: { matic_entry_id: "entry-b", friendly_name: "Second" } },
+          "sensor.stale_entry": { state: "ready", attributes: { matic_entry_id: "not-a-robot" } },
         },
       };
       const first = adapter.project(hass, undefined, "entry-a");
@@ -660,13 +661,35 @@ test.describe("Map Studio v0.4 foundation", () => {
         first: [first.entryKey, first.robotLabel],
         second: [second.entryKey, second.robotLabel],
         robots: second.robots.map((robot) => robot.label),
+        robotCount: second.host.robotCount,
       };
     });
     expect(result).toEqual({
       first: ["entry-a", "First"],
       second: ["entry-b", "Second"],
       robots: ["First", "Second"],
+      robotCount: 2,
     });
+  });
+
+  test("hides the robot selector when non-vacuum Matic entities have stale entry metadata", async ({ page }) => {
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(() => {
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "entry-a" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "user", is_admin: true },
+        states: {
+          "vacuum.first": { state: "docked", attributes: { matic_entry_id: "entry-a", friendly_name: "First" } },
+          "sensor.stale_entry": { state: "ready", attributes: { matic_entry_id: "not-a-robot" } },
+        },
+      };
+      document.body.append(panel);
+    });
+    await expect(page.getByLabel("Choose robot")).toHaveCount(0);
   });
 
   test("routes v0.4 copy through Home Assistant localization", async ({ page }) => {

@@ -82,6 +82,17 @@ def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
     assert non_finite.battery_percentage is None
 
 
+def test_active_cleaning_remains_primary_when_firmware_retains_warning() -> None:
+    """Keep a non-blocking warning from hiding a mission still in progress."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[106, 119], errors=[207]).SerializeToString()
+    )
+
+    assert state.cleaning is True
+    assert state.error_codes == (207,)
+    assert state.activity is RobotActivity.CLEANING
+
+
 @pytest.mark.parametrize(
     ("states", "activity"),
     [

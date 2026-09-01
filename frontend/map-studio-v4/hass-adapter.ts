@@ -64,7 +64,6 @@ export class HassAdapter {
     const states = hass?.states ?? {};
     const panelEntry = panel?.config?.entry_id;
     const requestedEntry = typeof panelEntry === "string" ? panelEntry : null;
-    const entryKeys = new Set<string>();
     let selectedVacuum: HassEntityLike | null = null;
     let selectedVacuumEntityId: string | null = null;
     let selectedEntryKey: string | null = null;
@@ -73,7 +72,6 @@ export class HassAdapter {
     for (const [entityId, entity] of Object.entries(states)) {
       const entryKey = maticEntryKey(entity);
       if (!entryKey) continue;
-      entryKeys.add(entryKey);
       if (!entityId.startsWith("vacuum.")) continue;
       robots.set(entryKey, { entryId: entryKey, label: safeRobotLabel(entity.attributes?.friendly_name) });
       const requested = preferredEntry || requestedEntry;
@@ -90,7 +88,7 @@ export class HassAdapter {
       robotConnected: selectedVacuum !== null
         && selectedVacuum.state !== "unavailable"
         && selectedVacuum.state !== "unknown",
-      robotCount: entryKeys.size,
+      robotCount: robots.size,
     } as const;
     const activity = selectedVacuum
       ? activityForVacuum(selectedVacuum.state)

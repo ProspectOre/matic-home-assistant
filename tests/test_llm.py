@@ -313,7 +313,7 @@ async def test_operations_and_robot_resolution() -> None:
     assert robot["name"] == "Synthetic Robot"
     assert robot["coordinator_available"] is True
     assert robot["robot"] == {
-        "activity": "error",
+        "activity": "cleaning",
         "battery_percentage": 72,
         "current_room": "Study",
         "previous_room": "Kitchen",

@@ -859,7 +859,7 @@ export class MaticMapShellV4 extends LitElement {
               @click=${this.#navigation}
             >${navigationBack ? "←" : "☰"}</button>
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
-            ${state.host.robotCount > 1 ? html`
+            ${state.robots.length > 1 ? html`
               <select
                 class="context-switcher robot-switcher"
                 aria-label=${this.#t("v4_choose_robot", "Choose robot")}
