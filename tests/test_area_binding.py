@@ -21,6 +21,7 @@ from custom_components.matic_robot.area_binding import (
     _occupancy_changes_are_explained,
     _point_near_segment,
     _segment_context,
+    _smallest_rotation,
     _wall_pair_explains_probe,
     area_binding_allows_review,
     area_binding_status,
@@ -62,6 +63,51 @@ def _floor_plan() -> FloorPlan:
             ),
         ),
     )
+
+
+@pytest.mark.parametrize(
+    "points",
+    [
+        ((2, 0), (1, 0), (3, 0)),
+        ((1, 0), (1, 0), (0, 0), (1, 0)),
+        ((0, 1), (0, 0), (0, 1), (0, 0)),
+    ],
+)
+def test_linear_smallest_rotation_matches_reference(
+    points: tuple[tuple[int, int], ...],
+) -> None:
+    expected = min(points[index:] + points[:index] for index in range(len(points)))
+    assert _smallest_rotation(points) == expected
+
+
+def test_dense_floor_area_binding_remains_bounded() -> None:
+    """Dense native traces and a maximum-size painted area stay interactive."""
+    side_points = 2_000
+    boundary = tuple(
+        [(index / side_points * 10, 0.0) for index in range(side_points)]
+        + [(10.0, index / side_points * 10) for index in range(side_points)]
+        + [(10 - index / side_points * 10, 10.0) for index in range(side_points)]
+        + [(0.0, 10 - index / side_points * 10) for index in range(side_points)]
+    )
+    floor_plan = FloorPlan(
+        1,
+        "dense-partition",
+        b"dense-partition",
+        (_room("dense", "Dense", boundary),),
+    )
+    circles = [
+        {
+            "x": 5.0 + (index % 16) * 0.01,
+            "y": 5.0 + (index // 16) * 0.01,
+            "radius": 0.1,
+        }
+        for index in range(512)
+    ]
+
+    binding = binding_for_area(floor_plan, circles)
+
+    assert binding["version"] == SCOPED_MAP_BINDING_VERSION
+    assert len(binding["local_occupancy"]) == 512
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
