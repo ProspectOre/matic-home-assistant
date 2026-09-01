@@ -145,6 +145,7 @@ export interface WorkspaceSelection {
   readonly floorId: string;
   readonly historyId: string | null;
   readonly roomIds: readonly string[];
+  readonly roomSettings: readonly import("./backend-contracts").PlanRoom[];
   readonly cleaningMode: CleaningMode;
   readonly coverageSetting: CoverageSetting;
   readonly planId: string | null;
@@ -234,6 +235,7 @@ export type WorkspaceIntent =
   | { readonly type: "toggle-room"; readonly roomId: string }
   | {
       readonly type: "patch-room-settings";
+      readonly roomId: string;
       readonly cleaningMode?: CleaningMode;
       readonly coverageSetting?: CoverageSetting;
     }

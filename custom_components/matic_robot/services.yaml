@@ -24,6 +24,18 @@ clean:
       selector:
         boolean:
 
+clean_room_sequence:
+  target: *vacuum_target
+  fields:
+    rooms:
+      required: true
+      selector:
+        object:
+    return_to_base:
+      default: true
+      selector:
+        boolean:
+
 clean_area:
   target: *vacuum_target
   fields:

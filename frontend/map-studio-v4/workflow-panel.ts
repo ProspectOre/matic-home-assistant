@@ -80,8 +80,22 @@ export class MaticMapWorkflowV4 extends LitElement {
       border-color: var(--primary-color, #0678ce);
       background: color-mix(in srgb, var(--primary-color, #0678ce) 9%, transparent);
     }
-    .room { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: center; gap: 0.6rem; padding: 0.5rem 0.65rem; }
-    .room input { inline-size: 1.2rem; block-size: 1.2rem; }
+    .room { display: grid; gap: 0.5rem; padding: 0.55rem 0.65rem; }
+    .room[data-selected="true"] {
+      border-color: color-mix(in srgb, var(--primary-color, #0678ce) 62%, transparent);
+      background: color-mix(in srgb, var(--primary-color, #0678ce) 8%, var(--secondary-background-color, #f5f7f8));
+    }
+    .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.6rem; min-block-size: 2.1rem; }
+    .room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
+    .room-settings { padding-block-start: 0.1rem; padding-inline-start: 1.8rem; }
+    .plan-options {
+      display: grid;
+      gap: 0.55rem;
+      padding: 0.7rem;
+      border: 1px solid var(--divider-color, #d1d8dc);
+      border-radius: 0.7rem;
+      background: var(--secondary-background-color, #f5f7f8);
+    }
     .plan-room { display: grid; gap: 0.5rem; padding: 0.65rem; }
     .plan-room-head { display: flex; align-items: center; gap: 0.4rem; min-inline-size: 0; }
     .plan-room-head strong { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
@@ -170,41 +184,58 @@ export class MaticMapWorkflowV4 extends LitElement {
           ${(plans.value?.rooms || []).map((room) => {
             const checked = this.state.selection.roomIds.includes(room.roomId);
             return html`
-              <label class="room">
-                <input
-                  type="checkbox"
-                  .checked=${checked}
-                  @change=${() => this.#intent({ type: "toggle-room", roomId: room.roomId })}
-                >
-                <span>${room.name}</span>
-              </label>
+              <div class="room" data-selected=${String(checked)}>
+                <label class="room-choice">
+                  <input
+                    type="checkbox"
+                    .checked=${checked}
+                    @change=${() => this.#intent({ type: "toggle-room", roomId: room.roomId })}
+                  >
+                  <strong>${room.name}</strong>
+                  ${checked ? html`<small>${this.#t("v4_room_ready", "Ready")}</small>` : nothing}
+                </label>
+                ${checked ? this.#roomSettings(
+                  room.roomId,
+                  this.state.selection.roomSettings.find((candidate) => candidate.roomId === room.roomId)
+                    || { roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard" },
+                ) : nothing}
+              </div>
             `;
           })}
-        </div>
-        <div class="split">
-          <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
-            <select
-              .value=${this.state.selection.cleaningMode}
-              @change=${(event: Event) => this.#intent({
-                type: "patch-room-settings",
-                cleaningMode: eventValue(event) as CleaningMode,
-              })}
-            >${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
-          </label>
-          <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
-            <select
-              .value=${this.state.selection.coverageSetting}
-              @change=${(event: Event) => this.#intent({
-                type: "patch-room-settings",
-                coverageSetting: eventValue(event) as CoverageSetting,
-              })}
-            >${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
-          </label>
         </div>
         <p class="subtle">${this.#t("v4_room_selection_hint", "Select rooms here or directly on the map. The map and list stay in sync.")}</p>
         ${this.#notice()}
       </div>
     `);
+  }
+
+  #roomSettings(roomId: string, room: PlanRoom) {
+    return html`
+      <div class="split room-settings">
+        <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+          <select
+            aria-label=${this.#t("v4_room_cleaning_system", "Cleaning system for room")}
+            .value=${room.cleaningMode}
+            @change=${(event: Event) => this.#intent({
+              type: "patch-room-settings",
+              roomId,
+              cleaningMode: eventValue(event) as CleaningMode,
+            })}
+          >${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
+        </label>
+        <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+          <select
+            aria-label=${this.#t("v4_room_cleaning_mode", "Cleaning mode for room")}
+            .value=${room.coverageSetting}
+            @change=${(event: Event) => this.#intent({
+              type: "patch-room-settings",
+              roomId,
+              coverageSetting: eventValue(event) as CoverageSetting,
+            })}
+          >${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
+        </label>
+      </div>
+    `;
   }
 
   #togglePlanRoom(roomId: string): void {
@@ -236,6 +267,19 @@ export class MaticMapWorkflowV4 extends LitElement {
     const resource = this.state.resources.plans;
     const catalog = resource.value;
     const draft = this.state.planDraft;
+    const selectedRows = draft.rooms.map((room) => ({
+      room,
+      label: catalog?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name || "Room",
+      selected: true,
+    }));
+    const availableRows = (catalog?.rooms || [])
+      .filter((room) => !draft.rooms.some((candidate) => candidate.roomId === room.roomId))
+      .map((room) => ({
+        room: { roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard" } satisfies PlanRoom,
+        label: room.name,
+        selected: false,
+      }));
+    const roomRows = [...selectedRows, ...availableRows];
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         <div class="split">
@@ -273,24 +317,30 @@ export class MaticMapWorkflowV4 extends LitElement {
           </label>
           <label class="checkbox"><input type="checkbox" .checked=${draft.enabled} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { enabled: eventChecked(event) } })}>${this.#t("plan_enabled", "Enabled")}</label>
         </div>
-        <div class="list" aria-label=${this.#t("plan_rooms", "Plan rooms")}>
-          ${(catalog?.rooms || []).map((room) => {
-            const checked = draft.rooms.some((candidate) => candidate.roomId === room.roomId);
-            return html`<label class="room"><input type="checkbox" .checked=${checked} @change=${() => this.#togglePlanRoom(room.roomId)}><span>${room.name}</span></label>`;
-          })}
+        <div class="plan-options" aria-label=${this.#t("v4_completion_options", "Completion options")}>
+          <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
+          <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
+          ${draft.finishCurrentRoom ? html`<label class="field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
         </div>
-        ${draft.rooms.length ? html`
-          <div class="list" aria-label=${this.#t("v4_room_order_settings", "Room order and settings")}>
-            ${draft.rooms.map((room, index) => {
-              const label = catalog?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name || "Room";
-              return html`
-                <div class="plan-room">
-                  <div class="plan-room-head">
-                    <strong>${index + 1}. ${label}</strong>
-                    <button class="icon-button" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${() => this.#movePlanRoom(index, -1)}>↑</button>
-                    <button class="icon-button" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${() => this.#movePlanRoom(index, 1)}>↓</button>
-                  </div>
-                  <div class="split">
+        <div class="list" aria-label=${this.#t("plan_rooms", "Plan rooms")}>
+          ${roomRows.map(({ room, label, selected }) => {
+            const index = selected
+              ? draft.rooms.findIndex((candidate) => candidate.roomId === room.roomId)
+              : -1;
+            return html`
+              <div class="room plan-room" data-selected=${String(selected)}>
+                <label class="room-choice">
+                  <input type="checkbox" .checked=${selected} @change=${() => this.#togglePlanRoom(room.roomId)}>
+                  <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
+                  ${selected ? html`
+                    <span>
+                      <button class="icon-button" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>↑</button>
+                      <button class="icon-button" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>↓</button>
+                    </span>
+                  ` : nothing}
+                </label>
+                ${selected ? html`
+                  <div class="split room-settings">
                     <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
                       <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
@@ -298,19 +348,11 @@ export class MaticMapWorkflowV4 extends LitElement {
                       <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
-                </div>
-              `;
-            })}
-          </div>
-        ` : nothing}
-        <details>
-          <summary>${this.#t("v4_completion_options", "Completion options")}</summary>
-          <div class="stack">
-            <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
-            <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
-            ${draft.finishCurrentRoom ? html`<label class="field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
-          </div>
-        </details>
+                ` : nothing}
+              </div>
+            `;
+          })}
+        </div>
         <div class="toolbar">
           ${draft.id ? html`
             <button

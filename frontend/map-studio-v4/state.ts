@@ -108,6 +108,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     floorId: "current",
     historyId: null,
     roomIds: [],
+    roomSettings: [],
     cleaningMode: "vacuum",
     coverageSetting: "standard",
     planId: null,
@@ -292,6 +293,16 @@ export const reduceWorkspace = (
           roomIds: selected
             ? state.selection.roomIds.filter((roomId) => roomId !== intent.roomId)
             : [...state.selection.roomIds, intent.roomId],
+          roomSettings: selected
+            ? state.selection.roomSettings.filter((room) => room.roomId !== intent.roomId)
+            : [
+              ...state.selection.roomSettings,
+              {
+                roomId: intent.roomId,
+                cleaningMode: "vacuum",
+                coverageSetting: "standard",
+              },
+            ],
         },
       };
     }
@@ -300,8 +311,14 @@ export const reduceWorkspace = (
         ...state,
         selection: {
           ...state.selection,
-          ...(intent.cleaningMode ? { cleaningMode: intent.cleaningMode } : {}),
-          ...(intent.coverageSetting ? { coverageSetting: intent.coverageSetting } : {}),
+          roomSettings: state.selection.roomSettings.map((room) =>
+            room.roomId === intent.roomId
+              ? {
+                ...room,
+                ...(intent.cleaningMode ? { cleaningMode: intent.cleaningMode } : {}),
+                ...(intent.coverageSetting ? { coverageSetting: intent.coverageSetting } : {}),
+              }
+              : room),
         },
       };
     case "set-floor":

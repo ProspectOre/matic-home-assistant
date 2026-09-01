@@ -838,6 +838,15 @@ export class RendererController {
     this.#notifyCamera();
   }
 
+  rotateBy(deltaRadians: number): void {
+    this.#camera = {
+      ...this.#camera,
+      yaw: angle(this.#camera.yaw + deltaRadians),
+    };
+    this.requestRender();
+    this.#notifyCamera();
+  }
+
   #notifyCamera(clientX?: number, clientY?: number): void {
     const home = this.#camera.orthographic ? this.#homeTop : this.#homeThree;
     const bounds = clientX === undefined || clientY === undefined

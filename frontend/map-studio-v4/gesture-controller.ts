@@ -29,6 +29,23 @@ const midpoint = (first: PointerRecord, second: PointerRecord): MapPoint => ({
   y: (first.y + second.y) / 2,
 });
 
+const angle = (first: PointerRecord, second: PointerRecord): number =>
+  Math.atan2(second.y - first.y, second.x - first.x);
+
+const angleDelta = (value: number): number => {
+  let delta = value;
+  while (delta > Math.PI) delta -= Math.PI * 2;
+  while (delta < -Math.PI) delta += Math.PI * 2;
+  return delta;
+};
+
+interface SafariGestureEvent extends Event {
+  readonly scale: number;
+  readonly rotation: number;
+  readonly clientX?: number;
+  readonly clientY?: number;
+}
+
 const cloneCircles = (circles: readonly AreaCircle[]): AreaCircle[] =>
   circles.map((circle) => ({ ...circle }));
 
@@ -48,6 +65,9 @@ export class GestureController {
   #lastMapPoint: MapPoint | null = null;
   #pinchDistance = 0;
   #pinchCenter: MapPoint | null = null;
+  #pinchAngle = 0;
+  #gestureScale = 1;
+  #gestureRotation = 0;
   #navigationUntilRelease = false;
   #touchArmTimer: number | null = null;
   #disposed = false;
@@ -61,6 +81,9 @@ export class GestureController {
     host.addEventListener("pointerup", this.#pointerUp);
     host.addEventListener("pointercancel", this.#pointerUp);
     host.addEventListener("wheel", this.#wheel, { passive: false });
+    host.addEventListener("gesturestart", this.#gestureStart as EventListener, { passive: false });
+    host.addEventListener("gesturechange", this.#gestureChange as EventListener, { passive: false });
+    host.addEventListener("gestureend", this.#gestureEnd as EventListener, { passive: false });
     host.addEventListener("keydown", this.#keyDown);
     host.addEventListener("keyup", this.#keyUp);
     host.addEventListener("blur", this.#blur);
@@ -92,6 +115,7 @@ export class GestureController {
       if (first && second) {
         this.#pinchDistance = Math.max(1, distance(first, second));
         this.#pinchCenter = midpoint(first, second);
+        this.#pinchAngle = angle(first, second);
       }
       event.preventDefault();
       return;
@@ -143,11 +167,14 @@ export class GestureController {
       const nextDistance = Math.max(1, distance(first, second));
       const nextCenter = midpoint(first, second);
       this.#renderer.zoomAt(nextDistance / this.#pinchDistance, nextCenter.x, nextCenter.y);
+      const nextAngle = angle(first, second);
+      this.#renderer.rotateBy(angleDelta(nextAngle - this.#pinchAngle));
       if (this.#pinchCenter) {
         this.#renderer.panBy(nextCenter.x - this.#pinchCenter.x, nextCenter.y - this.#pinchCenter.y);
       }
       this.#pinchDistance = nextDistance;
       this.#pinchCenter = nextCenter;
+      this.#pinchAngle = nextAngle;
       event.preventDefault();
       return;
     }
@@ -242,6 +269,35 @@ export class GestureController {
     );
   };
 
+  readonly #gestureStart = (event: SafariGestureEvent): void => {
+    if (this.#disposed || isInteractiveControl(event.target)) return;
+    this.#host.focus({ preventScroll: true });
+    this.#gestureScale = Number.isFinite(event.scale) ? event.scale : 1;
+    this.#gestureRotation = Number.isFinite(event.rotation) ? event.rotation : 0;
+    event.preventDefault();
+  };
+
+  readonly #gestureChange = (event: SafariGestureEvent): void => {
+    if (this.#disposed || isInteractiveControl(event.target)) return;
+    const scale = Number.isFinite(event.scale) && event.scale > 0 ? event.scale : 1;
+    const rotation = Number.isFinite(event.rotation) ? event.rotation : 0;
+    this.#renderer.zoomAt(
+      scale / Math.max(0.01, this.#gestureScale),
+      event.clientX,
+      event.clientY,
+    );
+    this.#renderer.rotateBy((rotation - this.#gestureRotation) * Math.PI / 180);
+    this.#gestureScale = scale;
+    this.#gestureRotation = rotation;
+    event.preventDefault();
+  };
+
+  readonly #gestureEnd = (event: SafariGestureEvent): void => {
+    this.#gestureScale = 1;
+    this.#gestureRotation = 0;
+    event.preventDefault();
+  };
+
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.code === "Space") {
@@ -303,6 +359,9 @@ export class GestureController {
     this.#host.removeEventListener("pointerup", this.#pointerUp);
     this.#host.removeEventListener("pointercancel", this.#pointerUp);
     this.#host.removeEventListener("wheel", this.#wheel);
+    this.#host.removeEventListener("gesturestart", this.#gestureStart as EventListener);
+    this.#host.removeEventListener("gesturechange", this.#gestureChange as EventListener);
+    this.#host.removeEventListener("gestureend", this.#gestureEnd as EventListener);
     this.#host.removeEventListener("keydown", this.#keyDown);
     this.#host.removeEventListener("keyup", this.#keyUp);
     this.#host.removeEventListener("blur", this.#blur);

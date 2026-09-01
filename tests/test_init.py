@@ -823,7 +823,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 17
+    assert hass.services.async_register.call_count == 18
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"

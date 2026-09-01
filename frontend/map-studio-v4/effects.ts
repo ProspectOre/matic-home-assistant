@@ -1060,13 +1060,15 @@ export class EffectController {
       }
       case "clean-rooms": {
         const plans = this.#store.value.resources.plans.value;
-        const roomIds = this.#store.value.selection.roomIds;
-        const rooms = plans?.rooms.filter((room) => roomIds.includes(room.roomId)).map((room) => room.name) || [];
-        if (rooms.length) await this.#motion("matic_robot", "clean", {
+        const selected = this.#store.value.selection.roomSettings;
+        const rooms = selected.map((room) => ({
+          room: plans?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name,
+          cleaning_mode: room.cleaningMode,
+          coverage_setting: room.coverageSetting,
+        })).filter((room) => room.room);
+        if (rooms.length) await this.#motion("matic_robot", "clean_room_sequence", {
           rooms,
-          ordered: false,
-          cleaning_mode: this.#store.value.selection.cleaningMode,
-          coverage_setting: this.#store.value.selection.coverageSetting,
+          return_to_base: true,
         });
         return;
       }

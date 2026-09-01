@@ -275,25 +275,6 @@ export class MaticMapShellV4 extends LitElement {
       font: inherit;
     }
 
-    .header-state {
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      min-inline-size: 0;
-      color: var(--secondary-text-color, #60717c);
-      font-size: 0.78rem;
-      font-weight: 650;
-      white-space: nowrap;
-    }
-
-    .header-state::before {
-      content: "";
-      inline-size: 0.48rem;
-      block-size: 0.48rem;
-      border-radius: 50%;
-      background: var(--success-color, #2f9e61);
-    }
-
     .workspace {
       position: relative;
       display: grid;
@@ -320,7 +301,7 @@ export class MaticMapShellV4 extends LitElement {
 
     .status-strip {
       display: grid;
-      grid-template-columns: 2.35rem minmax(0, 1fr);
+      grid-template-columns: 2.35rem minmax(0, 1fr) auto;
       gap: 0.7rem;
       align-items: center;
       padding: 0.85rem 1rem;
@@ -340,6 +321,17 @@ export class MaticMapShellV4 extends LitElement {
     .status-strip strong, .status-strip small { display: block; }
     .status-strip strong { font-size: 0.82rem; }
     .status-strip small { margin-block-start: 0.12rem; color: var(--secondary-text-color, #687984); font-size: 0.72rem; }
+    .status-action, .workflow-back {
+      min-block-size: 2.5rem;
+      padding-inline: 0.75rem;
+      border: 1px solid currentColor;
+      border-radius: 0.65rem;
+      color: var(--error-color, #b73535);
+      background: transparent;
+      cursor: pointer;
+      font-weight: 700;
+    }
+    .status-action:disabled { cursor: default; opacity: 0.55; }
 
     .workflow {
       display: flex;
@@ -350,7 +342,9 @@ export class MaticMapShellV4 extends LitElement {
       overflow: auto;
     }
 
-    .workflow h2 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
+    .workflow-heading { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.6rem; align-items: center; }
+    .workflow-heading h2 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
+    .workflow-back { min-inline-size: 2.75rem; padding-inline: 0.55rem; color: var(--primary-text-color, #1f2933); border-color: var(--divider-color, #c3ccd1); }
     .workflow > p { margin: 0.35rem 0 1rem; color: var(--secondary-text-color, #687984); font-size: 0.8rem; line-height: 1.48; }
 
     .quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
@@ -531,16 +525,8 @@ export class MaticMapShellV4 extends LitElement {
     .narrow .mobile-sheet .primary-stack { margin-block-start: 0; padding-block-start: 0.55rem; }
     .narrow .quick-actions { grid-template-columns: minmax(0, 1fr); }
     .narrow .quick-actions button { min-block-size: 3.8rem; }
-    .narrow .header-state {
-      display: inline-flex;
-      overflow: hidden;
-      max-inline-size: 5.5rem;
-      font-size: 0.7rem;
-      text-overflow: ellipsis;
-    }
     .narrow .title { font-size: 0.95rem; }
     .narrow .context-switcher { max-inline-size: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .narrow .robot-switcher:disabled { display: none; }
     .narrow .full-map-hud { inset-block-end: max(0.75rem, env(safe-area-inset-bottom)); }
     .narrow .workspace.full-map .mobile-sheet { display: none; }
 
@@ -838,10 +824,15 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = workflowCopy(state, this.localize);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
     const secondary = selectPausedSecondaryAction(state);
+    const statusAction = !narrow && primary.id === "stop"
+      ? primary
+      : !narrow && secondary?.id === "stop" ? secondary : null;
+    const footerPrimary = statusAction === primary ? null : primary;
+    const footerSecondary = statusAction === secondary ? null : secondary;
     const compactPrecision = state.workflow === "draw" && (narrow || state.fullMap);
     const locatingInFullMap = state.fullMap
       && (state.coherence === "verifying" || state.coherence === "booting");
-    const navigationBack = state.workflow !== "none" || state.fullMap || state.precisionOpen;
+    const navigationBack = state.fullMap || state.precisionOpen;
     const dialog = dialogCopy(state.dialog, this.localize);
     const historyFloors = state.resources.history.value?.floors || [];
     const floorChoices = historyFloors.length
@@ -868,11 +859,10 @@ export class MaticMapShellV4 extends LitElement {
               @click=${this.#navigation}
             >${navigationBack ? "←" : "☰"}</button>
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
-            ${state.robots.length ? html`
+            ${state.host.robotCount > 1 ? html`
               <select
                 class="context-switcher robot-switcher"
                 aria-label=${this.#t("v4_choose_robot", "Choose robot")}
-                ?disabled=${state.host.robotCount <= 1}
                 .value=${state.selection.entryId || ""}
                 @change=${(event: Event) => this.#intent({
                   type: "select-entry",
@@ -895,7 +885,6 @@ export class MaticMapShellV4 extends LitElement {
               <option value=${floor.id} ?disabled=${floor.disabled}>${floor.label}</option>
             `)}</select>
             <span class="spacer"></span>
-            <span class="header-state">${status.title}</span>
             <div class="overflow-wrap">
               <button
                 class="overflow"
@@ -963,14 +952,33 @@ export class MaticMapShellV4 extends LitElement {
               <div class="status-strip">
                 <span class="status-icon" aria-hidden="true">◆</span>
                 <span><strong>${status.title}</strong><small>${status.detail}</small></span>
+                ${statusAction ? html`
+                  <button
+                    class="status-action"
+                    type="button"
+                    ?disabled=${!statusAction.enabled}
+                    title=${statusAction.reason ?? ""}
+                    @click=${() => this.#action(statusAction)}
+                  >${this.#t("v4_stop", "Stop")}</button>
+                ` : nothing}
               </div>
               <section class="workflow">
-                <h2 tabindex="-1">${workflow.title}</h2>
+                <div class="workflow-heading">
+                  ${state.workflow !== "none" ? html`
+                    <button
+                      class="workflow-back"
+                      type="button"
+                      aria-label=${this.#t("v4_back", "Back")}
+                      @click=${() => this.#workflow("none")}
+                    >←</button>
+                  ` : nothing}
+                  <h2 tabindex="-1">${workflow.title}</h2>
+                </div>
                 <p>${workflow.description}</p>
                 ${this.#workflowBody(state)}
                 <div class="primary-stack">
-                  ${this.#primaryButton(primary)}
-                  ${secondary ? this.#primaryButton(secondary, "secondary-action") : nothing}
+                  ${footerPrimary ? this.#primaryButton(footerPrimary) : nothing}
+                  ${footerSecondary ? this.#primaryButton(footerSecondary, "secondary-action") : nothing}
                 </div>
               </section>
             </aside>
@@ -995,8 +1003,8 @@ export class MaticMapShellV4 extends LitElement {
                 ${state.workflow === "draw" ? nothing : this.#workflowBody(state)}
               </div>
               <div class="primary-stack">
-                ${this.#primaryButton(primary)}
-                ${secondary ? this.#primaryButton(secondary, "secondary-action") : nothing}
+                ${footerPrimary ? this.#primaryButton(footerPrimary) : nothing}
+                ${footerSecondary ? this.#primaryButton(footerSecondary, "secondary-action") : nothing}
               </div>
             </section>
 

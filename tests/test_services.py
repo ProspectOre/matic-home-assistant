@@ -48,6 +48,7 @@ from custom_components.matic_robot.plans import (
 )
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
+    CLEAN_ROOM_SEQUENCE_SCHEMA,
     DELETE_PLAN_ROOM_SCHEMA,
     MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
@@ -723,6 +724,107 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
     assert failure.value.translation_key == "robot_command_failed"
     assert "protocol detail" not in str(failure.value)
     coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    services = await _registered_services(hass, manager)
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room("room-office", "Office", "office", b"office", ()),
+            Room("room-study", "Study", "study", b"study", ()),
+        ),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+        async_confirm_room_completed=MagicMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=SimpleNamespace(
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_send_user_command=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "rooms": [
+                    {
+                        "room": "Study",
+                        "cleaning_mode": "mop",
+                        "coverage_setting": "heavy_duty",
+                    },
+                    {
+                        "room": "Office",
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                    },
+                ],
+            }
+        ),
+    )
+
+    async def exercise_sequence(*_args, **kwargs) -> None:
+        assert kwargs["floor_is_current"]() is True
+        token = manager.begin_managed_motion("serial")
+        try:
+            await kwargs["managed_user_command"](token, UserCommand.STOP)
+        finally:
+            manager.end_managed_motion("serial", token)
+
+    execute = AsyncMock(side_effect=exercise_sequence)
+    dock_after_stop = MagicMock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=(
+                "vacuum.test",
+                entry,
+                "serial",
+                {"room-office": "Office", "room-study": "Study"},
+            ),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            execute,
+        ),
+        patch(
+            "custom_components.matic_robot.services.schedule_dock_after_stop",
+            dock_after_stop,
+        ),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(call)
+
+    rooms = execute.await_args.args[5]
+    assert rooms == [
+        CleaningRoom("room-study", "Study", "mop", "heavy_duty"),
+        CleaningRoom("room-office", "Office", "vacuum", "standard"),
+    ]
+    assert execute.await_args.kwargs["intelligent"] is False
+    assert execute.await_args.args[1].data["plan_id"] == "quick_clean"
+    assert execute.await_args.args[1].data["return_to_base"] is True
+    assert execute.await_args.kwargs["floor_token"] == plan_floor_token(floor_plan)
+    entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    dock_after_stop.assert_called_once()
 
 
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:

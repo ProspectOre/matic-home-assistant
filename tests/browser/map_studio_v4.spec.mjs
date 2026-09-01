@@ -237,7 +237,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const toggle = gallery.getByRole("button", { name: /Map workspace, .* height/ });
 
     await expect(sheet).toHaveAttribute("data-detent", "half");
-    await expect(gallery.getByRole("banner").getByText("Docked", { exact: true })).toBeVisible();
+    await expect(gallery.getByRole("banner").getByText("Docked", { exact: true })).toHaveCount(0);
     await expect.poll(async () => gallery.locator(".scene-window").evaluate((element) => {
       const bounds = element.getBoundingClientRect();
       const sheetBounds = element.getRootNode().host.getRootNode().querySelector(".mobile-sheet")?.getBoundingClientRect();
@@ -360,6 +360,57 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(Math.abs(origin.zoomOriginY - 70)).toBeLessThan(0.2);
   });
 
+  test("restores native trackpad pinch and twist", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    const map = gallery.locator(".map-root");
+    const before = await snapshot(page);
+
+    const prevented = await map.evaluate((element) => {
+      const start = new Event("gesturestart", { bubbles: true, cancelable: true });
+      Object.assign(start, { scale: 1, rotation: 0, clientX: 260, clientY: 220 });
+      element.dispatchEvent(start);
+      const change = new Event("gesturechange", { bubbles: true, cancelable: true });
+      Object.assign(change, { scale: 1.35, rotation: 28, clientX: 260, clientY: 220 });
+      element.dispatchEvent(change);
+      const end = new Event("gestureend", { bubbles: true, cancelable: true });
+      Object.assign(end, { scale: 1.35, rotation: 28 });
+      element.dispatchEvent(end);
+      return start.defaultPrevented && change.defaultPrevented && end.defaultPrevented;
+    });
+    expect(prevented).toBe(true);
+    await expect.poll(async () => (await snapshot(page)).draw.zoomPercent)
+      .toBeGreaterThan(before.draw.zoomPercent);
+    await expect.poll(async () => (await snapshot(page)).cameras.top?.yaw ?? 0)
+      .not.toBeCloseTo(before.cameras.top?.yaw ?? 0, 4);
+
+  });
+
+  test("keeps workflow navigation and Stop together in the inspector", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "cleaning" });
+    await gallery.getByRole("button", { name: /Rooms Pick rooms/ }).click();
+    const inspector = gallery.locator(".inspector");
+    await expect(inspector.getByRole("button", { name: "Back" })).toBeVisible();
+    await expect(inspector.locator(".status-strip").getByRole("button", { name: "Stop" })).toBeVisible();
+    await expect(inspector.locator(".primary-stack").getByRole("button", { name: "Stop" })).toHaveCount(0);
+    await expect(gallery.getByRole("banner").getByText("Cleaning", { exact: true })).toHaveCount(0);
+  });
+
+  test("uses one ordered room list for plan selection and per-room settings", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: /Plans Run or edit/ }).click();
+    const inspector = gallery.locator(".inspector");
+    const list = inspector.getByLabel("Plan rooms");
+    await expect(list).toHaveCount(1);
+    await expect(inspector.getByLabel("Room order and settings")).toHaveCount(0);
+    await expect(list.locator(".room")).toHaveCount(4);
+    await expect(list.locator('.room[data-selected="true"]')).toHaveCount(3);
+    await expect(list.getByLabel("Cleaning system")).toHaveCount(3);
+    await expect(inspector.locator("details")).toHaveCount(0);
+    expect(await inspector.locator(".plan-options").evaluate((options) =>
+      Boolean(options.compareDocumentPosition(options.parentElement.querySelector('[aria-label="Plan rooms"]')) & Node.DOCUMENT_POSITION_FOLLOWING),
+    )).toBe(true);
+  });
+
   test("keeps Stop reachable while paused and strips transition Full map to safety controls", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "paused" });
     await gallery.getByRole("button", { name: "Full map" }).click();
@@ -452,8 +503,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await expect(gallery.getByRole("heading", { name: "Start cleaning" })).toBeVisible();
-    await expect(gallery.getByLabel("Choose robot")).toBeVisible();
-    await expect(gallery.getByLabel("Choose robot")).toBeDisabled();
+    await expect(gallery.getByLabel("Choose robot")).toHaveCount(0);
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeVisible();
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeEnabled();
     await expect(gallery.getByLabel("Choose floor", { exact: true }).locator("option"))
@@ -582,8 +632,11 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     await gallery.evaluate((element) => element.setScenario("rooms"));
     await expect.poll(async () => (await snapshot(page)).workflow).toBe("rooms");
-    await expect(gallery.getByLabel("Cleaning system").first()).toBeVisible();
-    const mode = gallery.getByLabel("Cleaning mode").first();
+    const inspector = gallery.locator(".inspector");
+    await expect(inspector.getByLabel("Cleaning system for room")).toHaveCount(0);
+    await inspector.getByRole("checkbox", { name: "Kitchen" }).check();
+    await expect(inspector.getByLabel("Cleaning system for room")).toBeVisible();
+    const mode = inspector.getByLabel("Cleaning mode for room");
     await expect(mode.locator("option")).toHaveText(["Quick", "Optimal", "Heavy Duty"]);
   });
 

@@ -1040,6 +1040,20 @@
     }
   },
   "services": {
+    "clean_room_sequence": {
+      "name": "Clean room sequence",
+      "description": "Runs an ordered, unsaved room sequence with cleaning settings for each room.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Ordered room objects containing room, cleaning_mode, and coverage_setting."
+        },
+        "return_to_base": {
+          "name": "Return to dock",
+          "description": "Return to the dock after the final room."
+        }
+      }
+    },
     "clean_area": {
       "name": "Clean custom area",
       "description": "Cleans a named area drawn on the local map. Coordinates stay private inside Home Assistant.",
