@@ -19,6 +19,7 @@ from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    area_binding_status,
     binding_for_area,
     binding_for_floor_plan,
 )
@@ -1183,7 +1184,13 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
-    response = await view.get(_request(hass), "entry")
+    with patch(
+        "custom_components.matic_robot.slam_scene.area_binding_status",
+        wraps=area_binding_status,
+    ) as classify:
+        response = await view.get(_request(hass), "entry")
+
+    assert classify.call_count == 3
 
     assert json.loads(response.body) == {
         "scene_url": "/api/matic_robot/slam_scene/entry",

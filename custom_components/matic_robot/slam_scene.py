@@ -979,7 +979,7 @@ class MaticAreasView(HomeAssistantView):
         areas = []
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             status = area_binding_status(area, floor_plan)
-            can_rebind = area_binding_allows_review(area, floor_plan)
+            can_rebind = area_binding_allows_review(area, floor_plan, status=status)
             areas.append(
                 {
                     "id": area_id,

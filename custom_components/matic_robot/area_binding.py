@@ -582,9 +582,17 @@ def area_binding_status(
     return AreaBindingStatus.INVALID
 
 
-def area_binding_allows_review(area: Mapping[str, Any], floor_plan: FloorPlan) -> bool:
+def area_binding_allows_review(
+    area: Mapping[str, Any],
+    floor_plan: FloorPlan,
+    *,
+    status: AreaBindingStatus | None = None,
+) -> bool:
     """Return whether stale coordinates can be shown for local confirmation."""
-    if area_binding_status(area, floor_plan) is not AreaBindingStatus.GEOMETRY_CHANGED:
+    binding_status = (
+        status if status is not None else area_binding_status(area, floor_plan)
+    )
+    if binding_status is not AreaBindingStatus.GEOMETRY_CHANGED:
         return False
     try:
         _validate_area_circles(floor_plan, area["circles"])
