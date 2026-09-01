@@ -201,6 +201,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .scene-window {
       position: absolute;
       inset: 0;
+      inset-block-end: var(--map-sheet-offset, 0px);
       overflow: hidden;
     }
 

@@ -210,15 +210,21 @@ test.describe("Map Studio v0.4 foundation", () => {
     const sheet = gallery.locator(".mobile-sheet");
     const toggle = gallery.getByRole("button", { name: /Map workspace, .* height/ });
 
-    await expect(sheet).toHaveAttribute("data-detent", "peek");
-    await expect(toggle).toHaveAttribute("aria-expanded", "false");
-    await toggle.click();
     await expect(sheet).toHaveAttribute("data-detent", "half");
+    await expect(gallery.getByRole("banner").getByText("Docked", { exact: true })).toBeVisible();
+    await expect.poll(async () => gallery.locator(".scene-window").evaluate((element) => {
+      const bounds = element.getBoundingClientRect();
+      const sheetBounds = element.getRootNode().host.getRootNode().querySelector(".mobile-sheet")?.getBoundingClientRect();
+      return sheetBounds ? Math.abs(bounds.bottom - sheetBounds.top) : Number.POSITIVE_INFINITY;
+    })).toBeLessThanOrEqual(1);
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await toggle.click();
     await expect(sheet).toHaveAttribute("data-detent", "full");
     await toggle.click();
     await expect(sheet).toHaveAttribute("data-detent", "peek");
+    await expect(toggle).toHaveAttribute("aria-expanded", "false");
+    await toggle.click();
+    await expect(sheet).toHaveAttribute("data-detent", "half");
 
     await page.evaluate(async (tag) => {
       const module = await import("/map_studio_v4/index.js");
@@ -400,7 +406,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("restores classic display controls without compromising the map-first shell", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
-    await gallery.getByRole("complementary").getByRole("button", { name: "Rooms", exact: true }).click();
+    await gallery.getByRole("complementary").getByRole("button", { name: /Rooms Pick rooms and clean them now/ }).click();
     await gallery.getByRole("button", { name: "2D", exact: true }).click();
     await gallery.getByRole("button", { name: "Rooms", exact: true }).last().click();
     await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
@@ -413,6 +419,21 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.getByRole("button", { name: "Rotate right" }).click();
     await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null)
       .not.toBeNull();
+  });
+
+  test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+
+    await expect(gallery.getByRole("heading", { name: "Start cleaning" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: /Plans Run or edit a saved routine/ })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: /Custom areas Use or draw a precise outline/ })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: /History Browse earlier floor maps/ })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Run plan", exact: true })).toHaveCount(0);
+
+    await gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ }).click();
+    await expect(gallery.getByRole("heading", { name: "Choose rooms" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Choose rooms", exact: true })).toBeDisabled();
   });
 
   test("clears a drawn area reversibly and exposes official cleaning-mode wording", async ({ page }) => {

@@ -622,11 +622,11 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
     };
   }
   return {
-    id: "run-plan",
-    label: "Run plan",
-    kind: "primary",
-    enabled: canStartMotion(state),
-    ...(canStartMotion(state) ? {} : { reason: "Map verification is required" }),
+    id: "choose-cleaning",
+    label: "Choose what to clean",
+    kind: "neutral",
+    enabled: false,
+    reason: "Choose rooms, a plan, or a custom area",
   };
 };
 

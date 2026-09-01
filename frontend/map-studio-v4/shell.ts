@@ -76,7 +76,7 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "support":
       return { title: t("v4_map_support", "Map support"), description: t("v4_map_support_detail", "Private geometry is never included.") };
     case "none":
-      return { title: t("v4_clean", "Clean"), description: t("v4_clean_detail", "Start with a saved plan, rooms, or an area.") };
+      return { title: t("v4_clean", "Start cleaning"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
   }
 };
 
@@ -348,7 +348,7 @@ export class MaticMapShellV4 extends LitElement {
     .workflow h2 { margin: 0; font-size: 1.15rem; letter-spacing: -0.02em; }
     .workflow > p { margin: 0.35rem 0 1rem; color: var(--secondary-text-color, #687984); font-size: 0.8rem; line-height: 1.48; }
 
-    .quick-actions { display: grid; grid-template-columns: repeat(2, 1fr); gap: 0.55rem; }
+    .quick-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
     .quick-actions button, .room-row {
       min-block-size: 3.25rem;
       border: 1px solid var(--divider-color, rgb(60 75 85 / 17%));
@@ -357,7 +357,27 @@ export class MaticMapShellV4 extends LitElement {
       background: var(--secondary-background-color, #f4f7f8);
     }
 
-    .quick-actions button { cursor: pointer; font-size: 0.8rem; font-weight: 650; }
+    .quick-actions button {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 0.55rem;
+      align-items: center;
+      min-block-size: 4.4rem;
+      padding: 0.72rem 0.8rem;
+      cursor: pointer;
+      text-align: start;
+    }
+    .quick-actions button:hover { border-color: color-mix(in srgb, var(--primary-color, #0678ce) 42%, transparent); }
+    .quick-actions button:focus-visible { outline: 2px solid var(--primary-color, #0678ce); outline-offset: 2px; }
+    .quick-actions button.featured {
+      border-color: color-mix(in srgb, var(--primary-color, #0678ce) 30%, transparent);
+      background: color-mix(in srgb, var(--primary-color, #0678ce) 9%, var(--card-background-color, #fff));
+    }
+    .quick-copy { min-inline-size: 0; }
+    .quick-copy strong, .quick-copy small { display: block; }
+    .quick-copy strong { font-size: 0.82rem; font-weight: 720; }
+    .quick-copy small { margin-block-start: 0.18rem; color: var(--secondary-text-color, #687984); font-size: 0.7rem; line-height: 1.35; }
+    .quick-arrow { color: var(--secondary-text-color, #687984); font-size: 1rem; }
     .room-list { display: grid; gap: 0.5rem; }
     .room-row { display: flex; align-items: center; gap: 0.65rem; padding-inline: 0.8rem; font-size: 0.8rem; }
     .check { color: var(--primary-color, #0678ce); font-weight: 800; }
@@ -378,7 +398,13 @@ export class MaticMapShellV4 extends LitElement {
     }
 
     .primary-action.danger { background: var(--error-color, #c43b3b); }
-    .primary-action:disabled { cursor: default; opacity: 0.48; box-shadow: none; }
+    .primary-action:disabled {
+      cursor: default;
+      opacity: 1;
+      color: var(--disabled-text-color, #89969e);
+      background: var(--disabled-color, var(--secondary-background-color, #e8edef));
+      box-shadow: none;
+    }
     .secondary-action { color: var(--error-color, #b73535); background: transparent; border: 1px solid currentColor; }
 
     .precision-docked { margin-block-end: 1rem; }
@@ -498,7 +524,15 @@ export class MaticMapShellV4 extends LitElement {
     .narrow .sheet-body { min-block-size: 0; padding-block: 0.25rem; overflow: auto; }
     .narrow .mobile-sheet[data-detent="peek"] .sheet-body { display: none; }
     .narrow .mobile-sheet .primary-stack { margin-block-start: 0; padding-block-start: 0.55rem; }
-    .narrow .header-state { display: none; }
+    .narrow .quick-actions { grid-template-columns: minmax(0, 1fr); }
+    .narrow .quick-actions button { min-block-size: 3.8rem; }
+    .narrow .header-state {
+      display: inline-flex;
+      overflow: hidden;
+      max-inline-size: 5.5rem;
+      font-size: 0.7rem;
+      text-overflow: ellipsis;
+    }
     .narrow .title { font-size: 0.95rem; }
     .narrow .robot-switcher { max-inline-size: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .narrow .full-map-hud { inset-block-end: max(0.75rem, env(safe-area-inset-bottom)); }
@@ -524,7 +558,7 @@ export class MaticMapShellV4 extends LitElement {
   protected _workflowReady = false;
   protected _overflowOpen = false;
   protected _browserFullscreen = false;
-  protected _sheetDetent: SheetDetent = "peek";
+  protected _sheetDetent: SheetDetent = "half";
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -597,7 +631,7 @@ export class MaticMapShellV4 extends LitElement {
         });
       }
       if (!previous || previous.workflow !== this.state.workflow) {
-        this._sheetDetent = this.state.workflow === "none" ? "peek" : "half";
+        this._sheetDetent = "half";
       }
     }
   }
@@ -752,6 +786,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #primaryButton(action: PrimaryAction, className = "primary-action") {
+    if (action.id === "choose-cleaning") return nothing;
     const labels: Readonly<Record<string, [string, string]>> = {
       stop: ["v4_stop", "Stop"],
       resume: ["v4_resume", "Resume"],
@@ -778,11 +813,19 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState) {
     if (state.workflow === "none") return html`
-      <div class="quick-actions">
-        <button type="button" @click=${() => this.#workflow("rooms")}>${this.#t("map_rooms", "Rooms")}</button>
-        <button type="button" @click=${() => this.#workflow("draw")}>${this.#t("v4_draw_area", "Draw area")}</button>
-        <button type="button" @click=${() => this.#workflow("plan")}>${this.#t("cleaning_workspace_plans", "Plans")}</button>
-        <button type="button" @click=${() => this.#workflow("history")}>${this.#t("map_timeline_history", "History")}</button>
+      <div class="quick-actions" aria-label=${this.#t("v4_cleaning_choices", "Cleaning choices")}>
+        <button class="featured" type="button" @click=${() => this.#workflow("rooms")}>
+          <span class="quick-copy"><strong>${this.#t("map_rooms", "Rooms")}</strong><small>${this.#t("v4_rooms_quick_detail", "Pick rooms and clean them now.")}</small></span><span class="quick-arrow" aria-hidden="true">›</span>
+        </button>
+        <button type="button" @click=${() => this.#workflow("plan")}>
+          <span class="quick-copy"><strong>${this.#t("cleaning_workspace_plans", "Plans")}</strong><small>${this.#t("v4_plans_quick_detail", "Run or edit a saved routine.")}</small></span><span class="quick-arrow" aria-hidden="true">›</span>
+        </button>
+        <button type="button" @click=${() => this.#workflow("draw")}>
+          <span class="quick-copy"><strong>${this.#t("area_workspace_title", "Custom areas")}</strong><small>${this.#t("v4_areas_quick_detail", "Use or draw a precise outline.")}</small></span><span class="quick-arrow" aria-hidden="true">›</span>
+        </button>
+        <button type="button" @click=${() => this.#workflow("history")}>
+          <span class="quick-copy"><strong>${this.#t("map_timeline_history", "History")}</strong><small>${this.#t("v4_history_quick_detail", "Browse earlier floor maps.")}</small></span><span class="quick-arrow" aria-hidden="true">›</span>
+        </button>
       </div>
     `;
     if (!this._workflowReady) return html`<div role="status">${this.#t("v4_loading_workspace", "Loading workspace…")}</div>`;
