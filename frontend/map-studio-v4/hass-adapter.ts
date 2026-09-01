@@ -6,7 +6,13 @@ import type {
   RobotActivity,
 } from "./contracts";
 
-const activityForVacuum = (state: string): RobotActivity => {
+const activityForVacuum = (
+  state: string,
+  attributes: Readonly<Record<string, unknown>> | undefined,
+): RobotActivity => {
+  if (attributes?.recharge_and_resume === true && attributes?.charging === true) {
+    return "recharging";
+  }
   switch (state) {
     case "cleaning":
       return "cleaning";
@@ -91,7 +97,7 @@ export class HassAdapter {
       robotCount: robots.size,
     } as const;
     const activity = selectedVacuum
-      ? activityForVacuum(selectedVacuum.state)
+      ? activityForVacuum(selectedVacuum.state, selectedVacuum.attributes)
       : "unknown";
     const batteryPercent = boundedBattery(selectedVacuum?.attributes?.battery_level);
     const language = hass?.selectedLanguage || hass?.language || "en";

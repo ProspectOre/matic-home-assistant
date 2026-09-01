@@ -544,7 +544,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   if (state.dataMode === "history") {
     return { id: "return-live", label: "Return to Live", kind: "primary", enabled: true };
   }
-  if (state.activity === "cleaning" || state.activity === "returning") {
+  if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
     return { id: "stop", label: "Stop", kind: "danger", enabled: state.command === "idle" };
   }
   if (state.activity === "stopping" || state.command === "settling") {

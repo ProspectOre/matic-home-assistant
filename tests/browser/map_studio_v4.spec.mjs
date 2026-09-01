@@ -689,6 +689,51 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   });
 
+  test("shows recharge-and-resume as charging with Stop still available", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const module = await import("/map_studio_v4/index.js");
+      const adapter = new module.HassAdapter();
+      const projection = adapter.project({
+        connected: true,
+        language: "en",
+        user: { id: "user", is_admin: true },
+        states: {
+          "vacuum.first": {
+            state: "docked",
+            attributes: {
+              matic_entry_id: "entry-a",
+              friendly_name: "First",
+              battery_level: 18,
+              charging: true,
+              recharge_and_resume: true,
+            },
+          },
+        },
+      });
+      const state = {
+        ...module.createGalleryState("ready"),
+        activity: projection.activity,
+        batteryPercent: projection.batteryPercent,
+      };
+      return {
+        activity: projection.activity,
+        action: module.selectPrimaryAction(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(result).toEqual({
+      activity: "recharging",
+      action: { id: "stop", label: "Stop", kind: "danger", enabled: true },
+      canStart: false,
+    });
+
+    const gallery = await loadGallery(page, { scenario: "recharging" });
+    await expect(gallery).toContainText("Charging to resume");
+    await expect(gallery).toContainText("18% battery");
+    await expect(gallery.getByRole("button", { name: "Stop", exact: true })).toBeVisible();
+  });
+
   test("hides the robot selector when non-vacuum Matic entities have stale entry metadata", async ({ page }) => {
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });

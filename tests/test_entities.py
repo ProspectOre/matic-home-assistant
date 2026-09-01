@@ -1679,6 +1679,8 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert entity.extra_state_attributes == {
         "matic_entry_id": "entry",
         "low_charge": False,
+        "charging": False,
+        "recharge_and_resume": False,
         "problem": False,
         "current_area": None,
         "previous_area": None,
@@ -1692,6 +1694,8 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert bare.extra_state_attributes == {
         "matic_entry_id": "entry",
         "low_charge": False,
+        "charging": False,
+        "recharge_and_resume": False,
         "problem": False,
         "current_area": None,
         "previous_area": None,

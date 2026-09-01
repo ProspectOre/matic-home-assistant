@@ -1119,7 +1119,10 @@ export class EffectController {
       || (domain === "vacuum" && service === "return_to_base");
     const stopAllowed = stopping
       && state.command === "idle"
-      && (state.activity === "cleaning" || state.activity === "paused" || state.activity === "returning");
+      && (state.activity === "cleaning"
+        || state.activity === "paused"
+        || state.activity === "returning"
+        || state.activity === "recharging");
     if (!entityId || (!stopAllowed && !canStartMotion(state))) return;
     this.#store.patch({ command: "pending", notice: null });
     try {

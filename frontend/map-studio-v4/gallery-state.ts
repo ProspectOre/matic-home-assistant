@@ -14,6 +14,7 @@ export type GalleryScenario =
   | "cleaning"
   | "paused"
   | "returning"
+  | "recharging"
   | "rooms"
   | "draw"
   | "history"
@@ -83,6 +84,8 @@ export const createGalleryState = (scenario: GalleryScenario): WorkspaceState =>
       return { ...state, activity: "paused" };
     case "returning":
       return { ...state, activity: "returning" };
+    case "recharging":
+      return { ...state, activity: "recharging", batteryPercent: 18 };
     case "rooms":
       return { ...state, workflow: "rooms" };
     case "draw":
@@ -182,6 +185,7 @@ export const GALLERY_SCENARIOS: readonly GalleryScenario[] = [
   "cleaning",
   "paused",
   "returning",
+  "recharging",
   "rooms",
   "draw",
   "history",

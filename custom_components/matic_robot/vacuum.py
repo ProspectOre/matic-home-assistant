@@ -108,6 +108,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         return {
             "matic_entry_id": self._config_entry.entry_id,
             "low_charge": state.low_charge,
+            "charging": state.is_charging,
+            "recharge_and_resume": state.recharge_and_resume,
             "problem": bool(state.error_codes),
             "current_area": state.current_area,
             "previous_area": state.previous_area,

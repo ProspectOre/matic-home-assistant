@@ -60,6 +60,12 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): { readonly titl
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map") };
   }
   if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: t("v4_cleaning_progress", "Cleaning in progress") };
+  if (state.activity === "recharging") {
+    const battery = state.batteryPercent === null
+      ? t("v4_recharging_detail", "Will resume automatically when ready")
+      : t("v4_recharging_battery", "Charging to resume · {percent}% battery", { percent: state.batteryPercent });
+    return { title: t("v4_recharging", "Charging to resume"), detail: battery };
+  }
   if (state.activity === "paused") return { title: t("v4_paused", "Paused"), detail: t("v4_can_resume", "Cleaning can resume") };
   if (state.activity === "returning") return { title: t("v4_returning", "Returning"), detail: t("v4_going_dock", "Going to the dock") };
   if (state.activity === "stopping") return { title: t("v4_stopping", "Stopping"), detail: t("v4_waiting_robot", "Waiting for the robot") };

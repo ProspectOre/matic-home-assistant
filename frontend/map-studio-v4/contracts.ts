@@ -38,6 +38,7 @@ export type RobotActivity =
   | "cleaning"
   | "paused"
   | "returning"
+  | "recharging"
   | "stopping"
   | "problem"
   | "unknown";

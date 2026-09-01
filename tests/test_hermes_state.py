@@ -85,7 +85,7 @@ def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
 def test_active_cleaning_remains_primary_when_firmware_retains_warning() -> None:
     """Keep a non-blocking warning from hiding a mission still in progress."""
     state = _decode_operational_state(
-        KabukiOutputWire(states=[106, 119], errors=[207]).SerializeToString()
+        KabukiOutputWire(states=[119], errors=[207]).SerializeToString()
     )
 
     assert state.cleaning is True
@@ -93,10 +93,24 @@ def test_active_cleaning_remains_primary_when_firmware_retains_warning() -> None
     assert state.activity is RobotActivity.CLEANING
 
 
+def test_low_charge_cleaning_task_at_dock_is_recharge_and_resume() -> None:
+    """Model a retained task as suspended while physical charging wins."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[107, 119, 206]).SerializeToString()
+    )
+
+    assert state.cleaning is True
+    assert state.charging is True
+    assert state.low_charge is True
+    assert state.recharge_and_resume is True
+    assert state.activity is RobotActivity.CHARGING
+
+
 @pytest.mark.parametrize(
     ("states", "activity"),
     [
-        ([106, 119], RobotActivity.CLEANING),
+        ([106, 119], RobotActivity.DOCKED),
+        ([107, 119, 206], RobotActivity.CHARGING),
         ([109, 200, 119], RobotActivity.PAUSED),
         ([104, 105], RobotActivity.RETURNING),
         ([104, 105, 106, 119], RobotActivity.RETURNING),
