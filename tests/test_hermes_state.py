@@ -64,7 +64,7 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.paused is True
     assert state.cleaning is False
     assert state.returning is False
-    assert state.activity is RobotActivity.ERROR
+    assert state.activity is RobotActivity.DOCKED
     assert state.error_names == ("error_code_207",)
 
 

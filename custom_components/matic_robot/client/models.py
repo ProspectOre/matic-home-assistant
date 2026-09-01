@@ -104,13 +104,13 @@ class RobotOperationalState:
             return RobotActivity.PAUSED
         if self.returning:
             return RobotActivity.RETURNING
-        # A cleaning mission can retain its task flag while the robot is
-        # physically docked for a low-charge recharge-and-resume cycle.  The
-        # physical charging state must win so Home Assistant does not claim
-        # that a stationary docked robot is actively cleaning.
-        if self.cleaning and self.charging:
+        # Firmware can retain task and warning flags while the robot is
+        # physically docked, both during recharge-and-resume and ordinary
+        # charging.  Physical charging must win as the HA vacuum activity;
+        # raw warning evidence remains available through ``error_codes``.
+        if self.charging:
             return RobotActivity.CHARGING
-        if self.cleaning and self.charging_idle:
+        if self.charging_idle:
             return RobotActivity.DOCKED
         # Firmware can retain a non-blocking warning code while it continues an
         # accepted cleaning mission.  The active task is the primary HA vacuum
@@ -119,10 +119,6 @@ class RobotOperationalState:
             return RobotActivity.CLEANING
         if self.error_codes:
             return RobotActivity.ERROR
-        if self.charging:
-            return RobotActivity.CHARGING
-        if self.charging_idle:
-            return RobotActivity.DOCKED
         return RobotActivity.READY
 
     @property
