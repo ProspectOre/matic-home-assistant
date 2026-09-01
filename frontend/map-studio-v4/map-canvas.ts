@@ -61,9 +61,7 @@ export class MaticMapCanvasV4 extends LitElement {
       block-size: 100%;
       outline: none;
       isolation: isolate;
-      background:
-        radial-gradient(circle at 52% 45%, rgb(255 255 255 / 92%), transparent 42%),
-        var(--secondary-background-color, #edf2f4);
+      background: var(--secondary-background-color, #edf2f4);
       touch-action: none;
       container-type: inline-size;
     }
@@ -73,7 +71,6 @@ export class MaticMapCanvasV4 extends LitElement {
       outline-offset: -3px;
     }
 
-    .floor-chip,
     .map-tools,
     .view-switch,
     .appearance-switch,
@@ -86,33 +83,6 @@ export class MaticMapCanvasV4 extends LitElement {
       border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
       background: var(--card-background-color, rgb(255 255 255 / 96%));
       box-shadow: 0 5px 18px rgb(31 41 51 / 12%);
-    }
-
-    .floor-chip {
-      inset-block-start: 0.75rem;
-      inset-inline-start: 0.75rem;
-      display: inline-flex;
-      align-items: center;
-      gap: 0.4rem;
-      max-inline-size: min(15rem, calc(100% - 11rem));
-      min-block-size: 2.75rem;
-      padding-inline: 0.8rem;
-      border-radius: 1.5rem;
-      color: var(--primary-text-color, #1f2933);
-      font-size: 0.82rem;
-      font-weight: 650;
-    }
-
-    .floor-chip span {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .floor-chip small {
-      color: var(--secondary-text-color, #687984);
-      font-weight: 500;
-      white-space: nowrap;
     }
 
     .map-tools {
@@ -372,7 +342,6 @@ export class MaticMapCanvasV4 extends LitElement {
       .draw-tools { grid-template-columns: repeat(6, 2.75rem); }
       .draw-tools button { padding: 0; font-size: 0; }
       .draw-tools button::first-letter { font-size: 1rem; }
-      .floor-chip { max-inline-size: calc(100% - 9.5rem); }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -546,18 +515,6 @@ export class MaticMapCanvasV4 extends LitElement {
         data-workflow=${state.workflow}
         @keydown=${this.#keyboard}
       >
-        ${state.floor.classifiedCount > 1 ? html`
-          <button
-            class="floor-chip"
-            type="button"
-            aria-label=${`${this.#t("v4_choose_floor", "Choose floor")}: ${state.floor.displayName}`}
-            @click=${() => this.#intent({ type: "open-workflow", workflow: "history" })}
-          >
-            <span>${state.floor.displayName}</span>
-            ${state.floor.readOnly ? html`<small>${this.#t("v4_saved_read_only", "Saved · read only")}</small>` : nothing}
-          </button>
-        ` : nothing}
-
         ${!locating || state.fullMap ? html`<nav class="map-tools" aria-label="Map tools">
           ${!locating ? html`
             <button type="button" @click=${() => {

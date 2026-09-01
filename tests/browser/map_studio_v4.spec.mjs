@@ -84,6 +84,32 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ panelV4: true, galleryV4: true, panelV3: false });
   });
 
+  test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
+
+    await expect.poll(async () => overlay.evaluate((canvas) => {
+      const context = canvas.getContext("2d");
+      if (!context) return null;
+      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+      const points = [];
+      for (let y = 0; y < canvas.height; y += 1) {
+        for (let x = 0; x < canvas.width; x += 1) {
+          const offset = (y * canvas.width + x) * 4;
+          if (pixels.data[offset] === 6
+            && pixels.data[offset + 1] === 120
+            && pixels.data[offset + 2] === 206
+            && pixels.data[offset + 3] > 0) points.push([x, y]);
+        }
+      }
+      if (!points.length) return null;
+      const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
+      const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
+      return Math.abs(x - canvas.width / 2) <= 1
+        && Math.abs(y - canvas.height / 2) <= 1;
+    })).toBe(true);
+  });
+
   test("upgrades a pre-existing shell without a blank first render", async ({ page }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));
@@ -295,7 +321,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(fullMap).toBeFocused();
   });
 
-  test("keeps browser zoom modifiers untouched and focal wheel zoom bounded", async ({ page }) => {
+  test("owns trackpad pinch over the map and keeps focal zoom bounded", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "draw" });
     const map = gallery.locator(".map-root");
     const before = (await snapshot(page)).draw.zoomPercent;
@@ -311,8 +337,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       element.dispatchEvent(event);
       return event.defaultPrevented;
     });
-    expect(modifierPrevented).toBe(false);
-    expect((await snapshot(page)).draw.zoomPercent).toBe(before);
+    expect(modifierPrevented).toBe(true);
+    await expect.poll(async () => (await snapshot(page)).draw.zoomPercent).toBeGreaterThan(before);
+    const afterPinch = (await snapshot(page)).draw.zoomPercent;
 
     const wheelPrevented = await map.evaluate((element) => {
       const bounds = element.getBoundingClientRect();
@@ -327,7 +354,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       return event.defaultPrevented;
     });
     expect(wheelPrevented).toBe(true);
-    await expect.poll(async () => (await snapshot(page)).draw.zoomPercent).toBeGreaterThan(before);
+    await expect.poll(async () => (await snapshot(page)).draw.zoomPercent).toBeGreaterThan(afterPinch);
     const origin = (await snapshot(page)).draw;
     expect(Math.abs(origin.zoomOriginX - 30)).toBeLessThan(0.2);
     expect(Math.abs(origin.zoomOriginY - 70)).toBeLessThan(0.2);
@@ -425,12 +452,20 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await expect(gallery.getByRole("heading", { name: "Start cleaning" })).toBeVisible();
-    await expect(gallery.getByRole("button", { name: "Choose floor: House" })).toBeVisible();
+    await expect(gallery.getByLabel("Choose robot")).toBeVisible();
+    await expect(gallery.getByLabel("Choose robot")).toBeDisabled();
+    await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeVisible();
+    await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeEnabled();
     await expect(gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Plans Run or edit a saved routine/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /Custom areas Use or draw a precise outline/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: /History Browse earlier floor maps/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run plan", exact: true })).toHaveCount(0);
+
+    await gallery.getByLabel("Choose floor", { exact: true }).selectOption("saved-1");
+    await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("saved-1");
+    await gallery.getByLabel("Choose floor", { exact: true }).selectOption("current");
+    await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("current");
 
     await gallery.getByRole("button", { name: /Rooms Pick rooms and clean them now/ }).click();
     await expect(gallery.getByRole("heading", { name: "Choose rooms" })).toBeVisible();
@@ -454,13 +489,13 @@ test.describe("Map Studio v0.4 foundation", () => {
       };
       return elements.map((element) => {
         const foreground = luminance(getComputedStyle(element).color);
-        const background = luminance(getComputedStyle(element.closest("button")).backgroundColor);
+        const background = luminance(getComputedStyle(element.closest("button, select")).backgroundColor);
         return (Math.max(foreground, background) + 0.05) / (Math.min(foreground, background) + 0.05);
       });
     });
 
     expect(Math.min(...await contrastRatios(".quick-copy small"))).toBeGreaterThanOrEqual(4.5);
-    expect(Math.min(...await contrastRatios(".floor-chip"))).toBeGreaterThanOrEqual(4.5);
+    expect(Math.min(...await contrastRatios(".floor-switcher"))).toBeGreaterThanOrEqual(4.5);
     await gallery.evaluate((element) => element.setScenario("draw"));
     expect(Math.min(...await contrastRatios(".list-button small"))).toBeGreaterThanOrEqual(4.5);
     await gallery.evaluate((element) => element.setScenario("ready"));
@@ -472,9 +507,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       element.style.setProperty("--primary-color", "#42a5f5");
     });
     expect(Math.min(...await contrastRatios(".quick-copy small"))).toBeGreaterThanOrEqual(4.5);
-    expect(Math.min(...await contrastRatios(".floor-chip"))).toBeGreaterThanOrEqual(4.5);
+    expect(Math.min(...await contrastRatios(".floor-switcher"))).toBeGreaterThanOrEqual(4.5);
     await gallery.evaluate((element) => element.setScenario("draw"));
     expect(Math.min(...await contrastRatios(".list-button small"))).toBeGreaterThanOrEqual(4.5);
+  });
+
+  test("uses a neutral map surface without a decorative glow", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await expect(gallery.locator(".map-root")).toHaveCSS("background-image", "none");
   });
 
   test("responds within one interaction budget and reads canvas geometry once per frame", async ({ page }) => {

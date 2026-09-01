@@ -686,7 +686,10 @@ export class RendererController {
     }
     const pose = state.resources.pose.value;
     if (state.map.exactPose && pose?.position && state.dataMode === "live") {
-      const marker = this.#projectCell(pose.position[0], pose.position[1], 3);
+      // Pose coordinates share the floor-plan's meter space. Scene geometry is
+      // stored in origin-relative cells, so it must cross the same conversion
+      // boundary as custom-area coordinates before projection.
+      const marker = this.#projectMeters(pose.position[0], pose.position[1], 3);
       if (marker) {
         context.beginPath();
         context.arc(marker.x, marker.y, 7, 0, Math.PI * 2);

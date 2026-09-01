@@ -190,7 +190,9 @@ export const syntheticHistory = (): HistoryCatalog => ({
 });
 
 export const syntheticPose = (): PoseModel => ({
-  position: [92, 74],
+  // The pose API returns map meters, not scene-cell coordinates. This point is
+  // the exact center of the synthetic scene after applying its origin.
+  position: [4.475, 3.475],
   source: "latest_pose",
   revision: 7,
   poseRevision: 4,

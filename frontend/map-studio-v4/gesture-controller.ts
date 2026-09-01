@@ -225,14 +225,21 @@ export class GestureController {
   }
 
   readonly #wheel = (event: WheelEvent): void => {
-    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    // Safari and Chromium expose a trackpad pinch as a cancelable Ctrl+wheel
+    // gesture. The map owns gestures that start over its canvas; Command/Alt
+    // modifiers remain available to the browser and assistive technology.
+    if (event.metaKey || event.altKey) return;
     if (isInteractiveControl(event.target)) return;
     event.preventDefault();
     if (Math.abs(event.deltaX) > Math.abs(event.deltaY) * 0.7 && Math.abs(event.deltaX) < 50) {
       this.#renderer.panBy(-event.deltaX, -event.deltaY);
       return;
     }
-    this.#renderer.zoomAt(Math.exp(-event.deltaY * 0.0015), event.clientX, event.clientY);
+    this.#renderer.zoomAt(
+      Math.exp(-event.deltaY * (event.ctrlKey ? 0.01 : 0.0015)),
+      event.clientX,
+      event.clientY,
+    );
   };
 
   readonly #keyDown = (event: KeyboardEvent): void => {

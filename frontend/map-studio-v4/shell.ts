@@ -195,7 +195,7 @@ export class MaticMapShellV4 extends LitElement {
       box-shadow: 0 1px 5px rgb(31 41 51 / 8%);
     }
 
-    .nav, .overflow, .robot-switcher {
+    .nav, .overflow, .context-switcher {
       min-inline-size: 2.75rem;
       min-block-size: 2.75rem;
       border: 0;
@@ -205,12 +205,17 @@ export class MaticMapShellV4 extends LitElement {
       cursor: pointer;
     }
 
-    select.robot-switcher {
-      max-inline-size: 11rem;
+    select.context-switcher {
+      max-inline-size: 9rem;
       padding-inline: 0.55rem;
       border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
       background: var(--card-background-color, #fff);
       text-overflow: ellipsis;
+    }
+
+    select.context-switcher:disabled {
+      cursor: default;
+      opacity: 0.82;
     }
 
     .title {
@@ -534,7 +539,8 @@ export class MaticMapShellV4 extends LitElement {
       text-overflow: ellipsis;
     }
     .narrow .title { font-size: 0.95rem; }
-    .narrow .robot-switcher { max-inline-size: 6rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .narrow .context-switcher { max-inline-size: 6.5rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .narrow .robot-switcher:disabled { display: none; }
     .narrow .full-map-hud { inset-block-end: max(0.75rem, env(safe-area-inset-bottom)); }
     .narrow .workspace.full-map .mobile-sheet { display: none; }
 
@@ -837,6 +843,15 @@ export class MaticMapShellV4 extends LitElement {
       && (state.coherence === "verifying" || state.coherence === "booting");
     const navigationBack = state.workflow !== "none" || state.fullMap || state.precisionOpen;
     const dialog = dialogCopy(state.dialog, this.localize);
+    const historyFloors = state.resources.history.value?.floors || [];
+    const floorChoices = historyFloors.length
+      ? historyFloors.map((floor, index) => ({
+        id: floor.active ? "current" : floor.id,
+        label: floor.label || (floor.active
+          ? this.#t("v4_current_floor", "Current floor")
+          : this.#t("v4_saved_floor", "Saved floor {number}", { number: floor.ordinal ?? index + 1 })),
+      }))
+      : [{ id: state.selection.floorId, label: state.floor.displayName }];
     return html`
       <div class=${`root ${narrow ? "narrow" : "wide"}`} @keydown=${this.#keyboard}>
         <div class="app">
@@ -848,10 +863,11 @@ export class MaticMapShellV4 extends LitElement {
               @click=${this.#navigation}
             >${navigationBack ? "←" : "☰"}</button>
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
-            ${state.host.robotCount > 1 ? html`
+            ${state.robots.length ? html`
               <select
-                class="robot-switcher"
+                class="context-switcher robot-switcher"
                 aria-label=${this.#t("v4_choose_robot", "Choose robot")}
+                ?disabled=${state.host.robotCount <= 1}
                 .value=${state.selection.entryId || ""}
                 @change=${(event: Event) => this.#intent({
                   type: "select-entry",
@@ -861,6 +877,18 @@ export class MaticMapShellV4 extends LitElement {
                 <option value=${robot.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}
+            <select
+              class="context-switcher floor-switcher"
+              aria-label=${this.#t("v4_choose_floor", "Choose floor")}
+              ?disabled=${floorChoices.length <= 1}
+              .value=${state.selection.floorId}
+              @change=${(event: Event) => this.#intent({
+                type: "set-floor",
+                floorId: (event.currentTarget as HTMLSelectElement).value,
+              })}
+            >${floorChoices.map((floor) => html`
+              <option value=${floor.id}>${floor.label}</option>
+            `)}</select>
             <span class="spacer"></span>
             <span class="header-state">${status.title}</span>
             <div class="overflow-wrap">
