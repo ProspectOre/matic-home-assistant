@@ -850,11 +850,23 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.evaluate((element) => {
       const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
-      shell.localize = (key) => key.endsWith("map_studio_title") ? "Mapa Matic" : key;
+      const strings = {
+        map_studio_title: "Mapa Matic",
+        v4_navigation_help: "Ayuda de navegación",
+        v4_trackpad: "Panel táctil",
+        v4_trackpad_help: "Desplázate para mover · pellizca para ampliar · gira para rotar",
+      };
+      shell.localize = (key) => strings[key.split(".").at(-1)] || key;
       shell.requestUpdate();
     });
     await expect(gallery.getByRole("heading", { name: "Mapa Matic" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Full map" })).toBeVisible();
+    const help = gallery.getByRole("button", { name: "Ayuda de navegación" });
+    await help.click();
+    await expect(gallery.getByRole("complementary", { name: "Ayuda de navegación" }))
+      .toContainText("Panel táctil");
+    await expect(gallery.getByRole("complementary", { name: "Ayuda de navegación" }))
+      .toContainText("Desplázate para mover");
   });
 
   test("keeps the mobile map usable in RTL", async ({ page }) => {
