@@ -14,6 +14,7 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import "./precision-controls";
+import "./workflow-panel";
 import { translate } from "./localize";
 import {
   initialWorkspaceState,
@@ -152,7 +153,6 @@ export class MaticMapShellV4 extends LitElement {
     localize: { attribute: false },
     _measuredNarrow: { state: true },
     _sheetOffset: { state: true },
-    _workflowReady: { state: true },
     _overflowOpen: { state: true },
     _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
@@ -555,7 +555,6 @@ export class MaticMapShellV4 extends LitElement {
   }
   protected _measuredNarrow = false;
   protected _sheetOffset = 0;
-  protected _workflowReady = false;
   protected _overflowOpen = false;
   protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "half";
@@ -624,11 +623,6 @@ export class MaticMapShellV4 extends LitElement {
       } else if (previous?.dialog && !this.state.dialog) {
         this.#dialogLauncher?.focus();
         this.#dialogLauncher = null;
-      }
-      if (this.state.workflow !== "none" && !this._workflowReady) {
-        void import("./workflow-panel").then(() => {
-          this._workflowReady = true;
-        });
       }
       if (!previous || previous.workflow !== this.state.workflow) {
         this._sheetDetent = "half";
@@ -828,7 +822,6 @@ export class MaticMapShellV4 extends LitElement {
         </button>
       </div>
     `;
-    if (!this._workflowReady) return html`<div role="status">${this.#t("v4_loading_workspace", "Loading workspace…")}</div>`;
     return html`<matic-map-workflow-v4 .state=${state} .localize=${this.localize}></matic-map-workflow-v4>`;
   }
 

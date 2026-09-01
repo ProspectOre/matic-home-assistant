@@ -458,6 +458,7 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
     assert 'from"lit"' not in _STUDIO_V4_JS
     assert "https://" not in _STUDIO_V4_JS
+    assert b"matic-map-workflow-v4" in initial_bytes
     assert frontend.MATIC_MAP_PANEL_ELEMENT == "matic-map-panel-v0-4-0"
 
 
