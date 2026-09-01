@@ -734,14 +734,14 @@ var Y=100,Ee=1e3,me=.2,Re=2.5,ot=64,Ie=o=>!o||typeof o!="object"?!1:typeof o.typ
             aria-label=${this.#e("v4_room_cleaning_system","Cleaning system for room")}
             .value=${r.cleaningMode}
             @change=${n=>this.#r({type:"patch-room-settings",roomId:t,cleaningMode:T(n)})}
-          >${Mt.map(n=>m`<option value=${n}>${this.#t(n)}</option>`)}</select>
+          >${Mt.map(n=>m`<option value=${n} ?selected=${n===r.cleaningMode}>${this.#t(n)}</option>`)}</select>
         </label>
         <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
           <select
             aria-label=${this.#e("v4_room_cleaning_mode","Cleaning mode for room")}
             .value=${r.coverageSetting}
             @change=${n=>this.#r({type:"patch-room-settings",roomId:t,coverageSetting:T(n)})}
-          >${At.map(n=>m`<option value=${n}>${this.#n(n)}</option>`)}</select>
+          >${At.map(n=>m`<option value=${n} ?selected=${n===r.coverageSetting}>${this.#n(n)}</option>`)}</select>
         </label>
       </div>
     `}#u(t){let r=this.state.planDraft.rooms,i=r.find(a=>a.roomId===t)?r.filter(a=>a.roomId!==t):[...r,{roomId:t,cleaningMode:"vacuum",coverageSetting:"standard"}];this.#r({type:"patch-plan-draft",patch:{rooms:i}})}#s(t,r){let n=this.state.planDraft.rooms.map((i,a)=>a===t?{...i,...r}:i);this.#r({type:"patch-plan-draft",patch:{rooms:n}})}#y(t,r){let n=t+r,i=[...this.state.planDraft.rooms];if(n<0||n>=i.length)return;let[a]=i.splice(t,1);a&&(i.splice(n,0,a),this.#r({type:"patch-plan-draft",patch:{rooms:i}}))}#f(){let t=this.state.resources.plans,r=t.value,n=this.state.planDraft,i=n.rooms.map(l=>({room:l,label:r?.rooms.find(c=>c.roomId===l.roomId)?.name||"Room",selected:!0})),a=(r?.rooms||[]).filter(l=>!n.rooms.some(c=>c.roomId===l.roomId)).map(l=>({room:{roomId:l.roomId,cleaningMode:"vacuum",coverageSetting:"standard"},label:l.name,selected:!1})),s=[...i,...a];return this.#i(t.status,t.problem,m`
@@ -799,10 +799,10 @@ var Y=100,Ee=1e3,me=.2,Re=2.5,ot=64,Ie=o=>!o||typeof o!="object"?!1:typeof o.typ
                 ${d?m`
                   <div class="split room-settings">
                     <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
-                      <select .value=${l.cleaningMode} @change=${p=>this.#s(u,{cleaningMode:T(p)})}>${Mt.map(p=>m`<option value=${p}>${this.#t(p)}</option>`)}</select>
+                      <select .value=${l.cleaningMode} @change=${p=>this.#s(u,{cleaningMode:T(p)})}>${Mt.map(p=>m`<option value=${p} ?selected=${p===l.cleaningMode}>${this.#t(p)}</option>`)}</select>
                     </label>
                     <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
-                      <select .value=${l.coverageSetting} @change=${p=>this.#s(u,{coverageSetting:T(p)})}>${At.map(p=>m`<option value=${p}>${this.#n(p)}</option>`)}</select>
+                      <select .value=${l.coverageSetting} @change=${p=>this.#s(u,{coverageSetting:T(p)})}>${At.map(p=>m`<option value=${p} ?selected=${p===l.coverageSetting}>${this.#n(p)}</option>`)}</select>
                     </label>
                   </div>
                 `:h}
@@ -853,10 +853,10 @@ var Y=100,Ee=1e3,me=.2,Re=2.5,ot=64,Ie=o=>!o||typeof o!="object"?!1:typeof o.typ
         </label>
         <div class="split">
           <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
-            <select .value=${t.cleaningMode} @change=${i=>this.#r({type:"patch-area-draft",patch:{cleaningMode:T(i)}})}>${Mt.map(i=>m`<option value=${i}>${this.#t(i)}</option>`)}</select>
+            <select .value=${t.cleaningMode} @change=${i=>this.#r({type:"patch-area-draft",patch:{cleaningMode:T(i)}})}>${Mt.map(i=>m`<option value=${i} ?selected=${i===t.cleaningMode}>${this.#t(i)}</option>`)}</select>
           </label>
           <label class="field">${this.#e("cleaning_mode","Cleaning mode")}
-            <select .value=${t.coverageSetting} @change=${i=>this.#r({type:"patch-area-draft",patch:{coverageSetting:T(i)}})}>${At.map(i=>m`<option value=${i}>${this.#n(i)}</option>`)}</select>
+            <select .value=${t.coverageSetting} @change=${i=>this.#r({type:"patch-area-draft",patch:{coverageSetting:T(i)}})}>${At.map(i=>m`<option value=${i} ?selected=${i===t.coverageSetting}>${this.#n(i)}</option>`)}</select>
           </label>
         </div>
         <p class="subtle">${this.#e("v4_private_marks","{count} map-space marks. The outline stays private and floor-bound.",{count:this.state.draw.circles.length})}</p>

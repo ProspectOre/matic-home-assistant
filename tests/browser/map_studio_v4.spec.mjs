@@ -651,7 +651,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(inspector.getByLabel("Cleaning system for room")).toHaveCount(0);
     await inspector.getByRole("checkbox", { name: "Kitchen" }).check();
     await expect(inspector.getByLabel("Cleaning system for room")).toBeVisible();
+    await expect(inspector.getByLabel("Cleaning system for room")).toHaveValue("vacuum");
     const mode = inspector.getByLabel("Cleaning mode for room");
+    await expect(mode).toHaveValue("standard");
     await expect(mode.locator("option")).toHaveText(["Quick", "Optimal", "Heavy Duty"]);
   });
 

@@ -224,7 +224,7 @@ export class MaticMapWorkflowV4 extends LitElement {
               roomId,
               cleaningMode: eventValue(event) as CleaningMode,
             })}
-          >${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
+          >${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
         </label>
         <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
           <select
@@ -235,7 +235,7 @@ export class MaticMapWorkflowV4 extends LitElement {
               roomId,
               coverageSetting: eventValue(event) as CoverageSetting,
             })}
-          >${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
+          >${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
         </label>
       </div>
     `;
@@ -345,10 +345,10 @@ export class MaticMapWorkflowV4 extends LitElement {
                 ${selected ? html`
                   <div class="split room-settings">
                     <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
-                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
+                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
                     <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
-                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
+                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
                 ` : nothing}
@@ -415,10 +415,10 @@ export class MaticMapWorkflowV4 extends LitElement {
         </label>
         <div class="split">
           <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
-            <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode}>${this.#modeLabel(mode)}</option>`)}</select>
+            <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === draft.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
           </label>
           <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
-            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option}>${this.#coverageLabel(option)}</option>`)}</select>
+            <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === draft.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
         <p class="subtle">${this.#t("v4_private_marks", "{count} map-space marks. The outline stays private and floor-bound.", { count: this.state.draw.circles.length })}</p>
