@@ -1,4 +1,5 @@
-import { LitElement, css, html, nothing } from "lit";
+import { LitElement, css, nothing } from "lit";
+import { html, unsafeStatic } from "lit/static-html.js";
 
 import type {
   CleaningMode,
@@ -6,6 +7,7 @@ import type {
   PlanRoom,
 } from "./backend-contracts";
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
+import { PRECISION_CONTROLS_TAG, WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import "./precision-controls";
 import { initialWorkspaceState } from "./state";
@@ -16,6 +18,7 @@ const coverage: readonly CoverageSetting[] = ["quick", "standard", "heavy_duty"]
 
 const eventValue = (event: Event): string => (event.currentTarget as HTMLInputElement).value;
 const eventChecked = (event: Event): boolean => (event.currentTarget as HTMLInputElement).checked;
+const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 
 export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
@@ -372,7 +375,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     const areas = this.state.resources.areas;
     return html`
       <div class="stack">
-        <matic-precision-controls-v4 .state=${this.state} .localize=${this.localize}></matic-precision-controls-v4>
+        <${precisionControlsTag} .state=${this.state} .localize=${this.localize}></${precisionControlsTag}>
         <p class="subtle">${this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
         <div class="toolbar">
           <button
@@ -540,12 +543,6 @@ export class MaticMapWorkflowV4 extends LitElement {
   }
 }
 
-if (!customElements.get("matic-map-workflow-v4")) {
-  customElements.define("matic-map-workflow-v4", MaticMapWorkflowV4);
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "matic-map-workflow-v4": MaticMapWorkflowV4;
-  }
+if (!customElements.get(WORKFLOW_TAG)) {
+  customElements.define(WORKFLOW_TAG, MaticMapWorkflowV4);
 }

@@ -84,6 +84,21 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ panelV4: true, galleryV4: true, panelV3: false });
   });
 
+  test("registers isolated constructors for successive content-addressed builds", async ({ page }) => {
+    await page.goto("/");
+    const tags = await page.evaluate(async () => {
+      const first = await import("/matic_robot/0.4.0b1-aaaaaaaaaaaa/map-studio-v4/index.js");
+      const second = await import("/matic_robot/0.4.0b1-bbbbbbbbbbbb/map-studio-v4/index.js");
+      return [first.MATIC_MAP_PANEL_TAG, second.MATIC_MAP_PANEL_TAG];
+    });
+    expect(tags).toEqual([
+      "matic-map-panel-v0-4-0-aaaaaaaaaaaa",
+      "matic-map-panel-v0-4-0-bbbbbbbbbbbb",
+    ]);
+    expect(await page.evaluate((names) => names.every((name) => Boolean(customElements.get(name))), tags))
+      .toBe(true);
+  });
+
   test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");

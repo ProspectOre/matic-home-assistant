@@ -1,4 +1,5 @@
-import { LitElement, html } from "lit";
+import { LitElement } from "lit";
+import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
 import type {
@@ -9,6 +10,7 @@ import type {
   WorkspaceState,
 } from "./contracts";
 import { isWorkspaceIntent } from "./contracts";
+import { PANEL_TAG, SHELL_TAG } from "./element-tags";
 import { HassAdapter } from "./hass-adapter";
 import { MaticBackend } from "./backend";
 import { EffectController } from "./effects";
@@ -21,6 +23,8 @@ import {
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
 import { translate } from "./localize";
+
+const shellTag = unsafeStatic(SHELL_TAG);
 
 export class MaticMapPanelV4 extends LitElement {
   static override properties = {
@@ -242,22 +246,18 @@ export class MaticMapPanelV4 extends LitElement {
       `;
     }
     return html`
-      <matic-map-shell-v4
+      <${shellTag}
         .state=${this._workspace}
         .localize=${this.hass?.localize}
         @matic-workspace-intent=${this.#intent}
         @matic-workspace-action=${this.#action}
-      ></matic-map-shell-v4>
+      ></${shellTag}>
     `;
   }
 }
 
-if (!customElements.get("matic-map-panel-v0-4-0")) {
-  customElements.define("matic-map-panel-v0-4-0", MaticMapPanelV4);
+if (!customElements.get(PANEL_TAG)) {
+  customElements.define(PANEL_TAG, MaticMapPanelV4);
 }
 
-declare global {
-  interface HTMLElementTagNameMap {
-    "matic-map-panel-v0-4-0": MaticMapPanelV4;
-  }
-}
+export { PANEL_TAG as MATIC_MAP_PANEL_TAG };

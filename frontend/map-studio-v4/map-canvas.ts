@@ -2,6 +2,7 @@ import { LitElement, css, html, nothing } from "lit";
 import type { PropertyValues } from "lit";
 
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
+import { MAP_CANVAS_TAG } from "./element-tags";
 import { GestureController } from "./gesture-controller";
 import { RendererController, type RendererDiagnostics } from "./renderer-controller";
 import {
@@ -629,12 +630,6 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 }
 
-if (!customElements.get("matic-map-canvas-v4")) {
-  customElements.define("matic-map-canvas-v4", MaticMapCanvasV4);
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "matic-map-canvas-v4": MaticMapCanvasV4;
-  }
+if (!customElements.get(MAP_CANVAS_TAG)) {
+  customElements.define(MAP_CANVAS_TAG, MaticMapCanvasV4);
 }

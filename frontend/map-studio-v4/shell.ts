@@ -1,4 +1,5 @@
-import { LitElement, css, html, nothing } from "lit";
+import { LitElement, css, nothing } from "lit";
+import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
 import type {
@@ -8,6 +9,12 @@ import type {
   WorkspaceState,
   Workflow,
 } from "./contracts";
+import {
+  MAP_CANVAS_TAG,
+  PRECISION_CONTROLS_TAG,
+  SHELL_TAG,
+  WORKFLOW_TAG,
+} from "./element-tags";
 import {
   WORKSPACE_ACTION_EVENT,
   WORKSPACE_INTENT_EVENT,
@@ -21,6 +28,10 @@ import {
   selectPausedSecondaryAction,
   selectPrimaryAction,
 } from "./state";
+
+const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
+const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
+const workflowTag = unsafeStatic(WORKFLOW_TAG);
 
 const statusCopy = (state: WorkspaceState, localize?: Localize): { readonly title: string; readonly detail: string } => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
@@ -288,7 +299,7 @@ export class MaticMapShellV4 extends LitElement {
     .workspace.full-map .mobile-sheet { display: none; }
 
     .canvas { min-inline-size: 0; min-block-size: 0; }
-    matic-map-canvas-v4 { block-size: 100%; }
+    .map-canvas { block-size: 100%; }
 
     .inspector {
       display: flex;
@@ -814,7 +825,7 @@ export class MaticMapShellV4 extends LitElement {
         </button>
       </div>
     `;
-    return html`<matic-map-workflow-v4 .state=${state} .localize=${this.localize}></matic-map-workflow-v4>`;
+    return html`<${workflowTag} .state=${state} .localize=${this.localize}></${workflowTag}>`;
   }
 
   protected override render() {
@@ -919,13 +930,14 @@ export class MaticMapShellV4 extends LitElement {
 
           <main class=${`workspace ${state.fullMap ? "full-map" : ""}`}>
             <div class="canvas">
-              <matic-map-canvas-v4
+              <${mapCanvasTag}
+                class="map-canvas"
                 style=${narrow && !state.fullMap
                   ? `--map-sheet-offset:${this._sheetOffset}px`
                   : "--map-sheet-offset:0px"}
                 .state=${state}
                 .localize=${this.localize}
-              ></matic-map-canvas-v4>
+              ></${mapCanvasTag}>
             </div>
 
             ${compactPrecision ? html`
@@ -943,7 +955,7 @@ export class MaticMapShellV4 extends LitElement {
                   @click=${() => this.#intent({ type: "clear-draft" })}
                 >${this.#t("clear", "Clear")}</button>
                 ${state.precisionOpen ? html`
-                  <matic-precision-controls-v4 compact .state=${state} .localize=${this.localize}></matic-precision-controls-v4>
+                  <${precisionControlsTag} compact .state=${state} .localize=${this.localize}></${precisionControlsTag}>
                 ` : nothing}
               </div>
             ` : nothing}
@@ -1057,12 +1069,6 @@ export class MaticMapShellV4 extends LitElement {
   }
 }
 
-if (!customElements.get("matic-map-shell-v4")) {
-  customElements.define("matic-map-shell-v4", MaticMapShellV4);
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "matic-map-shell-v4": MaticMapShellV4;
-  }
+if (!customElements.get(SHELL_TAG)) {
+  customElements.define(SHELL_TAG, MaticMapShellV4);
 }

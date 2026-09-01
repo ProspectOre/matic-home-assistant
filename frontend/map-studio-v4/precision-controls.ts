@@ -10,6 +10,7 @@ import {
   type WorkspaceState,
 } from "./contracts";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
+import { PRECISION_CONTROLS_TAG } from "./element-tags";
 import { initialWorkspaceState } from "./state";
 import { translate } from "./localize";
 
@@ -190,12 +191,6 @@ export class MaticPrecisionControlsV4 extends LitElement {
   }
 }
 
-if (!customElements.get("matic-precision-controls-v4")) {
-  customElements.define("matic-precision-controls-v4", MaticPrecisionControlsV4);
-}
-
-declare global {
-  interface HTMLElementTagNameMap {
-    "matic-precision-controls-v4": MaticPrecisionControlsV4;
-  }
+if (!customElements.get(PRECISION_CONTROLS_TAG)) {
+  customElements.define(PRECISION_CONTROLS_TAG, MaticPrecisionControlsV4);
 }

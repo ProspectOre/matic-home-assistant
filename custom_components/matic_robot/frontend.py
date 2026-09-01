@@ -69,7 +69,7 @@ MATIC_MAP_STUDIO_V4_PATH = f"{MATIC_MAP_STUDIO_V4_ROOT_PATH}/index.js"
 # manifest.  Home Assistant keeps a custom-element registry alive while its
 # SPA changes panels, so reusing the same tag can leave an older constructor
 # serving a newly cache-busted module after an in-place integration reload.
-MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-4-0"
+MATIC_MAP_PANEL_ELEMENT = f"matic-map-panel-v0-4-0-{MATIC_MAP_STUDIO_V4_VERSION}"
 DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
 DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
 

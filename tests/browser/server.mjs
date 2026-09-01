@@ -61,6 +61,14 @@ const server = createServer((request, response) => {
     const candidate = normalize(join(root, path.slice("/map_studio_v4/".length)));
     if (candidate === root || candidate.startsWith(`${root}${sep}`)) file = candidate;
   }
+  const versionedV4 = path.match(
+    /^\/matic_robot\/[^/]+-[a-f0-9]{12}\/map-studio-v4\/(.+)$/u,
+  );
+  if (versionedV4) {
+    const root = join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4");
+    const candidate = normalize(join(root, versionedV4[1]));
+    if (candidate.startsWith(`${root}${sep}`)) file = candidate;
+  }
   if (!file) {
     response.writeHead(404, { "Content-Type": "text/plain" });
     response.end("not found");

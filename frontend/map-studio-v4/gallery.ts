@@ -1,8 +1,10 @@
-import { LitElement, css, html } from "lit";
+import { LitElement, css } from "lit";
+import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
 import type { WorkspaceState } from "./contracts";
 import { isWorkspaceIntent } from "./contracts";
+import { SHELL_TAG } from "./element-tags";
 import {
   createGalleryState,
   GALLERY_SCENARIOS,
@@ -10,6 +12,8 @@ import {
 } from "./gallery-state";
 import "./shell";
 import { WorkspaceStore } from "./state";
+
+const shellTag = unsafeStatic(SHELL_TAG);
 
 export class MaticMapStudioGalleryV4 extends LitElement {
   static override properties = {
@@ -65,7 +69,7 @@ export class MaticMapStudioGalleryV4 extends LitElement {
     }
 
     :host([narrow]) .stage { max-inline-size: 24.375rem; block-size: 52.75rem; }
-    matic-map-shell-v4 { block-size: 100%; }
+    .shell { block-size: 100%; }
   `;
 
   scenario: GalleryScenario = "ready";
@@ -133,10 +137,11 @@ export class MaticMapStudioGalleryV4 extends LitElement {
         </nav>
       ` : null}
       <div class="stage">
-        <matic-map-shell-v4
+        <${shellTag}
+          class="shell"
           .state=${this._workspace}
           @matic-workspace-intent=${this.#intent}
-        ></matic-map-shell-v4>
+        ></${shellTag}>
       </div>
     `;
   }

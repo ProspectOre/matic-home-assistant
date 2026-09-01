@@ -446,7 +446,8 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     studio_v4_expected = _studio_v4_tree_hash()
     assert frontend.MATIC_MAP_STUDIO_V4_VERSION == studio_v4_expected
     assert studio_v4_expected in frontend.MATIC_MAP_STUDIO_V4_PATH
-    assert 'customElements.get("matic-map-panel-v0-4-0")' in _STUDIO_V4_JS
+    assert "import.meta.url.match" in _STUDIO_V4_JS
+    assert "matic-map-panel-v0-4-0" in _STUDIO_V4_JS
     assert 'customElements.get("matic-map-studio-gallery-v0-4-0")' in _STUDIO_V4_JS
 
 
@@ -459,7 +460,9 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     assert 'from"lit"' not in _STUDIO_V4_JS
     assert "https://" not in _STUDIO_V4_JS
     assert b"matic-map-workflow-v4" in initial_bytes
-    assert frontend.MATIC_MAP_PANEL_ELEMENT == "matic-map-panel-v0-4-0"
+    assert frontend.MATIC_MAP_PANEL_ELEMENT == (
+        f"matic-map-panel-v0-4-0-{frontend.MATIC_MAP_STUDIO_V4_VERSION}"
+    )
 
 
 def test_node_syntax_check() -> None:
