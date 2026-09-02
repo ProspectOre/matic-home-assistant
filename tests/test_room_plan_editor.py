@@ -465,6 +465,12 @@ def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     )
 
 
+def test_v4_bundle_is_ascii_safe_for_home_assistant_file_editor() -> None:
+    """Prevent File Editor uploads from corrupting UTF-8 UI glyphs."""
+    for path in _STUDIO_V4_DIRECTORY.rglob("*.js"):
+        assert path.read_bytes().isascii(), path
+
+
 def test_node_syntax_check() -> None:
     """Gate the module through ``node --check`` when node is available."""
     node = shutil.which("node")

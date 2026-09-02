@@ -450,10 +450,10 @@ var S=100,Z=1e3,I=.2,Y=2.5,ne=64,xt=r=>!r||typeof r!="object"?!1:typeof r.type==
 
         ${t.view==="three"&&n?f`
           <div class="camera-steps" role="toolbar" aria-label=${this.#t("map_camera_controls","Map camera controls")}>
-            <button type="button" aria-label=${this.#t("map_rotate_left","Rotate left")} aria-keyshortcuts="[" @click=${()=>this.#a(-52,0)}>↶</button>
-            <button type="button" aria-label=${this.#t("map_tilt_down","Lower viewing angle")} aria-keyshortcuts="PageDown" @click=${()=>this.#a(0,30)}>⌄</button>
-            <button type="button" aria-label=${this.#t("map_tilt_up","Raise viewing angle")} aria-keyshortcuts="PageUp" @click=${()=>this.#a(0,-30)}>⌃</button>
-            <button type="button" aria-label=${this.#t("map_rotate_right","Rotate right")} aria-keyshortcuts="]" @click=${()=>this.#a(52,0)}>↷</button>
+            <button type="button" aria-label=${this.#t("map_rotate_left","Rotate left")} aria-keyshortcuts="[" @click=${()=>this.#a(-52,0)}>\u21b6</button>
+            <button type="button" aria-label=${this.#t("map_tilt_down","Lower viewing angle")} aria-keyshortcuts="PageDown" @click=${()=>this.#a(0,30)}>\u2304</button>
+            <button type="button" aria-label=${this.#t("map_tilt_up","Raise viewing angle")} aria-keyshortcuts="PageUp" @click=${()=>this.#a(0,-30)}>\u2303</button>
+            <button type="button" aria-label=${this.#t("map_rotate_right","Rotate right")} aria-keyshortcuts="]" @click=${()=>this.#a(52,0)}>\u21b7</button>
           </div>
         `:p}
 
@@ -486,13 +486,13 @@ var S=100,Z=1e3,I=.2,Y=2.5,ne=64,xt=r=>!r||typeof r!="object"?!1:typeof r.type==
               type="button"
               ?disabled=${t.draw.strokeCount===0}
               @click=${()=>this.#n({type:"undo-draft"})}
-            >↶ ${this.#t("undo","Undo")}</button>
+            >\u21b6 ${this.#t("undo","Undo")}</button>
             <button
               type="button"
               ?disabled=${t.draw.redo.length===0}
               @click=${()=>this.#n({type:"redo-draft"})}
-            >↷ ${this.#t("redo","Redo")}</button>
-            <button type="button" @click=${()=>this.#i("review-area")}>✓ ${this.#t("done_editing","Done editing")}</button>
+            >\u21b7 ${this.#t("redo","Redo")}</button>
+            <button type="button" @click=${()=>this.#i("review-area")}>\u2713 ${this.#t("done_editing","Done editing")}</button>
           </div>
         `:p}
 
@@ -584,7 +584,7 @@ var S=100,Z=1e3,I=.2,Y=2.5,ne=64,xt=r=>!r||typeof r!="object"?!1:typeof r.type==
               type="button"
               aria-label=${this.#r("zoom_out","Zoom out")}
               @click=${()=>this.#e({type:"step-zoom",factor:.8})}
-            >−</button>
+            >\u2212</button>
             <span class="number">
               <input
                 id="zoom"
@@ -614,7 +614,7 @@ var S=100,Z=1e3,I=.2,Y=2.5,ne=64,xt=r=>!r||typeof r!="object"?!1:typeof r.type==
               type="button"
               aria-label=${this.#r("v4_narrower_brush","Narrower brush")}
               @click=${()=>this.#e({type:"set-brush",value:t.brushMeters/1.25})}
-            >−</button>
+            >\u2212</button>
             <span class="number">
               <input
                 id="brush"

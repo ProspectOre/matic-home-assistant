@@ -14,6 +14,9 @@ export interface RendererDiagnostics {
   readonly renderedPoints: number;
   readonly lastFrameMs: number;
   readonly slowFrames: number;
+  readonly cameraDistance: number;
+  readonly fitDistance: number;
+  readonly fitActive: boolean;
 }
 
 export interface CameraState {
@@ -64,6 +67,15 @@ const qualityScale = (quality: MapQuality): number => {
     case "maximum":
     case "auto": return 1;
   }
+};
+
+const PERSPECTIVE_FIELD_OF_VIEW = Math.PI / 3.15;
+const FIT_PADDING = 1.08;
+
+const perspectiveFitDistance = (radius: number, aspect: number): number => {
+  const halfVertical = PERSPECTIVE_FIELD_OF_VIEW / 2;
+  const halfHorizontal = Math.atan(Math.tan(halfVertical) * Math.max(0.2, aspect));
+  return radius / Math.sin(Math.min(halfVertical, halfHorizontal)) * FIT_PADDING;
 };
 
 const multiply = (left: Float32Array, right: Float32Array): Float32Array => {
@@ -196,6 +208,7 @@ export class RendererController {
   #slowFrames = 0;
   #qualityScale = 1;
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
+  #fitActive = true;
   #disposed = false;
 
   constructor(
@@ -211,7 +224,15 @@ export class RendererController {
     this.#sceneCanvas.addEventListener("webglcontextrestored", this.#contextRestored);
     this.#initWebGl();
     this.#resizeObserver = new ResizeObserver(() => {
-      this.requestRender();
+      const previousThree = this.#homeThree;
+      const previousTop = this.#homeTop;
+      this.#updateHomeDistances();
+      if (this.#fitActive
+        && (previousThree !== this.#homeThree || previousTop !== this.#homeTop)) {
+        this.fit(false);
+      } else {
+        this.requestRender();
+      }
     });
     this.#resizeObserver.observe(sceneCanvas);
   }
@@ -250,6 +271,7 @@ export class RendererController {
       targetZ: clamp(camera.targetZ, -target.z, target.z),
       orthographic: camera.orthographic,
     };
+    this.#fitActive = false;
     this.requestRender();
     if (notify) this.#notifyCamera();
   }
@@ -293,10 +315,9 @@ export class RendererController {
     const enteredDraw = previous?.workflow !== "draw" && state.workflow === "draw";
     const leftDraw = previous?.workflow === "draw" && state.workflow !== "draw";
     if (!previous || previous.view !== state.view || enteredDraw || leftDraw) {
-      this.#camera = this.#preferredCamera(
-        state.workflow === "draw" ? "top" : state.view,
-        state,
-      );
+      const view = state.workflow === "draw" ? "top" : state.view;
+      this.#camera = this.#preferredCamera(view, state);
+      this.#fitActive = this.#preferenceIsFit(view, state);
     }
     if (state.workflow === "draw" && previous?.draw.zoomPercent !== state.draw.zoomPercent) {
       this.#camera = {
@@ -305,6 +326,10 @@ export class RendererController {
         pitch: Math.PI / 2 - 0.018,
         distance: this.#homeTop * 100 / state.draw.zoomPercent,
       };
+      this.#fitActive = state.draw.zoomPercent === 100
+        && Math.abs(this.#camera.targetX) < 0.001
+        && Math.abs(this.#camera.targetZ) < 0.001
+        && Math.abs(angle(this.#camera.yaw)) < 0.001;
     }
     this.requestRender();
   }
@@ -330,6 +355,17 @@ export class RendererController {
       targetZ: clamp(preference.targetZ, -this.#radius, this.#radius),
       orthographic: top,
     };
+  }
+
+  #preferenceIsFit(view: MapView, state: WorkspaceState): boolean {
+    const preference = state.cameras[view];
+    if (!preference) return true;
+    const top = view === "top";
+    return Math.abs(preference.zoom - 1) < 0.001
+      && Math.abs(preference.targetX) < 0.001
+      && Math.abs(preference.targetZ) < 0.001
+      && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
+      && (top || Math.abs(preference.pitch - 0.82) < 0.001);
   }
 
   #compile(type: number, source: string): WebGLShader {
@@ -441,13 +477,23 @@ export class RendererController {
     const width = spanX * meters;
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
-    this.#homeThree = this.#radius * 1.72;
-    const bounds = this.#measureViewport();
-    const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
-    this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
+    this.#updateHomeDistances();
     this.fit(false);
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
+  }
+
+  #updateHomeDistances(): void {
+    const scene = this.#scene;
+    if (!scene) return;
+    const [spanX, spanY] = scene.metadata.span;
+    const meters = scene.metadata.metersPerCell;
+    const width = spanX * meters;
+    const depth = spanY * meters;
+    const bounds = this.#measureViewport();
+    const aspect = Math.max(0.2, bounds.width / Math.max(1, bounds.height));
+    this.#homeThree = perspectiveFitDistance(this.#radius, aspect);
+    this.#homeTop = Math.max(depth / 2, width / (2 * aspect)) * 1.12;
   }
 
   #uploadScene(scene: SceneModel): void {
@@ -553,7 +599,7 @@ export class RendererController {
         -this.#radius * 4,
         this.#radius * 4,
       )
-      : perspective(Math.PI / 3.15, aspect, 0.02, Math.max(60, this.#radius * 12));
+      : perspective(PERSPECTIVE_FIELD_OF_VIEW, aspect, 0.02, Math.max(60, this.#radius * 12));
     return multiply(projection, view);
   }
 
@@ -629,7 +675,7 @@ export class RendererController {
     ];
   }
 
-  #projectCell(x: number, y: number, height = 0): MapPoint | null {
+  #projectCell(x: number, y: number, height = 0, clipToViewport = true): MapPoint | null {
     const world = this.#worldForCell(x, y, height);
     if (!world) return null;
     const [worldX, worldY, worldZ] = world;
@@ -640,7 +686,9 @@ export class RendererController {
     if (clipW <= 0.001) return null;
     const xNormalized = clipX / clipW;
     const yNormalized = clipY / clipW;
-    if (Math.abs(xNormalized) > 1.15 || Math.abs(yNormalized) > 1.15) return null;
+    if (!Number.isFinite(xNormalized) || !Number.isFinite(yNormalized)) return null;
+    if (clipToViewport
+      && (Math.abs(xNormalized) > 1.15 || Math.abs(yNormalized) > 1.15)) return null;
     const bounds = this.#viewport;
     return {
       x: (xNormalized * 0.5 + 0.5) * bounds.width,
@@ -696,7 +744,10 @@ export class RendererController {
         for (let index = 0; index < room.boundary.length; index += step) {
           const point = room.boundary[index];
           if (!point) continue;
-          const projected = this.#projectCell(point[0], point[1], 0.2);
+          // Keep the complete polygon in one camera space and let Canvas clip
+          // it to the viewport. Dropping off-screen vertices creates artificial
+          // chords whose shape changes as the camera zooms or pans.
+          const projected = this.#projectCell(point[0], point[1], 0.2, false);
           if (!projected) continue;
           if (!started) context.moveTo(projected.x, projected.y);
           else context.lineTo(projected.x, projected.y);
@@ -833,6 +884,7 @@ export class RendererController {
     this.#camera = top
       ? { yaw: 0, pitch: Math.PI / 2 - 0.018, distance: this.#homeTop, targetX: 0, targetZ: 0, orthographic: true }
       : { yaw: -Math.PI / 4, pitch: 0.82, distance: this.#homeThree, targetX: 0, targetZ: 0, orthographic: false };
+    this.#fitActive = true;
     this.requestRender();
     if (notify) this.#notifyCamera();
   }
@@ -844,6 +896,7 @@ export class RendererController {
       ...this.#camera,
       distance: clamp(this.#camera.distance / factor, distance.minimum, distance.maximum),
     };
+    this.#fitActive = false;
     if (before && clientX !== undefined && clientY !== undefined) {
       const after = this.screenToMap(clientX, clientY);
       if (after) {
@@ -872,6 +925,7 @@ export class RendererController {
       yaw: angle(this.#camera.yaw + deltaX * 0.006),
       pitch: clamp(this.#camera.pitch - deltaY * 0.004, 0.18, 1.38),
     };
+    this.#fitActive = false;
     this.requestRender();
     this.#notifyCamera();
   }
@@ -881,6 +935,7 @@ export class RendererController {
       ...this.#camera,
       yaw: angle(this.#camera.yaw + deltaRadians),
     };
+    this.#fitActive = false;
     this.requestRender();
     this.#notifyCamera();
   }
@@ -912,6 +967,9 @@ export class RendererController {
       renderedPoints: this.#renderedPoints,
       lastFrameMs: Math.round(this.#lastFrameMs * 100) / 100,
       slowFrames: this.#slowFrames,
+      cameraDistance: this.#camera.distance,
+      fitDistance: this.#camera.orthographic ? this.#homeTop : this.#homeThree,
+      fitActive: this.#fitActive,
     };
   }
 

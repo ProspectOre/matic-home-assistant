@@ -125,6 +125,80 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toBe(true);
   });
 
+  test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const map = gallery.locator("matic-map-canvas-v4");
+    const window = gallery.locator("matic-map-canvas-v4 .scene-window");
+
+    const bounds = await window.boundingBox();
+    expect(bounds).not.toBeNull();
+    const aspect = bounds.width / bounds.height;
+    const halfVertical = (Math.PI / 3.15) / 2;
+    const halfHorizontal = Math.atan(Math.tan(halfVertical) * aspect);
+    const sceneRadius = Math.hypot(180 * 0.05, 140 * 0.05) / 2;
+    const expectedFit = sceneRadius / Math.sin(Math.min(halfVertical, halfHorizontal)) * 1.08;
+
+    await expect.poll(async () => map.evaluate((element) => element.rendererDiagnostics()))
+      .toMatchObject({ fitActive: true });
+    const diagnostics = await map.evaluate((element) => element.rendererDiagnostics());
+    expect(diagnostics.fitDistance).toBeCloseTo(expectedFit, 4);
+    expect(diagnostics.cameraDistance).toBeCloseTo(diagnostics.fitDistance, 6);
+  });
+
+  test("keeps an off-screen room polygon intact while zooming", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const scene = state.resources.scene.value;
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          scene: {
+            ...state.resources.scene,
+            value: {
+              ...scene,
+              metadata: {
+                ...scene.metadata,
+                rooms: [{
+                  id: "whole-floor",
+                  name: "Whole floor",
+                  boundary: [[0, 0], [180, 0], [180, 140], [0, 140]],
+                  center: [90, 70],
+                }],
+              },
+            },
+          },
+        },
+      });
+    }, GALLERY_TAG);
+
+    await gallery.getByRole("button", { name: "2D", exact: true }).click();
+    await gallery.getByRole("button", { name: "Rooms", exact: true }).click();
+    await gallery.getByRole("button", { name: "Labels", exact: true }).click();
+    const root = gallery.locator("matic-map-canvas-v4 .map-root");
+    const box = await root.boundingBox();
+    expect(box).not.toBeNull();
+    for (let index = 0; index < 4; index += 1) {
+      await root.dblclick({ position: { x: box.width / 2, y: box.height / 2 } });
+    }
+
+    const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
+    await expect.poll(async () => overlay.evaluate((canvas) => {
+      const context = canvas.getContext("2d");
+      if (!context) return false;
+      const samples = [[0.25, 0.25], [0.75, 0.25], [0.25, 0.75], [0.75, 0.75]];
+      return samples.every(([x, y]) => context.getImageData(
+        Math.floor(canvas.width * x),
+        Math.floor(canvas.height * y),
+        1,
+        1,
+      ).data[3] > 0);
+    })).toBe(true);
+  });
+
   test("upgrades a pre-existing shell without a blank first render", async ({ page }) => {
     const errors = [];
     page.on("pageerror", (error) => errors.push(error.message));

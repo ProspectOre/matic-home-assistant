@@ -140,7 +140,7 @@ import{A as $,B as f,i as v,w as g,x as i,y as c,z as b}from"./chunk.js";var p=[
               ${(a?.plans||[]).map(t=>i`<option value=${t.id}>${t.name}</option>`)}
             </select>
           </label>
-          <button class="list-button" type="button" @click=${()=>this.#t({type:"select-plan",planId:null})}>＋ ${this.#e("plan_new","New plan")}</button>
+          <button class="list-button" type="button" @click=${()=>this.#t({type:"select-plan",planId:null})}>\uff0b ${this.#e("plan_new","New plan")}</button>
         </div>
         <label class="field">${this.#e("plan_name","Plan name")}
           <input
@@ -171,8 +171,8 @@ import{A as $,B as f,i as v,w as g,x as i,y as c,z as b}from"./chunk.js";var p=[
                 <div class="plan-room">
                   <div class="plan-room-head">
                     <strong>${r+1}. ${o}</strong>
-                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:o})} ?disabled=${r===0} @click=${()=>this.#n(r,-1)}>↑</button>
-                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:o})} ?disabled=${r===s.rooms.length-1} @click=${()=>this.#n(r,1)}>↓</button>
+                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_up","Move {room} earlier",{room:o})} ?disabled=${r===0} @click=${()=>this.#n(r,-1)}>\u2191</button>
+                    <button class="icon-button" type="button" aria-label=${this.#e("move_room_down","Move {room} later",{room:o})} ?disabled=${r===s.rooms.length-1} @click=${()=>this.#n(r,1)}>\u2193</button>
                   </div>
                   <div class="split">
                     <label class="field">${this.#e("v4_cleaning_system","Cleaning system")}
@@ -191,7 +191,7 @@ import{A as $,B as f,i as v,w as g,x as i,y as c,z as b}from"./chunk.js";var p=[
           <div class="stack">
             <label class="checkbox"><input type="checkbox" .checked=${s.returnToBase} @change=${t=>this.#t({type:"patch-plan-draft",patch:{returnToBase:m(t)}})}>${this.#e("plan_return_to_base","Return to the dock when finished")}</label>
             <label class="checkbox"><input type="checkbox" .checked=${s.finishCurrentRoom} @change=${t=>this.#t({type:"patch-plan-draft",patch:{finishCurrentRoom:m(t)}})}>${this.#e("plan_finish_room","Finish the active room after Stop")}</label>
-            ${s.finishCurrentRoom?i`<label class="field">${this.#e("plan_threshold","Finish threshold")} · ${s.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(s.finishCurrentRoomThreshold)} @input=${t=>this.#t({type:"patch-plan-draft",patch:{finishCurrentRoomThreshold:Number(l(t))}})}></label>`:c}
+            ${s.finishCurrentRoom?i`<label class="field">${this.#e("plan_threshold","Finish threshold")} \u00b7 ${s.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(s.finishCurrentRoomThreshold)} @input=${t=>this.#t({type:"patch-plan-draft",patch:{finishCurrentRoomThreshold:Number(l(t))}})}></label>`:c}
           </div>
         </details>
         <div class="toolbar">
@@ -219,7 +219,7 @@ import{A as $,B as f,i as v,w as g,x as i,y as c,z as b}from"./chunk.js";var p=[
         </div>
         ${this.#a(e.status,e.problem,i`
           <div class="list" aria-label=${this.#e("area_workspace_title","Saved custom areas")}>
-            <button class="list-button" type="button" @click=${()=>this.#t({type:"select-area",areaId:null})}>＋ ${this.#e("area_new","New outline")}</button>
+            <button class="list-button" type="button" @click=${()=>this.#t({type:"select-area",areaId:null})}>\uff0b ${this.#e("area_new","New outline")}</button>
             ${(e.value?.areas||[]).map(a=>i`
               <button class="list-button" type="button" @click=${()=>{this.#t({type:"select-area",areaId:a.id}),this.#t({type:"open-workflow",workflow:"areaReview"})}}>
                 <span>${a.name}</span>
