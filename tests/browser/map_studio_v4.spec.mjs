@@ -686,6 +686,18 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(Math.min(...await contrastRatios(".list-button small"))).toBeGreaterThanOrEqual(4.5);
   });
 
+  test("honors reduced motion and announces a fail-closed map transition", async ({ page }) => {
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    await expect(gallery.locator(".mobile-sheet")).toHaveCSS("transition-duration", "0s");
+    await expect(gallery.locator("[aria-live=polite]")).toContainText("Live map");
+
+    await gallery.evaluate((element) => element.setScenario("transition"));
+    await expect(gallery.getByRole("status")).toContainText("Locating");
+    await expect(gallery.getByRole("button", { name: "Locating…" })).toBeDisabled();
+    await expect(gallery.locator("[aria-live=polite]")).toContainText("not available");
+  });
+
   test("uses a neutral map surface without a decorative glow", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await expect(gallery.locator(".map-root")).toHaveCSS("background-image", "none");
