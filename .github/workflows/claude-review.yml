@@ -34,7 +34,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
             --allowedTools "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr
-            view:*)"
+            view:*)" --disallowedTools "Task"
           prompt: |
             You are this repository's regular review gate. Review pull request
             #${{ github.event.pull_request.number }} of
@@ -49,6 +49,11 @@ jobs:
             payload); rotation and completion-evidence invariants; and test
             adequacy for changed behavior. Review only — never edit files,
             push commits, approve, or request changes.
+
+            Do the reading and judging yourself in this one turn. Do not
+            delegate to subagents and do not defer any part of the verdict to
+            later work: nothing runs after your final message, so a promise to
+            report back publishes nothing at all.
 
             When done, return the verdict as your final message and nothing
             else. Do not call any write API: this workflow publishes your
