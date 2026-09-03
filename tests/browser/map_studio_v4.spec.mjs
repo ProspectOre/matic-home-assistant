@@ -103,9 +103,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
 
+    // Report the measured centroid instead of a bare boolean. "The marker was
+    // never painted" and "the marker landed off centre" are different faults
+    // that a true/false poll renders identically, which makes a failure here
+    // impossible to diagnose from CI logs alone.
     await expect.poll(async () => overlay.evaluate((canvas) => {
       const context = canvas.getContext("2d");
-      if (!context) return null;
+      if (!context) return { painted: false, reason: "no 2d context" };
       const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
       const points = [];
       for (let y = 0; y < canvas.height; y += 1) {
@@ -117,12 +121,23 @@ test.describe("Map Studio v0.4 foundation", () => {
             && pixels.data[offset + 3] > 0) points.push([x, y]);
         }
       }
-      if (!points.length) return null;
+      const measured = {
+        painted: points.length > 0,
+        samples: points.length,
+        canvas: `${canvas.width}x${canvas.height}`,
+        dpr: window.devicePixelRatio,
+      };
+      if (!points.length) return { ...measured, reason: "no marker pixels" };
       const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
       const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
-      return Math.abs(x - canvas.width / 2) <= 1
-        && Math.abs(y - canvas.height / 2) <= 1;
-    })).toBe(true);
+      return {
+        ...measured,
+        offsetX: Math.round((x - canvas.width / 2) * 100) / 100,
+        offsetY: Math.round((y - canvas.height / 2) * 100) / 100,
+        centered: Math.abs(x - canvas.width / 2) <= 1
+          && Math.abs(y - canvas.height / 2) <= 1,
+      };
+    })).toMatchObject({ painted: true, centered: true });
   });
 
   test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
