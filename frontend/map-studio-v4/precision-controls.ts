@@ -1,4 +1,5 @@
 import { LitElement, css, html } from "lit";
+import { controls } from "./controls";
 import { base, tokens } from "./tokens";
 
 import {
@@ -22,75 +23,23 @@ export class MaticPrecisionControlsV4 extends LitElement {
     compact: { type: Boolean, reflect: true },
   };
 
-  static override styles = [tokens, base, css`
-    :host { display: block; color: var(--primary-text-color, #1f2933); }
-    button, input { font: inherit; }
-
-    .controls {
-      display: grid;
-      gap: 0.8rem;
-      padding: 0.9rem;
-      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
-      border-radius: 0.85rem;
-      background: var(--card-background-color, #fff);
-    }
-
-    .row { display: grid; gap: 0.42rem; }
-    label { color: var(--secondary-text-color, #687984); font-size: 0.75rem; font-weight: 650; }
-
-    .stepper {
-      display: grid;
-      grid-template-columns: 2.75rem minmax(0, 1fr) 2.75rem;
-      gap: 0.35rem;
-      align-items: stretch;
-    }
-
-    button, .number {
-      min-block-size: 2.75rem;
-      border: 1px solid var(--divider-color, rgb(60 75 85 / 20%));
-      border-radius: 0.65rem;
-      color: inherit;
-      background: var(--secondary-background-color, #f3f6f7);
-    }
-
-    button { cursor: pointer; font-weight: 700; }
-    button:hover { background: color-mix(in srgb, var(--primary-color, #0678ce) 9%, transparent); }
-
-    .number {
-      display: flex;
-      align-items: center;
-      min-inline-size: 0;
-      padding-inline: 0.6rem;
-      background: var(--card-background-color, #fff);
-    }
-
-    input {
-      min-inline-size: 0;
-      inline-size: 100%;
-      border: 0;
-      outline: 0;
-      color: inherit;
-      background: transparent;
-      text-align: end;
-      font-variant-numeric: tabular-nums;
-    }
-
-    .unit { margin-inline-start: 0.25rem; color: var(--secondary-text-color, #687984); font-size: 0.75rem; }
-    .hint { margin: 0; color: var(--secondary-text-color, #687984); font-size: 0.72rem; line-height: 1.45; }
-
-    :host([compact]) .controls {
-      position: absolute;
-      z-index: 8;
-      inset-block-start: calc(100% + 0.4rem);
-      inset-inline-end: 0;
-      inline-size: min(18rem, calc(100vw - 1.5rem));
-      box-shadow: 0 12px 32px rgb(31 41 51 / 20%);
-    }
-
-    @media (forced-colors: active) {
-      button, .number, .controls { border-color: CanvasText; }
-    }
-  `];
+  static override styles = [tokens, base, controls, css`
+:host { display: block; color: var(--ms-text); }
+.controls { display: grid; gap: var(--ms-space-3); padding: var(--ms-space-3); }
+.stepper { display: grid; grid-template-columns: var(--ms-control) minmax(0, 1fr) var(--ms-control); gap: var(--ms-space-1); align-items: stretch; }
+.number { --ms-local: var(--ms-surface-card); display: flex; align-items: center; min-inline-size: 0; min-block-size: var(--ms-control); padding-inline: var(--ms-space-2); border: 1px solid var(--ms-line-strong); border-radius: var(--ms-radius-sm); background: var(--ms-local); }
+.number:focus-within { outline: 2px solid var(--ms-accent); outline-offset: 1px; border-color: var(--ms-accent); }
+input { min-inline-size: 0; inline-size: 100%; border: 0; outline: 0; color: inherit; background: transparent; text-align: end; font-size: var(--ms-t-sm); font-variant-numeric: tabular-nums; }
+.unit { margin-inline-start: var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); }
+.hint { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+:host([compact]) .controls {
+position: absolute;
+z-index: 8;
+inset-block-start: calc(100% + var(--ms-space-1));
+inset-inline-end: 0;
+inline-size: min(18rem, calc(100vw - 1.5rem));
+}
+`];
 
   state: WorkspaceState = initialWorkspaceState();
   compact = false;
@@ -119,11 +68,12 @@ export class MaticPrecisionControlsV4 extends LitElement {
   protected override render() {
     const { draw } = this.state;
     return html`
-      <div class="controls" aria-label=${this.#t("v4_drawing_precision", "Drawing precision")}>
-        <div class="row">
+      <div class="controls ms-surface ms-surface--overlay" aria-label=${this.#t("v4_drawing_precision", "Drawing precision")}>
+        <div class="row ms-field">
           <label for="zoom">${this.#t("v4_map_zoom", "Map zoom")}</label>
           <div class="stepper">
             <button
+              class="ms-btn ms-btn--secondary ms-btn--icon"
               type="button"
               aria-label=${this.#t("zoom_out", "Zoom out")}
               @click=${() => this.#intent({ type: "step-zoom", factor: 0.8 })}
@@ -143,6 +93,7 @@ export class MaticPrecisionControlsV4 extends LitElement {
               <span class="unit">%</span>
             </span>
             <button
+              class="ms-btn ms-btn--secondary ms-btn--icon"
               type="button"
               aria-label=${this.#t("zoom_in", "Zoom in")}
               @click=${() => this.#intent({ type: "step-zoom", factor: 1.25 })}
@@ -150,10 +101,11 @@ export class MaticPrecisionControlsV4 extends LitElement {
           </div>
         </div>
 
-        <div class="row">
+        <div class="row ms-field">
           <label for="brush">${this.#t("brush_size", "Brush width")}</label>
           <div class="stepper">
             <button
+              class="ms-btn ms-btn--secondary ms-btn--icon"
               type="button"
               aria-label=${this.#t("v4_narrower_brush", "Narrower brush")}
               @click=${() => this.#intent({
@@ -176,6 +128,7 @@ export class MaticPrecisionControlsV4 extends LitElement {
               <span class="unit">m</span>
             </span>
             <button
+              class="ms-btn ms-btn--secondary ms-btn--icon"
               type="button"
               aria-label=${this.#t("v4_wider_brush", "Wider brush")}
               @click=${() => this.#intent({
