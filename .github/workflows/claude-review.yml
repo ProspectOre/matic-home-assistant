@@ -109,14 +109,24 @@ jobs:
             echo "Could not extract a verdict from the transcript." >&2
             exit 1
           fi
-          case "$body" in
-            "## Review result:"*) ;;
-            *)
-              echo "The reviewer did not return a verdict; publishing nothing." >&2
-              printf '%s\n' "$body" >&2
-              exit 1
-              ;;
-          esac
+          # The verdict is the contract, not what leads up to it. Reviewers
+          # tend to narrate before the heading ("Now I have everything I need
+          # for the verdict."), and review-gate.yml anchors its match to the
+          # start of the body, so publish from the heading onwards rather than
+          # discarding an otherwise complete review over its preamble.
+          verdict="$(printf '%s\n' "$body" | awk '
+            tolower($0) ~ /^[[:space:]]*#+[[:space:]]*review result:/ { found = 1 }
+            found { print }
+          ')"
+          if [ -z "${verdict//[[:space:]]/}" ]; then
+            echo "The reviewer did not return a verdict; publishing nothing." >&2
+            printf '%s\n' "$body" >&2
+            exit 1
+          fi
+          if [ "$verdict" != "$body" ]; then
+            echo "Dropped preamble before the verdict heading." >&2
+          fi
+          body="$verdict"
           # A clean verdict must be the heading and the reviewed-commit line
           # and nothing else. review-gate.yml anchors its match to the end of
           # the body, so trailing prose would post a review the gate then
