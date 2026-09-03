@@ -30,6 +30,10 @@ from .plans import OEM_STOP_FENCE_SECONDS, CleaningPlanManager
 
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
+# Coordinator state can still show the pre-STOP task for one refresh. Keep
+# that stale edge from abandoning the settlement watcher, but stop waiting if
+# cleaning or pause persists long enough to be replacement work.
+DOCK_SETTLE_TRANSITION_GRACE_SECONDS = 60
 
 SETTLED_STATE = "idle"
 HOMEWARD_STATES = frozenset({"docked", "returning"})
@@ -58,17 +62,30 @@ async def async_dock_when_stop_settles(
     entity_id: str,
 ) -> bool:
     """Dock once the stopped task ends and report whether DOCK was sent."""
-    deadline = monotonic() + DOCK_SETTLE_TIMEOUT_SECONDS
+    started = monotonic()
+    deadline = started + DOCK_SETTLE_TIMEOUT_SECONDS
+    transition_grace_deadline = min(
+        deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
+    )
+    settled_state_observed = False
     while True:
         if not manager.stop_pending(serial_number):
             return False
+        now = monotonic()
+        refresh_transition = False
         state = hass.states.get(entity_id)
         if state is not None:
             if state.state in HOMEWARD_STATES:
                 return False
             if state.state in REPLACEMENT_STATES:
-                return False
-            if state.state == SETTLED_STATE:
+                # The first state read commonly still reflects the task that
+                # accepted STOP. Refresh through that bounded transition edge;
+                # a later or persistent cleaning state is replacement motion.
+                if settled_state_observed or now >= transition_grace_deadline:
+                    return False
+                refresh_transition = True
+            elif state.state == SETTLED_STATE:
+                settled_state_observed = True
                 try:
                     active = await client.async_has_active_cleaning_session()
                 except MaticError as err:
@@ -88,9 +105,11 @@ async def async_dock_when_stop_settles(
                         return False
                     await refresh()
                     return True
-        if monotonic() >= deadline:
+        if now >= deadline:
             return False
         await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+        if refresh_transition:
+            await refresh()
 
 
 def schedule_dock_after_stop(

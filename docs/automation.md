@@ -352,8 +352,10 @@ least three successful runs. A stop below the configured threshold remains
 immediate; at or above it, the current room completes and the robot docks: the
 next leg is never dispatched, and inside a leg the managed STOP is sent at the
 observed room boundary so later rooms remain due. Until a confident compatible duration exists,
-enabling the policy means the current room finishes. Set the threshold to `0%`
-to always finish it. This is a time-based estimate, not a measured area
+enabling the policy means the current room finishes. At a configured boundary
+the estimate rounds down, so progress just below the threshold still stops
+immediately while the exact threshold finishes the room. Set the threshold to
+`0%` to always finish it. This is a time-based estimate, not a measured area
 percentage; pauses, recharge, and other delays can reduce its accuracy.
 
 Use **Run all — top to bottom** when every selected room should always clean in
