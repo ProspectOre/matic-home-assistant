@@ -246,7 +246,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "group: review-gate-base-change-${{ github.event.pull_request.number }}"
         in base_change
     )
-    assert "Base changed; push a new head before @codex review" in base_change
+    assert "Base changed; push a new head for a fresh review" in base_change
     assert "Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA" in base_change
     assert 'stamp_status "$REVIEW_GATE_CONTEXT"' in base_change
     assert base_change.count('stamp_status "$REVIEW_GATE_CONTEXT"') == 2
@@ -264,7 +264,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         base_advance
     )
     assert "base_advanced_at" in base_advance
-    assert "push a new head before @codex review" in base_advance
+    assert "push a new head for a fresh review" in base_advance
     assert "mktemp" in base_advance
     assert "event_head_sha" in base_advance
     assert "EVENT_HEAD_SHA" in base_advance
@@ -321,7 +321,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "if: always()" in rollout
     assert "review-fork-regular-review.yml" in rollout
     assert "actions: write" in rollout
-    assert "Disarming automatic merge; waiting for @codex review" in rollout
+    assert "Disarming automatic merge; waiting for the regular review" in rollout
     assert "disablePullRequestAutoMerge" in rollout
     assert "((.auto_merge != null) | tostring)" in rollout
     assert "cancel-legacy-auto-merge-runs" in rollout

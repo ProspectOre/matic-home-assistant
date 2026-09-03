@@ -16,6 +16,8 @@ permissions:
   contents: read
   pull-requests: write
   id-token: write
+  # Needed to dispatch the review gate once a verdict is published.
+  actions: write
 
 jobs:
   review:
@@ -145,3 +147,8 @@ jobs:
             -f commit_id=${{ github.event.pull_request.head.sha }} \
             -f event=COMMENT \
             -f body="$body"
+          # A review posted with GITHUB_TOKEN raises no pull_request_review
+          # event, by design, so the gate's routers never see this verdict and
+          # its status would sit on the previous evaluation indefinitely. Ask
+          # the gate to re-read the pull request now that the evidence exists.
+          gh workflow run review-gate.yml -f pull_request="$PR_NUMBER"

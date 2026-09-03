@@ -62,8 +62,8 @@ jobs:
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
 
-          gate_description="Base changed; push a new head before @codex review"
-          marker_description="Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA; push a new head before @codex review"
+          gate_description="Base changed; push a new head for a fresh review"
+          marker_description="Base changed for PR #$PR_NUMBER at base $EVENT_BASE_SHA; push a new head for a fresh review"
 
           active_gate_runs() {
             gh api "repos/$REPO/actions/workflows/review-gate.yml/runs?per_page=100" --paginate --slurp \

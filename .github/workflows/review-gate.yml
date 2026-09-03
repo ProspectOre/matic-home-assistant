@@ -1,4 +1,4 @@
-name: Codex Review Gate
+name: Regular Review Gate
 
 run-name: "review-gate #${{ inputs.pull_request || github.event.pull_request.number }}"
 
@@ -35,7 +35,7 @@ jobs:
       || github.event.pull_request.number != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
-      - name: Evaluate exact-head regular Codex review
+      - name: Evaluate exact-head regular review
         env:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
@@ -102,7 +102,7 @@ jobs:
           # already classified review and issue-comment events.
           if [[ -n "$event_head_sha" ]]; then
             stamp_status_for_sha "$event_head_sha" "$REVIEW_GATE_CONTEXT" pending \
-              "Review state changed; evaluating regular Codex review"
+              "Review state changed; evaluating the regular review"
           fi
 
           read_pr_snapshot() {
@@ -144,7 +144,7 @@ jobs:
             exit 0
           fi
           head_prefix="$(printf '%.10s' "$head_sha")"
-          base_marker_description="Base changed for PR #$pr_number at base $base_sha at $(date -u +%Y-%m-%dT%H:%M:%SZ); push a new head before @codex review"
+          base_marker_description="Base changed for PR #$pr_number at base $base_sha at $(date -u +%Y-%m-%dT%H:%M:%SZ); push a new head for a fresh review"
 
           stamp_status() {
             local context="$1"
@@ -399,25 +399,25 @@ jobs:
                 "Regular review invalidated at $latest_finding_at; active regular findings require a newer clean normal verdict"
             fi
             if base_change_marker_exists; then
-              stamp_review_gate pending "Base changed; push a new head before @codex review"
+              stamp_review_gate pending "Base changed; push a new head for a fresh review"
               echo "The base-change marker requires a new PR head and regular review."
               exit 0
             fi
             if [[ "$verdict" == "null" ]]; then
               if [[ -n "$latest_finding_at" ]]; then
-                stamp_review_gate pending "Waiting for fresh clean Codex review on $head_prefix"
+                stamp_review_gate pending "Waiting for a fresh clean regular review on $head_prefix"
                 echo "A findings-bearing regular review needs a newer clean review."
                 exit 0
               fi
-              stamp_review_gate pending "Waiting for @codex review on $head_prefix"
-              echo "No affirmative regular Codex verdict covers the exact head."
+              stamp_review_gate pending "Waiting for the regular review on $head_prefix"
+              echo "No affirmative regular review verdict covers the exact head."
               exit 0
             fi
             verdict_at="$(jq -r '.at // empty' <<< "$verdict")"
             if [[ -z "$verdict_at" || "$finding_count" -gt 0 ]]; then
-              stamp_review_gate pending "Codex reported findings on $head_prefix"
-              echo "Codex reported $finding_count active regular-review finding(s) on the exact head."
-              echo "Fix them, push a new head, and tag @codex review again."
+              stamp_review_gate pending "The regular review reported findings on $head_prefix"
+              echo "The regular review reported $finding_count active finding(s) on the exact head."
+              echo "Fix them and push a new head for a fresh review."
               exit 0
             fi
           }
@@ -447,7 +447,7 @@ jobs:
           fi
           # The event head was revoked before its first API read. Revoke the
           # resolved head as well for manual dispatches and stale event payloads.
-          stamp_review_gate pending "Evaluating regular Codex review on $head_prefix"
+          stamp_review_gate pending "Evaluating the regular review on $head_prefix"
           gate_snapshot="$(read_gate_snapshot)"
           require_clean_regular_snapshot "$gate_snapshot"
 
@@ -466,7 +466,7 @@ jobs:
           fi
           if [[ "$final_base_sha" != "$base_sha" ]]; then
             stamp_base_change_marker
-            stamp_review_gate pending "Base changed; push a new head before @codex review"
+            stamp_review_gate pending "Base changed; push a new head for a fresh review"
             echo "The PR base changed during evaluation; push a new head before requesting a regular review."
             exit 0
           fi
@@ -487,7 +487,7 @@ jobs:
           if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$last_base_ref" != "$DEFAULT_BRANCH" || "$last_is_draft" != "false" || "$last_auto_merge_enabled" != "false" || "$last_pr_state" != "OPEN" ]]; then
             if [[ "$last_head_sha" == "$head_sha" && "$last_base_sha" != "$base_sha" ]]; then
               stamp_base_change_marker
-              stamp_review_gate pending "Base changed; push a new head before @codex review"
+              stamp_review_gate pending "Base changed; push a new head for a fresh review"
             fi
             if [[ "$last_auto_merge_enabled" == "true" ]]; then
               disable_auto_merge "$last_pr_node_id"
@@ -521,7 +521,7 @@ jobs:
               exit 1
               ;;
           esac
-          stamp_review_gate success "Clean regular Codex review for $head_prefix; evidence $evidence_marker"
-          echo "The exact pull request head has an affirmative clean regular Codex review."
+          stamp_review_gate success "Clean regular review for $head_prefix; evidence $evidence_marker"
+          echo "The exact pull request head has an affirmative clean regular review."
           echo "Security-review messages are intentionally not review-gate evidence."
           echo "This workflow never enables or performs a merge."
