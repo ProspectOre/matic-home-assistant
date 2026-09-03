@@ -117,7 +117,14 @@ background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
 .ms-surface--floating { box-shadow: var(--ms-shadow-2); }
 .ms-surface--overlay { border-radius: var(--ms-radius-md); box-shadow: var(--ms-shadow-3); }
 .ms-field { display: grid; gap: var(--ms-space-1); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); }
-.ms-field input, .ms-field select, .ms-select {
+/* Child combinator, not descendant: .ms-field wraps a label and ITS
+   control. A descendant selector at (0,1,1) also matched inputs nested
+   inside composite controls -- precision-controls' .stepper > .number >
+   input -- and beat that component's own input { border: 0; background:
+   transparent } at (0,0,1), painting a second border and background
+   inside a wrapper that already had them, forcing 44px onto the inner
+   input, and drawing a second focus ring over .number:focus-within. */
+.ms-field > input, .ms-field > select, .ms-select {
 --ms-local: var(--ms-surface-card);
 inline-size: 100%;
 min-block-size: var(--ms-control);
@@ -128,10 +135,10 @@ color: var(--ms-text);
 background: var(--ms-local);
 font-size: var(--ms-t-sm);
 }
-.ms-field input:focus-visible, .ms-field select:focus-visible, .ms-select:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 1px; border-color: var(--ms-accent); }
-.ms-field input:disabled, .ms-field select:disabled, .ms-select:disabled { color: var(--ms-text-disabled); cursor: default; }
+.ms-field > input:focus-visible, .ms-field > select:focus-visible, .ms-select:focus-visible { outline: 2px solid var(--ms-accent); outline-offset: 1px; border-color: var(--ms-accent); }
+.ms-field > input:disabled, .ms-field > select:disabled, .ms-select:disabled { color: var(--ms-text-disabled); cursor: default; }
 @media (forced-colors: active) {
-.ms-btn, .ms-row, .ms-surface, .ms-field input, .ms-field select, .ms-select { border-color: ButtonBorder; }
+.ms-btn, .ms-row, .ms-surface, .ms-field > input, .ms-field > select, .ms-select { border-color: ButtonBorder; }
 .ms-btn[aria-pressed="true"], .ms-btn[aria-checked="true"], .ms-row[aria-pressed="true"], .ms-row[aria-current="true"], .ms-row[data-selected="true"] { forced-color-adjust: none; color: HighlightText; background: Highlight; border-color: Highlight; }
 .ms-btn:disabled, .ms-row:disabled, .ms-btn[aria-disabled="true"], .ms-row[aria-disabled="true"] { color: GrayText; border-color: GrayText; }
 }
