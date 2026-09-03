@@ -1,4 +1,5 @@
 import { LitElement, css, nothing } from "lit";
+import { base, tokens } from "./tokens";
 import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
@@ -175,7 +176,7 @@ export class MaticMapShellV4 extends LitElement {
     _sheetDetent: { state: true },
   };
 
-  static override styles = css`
+  static override styles = [tokens, base, css`
     :host {
       display: block;
       min-inline-size: 0;
@@ -186,8 +187,6 @@ export class MaticMapShellV4 extends LitElement {
       container-type: size;
     }
 
-    * { box-sizing: border-box; }
-    button { font: inherit; }
 
     .root { min-block-size: 0; block-size: 100%; }
 
@@ -554,7 +553,7 @@ export class MaticMapShellV4 extends LitElement {
     @media (prefers-reduced-motion: reduce) {
       .narrow .mobile-sheet { transition: none; }
     }
-  `;
+  `];
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;

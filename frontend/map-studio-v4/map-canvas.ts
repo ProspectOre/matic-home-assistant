@@ -1,4 +1,5 @@
 import { LitElement, css, html, nothing } from "lit";
+import { base, tokens } from "./tokens";
 import type { PropertyValues } from "lit";
 
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
@@ -42,7 +43,7 @@ export class MaticMapCanvasV4 extends LitElement {
     localize: { attribute: false },
   };
 
-  static override styles = css`
+  static override styles = [tokens, base, css`
     :host {
       display: block;
       min-width: 0;
@@ -51,7 +52,6 @@ export class MaticMapCanvasV4 extends LitElement {
       color: var(--primary-text-color, #1f2933);
     }
 
-    * { box-sizing: border-box; }
 
     button, input { font: inherit; }
 
@@ -381,7 +381,7 @@ export class MaticMapCanvasV4 extends LitElement {
       .area-stroke, .brush-cursor { stroke: Highlight; }
       .robot { background: Highlight; border-color: Canvas; }
     }
-  `;
+  `];
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
