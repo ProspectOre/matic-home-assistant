@@ -803,6 +803,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("[aria-live=polite]")).toContainText("not available");
   });
 
+  test("gives the map status overlay a readable surface", async ({ page }) => {
+    // The overlay sits directly on the map, including the photo view, so it
+    // needs its own background. It once inherited one from a shared rule that
+    // also styled the toolbars; when that rule was replaced by a class, every
+    // toolbar was updated and this was missed, and nothing failed because the
+    // other assertions on .map-message only check presence and text.
+    const gallery = await loadGallery(page, { scenario: "ha-offline" });
+    const message = gallery.locator("matic-map-canvas-v4 .map-message");
+    await expect(message).toBeVisible();
+    const surface = await message.evaluate((element) => {
+      const style = getComputedStyle(element);
+      return {
+        background: style.backgroundColor,
+        border: style.borderTopWidth,
+        shadow: style.boxShadow,
+      };
+    });
+    expect(surface.background).not.toBe("rgba(0, 0, 0, 0)");
+    expect(surface.border).not.toBe("0px");
+    expect(surface.shadow).not.toBe("none");
+  });
+
   test("uses a neutral map surface without a decorative glow", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await expect(gallery.locator(".map-root")).toHaveCSS("background-image", "none");
