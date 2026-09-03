@@ -132,12 +132,22 @@ test.describe("Map Studio v0.4 foundation", () => {
         if (!points.length) return { ...measured, reason: "no marker pixels" };
         const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
         const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
+        // Allow one CSS pixel rather than one device pixel. The overlay is
+        // sized to an odd number of device pixels (a 606.5 CSS-pixel viewport
+        // at ratio 2), so the true centre falls on a half pixel while the
+        // symmetric marker rasterises onto a whole one -- a structural ~1px
+        // offset before any antialiasing. WebKit's arc antialiasing then
+        // differs by a fraction of a pixel between platforms, which is enough
+        // to cross a one-device-pixel bound. The meter-versus-cell conversion
+        // this guards would be wrong by far more than a pixel.
+        const tolerance = Math.max(1, window.devicePixelRatio || 1);
         return {
           ...measured,
+          tolerance,
           offsetX: Math.round((x - canvas.width / 2) * 100) / 100,
           offsetY: Math.round((y - canvas.height / 2) * 100) / 100,
-          centered: Math.abs(x - canvas.width / 2) <= 1
-            && Math.abs(y - canvas.height / 2) <= 1,
+          centered: Math.abs(x - canvas.width / 2) <= tolerance
+            && Math.abs(y - canvas.height / 2) <= tolerance,
         };
       });
       return measured.painted;
