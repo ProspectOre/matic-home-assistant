@@ -1,0 +1,48 @@
+name: Apply intelligent stop and threshold fix
+
+on:
+  push:
+    branches: [fix/intelligent-stop-return-threshold]
+
+permissions:
+  contents: write
+
+jobs:
+  apply:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Apply exact patch
+        run: python .github/scripts/apply_intelligent_stop_fix.py
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[test]'
+      - name: Format patched Python
+        run: ruff format custom_components/matic_robot/stop_return.py custom_components/matic_robot/plans.py tests/test_stop_return.py tests/test_plans.py
+      - name: Run focused regressions
+        run: pytest tests/test_stop_return.py tests/test_plans.py
+      - name: Run full Python suite
+        run: pytest --cov=custom_components/matic_robot --cov-report=term-missing
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy custom_components/matic_robot
+      - run: python scripts/check_public_tree.py
+      - run: python -m build --sdist --wheel
+      - run: python scripts/check_release_artifacts.py dist
+      - run: python scripts/check_fresh_install.py dist
+      - name: Commit validated patch and remove temporary drivers
+        run: |
+          rm .github/scripts/apply_intelligent_stop_fix.py
+          rm .github/workflows/apply-intelligent-stop-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          git commit -m 'Fix intelligent stop return and threshold boundary'
+          git push origin HEAD:fix/intelligent-stop-return-threshold
