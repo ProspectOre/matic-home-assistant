@@ -503,7 +503,7 @@ export class MaticMapShellV4 extends LitElement {
 
     .narrow .app { grid-template-rows: 3.35rem minmax(0, 1fr); min-block-size: 28rem; }
     .narrow .workspace { grid-template-columns: minmax(0, 1fr); }
-    .narrow .inspector { display: none; }
+    .narrow .inspector { border-inline-start: 0; }
     .narrow .mobile-sheet {
       position: absolute;
       z-index: 7;
@@ -1005,65 +1005,81 @@ export class MaticMapShellV4 extends LitElement {
               </div>
             ` : nothing}
 
-            <aside class="inspector" aria-label="Map workspace">
-              <div class="status-strip">
-                <span class="status-icon" aria-hidden="true">◆</span>
-                <span><strong>${status.title}</strong><small>${status.detail}</small></span>
-                ${statusAction ? html`
-                  <button
-                    class="status-action"
-                    type="button"
-                    ?disabled=${!statusAction.enabled}
-                    title=${statusAction.reason ?? ""}
-                    @click=${() => this.#action(statusAction)}
-                  >${this.#t("v4_stop", "Stop")}</button>
-                ` : nothing}
-              </div>
-              <section class="workflow">
-                <div class="workflow-heading">
-                  ${state.workflow !== "none" ? html`
-                    <button
-                      class="workflow-back"
-                      type="button"
-                      aria-label=${this.#t("v4_back", "Back")}
-                      @click=${() => this.#workflow("none")}
-                    >←</button>
-                  ` : nothing}
-                  <h2 tabindex="-1">${workflow.title}</h2>
+            <!--
+              One panel element, not two. It is a grid column when wide and a
+              bottom sheet when narrow. Rendering both and hiding one with
+              display:none meant two live workflow panels at all times, which
+              made #dialogLauncherFor pick the hidden copy on narrow -- so
+              cancelling a delete dialog on a phone restored focus to nothing --
+              and left every primary action ambiguous under Playwright's strict
+              mode.
+            -->
+            <aside
+              class=${narrow ? "inspector mobile-sheet" : "inspector"}
+              data-detent=${narrow ? this._sheetDetent : nothing}
+              aria-label="Map workspace"
+            >
+              ${narrow ? html`
+                <button
+                  class="sheet-toggle"
+                  type="button"
+                  aria-label=${this.#t("v4_workspace_height", "Map workspace, {height} height", { height: this._sheetDetent })}
+                  aria-expanded=${String(this._sheetDetent !== "peek")}
+                  @click=${this.#cycleSheet}
+                >
+                  <span class="sheet-handle" aria-hidden="true"></span>
+                  <span class="sheet-title">${workflow.title}</span>
+                  <span class="sheet-description">${workflow.description}</span>
+                </button>
+                <div class="sheet-body">
+                  <!--
+                    Draw still omits the body on narrow. Restoring it puts two
+                    "Clear" controls on screen at once -- the map's precision
+                    chip and the panel's own -- so the saved-areas list stays
+                    unreachable here until the sheet's per-workflow content
+                    model decides which surface owns the drawing controls.
+                  -->
+                  ${state.workflow === "draw" ? nothing : this.#workflowBody(state)}
                 </div>
-                <p>${workflow.description}</p>
-                ${this.#workflowBody(state)}
                 <div class="primary-stack">
                   ${footerPrimary ? this.#primaryButton(footerPrimary) : nothing}
                   ${footerSecondary ? this.#primaryButton(footerSecondary, "secondary-action") : nothing}
                 </div>
-              </section>
+              ` : html`
+                <div class="status-strip">
+                  <span class="status-icon" aria-hidden="true">◆</span>
+                  <span><strong>${status.title}</strong><small>${status.detail}</small></span>
+                  ${statusAction ? html`
+                    <button
+                      class="status-action"
+                      type="button"
+                      ?disabled=${!statusAction.enabled}
+                      title=${statusAction.reason ?? ""}
+                      @click=${() => this.#action(statusAction)}
+                    >${this.#t("v4_stop", "Stop")}</button>
+                  ` : nothing}
+                </div>
+                <section class="workflow">
+                  <div class="workflow-heading">
+                    ${state.workflow !== "none" ? html`
+                      <button
+                        class="workflow-back"
+                        type="button"
+                        aria-label=${this.#t("v4_back", "Back")}
+                        @click=${() => this.#workflow("none")}
+                      >←</button>
+                    ` : nothing}
+                    <h2 tabindex="-1">${workflow.title}</h2>
+                  </div>
+                  <p>${workflow.description}</p>
+                  ${this.#workflowBody(state)}
+                  <div class="primary-stack">
+                    ${footerPrimary ? this.#primaryButton(footerPrimary) : nothing}
+                    ${footerSecondary ? this.#primaryButton(footerSecondary, "secondary-action") : nothing}
+                  </div>
+                </section>
+              `}
             </aside>
-
-            <section
-              class="mobile-sheet"
-              data-detent=${this._sheetDetent}
-              aria-label="Map workspace"
-            >
-              <button
-                class="sheet-toggle"
-                type="button"
-                aria-label=${this.#t("v4_workspace_height", "Map workspace, {height} height", { height: this._sheetDetent })}
-                aria-expanded=${String(this._sheetDetent !== "peek")}
-                @click=${this.#cycleSheet}
-              >
-                <span class="sheet-handle" aria-hidden="true"></span>
-                <span class="sheet-title">${workflow.title}</span>
-                <span class="sheet-description">${workflow.description}</span>
-              </button>
-              <div class="sheet-body">
-                ${state.workflow === "draw" ? nothing : this.#workflowBody(state)}
-              </div>
-              <div class="primary-stack">
-                ${footerPrimary ? this.#primaryButton(footerPrimary) : nothing}
-                ${footerSecondary ? this.#primaryButton(footerSecondary, "secondary-action") : nothing}
-              </div>
-            </section>
 
             ${state.fullMap ? html`
               <section
