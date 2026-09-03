@@ -83,7 +83,6 @@ jobs:
         env:
           GH_TOKEN: ${{ steps.review.outputs.github_token }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
         run: |
@@ -112,7 +111,9 @@ jobs:
               exit 1
               ;;
           esac
+          # Take the reviewed commit straight from the trusted event context,
+          # so the evidence can only ever name this pull request's exact head.
           gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
-            -f commit_id="$HEAD_SHA" \
+            -f commit_id=${{ github.event.pull_request.head.sha }} \
             -f event=COMMENT \
             -f body="$body"
