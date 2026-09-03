@@ -168,7 +168,6 @@ max-inline-size: calc(100% - 1rem);
       translate: -50% -50%;
       inline-size: min(22rem, calc(100% - 2rem));
       padding: 1rem 1.1rem;
-      border-radius: 0.9rem;
       text-align: center;
     }
 
@@ -499,7 +498,7 @@ max-inline-size: calc(100% - 1rem);
         ` : nothing}
 
         ${message && !(state.fullMap && (locating || !state.host.administrator)) ? html`
-          <div class="map-message" role="status">
+          <div class="map-message ms-surface ms-surface--floating" role="status">
             <strong>${message.title}</strong>
             <span>${message.detail}</span>
           </div>
