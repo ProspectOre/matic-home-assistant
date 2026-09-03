@@ -107,37 +107,43 @@ test.describe("Map Studio v0.4 foundation", () => {
     // never painted" and "the marker landed off centre" are different faults
     // that a true/false poll renders identically, which makes a failure here
     // impossible to diagnose from CI logs alone.
-    await expect.poll(async () => overlay.evaluate((canvas) => {
-      const context = canvas.getContext("2d");
-      if (!context) return { painted: false, reason: "no 2d context" };
-      const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
-      const points = [];
-      for (let y = 0; y < canvas.height; y += 1) {
-        for (let x = 0; x < canvas.width; x += 1) {
-          const offset = (y * canvas.width + x) * 4;
-          if (pixels.data[offset] === 6
-            && pixels.data[offset + 1] === 120
-            && pixels.data[offset + 2] === 206
-            && pixels.data[offset + 3] > 0) points.push([x, y]);
+    let measured;
+    await expect.poll(async () => {
+      measured = await overlay.evaluate((canvas) => {
+        const context = canvas.getContext("2d");
+        if (!context) return { painted: false, reason: "no 2d context" };
+        const pixels = context.getImageData(0, 0, canvas.width, canvas.height);
+        const points = [];
+        for (let y = 0; y < canvas.height; y += 1) {
+          for (let x = 0; x < canvas.width; x += 1) {
+            const offset = (y * canvas.width + x) * 4;
+            if (pixels.data[offset] === 6
+              && pixels.data[offset + 1] === 120
+              && pixels.data[offset + 2] === 206
+              && pixels.data[offset + 3] > 0) points.push([x, y]);
+          }
         }
-      }
-      const measured = {
-        painted: points.length > 0,
-        samples: points.length,
-        canvas: `${canvas.width}x${canvas.height}`,
-        dpr: window.devicePixelRatio,
-      };
-      if (!points.length) return { ...measured, reason: "no marker pixels" };
-      const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
-      const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
-      return {
-        ...measured,
-        offsetX: Math.round((x - canvas.width / 2) * 100) / 100,
-        offsetY: Math.round((y - canvas.height / 2) * 100) / 100,
-        centered: Math.abs(x - canvas.width / 2) <= 1
-          && Math.abs(y - canvas.height / 2) <= 1,
-      };
-    })).toMatchObject({ painted: true, centered: true });
+        const measured = {
+          painted: points.length > 0,
+          samples: points.length,
+          canvas: `${canvas.width}x${canvas.height}`,
+          dpr: window.devicePixelRatio,
+        };
+        if (!points.length) return { ...measured, reason: "no marker pixels" };
+        const x = points.reduce((sum, point) => sum + point[0], 0) / points.length;
+        const y = points.reduce((sum, point) => sum + point[1], 0) / points.length;
+        return {
+          ...measured,
+          offsetX: Math.round((x - canvas.width / 2) * 100) / 100,
+          offsetY: Math.round((y - canvas.height / 2) * 100) / 100,
+          centered: Math.abs(x - canvas.width / 2) <= 1
+            && Math.abs(y - canvas.height / 2) <= 1,
+        };
+      });
+      return measured.painted;
+    }).toBe(true);
+    expect(measured, `pose projection ${JSON.stringify(measured)}`)
+      .toMatchObject({ centered: true });
   });
 
   test("fits the complete 3D scene inside the perspective viewport", async ({ page }) => {
