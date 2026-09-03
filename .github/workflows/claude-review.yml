@@ -49,19 +49,24 @@ jobs:
             adequacy for changed behavior. Review only — never edit files,
             push commits, approve, or request changes.
 
-            When done, post exactly one pull request review by running:
+            When done, post exactly one pull request review with a single
+            command that begins with `gh api`, passing the review body as a
+            literal single-quoted argument. Do not assign a shell variable and
+            do not chain commands: only a command starting with `gh api` is
+            permitted, so a body passed through `$BODY` can never be sent.
 
-            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body="$BODY"
+            If the change has no blocking findings, run exactly:
 
-            If the change has no blocking findings, $BODY must be exactly the
-            following two lines and nothing else before or after:
+            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body='## Review result: No issues found.
 
-            ## Review result: No issues found.
+            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`'
 
-            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
+            The body must be exactly those two lines, with nothing else before
+            or after them.
 
-            If there are blocking findings, $BODY must start with the heading
-            `## Review result: findings`, followed by the line
+            If there are blocking findings, run the same single `gh api`
+            command with a literal single-quoted body that starts with the
+            heading `## Review result: findings`, followed by the line
             **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
             and then a numbered list giving file:line, the defect, and a
             concrete failure scenario for every finding. If you cannot
