@@ -126,7 +126,7 @@ jobs:
             gh api "repos/$REPO/statuses/$head_sha" --silent \
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
-              -f description="Disarming automatic merge; waiting for @codex review" \
+              -f description="Disarming automatic merge; waiting for the regular review" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
           # Revoke the gate before waiting for an evaluator to stop. A prior
