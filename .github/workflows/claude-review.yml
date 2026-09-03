@@ -29,11 +29,12 @@ jobs:
         with:
           fetch-depth: 1
       - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
+        id: review
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
             --allowedTools "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr
-            view:*),Bash(gh api:*)"
+            view:*)"
           prompt: |
             You are this repository's regular review gate. Review pull request
             #${{ github.event.pull_request.number }} of
@@ -49,25 +50,70 @@ jobs:
             adequacy for changed behavior. Review only — never edit files,
             push commits, approve, or request changes.
 
-            When done, post exactly one pull request review with a single
-            command that begins with `gh api`, passing the review body as a
-            literal single-quoted argument. Do not assign a shell variable and
-            do not chain commands: only a command starting with `gh api` is
-            permitted, so a body passed through `$BODY` can never be sent.
+            When done, return the verdict as your final message and nothing
+            else. Do not call any write API: this workflow publishes your
+            final message as the pull request review.
 
-            If the change has no blocking findings, run exactly:
+            If the change has no blocking findings, your final message must be
+            exactly these two lines:
 
-            gh api repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f commit_id=${{ github.event.pull_request.head.sha }} -f event=COMMENT -f body='## Review result: No issues found.
+            ## Review result: No issues found.
 
-            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`'
+            **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
 
-            The body must be exactly those two lines, with nothing else before
-            or after them.
-
-            If there are blocking findings, run the same single `gh api`
-            command with a literal single-quoted body that starts with the
-            heading `## Review result: findings`, followed by the line
+            If there are blocking findings, your final message must start with
+            the heading `## Review result: findings`, followed by the line
             **Reviewed commit:** `${{ github.event.pull_request.head.sha }}`
             and then a numbered list giving file:line, the defect, and a
-            concrete failure scenario for every finding. If you cannot
-            complete the review, post nothing.
+            concrete failure scenario for every finding.
+
+            Your final message must always begin with `## Review result:`. If
+            you cannot complete the review, say so in a final message that
+            does not begin with that heading, and nothing will be published.
+
+      # The reviewer holds no write tools, so publish its verdict here instead.
+      # Post with the action's own token: it is the Claude App installation
+      # token where one is available, which keeps the review authored by the
+      # identity review-gate.yml checks for.
+      # Skipped when the action itself did not run, which is what happens on
+      # any pull request that edits this workflow file. A run that did happen
+      # but produced no usable verdict still fails below.
+      - name: Publish the review verdict
+        if: steps.review.outputs.execution_file != ''
+        env:
+          GH_TOKEN: ${{ steps.review.outputs.github_token }}
+          EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          if [ ! -s "$EXECUTION_FILE" ]; then
+            echo "The execution output file $EXECUTION_FILE is missing or empty." >&2
+            exit 1
+          fi
+          # Record the shape of the transcript so a future extraction failure
+          # is diagnosable from the log alone.
+          echo "Transcript entry types:"
+          jq -r '[.[] | .type] | join(" ")' "$EXECUTION_FILE" || true
+          body="$(jq -r '[.[] | select(.type == "result") | .result // empty] | last // empty' "$EXECUTION_FILE")"
+          if [ -z "$body" ]; then
+            body="$(jq -r '[.[] | select(.type == "assistant") | .message.content[]? | select(.type == "text") | .text] | last // empty' "$EXECUTION_FILE")"
+          fi
+          if [ -z "$body" ]; then
+            echo "Could not extract a verdict from the transcript." >&2
+            exit 1
+          fi
+          case "$body" in
+            "## Review result:"*) ;;
+            *)
+              echo "The reviewer did not return a verdict; publishing nothing." >&2
+              printf '%s\n' "$body" >&2
+              exit 1
+              ;;
+          esac
+          # Take the reviewed commit straight from the trusted event context,
+          # so the evidence can only ever name this pull request's exact head.
+          gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+            -f commit_id=${{ github.event.pull_request.head.sha }} \
+            -f event=COMMENT \
+            -f body="$body"
