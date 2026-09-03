@@ -94,6 +94,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "updatedAt" in review_gate
     assert "stock_clean_envelope" in review_gate
     assert "stock_clean_issue_comment_envelope" in review_gate
+    assert "claude_action_clean_issue_comment_envelope" in review_gate
+    assert "claude finished" in review_gate
     assert "didn.t find any major issues" in review_gate
     assert "codex[[:space:]]+in[[:space:]]+github" in review_gate
     assert "def availability_notice:" in review_gate
@@ -119,10 +121,16 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
 
     claude_review = (ROOT / ".github" / "workflows" / "claude-review.yml").read_text()
     assert "vars.REVIEW_PROVIDER" not in claude_review
-    assert "if: github.event.pull_request.draft == false" in claude_review
+    assert "github.event.pull_request.draft == false" in claude_review
+    assert (
+        "github.event.pull_request.head.repo.full_name == github.repository"
+        in claude_review
+    )
     assert "anthropics/claude-code-action@" in claude_review
     assert "claude_code_oauth_token" in claude_review
-    assert "-f commit_id=${{ github.event.pull_request.head.sha }}" in claude_review
+    assert "return the verdict in your final response" in claude_review
+    assert "do not call any write API yourself" in claude_review
+    assert "Bash(gh api:*)" not in claude_review
     assert "## Review result: No issues found." in claude_review
     assert "## Review result: findings" in claude_review
     assert "never edit files" in claude_review
@@ -229,6 +237,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
+    assert "claude_action_clean_issue_comment_envelope" in regular_comment
+    assert "claude finished" in regular_comment
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "Trusted review-gate evaluator is not installed" in regular_comment
