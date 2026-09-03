@@ -1,0 +1,97 @@
+name: Certify intelligent stop and threshold fix
+
+on:
+  push:
+    branches: [fix/intelligent-stop-return-threshold]
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+concurrency:
+  group: certify-intelligent-stop-return-threshold
+  cancel-in-progress: true
+
+jobs:
+  certify:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REVIEW_PROVIDER: ${{ vars.REVIEW_PROVIDER }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Ensure the exact patch is present
+        run: |
+          if ! grep -q 'DOCK_SETTLE_TRANSITION_GRACE_SECONDS' custom_components/matic_robot/stop_return.py; then
+            test -f .github/scripts/apply_intelligent_stop_fix.py
+            python .github/scripts/apply_intelligent_stop_fix.py
+          fi
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.14"
+          cache: pip
+      - run: python -m pip install --upgrade pip
+      - run: python -m pip install -e '.[test]'
+      - run: ruff format custom_components/matic_robot/stop_return.py custom_components/matic_robot/plans.py tests/test_stop_return.py tests/test_plans.py
+      - name: Focused stop and threshold regressions
+        run: pytest tests/test_stop_return.py tests/test_plans.py
+      - name: Full Python release gate
+        run: pytest --cov=custom_components/matic_robot --cov-report=term-missing
+      - run: ruff check .
+      - run: ruff format --check .
+      - run: mypy custom_components/matic_robot
+      - run: python scripts/check_public_tree.py
+      - run: python -m build --sdist --wheel
+      - run: python scripts/check_release_artifacts.py dist
+      - run: python scripts/check_fresh_install.py dist
+      - name: Publish one code-only commit
+        run: |
+          rm -f .github/scripts/apply_intelligent_stop_fix.py
+          rm -f .github/workflows/apply-intelligent-stop-fix.yml
+          rm -f .github/workflows/finalize-intelligent-stop-fix.yml
+          rm -f .github/workflows/certify-intelligent-stop-fix.yml
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -A
+          if ! git diff --cached --quiet; then
+            git commit -m 'Fix intelligent stop return and threshold boundary'
+            git push origin HEAD:fix/intelligent-stop-return-threshold
+          fi
+      - name: Record validated pull request state
+        run: |
+          pr_number="$(gh pr list --head fix/intelligent-stop-return-threshold --state open --json number --jq '.[0].number')"
+          test -n "$pr_number"
+          cat > /tmp/pr-body.md <<'EOF'
+          ## Summary
+
+          - keep the post-STOP settlement watcher alive through the coordinator's brief stale `cleaning`/`paused` state, actively refreshing until the native session is truly inactive
+          - abandon docking when replacement work persists past a bounded grace period or starts after an idle settlement state
+          - round elapsed room progress down so a value just below the configured threshold stops immediately, while the exact threshold finishes the room
+          - document the conservative threshold boundary
+
+          This removes the OEM stop countdown from intelligent geofence-plan cancellation without sending DOCK while the stopped session or replacement work is still active.
+
+          Fixes #71
+
+          ## Validation
+
+          - focused stop-return and plan-manager suites: passed
+          - full pytest suite at 100% coverage: passed
+          - Ruff lint and format checks: passed
+          - strict mypy: passed
+          - public-tree validation: passed
+          - source and wheel build: passed
+          - release-artifact validation: passed
+          - isolated fresh-install validation: passed
+          EOF
+          gh pr edit "$pr_number" --body-file /tmp/pr-body.md
+          gh issue comment 71 --body "The implementation on PR #$pr_number passed the focused stop/threshold suites and the complete Python release gate at 100% coverage, plus lint, formatting, strict typing, privacy, build, artifact, and fresh-install validation. The PR remains draft until the configured review provider is Claude."
+          if [[ "$REVIEW_PROVIDER" == "claude" ]]; then
+            gh pr ready "$pr_number"
+            gh pr comment "$pr_number" --body '@claude review'
+          fi
