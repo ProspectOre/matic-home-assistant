@@ -498,6 +498,41 @@ async def test_bag_statistics_restore_and_count_full_transitions() -> None:
     assert count.native_value == 6
 
 
+async def test_bag_statistics_ignore_a_clear_flag_while_the_bag_is_missing() -> None:
+    """A bag taken out and not put back is not a confirmed replacement."""
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
+    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
+    replacement_count.async_write_ha_state = MagicMock()
+    last_replaced.async_write_ha_state = MagicMock()
+
+    def observe(**flags: object) -> None:
+        nonlocal coordinator
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(coordinator.data.operational, **flags),
+        )
+        replacement_count._async_coordinator_updated()
+        last_replaced._async_coordinator_updated()
+
+    observe(bag_full=False, bag_missing=False)
+    observe(bag_full=True, bag_missing=False)
+
+    # The bag is pulled out and left out: the full flag clears because there is
+    # no bag to be full, which is not evidence that a fresh one went in.
+    observe(bag_full=False, bag_missing=True)
+    observe(bag_full=False, bag_missing=True)
+    assert replacement_count.native_value == 0
+    assert last_replaced.native_value is None
+
+    # A present bag reporting clear twice is the confirmed replacement.
+    observe(bag_full=False, bag_missing=False)
+    observe(bag_full=False, bag_missing=False)
+    assert replacement_count.native_value == 1
+    assert last_replaced.native_value is not None
+
+
 async def test_bag_replacement_statistics_restore_previous_values() -> None:
     entry = _entry()
     coordinator = entry.runtime_data.coordinator

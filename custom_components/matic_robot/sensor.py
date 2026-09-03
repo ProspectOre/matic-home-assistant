@@ -713,13 +713,26 @@ class _MaticBagStatisticsSensor(MaticEntity, RestoreSensor):
 
     @callback
     def _async_coordinator_updated(self) -> None:
-        """Apply one new full/not-full observation."""
-        current = getattr(self.coordinator.data.operational, "bag_full", None)
+        """Apply one new full/not-full observation.
+
+        This mirrors the coordinator's ``_async_track_bag_state``; the two must
+        agree on what counts as a replacement or the same robot behaviour
+        produces two different statistics.
+        """
+        operational = self.coordinator.data.operational
+        current = getattr(operational, "bag_full", None)
         if current is None:
             return
-        rising = current is True and self._previous_full is False
+        rising = False
         falling = False
         if current is True:
+            rising = self._previous_full is False
+            self._previous_full = True
+            self._pending_clear = False
+        elif getattr(operational, "bag_missing", None) is True:
+            # A clear full flag while the bag is still reported missing is not
+            # a replacement: an absent bag reports empty because nothing is
+            # there. Wait for a present-bag clear sequence instead.
             self._pending_clear = False
         elif self._previous_full is True:
             if self._pending_clear:
@@ -732,8 +745,6 @@ class _MaticBagStatisticsSensor(MaticEntity, RestoreSensor):
                 self._pending_clear = True
         else:
             self._previous_full = False
-        if current is True:
-            self._previous_full = True
         if rising:
             self._async_apply_full_transition()
         if falling:
