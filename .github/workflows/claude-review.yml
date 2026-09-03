@@ -72,16 +72,17 @@ jobs:
             does not begin with that heading, and nothing will be published.
 
       # The reviewer holds no write tools, so publish its verdict here instead.
-      # Post with the action's own token: it is the Claude App installation
-      # token where one is available, which keeps the review authored by the
-      # identity review-gate.yml checks for.
+      # This step is the trusted publisher: it posts under the workflow's own
+      # token, having checked the verdict shape, and names the head straight
+      # from the event context. review-gate.yml therefore looks for
+      # github-actions[bot] as the reviewing identity for this provider.
       # Skipped when the action itself did not run, which is what happens on
       # any pull request that edits this workflow file. A run that did happen
       # but produced no usable verdict still fails below.
       - name: Publish the review verdict
         if: steps.review.outputs.execution_file != ''
         env:
-          GH_TOKEN: ${{ steps.review.outputs.github_token }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}

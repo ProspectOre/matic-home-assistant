@@ -51,7 +51,7 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
 
 SWITCHABLE_REVIEW_BOT = (
     "REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && "
-    "'claude[bot]' || 'chatgpt-codex-connector[bot]' }}"
+    "'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}"
 )
 
 
