@@ -760,6 +760,19 @@ async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> N
     assert snapshot["active_plan"] is None
 
 
+async def test_intelligent_order_includes_external_room_cleaning(hass) -> None:
+    """Native activity outside this integration moves a room behind its peers."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    kitchen = _room("Kitchen", "room-kitchen")
+    study = _room("Study", "room-study")
+    manager._robot("serial")["rooms"]["room-kitchen"] = {
+        "last_opportunity": "2026-08-31T12:00:00+00:00",
+    }
+
+    assert manager.choose("serial", "away", [kitchen, study]) == [study, kitchen]
+
+
 async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

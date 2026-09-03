@@ -354,6 +354,150 @@ async def test_room_statistics_sensors_follow_floor_plan_growth(hass) -> None:
     assert len(added) == 2
 
 
+async def test_bag_capability_is_not_exposed_before_real_world_verification(
+    hass,
+) -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(
+            coordinator.data.operational, bag_full=False, bag_missing=False
+        ),
+    )
+    added: list[object] = []
+
+    await binary_sensor.async_setup_entry(
+        hass, entry, lambda values: added.extend(values)
+    )
+    assert len(added) == len(binary_sensor.DESCRIPTIONS)
+    assert not any(entity.entity_description.key.startswith("bag_") for entity in added)
+
+    added.clear()
+    await sensor.async_setup_entry(hass, entry, lambda values: added.extend(values))
+    assert not any(entity.entity_description.key.startswith("bag_") for entity in added)
+
+
+async def test_bag_statistics_restore_and_count_full_transitions() -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    count = sensor.MaticBagFullCountSensor(entry)
+    last_full = sensor.MaticBagLastFullSensor(entry)
+    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
+    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
+    sensor._MaticBagStatisticsSensor(entry)._async_apply_full_transition()
+    sensor._MaticBagStatisticsSensor(entry)._async_apply_replacement_transition()
+    count.async_write_ha_state = MagicMock()
+    last_full.async_write_ha_state = MagicMock()
+    replacement_count.async_write_ha_state = MagicMock()
+    last_replaced.async_write_ha_state = MagicMock()
+    count._async_coordinator_updated()
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=False),
+    )
+    restored_at = sensor.dt_util.parse_datetime("2026-01-01T00:00:00+00:00")
+    with (
+        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
+        patch.object(
+            sensor.MaticBagFullCountSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=SimpleNamespace(native_value=4)),
+        ),
+        patch.object(
+            sensor.MaticBagLastFullSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=SimpleNamespace(native_value=restored_at)),
+        ),
+        patch.object(
+            sensor.MaticBagReplacementCountSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+        patch.object(
+            sensor.MaticBagLastReplacedSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=None),
+        ),
+    ):
+        await count.async_added_to_hass()
+        await last_full.async_added_to_hass()
+        await replacement_count.async_added_to_hass()
+        await last_replaced.async_added_to_hass()
+
+    assert count.native_value == 4
+    assert last_full.native_value == restored_at
+    assert replacement_count.native_value == 0
+    assert last_replaced.native_value is None
+
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=True),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    assert count.native_value == 5
+    assert last_full.native_value is not None
+    assert last_full.native_value != restored_at
+    assert replacement_count.native_value == 0
+    assert last_replaced.native_value is None
+
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=False),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    assert replacement_count.native_value == 0
+    assert last_replaced.native_value is None
+
+    # A single clear followed by a full report is treated as telemetry noise.
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=True),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    assert count.native_value == 5
+    assert replacement_count.native_value == 0
+
+    # Two consecutive clear reports identify the replacement.
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=False),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=False),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    assert replacement_count.native_value == 1
+    assert last_replaced.native_value is not None
+
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=True),
+    )
+    count._async_coordinator_updated()
+    last_full._async_coordinator_updated()
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    assert count.native_value == 6
+
+
 async def test_cues_event_entity_records_live_event(hass) -> None:
     entry = _entry()
     entity = event_platform.MaticCuesEventEntity(entry)

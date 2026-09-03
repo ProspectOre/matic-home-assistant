@@ -482,6 +482,13 @@ Template-visible attributes and recorded history follow one deliberate model:
   writes both sensors immediately, and storage migration repairs older global
   records from the newest verified per-plan completion without crediting an
   unverified room.
+- **Dust-bag verification.** When the robot reports its error list, the
+  integration decodes full and missing-bag values and keeps a bounded,
+  read-only observation record in `MaticGetOperations`. It counts full alerts
+  and confirmed full-to-clear replacements, with timestamps. A replacement is
+  identified only after a confirmed full-to-clear transition, avoiding
+  single-poll glitches. Public HA bag entities and statistics remain withheld
+  until a real robot transition is caught and verified.
 
 ## Events and observability
 

@@ -75,6 +75,10 @@ The integration adds Home Assistant-native planning and automation:
   room that started cannot monopolize every short run if it later fails. Duration
   learning is shared across plans only when the robot, stable room ID, cleaning
   mode, and coverage level all match.
+- **Dust-bag verification.** Robots that report the typed bag error field are
+  observed through the read-only operations surface, including bounded full and
+  confirmed-replacement transition counts with timestamps. Public bag entities
+  remain withheld until those transitions are verified on a real robot.
 - **Top-to-bottom runs.** Deterministic whole-plan runs in the exact saved
   room order, every time.
 - **Plan operations as actions.** Preview, run, stop-and-dock, history
@@ -178,7 +182,8 @@ name/settings form.
 
 Use **Intelligent rotation** when cleaning windows vary: it starts with rooms
 that have waited longest since their last cleaning opportunity and uses shared
-opportunity history plus saved order to break ties. Use
+opportunity history—including native sessions started manually or by the
+vendor app—plus saved order to break ties. Use
 **Run all — top to bottom** when every selected room should clean in the saved
 order every time. Room actions resolve stable map IDs before display names and
 reject ambiguous names instead of targeting an arbitrary room.

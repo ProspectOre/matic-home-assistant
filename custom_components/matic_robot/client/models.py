@@ -96,6 +96,8 @@ class RobotOperationalState:
     cues_voice_intent: CuesIntent | None = None
     cues_gesture_status: CuesGestureStatus | None = None
     following_person: bool | None = None
+    bag_full: bool | None = None
+    bag_missing: bool | None = None
 
     @property
     def activity(self) -> RobotActivity:

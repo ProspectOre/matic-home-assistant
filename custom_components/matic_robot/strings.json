@@ -715,6 +715,20 @@
       },
       "following_person": {
         "name": "Following a person"
+      },
+      "bag_full": {
+        "name": "Dust bag full",
+        "state": {
+          "off": "Dust bag not full",
+          "on": "Dust bag full"
+        }
+      },
+      "bag_missing": {
+        "name": "Dust bag missing",
+        "state": {
+          "off": "Dust bag present",
+          "on": "Dust bag missing"
+        }
       }
     },
     "button": {
@@ -894,6 +908,18 @@
       },
       "wifi_signal": {
         "name": "Wi-Fi signal"
+      },
+      "bag_full_count": {
+        "name": "Dust bag full events"
+      },
+      "bag_last_full": {
+        "name": "Dust bag last reported full"
+      },
+      "bag_replacement_count": {
+        "name": "Dust bag replacements"
+      },
+      "bag_last_replaced": {
+        "name": "Dust bag last replaced"
       }
     },
     "switch": {

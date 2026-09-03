@@ -68,6 +68,26 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.error_names == ("error_code_207",)
 
 
+def test_decode_verified_dust_bag_error_flags() -> None:
+    """Decode the native bag-full and bag-missing error values independently."""
+    state = _decode_operational_state(
+        KabukiOutputWire(errors=[205, 206]).SerializeToString()
+    )
+
+    assert state.bag_missing is True
+    assert state.bag_full is True
+
+
+def test_bag_flags_remain_unknown_without_an_error_field() -> None:
+    """Do not expose optional bag entities when firmware omits errors."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[106]).SerializeToString()
+    )
+
+    assert state.bag_missing is None
+    assert state.bag_full is None
+
+
 def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
     absent = _decode_operational_state(
         KabukiOutputWire(states=[107]).SerializeToString()

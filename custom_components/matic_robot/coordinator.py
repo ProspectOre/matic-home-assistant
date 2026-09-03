@@ -112,6 +112,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._session_history_recovered = False
         self._pending_error_codes: tuple[int, ...] = ()
         self._pending_error_polls = 0
+        self._bag_previous_full: bool | None = None
+        self._bag_pending_clear = False
+        self._bag_full_events = 0
+        self._bag_replacement_events = 0
+        self._bag_last_full_at: str | None = None
+        self._bag_last_replaced_at: str | None = None
         self._identity_issue_active = False
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
@@ -234,6 +240,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_telemetry(),
             )
             operational = self._async_confirm_robot_errors(operational)
+            self._async_track_bag_state(operational)
             state = RobotState(
                 info=info,
                 operational=operational,
@@ -302,6 +309,52 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             self._force_full_refresh = False
 
     @callback
+    def _async_track_bag_state(self, state: RobotOperationalState) -> None:
+        """Observe bag transitions without registering public HA entities yet."""
+        current = state.bag_full
+        if current is None:
+            return
+        if current is True:
+            if self._bag_previous_full is False:
+                now = dt_util.utcnow().isoformat()
+                self._bag_full_events += 1
+                self._bag_last_full_at = now
+                _LOGGER.info("Observed Matic dust-bag full transition")
+            self._bag_previous_full = True
+            self._bag_pending_clear = False
+            return
+        if state.bag_missing is True:
+            # A clear full flag while the bag is still reported missing is not
+            # a replacement; wait for a present-bag clear sequence instead.
+            self._bag_pending_clear = False
+            return
+        if self._bag_previous_full is True:
+            if self._bag_pending_clear:
+                now = dt_util.utcnow().isoformat()
+                self._bag_replacement_events += 1
+                self._bag_last_replaced_at = now
+                _LOGGER.info("Observed Matic dust-bag replacement transition")
+                self._bag_previous_full = False
+                self._bag_pending_clear = False
+            else:
+                self._bag_pending_clear = True
+            return
+        self._bag_previous_full = False
+
+    @property
+    def bag_observation(self) -> dict[str, object]:
+        """Return read-only bag observations for verification tooling."""
+        operational = self.data.operational if self.data is not None else None
+        return {
+            "full": operational.bag_full if operational is not None else None,
+            "missing": operational.bag_missing if operational is not None else None,
+            "full_events_observed": self._bag_full_events,
+            "replacement_events_observed": self._bag_replacement_events,
+            "last_full_at": self._bag_last_full_at,
+            "last_replaced_at": self._bag_last_replaced_at,
+        }
+
+    @callback
     def _async_confirm_robot_errors(
         self, state: RobotOperationalState
     ) -> RobotOperationalState:
@@ -321,7 +374,10 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "Waiting for a second poll before exposing robot error codes %s",
                 codes,
             )
-            return replace(state, error_codes=())
+            # Bag flags are derived from the same error list and must obey the
+            # same confirmation window; otherwise a one-poll firmware pulse
+            # could create a false full-bag statistic.
+            return replace(state, error_codes=(), bag_full=None, bag_missing=None)
         return state
 
     async def _async_track_cleaning_session(self, state: RobotState) -> RobotState:

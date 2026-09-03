@@ -103,6 +103,12 @@ _DISPLAYED_MISSION_LIMIT = 256
 _SESSION_COMPLETED_STATUS = 0
 _ROOM_MODE_NON_COMPLETION_STATUS = 1
 _ROOM_MODE_COMPLETED_STATUS = 2
+# Verified from the native KabukiDisplayedError mapping in the Matic client:
+# 205 = BAG_MISSING and 206 = BAG_FULL.  These are error-list values, not
+# state-list values (206 is also a low-charge state code when present in the
+# separate states field).
+_BAG_MISSING_ERROR = 205
+_BAG_FULL_ERROR = 206
 _OPERATIONAL_STATE_MAX_BYTES = 256 * 1024
 _OPERATIONAL_STATE_MAX_FIELDS = 1024
 _OPERATIONAL_STATE_MAX_CODES = 256
@@ -1330,6 +1336,7 @@ def _decode_operational_state(payload: bytes) -> RobotOperationalState:
         or len(wire.errors) > _OPERATIONAL_STATE_MAX_CODES
     ):
         raise DecodeError("operational state has too many status codes")
+    errors_reported = any(field.name == "errors" for field, _ in wire.ListFields())
     voice_status, voice_intent, gesture_status, following_person = _decode_cues_state(
         fields
     )
@@ -1356,6 +1363,8 @@ def _decode_operational_state(payload: bytes) -> RobotOperationalState:
         cues_voice_intent=voice_intent,
         cues_gesture_status=gesture_status,
         following_person=following_person,
+        bag_full=(_BAG_FULL_ERROR in wire.errors) if errors_reported else None,
+        bag_missing=(_BAG_MISSING_ERROR in wire.errors) if errors_reported else None,
     )
 
 

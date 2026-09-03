@@ -12,7 +12,9 @@
       "matter_pairing_mode": { "default": "mdi:access-point" },
       "ssh_tunnel_permission": { "default": "mdi:console-network" },
       "diagnostic_upload": { "default": "mdi:cloud-upload" },
-      "following_person": { "default": "mdi:account-arrow-right" }
+      "following_person": { "default": "mdi:account-arrow-right" },
+      "bag_full": { "default": "mdi:trash-can-alert" },
+      "bag_missing": { "default": "mdi:trash-can-outline" }
     },
     "button": {
       "run_selected_plan": { "default": "mdi:play-circle-outline" },
@@ -64,6 +66,10 @@
       "dock_detections": { "default": "mdi:home-search" },
       "sink_summon_locations": { "default": "mdi:water-pump" },
       "coverage_time": { "default": "mdi:timer-outline" },
+      "bag_full_count": { "default": "mdi:counter" },
+      "bag_last_full": { "default": "mdi:calendar-alert" },
+      "bag_replacement_count": { "default": "mdi:swap-horizontal" },
+      "bag_last_replaced": { "default": "mdi:calendar-refresh" },
       "cues_voice_status": { "default": "mdi:microphone-message" },
       "cues_gesture_status": { "default": "mdi:gesture-tap" }
     },

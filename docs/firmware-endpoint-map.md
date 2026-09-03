@@ -22,7 +22,7 @@ real robot actually returned after an OTA.
 
 | Collection/property | Decoded data | Current HA exposure |
 | --- | --- | --- |
-| `kabuki_state` | Battery, state/error codes, activity, firmware fallback, channel/profile, current/previous area, Cues voice/gesture lifecycle and following presence | Vacuum; activity, battery, current-area and Cues lifecycle sensors; operational binary sensors; Cues event entity and bus event; attributes |
+| `kabuki_state` | Battery, state/error codes (including typed dust-bag full/missing values), activity, firmware fallback, channel/profile, current/previous area, Cues voice/gesture lifecycle and following presence | Vacuum; activity, battery, current-area and Cues lifecycle sensors; read-only bag observation in `MaticGetOperations`; Cues event entity and bus event; attributes. Public bag entities remain withheld pending real-world verification. |
 | `coverage_plan` | Mission, partition, named room IDs and geometry | Rooms sensor, map camera, vacuum segments/Areas, cleaning target |
 | `latest_pose` | Robot position and heading across both verified wire layouts; payload-free vector paths in endpoint inspection | Map camera |
 | `approximate_trajectory` | Mission-correlated, finite 2D route updates and mission-scoped clear markers | Typed client stream; no HA entity or map overlay yet |

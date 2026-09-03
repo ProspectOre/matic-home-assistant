@@ -1696,9 +1696,10 @@ def _import_native_room_activity(
     for room_id, (timestamp, ended_at, name) in candidates.items():
         global_room = robot["rooms"].setdefault(room_id, {})
         known = _latest_timestamp(
-            global_room.get("last_opportunity"), global_room.get("last_completed")
+            global_room.get("last_opportunity"),
+            global_room.get("last_completed"),
         )
-        if known is not None and known > timestamp:
+        if known is not None and known >= timestamp:
             continue
         updates = {"name": name, "last_opportunity": ended_at}
         if any(global_room.get(key) != value for key, value in updates.items()):
