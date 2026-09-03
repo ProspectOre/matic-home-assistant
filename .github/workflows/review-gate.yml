@@ -43,9 +43,9 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
-          REVIEW_BOT: ${{ vars.REVIEW_PROVIDER == 'claude' && 'claude[bot]' || 'chatgpt-codex-connector[bot]' }}
-          REVIEW_BOT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'claude' || 'chatgpt-codex-connector' }}
-          REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'claude[bot]' || 'chatgpt-codex-connector[bot]' }}
+          REVIEW_BOT: ${{ 'claude[bot]' }}
+          REVIEW_BOT_LOGIN: ${{ 'claude' }}
+          REVIEW_BOT_EVENT_LOGIN: ${{ 'claude[bot]' }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment

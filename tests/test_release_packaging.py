@@ -49,10 +49,7 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     )
 
 
-SWITCHABLE_REVIEW_BOT = (
-    "REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && "
-    "'claude[bot]' || 'chatgpt-codex-connector[bot]' }}"
-)
+CLAUDE_REVIEW_BOT = "REVIEW_BOT_EVENT_LOGIN: ${{ 'claude[bot]' }}"
 
 
 def test_review_gate_uses_only_regular_review_evidence() -> None:
@@ -89,7 +86,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "REVIEW_BASE_CONTEXT: review-gate-base-change" in review_gate
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in review_gate
     assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in review_gate
-    assert SWITCHABLE_REVIEW_BOT in review_gate
+    assert CLAUDE_REVIEW_BOT in review_gate
     assert "Dedicated routers classify review and" in review_gate
     assert (
         "Exact-head regular PR reviews and explicit clean regular issue" in review_gate
@@ -121,7 +118,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "--auto" not in review_gate
 
     claude_review = (ROOT / ".github" / "workflows" / "claude-review.yml").read_text()
-    assert "vars.REVIEW_PROVIDER == 'claude'" in claude_review
+    assert "vars.REVIEW_PROVIDER" not in claude_review
+    assert "if: github.event.pull_request.draft == false" in claude_review
     assert "anthropics/claude-code-action@" in claude_review
     assert "claude_code_oauth_token" in claude_review
     assert "-f commit_id=${{ github.event.pull_request.head.sha }}" in claude_review
@@ -136,7 +134,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Run every review delivery independently" in regular_review
     assert "review-gate-review-event-" not in regular_review
     assert "cancel-in-progress: false" not in regular_review
-    assert SWITCHABLE_REVIEW_BOT in regular_review
+    assert CLAUDE_REVIEW_BOT in regular_review
     assert "EVENT_PREVIOUS_REVIEW_BODY" in regular_review
     assert "body_is_regular_review" in regular_review
     assert "def security_heading:" in regular_review
@@ -192,7 +190,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '"$source_pr_number" == "$pr_number"' in fork_regular_review
     assert '"$head_repository" != "$REPO"' in fork_regular_review
     assert "repos/$REPO/pulls/$PR_NUMBER/reviews/$REVIEW_ID" in fork_regular_review
-    assert SWITCHABLE_REVIEW_BOT in fork_regular_review
+    assert CLAUDE_REVIEW_BOT in fork_regular_review
     assert "body_is_regular_review" in fork_regular_review
     assert "security_heading | not" in fork_regular_review
     assert "availability_notice | not" in fork_regular_review
@@ -210,7 +208,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Run every comment delivery independently" in regular_comment
     assert "review-gate-comment-event-" not in regular_comment
     assert "cancel-in-progress: false" not in regular_comment
-    assert SWITCHABLE_REVIEW_BOT in regular_comment
+    assert CLAUDE_REVIEW_BOT in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
     assert "body_could_be_regular_comment" in regular_comment
     assert "before the pull request lookup" in regular_comment

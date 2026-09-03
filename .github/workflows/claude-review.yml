@@ -1,9 +1,7 @@
 name: Claude Review
 
-# Runs only when the repository variable REVIEW_PROVIDER is "claude"; the
-# review-gate workflows read the same variable to decide which bot identity
-# satisfies the gate, so switching providers is one variable flip with the
-# Codex flow as the unset default.
+# Claude is the repository's required regular review provider. The gate and
+# review-event routers use the same fixed bot identity.
 on:
   pull_request:
     types: [opened, reopened, synchronize, ready_for_review]
@@ -20,9 +18,7 @@ permissions:
 jobs:
   review:
     name: claude-review
-    if: >-
-      vars.REVIEW_PROVIDER == 'claude'
-      && github.event.pull_request.draft == false
+    if: github.event.pull_request.draft == false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
