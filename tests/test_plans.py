@@ -5064,3 +5064,48 @@ def test_entry_lookup_rejects_missing_registry_entry() -> None:
         pytest.raises(ServiceValidationError, match="unavailable"),
     ):
         _entry_for_entity(SimpleNamespace(), "vacuum.matic")
+
+
+async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
+    """Just-below progress stops now; the exact threshold finishes the room."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "finish_current_room": True,
+            "finish_current_room_threshold": 50,
+            "rooms": [],
+        },
+    )
+    for _ in range(3):
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        await manager.async_mark_completed("serial", "away", room, duration_seconds=100)
+
+    lock = manager.lock("serial")
+    await lock.acquire()
+    try:
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        active = manager._data["robots"]["serial"]["active_plan"]
+        active["active_elapsed_seconds"] = 49.9
+        active["active_segment_started"] = None
+
+        assert manager.request_stop("serial") == PlanStopDecision("immediate", 49, 50)
+        assert manager.cancellation_event("serial").is_set()
+
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "away", room)
+        active = manager._data["robots"]["serial"]["active_plan"]
+        active["active_elapsed_seconds"] = 50.0
+        active["active_segment_started"] = None
+
+        assert manager.request_stop("serial") == PlanStopDecision("after_room", 50, 50)
+        assert manager.finish_room_event("serial").is_set()
+        assert not manager.cancellation_event("serial").is_set()
+    finally:
+        lock.release()

@@ -78,12 +78,51 @@ async def test_skips_when_the_robot_is_already_home_or_heading_there(
 
 
 @pytest.mark.parametrize("state", ["cleaning", "paused"])
-async def test_skips_when_new_work_replaced_the_stop(hass, state: str) -> None:
+async def test_skips_when_new_work_replaced_the_stop(
+    hass, state: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_SETTLE_TRANSITION_GRACE_SECONDS", 0)
     hass.states.async_set(ENTITY, state, {})
     client = _client(session=False)
 
     assert await _run(hass, client, _manager()) is False
     client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", ["cleaning", "paused"])
+async def test_refreshes_past_the_stale_pre_stop_state_before_docking(
+    hass, state: str
+) -> None:
+    """The accepted STOP can settle before the coordinator leaves cleaning."""
+    hass.states.async_set(ENTITY, state, {})
+    client = _client(session=False)
+
+    def settle_state() -> None:
+        hass.states.async_set(ENTITY, "idle", {})
+
+    refresh = AsyncMock(side_effect=settle_state)
+
+    assert await _run(hass, client, _manager(), refresh) is True
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    assert refresh.await_count == 2
+
+
+async def test_abandons_when_new_work_starts_after_stop_settlement(hass) -> None:
+    """A post-settlement cleaning edge belongs to replacement motion."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=True)
+
+    async def start_replacement() -> bool:
+        hass.states.async_set(ENTITY, "cleaning", {})
+        return True
+
+    client.async_has_active_cleaning_session = AsyncMock(side_effect=start_replacement)
+    refresh = AsyncMock()
+
+    assert await _run(hass, client, _manager(), refresh) is False
+    client.async_has_active_cleaning_session.assert_awaited_once()
+    client.async_send_user_command.assert_not_awaited()
+    refresh.assert_not_awaited()
 
 
 async def test_skips_when_the_stop_fence_was_cleared(hass) -> None:

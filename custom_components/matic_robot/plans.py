@@ -1745,7 +1745,7 @@ def _active_elapsed_seconds(active: Mapping[str, Any], now: datetime) -> int:
             segment_elapsed = (now - parsed).total_seconds()
             if math.isfinite(segment_elapsed):
                 elapsed += max(0.0, segment_elapsed)
-    return max(0, round(elapsed))
+    return max(0, math.floor(elapsed))
 
 
 def _duration_history(record: Mapping[str, Any]) -> list[int]:
@@ -1833,7 +1833,7 @@ def _estimated_progress(active: object, expected: object) -> int | None:
     if not isinstance(active, Mapping):
         return None
     elapsed = _active_elapsed_seconds(active, dt_util.utcnow())
-    return max(0, min(100, round((elapsed / expected) * 100)))
+    return max(0, min(100, math.floor((elapsed / expected) * 100)))
 
 
 def resolve_room_reference(
