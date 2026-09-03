@@ -113,6 +113,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._pending_error_codes: tuple[int, ...] = ()
         self._pending_error_polls = 0
         self._bag_previous_full: bool | None = None
+        self._bag_errors_observed = False
         self._bag_pending_clear = False
         self._bag_full_events = 0
         self._bag_replacement_events = 0
@@ -239,6 +240,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 self._async_optional_pose(),
                 self._async_optional_telemetry(),
             )
+            operational = self._async_resolve_bag_capability(operational)
             operational = self._async_confirm_robot_errors(operational)
             self._async_track_bag_state(operational)
             state = RobotState(
@@ -307,6 +309,26 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             raise UpdateFailed(str(err)) from err
         finally:
             self._force_full_refresh = False
+
+    @callback
+    def _async_resolve_bag_capability(
+        self, state: RobotOperationalState
+    ) -> RobotOperationalState:
+        """Read an empty error list as "no errors" once errors have appeared.
+
+        ``errors`` is a repeated field, so a firmware that omits it and one
+        reporting no active errors are wire-identical and the decoder can only
+        report the bag flags as unknown. A robot that has already reported an
+        error has proven it populates the field, and from then on an empty list
+        is evidence that nothing is wrong -- including that the bag which was
+        full no longer is, which is the only signal a replacement produces.
+        """
+        if state.error_codes:
+            self._bag_errors_observed = True
+            return state
+        if not self._bag_errors_observed or state.bag_full is not None:
+            return state
+        return replace(state, bag_full=False, bag_missing=False)
 
     @callback
     def _async_track_bag_state(self, state: RobotOperationalState) -> None:

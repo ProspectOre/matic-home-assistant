@@ -164,6 +164,58 @@ async def test_bag_observation_tracks_confirmed_full_and_replacement_edges(
     assert coordinator.bag_observation["missing"] is False
 
 
+async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> None:
+    """A cleared bag-full error is evidence of a replacement, not unknown.
+
+    ``errors`` is a repeated field, so a firmware that omits it and one
+    reporting no active errors are wire-identical and the decoder can only
+    report the flags as unknown. Once the robot has reported an error it has
+    proven it populates the field, and an empty list afterwards means the bag
+    that was full no longer is -- the only signal a replacement produces.
+    """
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def poll(*error_codes: int) -> None:
+        reported = bool(error_codes)
+        client.async_get_state.return_value = replace(
+            client.async_get_state.return_value,
+            error_codes=tuple(error_codes),
+            bag_full=(206 in error_codes) if reported else None,
+            bag_missing=(205 in error_codes) if reported else None,
+        )
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    # An unrelated fault proves the robot populates the field and establishes
+    # that the bag is not full. Each new error set costs a confirmation poll.
+    await poll(207)
+    await poll(207)
+    assert coordinator.data.operational.bag_full is False
+
+    await poll(206, 207)
+    await poll(206, 207)
+    assert coordinator.bag_observation["full_events_observed"] == 1
+
+    # The bag is replaced and the unrelated fault has cleared too, so the robot
+    # now reports an empty error list. Before the capability was tracked this
+    # read as unknown and the replacement could never be observed at all.
+    await poll()
+    await poll()
+    assert coordinator.data.operational.bag_full is False
+    assert coordinator.bag_observation["replacement_events_observed"] == 1
+    assert coordinator.bag_observation["last_replaced_at"] is not None
+
+
+async def test_bag_flags_stay_unknown_until_an_error_is_ever_reported(hass) -> None:
+    """Never claim the bag is fine on a robot that has reported nothing."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    state = await coordinator._async_update_data()
+
+    assert state.operational.bag_full is None
+    assert state.operational.bag_missing is None
+
+
 async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
