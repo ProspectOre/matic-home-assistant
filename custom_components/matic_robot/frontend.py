@@ -40,11 +40,36 @@ MATIC_MAP_STUDIO_VERSION = sha256(
 MATIC_MAP_STUDIO_PATH = (
     f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_VERSION}/matic-map-studio.js"
 )
+
+
+def _tree_version(path: Path) -> str:
+    """Return a deterministic cache key for one generated module tree."""
+    digest = sha256()
+    for child in sorted(
+        candidate for candidate in path.rglob("*") if candidate.is_file()
+    ):
+        digest.update(child.relative_to(path).as_posix().encode())
+        digest.update(b"\0")
+        digest.update(child.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()[:12]
+
+
+# Map Studio 0.4 is a strict TypeScript/Lit module tree. Its entry and lazy
+# workflow chunks share one content-bound URL root so an upgrade cannot mix
+# generations. The classic v0.3 module remains loaded as a user-selectable,
+# local rollback surface.
+MATIC_MAP_STUDIO_V4_DIRECTORY = Path(__file__).with_name("map_studio_v4")
+MATIC_MAP_STUDIO_V4_VERSION = _tree_version(MATIC_MAP_STUDIO_V4_DIRECTORY)
+MATIC_MAP_STUDIO_V4_ROOT_PATH = (
+    f"/matic_robot/{MANIFEST_VERSION}-{MATIC_MAP_STUDIO_V4_VERSION}/map-studio-v4"
+)
+MATIC_MAP_STUDIO_V4_PATH = f"{MATIC_MAP_STUDIO_V4_ROOT_PATH}/index.js"
 # The panel element name is versioned independently from the integration
 # manifest.  Home Assistant keeps a custom-element registry alive while its
 # SPA changes panels, so reusing the same tag can leave an older constructor
 # serving a newly cache-busted module after an in-place integration reload.
-MATIC_MAP_PANEL_ELEMENT = "matic-map-panel-v0-3-1"
+MATIC_MAP_PANEL_ELEMENT = f"matic-map-panel-v0-4-0-{MATIC_MAP_STUDIO_V4_VERSION}"
 DATA_SLAM_SCENE_VIEW = f"{__package__}_slam_scene_view"
 DATA_SLAM_POSE_VIEW = f"{__package__}_slam_pose_view"
 
@@ -69,6 +94,11 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             StaticPathConfig(
                 MATIC_MAP_STUDIO_PATH, str(studio_path), cache_headers=True
             ),
+            StaticPathConfig(
+                MATIC_MAP_STUDIO_V4_ROOT_PATH,
+                str(MATIC_MAP_STUDIO_V4_DIRECTORY),
+                cache_headers=True,
+            ),
         ]
     )
     scene_view = MaticSlamSceneView()
@@ -87,6 +117,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
         hass,
         ROOM_PLAN_EDITOR_PATH,
     )
+    frontend.add_extra_js_url(hass, MATIC_MAP_STUDIO_PATH)
     # Keep panel_custom optional for config flows and headless installations.
     from homeassistant.components.panel_custom import async_register_panel
 
@@ -97,6 +128,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
             sidebar_title="Matic Map",
             sidebar_icon="mdi:robot-vacuum",
-            module_url=MATIC_MAP_STUDIO_PATH,
+            module_url=MATIC_MAP_STUDIO_V4_PATH,
             require_admin=True,
+            handle_safe_area=True,
         )

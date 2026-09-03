@@ -139,6 +139,8 @@ class MaticOperationsAPI(llm.API):
             api_prompt=(
                 "Use these tools only to inspect Matic robot and managed cleaning "
                 "plan state; they never issue a robot command or modify a plan. "
+                "Bag fields and bounded full/replacement observations are read-only "
+                "verification data; public bag entities are not registered yet. "
                 "Rooms in one leg share a native mission and should not dock "
                 "between them. A settings change starts another leg, where current "
                 "firmware may briefly touch the dock during handoff. Treat native "
@@ -167,7 +169,8 @@ class MaticGetOperationsTool(_MaticTool):
     name = "MaticGetOperations"
     description = (
         "Inspect every loaded Matic robot, including live activity, managed runner "
-        "lock state, active room, selected plan, and native reconciliation marker."
+        "lock state, active room, selected plan, native reconciliation marker, and "
+        "read-only dust-bag observations."
     )
 
     @override
@@ -537,24 +540,31 @@ def _robot_summary(entry: ConfigEntry[Any]) -> JsonObjectType:
     serial_number = state.info.serial_number
     manager = runtime.cleaning_plans
     snapshot = manager.snapshot(serial_number)
+    robot_summary: dict[str, object] = {
+        "activity": state.operational.activity.value,
+        "battery_percentage": state.operational.battery_percentage,
+        "current_room": state.operational.current_area,
+        "previous_room": state.operational.previous_area,
+        "error_codes": list(state.operational.error_codes),
+        "bag_full": state.operational.bag_full,
+        "bag_missing": state.operational.bag_missing,
+        "native_session_active": state.telemetry.active_cleaning_session,
+        "software_version": (
+            state.telemetry.software_version or state.operational.software_version
+        ),
+    }
+    # The coordinator keeps this bounded, read-only observation state even
+    # while public bag entities remain withheld pending real-world validation.
+    bag_observation = getattr(runtime.coordinator, "bag_observation", None)
+    if isinstance(bag_observation, dict):
+        robot_summary["bag_observation"] = bag_observation
     return cast(
         JsonObjectType,
         {
             "name": _entry_name(entry),
             "entry_id": entry.entry_id,
             "coordinator_available": bool(runtime.coordinator.last_update_success),
-            "robot": {
-                "activity": state.operational.activity.value,
-                "battery_percentage": state.operational.battery_percentage,
-                "current_room": state.operational.current_area,
-                "previous_room": state.operational.previous_area,
-                "error_codes": list(state.operational.error_codes),
-                "native_session_active": state.telemetry.active_cleaning_session,
-                "software_version": (
-                    state.telemetry.software_version
-                    or state.operational.software_version
-                ),
-            },
+            "robot": robot_summary,
             "managed_runner": {
                 "lock_held": manager.lock(serial_number).locked(),
                 "stop_settle_pending": manager.stop_pending(serial_number),

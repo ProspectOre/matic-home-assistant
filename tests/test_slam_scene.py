@@ -19,6 +19,7 @@ from homeassistant.helpers.http import KEY_HASS
 
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    area_binding_status,
     binding_for_area,
     binding_for_floor_plan,
 )
@@ -51,6 +52,7 @@ from custom_components.matic_robot.slam_scene import (
     MaticSlamHistoryView,
     MaticSlamPoseView,
     MaticSlamSceneView,
+    _map_session_key,
     areas_api_url,
     delta_api_url,
     history_api_url,
@@ -112,6 +114,10 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
             invalid_tiles=0,
             stream_state="connected",
             stream_failures=0,
+            bootstrap_state="complete",
+            bootstrap_photo_seen=True,
+            bootstrap_structure_seen=True,
+            bootstrap_failures=0,
         ),
         entries=MagicMock(return_value=map_entries),
         async_add_listener=MagicMock(return_value=MagicMock()),
@@ -132,6 +138,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
                 floor_plan=floor_plan,
                 pose=robot_pose,
                 operational=SimpleNamespace(current_area="Kitchen"),
+                telemetry=SimpleNamespace(active_cleaning_session=False),
             ),
         ),
         slam_history=SimpleNamespace(
@@ -143,11 +150,52 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         cleaning_plans=SimpleNamespace(
             areas=MagicMock(return_value={}),
             plans=MagicMock(return_value={}),
-            snapshot=MagicMock(return_value={"selected_plan": None}),
+            snapshot=MagicMock(
+                return_value={"selected_plan": None, "active_plan": None}
+            ),
+            lock=MagicMock(
+                return_value=SimpleNamespace(locked=MagicMock(return_value=False))
+            ),
+            stop_pending=MagicMock(return_value=False),
+            pending_native_reconciliation=MagicMock(return_value=None),
             async_save_area=AsyncMock(),
             async_delete_area=AsyncMock(),
         ),
     )
+
+
+def _browser_session_key(runtime: SimpleNamespace) -> str:
+    key = _map_session_key(runtime)
+    assert key is not None
+    return key
+
+
+def test_map_session_key_tracks_floor_partition_not_stream_token() -> None:
+    runtime = _runtime()
+    original = _map_session_key(runtime)
+    identity = runtime.slam_map.mission_identity
+    assert original is not None
+    assert identity is not None
+
+    runtime.slam_map.mission_identity = SlamMapIdentity(
+        "replacement-stream-token",
+        identity.mission_id,
+    )
+    assert _map_session_key(runtime) == original
+
+    floor_plan = runtime.coordinator.data.floor_plan
+    assert floor_plan is not None
+    runtime.coordinator.data.floor_plan = replace(
+        floor_plan,
+        partition_id_wire=b"replacement-partition",
+    )
+    assert _map_session_key(runtime) != original
+
+    runtime.coordinator.data.floor_plan = replace(
+        floor_plan,
+        mission_id=floor_plan.mission_id + 1,
+    )
+    assert _map_session_key(runtime) is None
 
 
 def _hass(entry) -> SimpleNamespace:
@@ -164,10 +212,15 @@ def _request(
     hass,
     *,
     etag: str | None = None,
+    prefer_cached: bool = False,
     admin: bool = True,
     path: str = "/",
 ):
-    headers = {"If-None-Match": etag} if etag is not None else None
+    headers = {}
+    if etag is not None:
+        headers["If-None-Match"] = etag
+    if prefer_cached:
+        headers["X-Matic-Prefer-Cached"] = "1"
     request = make_mocked_request("GET", path, headers=headers, app={KEY_HASS: hass})
     request["hass_user"] = SimpleNamespace(is_admin=admin)
     return request
@@ -520,6 +573,82 @@ async def test_scene_view_coalesces_concurrent_encodes_during_revision_churn() -
     assert view.current_revision("entry", runtime) == 8
 
 
+async def test_scene_view_serves_safe_cache_while_new_revision_encodes() -> None:
+    """A reopened panel gets the last verified scene while its delta is built."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    first = await view.get(_request(hass), "entry")
+    assert first.headers["X-Matic-Revision"] == "7"
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_encode(target):
+        started.set()
+        await release.wait()
+        return target()
+
+    hass.async_add_executor_job.side_effect = delayed_encode
+    runtime.slam_map.revision = 8
+
+    reopened = await view.get(_request(hass, prefer_cached=True), "entry")
+    await started.wait()
+
+    assert reopened.status == HTTPStatus.OK
+    assert reopened.headers["X-Matic-Revision"] == "7"
+    assert view.current_revision("entry", runtime) == 8
+    assert view.available_revision("entry", runtime) == 7
+    assert "entry" in view._tasks
+
+    task = view._tasks["entry"]
+    release.set()
+    completed = await task
+    await asyncio.sleep(0)
+
+    assert completed is not None
+    assert completed.revision == 8
+    assert view.current_revision("entry", runtime) == 8
+    assert view.available_revision("entry", runtime) == 8
+    assert hass.async_add_executor_job.await_count == 2
+
+
+async def test_scene_build_survives_a_cancelled_http_waiter() -> None:
+    """A browser timeout must not discard a large shared scene build."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_encode(target):
+        started.set()
+        await release.wait()
+        return target()
+
+    hass.async_add_executor_job.side_effect = delayed_encode
+    timed_out = asyncio.create_task(view.get(_request(hass), "entry"))
+    await started.wait()
+
+    timed_out.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await timed_out
+
+    replacement = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    assert hass.async_add_executor_job.await_count == 1
+    assert "entry" in view._tasks
+
+    release.set()
+    response = await replacement
+    await asyncio.sleep(0)
+
+    assert response.status == HTTPStatus.OK
+    assert hass.async_add_executor_job.await_count == 1
+    assert "entry" in view._cache
+    assert view._tasks == {}
+
+
 async def test_scene_waiter_reuses_cache_if_revision_returns() -> None:
     runtime = _runtime()
     hass = _hass(_entry(runtime))
@@ -586,6 +715,47 @@ async def test_scene_view_rechecks_live_session_after_waiting_for_the_encode_loc
     assert response.status == HTTPStatus.NOT_FOUND
     assert not view._cache
     hass.async_add_executor_job.assert_not_awaited()
+
+
+async def test_scene_view_rechecks_runtime_after_waiting_for_the_encode_lock() -> None:
+    runtime = _runtime()
+    entry = _entry(runtime)
+    hass = _hass(entry)
+    view = MaticSlamSceneView()
+    lock = asyncio.Lock()
+    view._locks["entry"] = lock
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    entry.runtime_data = _runtime()
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
+async def test_scene_waiter_returns_cache_published_while_waiting_for_lock() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+    assert (await view.get(_request(hass), "entry")).status == HTTPStatus.OK
+    completed_scene = view._cache.pop("entry")
+    lock = view._locks["entry"]
+    await lock.acquire()
+
+    task = asyncio.create_task(view.get(_request(hass), "entry"))
+    await asyncio.sleep(0)
+    view._cache["entry"] = completed_scene
+    lock.release()
+
+    response = await task
+
+    assert response.status == HTTPStatus.OK
+    hass.async_add_executor_job.assert_awaited_once()
 
 
 async def test_scene_view_rechecks_live_session_before_returning_waiter_cache() -> None:
@@ -682,6 +852,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
+        "map_session_key": _browser_session_key(runtime),
     }
     assert json.loads(cached.body)["pose_age_seconds"] == 0.25
     runtime.client.async_get_pose.assert_awaited_once()
@@ -696,6 +867,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
     assert fallback_payload["position"] is None
     assert fallback_payload["source"] == "current_area"
     assert fallback_payload["pose_freshness"] == "coordinator_fallback"
+    assert fallback_payload["map_session_key"] == _browser_session_key(fallback_runtime)
 
     unavailable_runtime = _runtime(pose=False)
     unavailable_runtime.coordinator.data.floor_plan = None
@@ -710,6 +882,7 @@ async def test_pose_view_returns_exact_fallback_and_unavailable_positions() -> N
         "pose_revision": 1,
         "pose_age_seconds": 0.0,
         "pose_freshness": "live",
+        "map_session_key": None,
     }
 
 
@@ -866,6 +1039,13 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "selected_floor_ordinal": 1,
                 "map_floor_ordinal": 1,
                 "map_session_verified": True,
+                "map_session_key": _browser_session_key(runtime),
+                "map_block_reason": None,
+                "runner_locked": False,
+                "stop_settle_pending": False,
+                "active_plan": False,
+                "native_reconciliation_pending": False,
+                "native_session_active": False,
                 "map_health": "ready",
                 "map_complete": True,
                 "map_truncated": False,
@@ -878,17 +1058,55 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
                 "invalid_tiles": 0,
                 "stream_state": "connected",
                 "stream_failures": 0,
+                "bootstrap_state": "complete",
+                "bootstrap_photo_seen": True,
+                "bootstrap_structure_seen": True,
+                "bootstrap_failures": 0,
             }
         ]
     }
 
+    runtime.cleaning_plans.lock.return_value.locked.return_value = True
+    runtime.cleaning_plans.stop_pending.return_value = True
+    runtime.cleaning_plans.snapshot.return_value = {
+        "active_plan": {"plan_id": "private-plan", "room_id": "private-room"}
+    }
+    runtime.cleaning_plans.pending_native_reconciliation.return_value = {
+        "session_id": "private-session"
+    }
+    runtime.coordinator.data.telemetry.active_cleaning_session = True
+    blocked_response = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    blocked_payload = json.loads(blocked_response.body)
+    blocked_entry = blocked_payload["entries"][0]
+    assert {
+        "runner_locked": blocked_entry["runner_locked"],
+        "stop_settle_pending": blocked_entry["stop_settle_pending"],
+        "active_plan": blocked_entry["active_plan"],
+        "native_reconciliation_pending": blocked_entry["native_reconciliation_pending"],
+        "native_session_active": blocked_entry["native_session_active"],
+    } == {
+        "runner_locked": True,
+        "stop_settle_pending": True,
+        "active_plan": True,
+        "native_reconciliation_pending": True,
+        "native_session_active": True,
+    }
+    assert "private-plan" not in blocked_response.text
+    assert "private-room" not in blocked_response.text
+    assert "private-session" not in blocked_response.text
+
     runtime.slam_map.mission_identity = None
+    assert _map_session_key(runtime) is None
     empty_identity = await MaticSlamCatalogView(
         "/matic_robot/test/room-plan-editor.js"
     ).get(_request(hass))
     empty_entry = json.loads(empty_identity.body)["entries"][0]
     assert empty_entry["history_count"] == 0
     assert empty_entry["map_floor_coherent"] is False
+    assert empty_entry["map_session_key"] is None
+    assert empty_entry["map_block_reason"] == "map_session_unverified"
     assert empty_entry["selected_floor_ordinal"] == 1
     assert empty_entry["map_floor_ordinal"] is None
 
@@ -899,6 +1117,31 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
     empty_plan_entry = json.loads(empty_plan.body)["entries"][0]
     assert empty_plan_entry["selected_floor_ordinal"] is None
     assert empty_plan_entry["map_floor_ordinal"] is None
+    assert empty_plan_entry["map_block_reason"] == "floor_plan_unavailable"
+
+    runtime.coordinator.data.floor_plan = _floor_plan()
+    runtime.slam_map.health.photo_tiles = 0
+    runtime.slam_map.health.structure_tiles = 0
+    runtime.slam_map.health.bootstrap_state = "complete"
+    empty_bootstrap = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    assert (
+        json.loads(empty_bootstrap.body)["entries"][0]["map_block_reason"]
+        == "bootstrap_empty"
+    )
+
+    runtime.slam_map.health.photo_tiles = 1
+    runtime.slam_map.health.structure_tiles = 1
+    runtime.slam_map.mission_identity = SlamMapIdentity("synthetic-other", 2)
+    runtime.slam_map.live_session_verified = True
+    mismatched = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js"
+    ).get(_request(hass))
+    assert (
+        json.loads(mismatched.body)["entries"][0]["map_block_reason"]
+        == "floor_plan_mismatch"
+    )
 
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
@@ -941,7 +1184,13 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     hass = _hass(_entry(runtime))
     view = MaticAreasView()
 
-    response = await view.get(_request(hass), "entry")
+    with patch(
+        "custom_components.matic_robot.slam_scene.area_binding_status",
+        wraps=area_binding_status,
+    ) as classify:
+        response = await view.get(_request(hass), "entry")
+
+    assert classify.call_count == 3
 
     assert json.loads(response.body) == {
         "scene_url": "/api/matic_robot/slam_scene/entry",
@@ -1199,12 +1448,16 @@ def test_scene_view_can_purge_one_entries_private_cache() -> None:
     view = MaticSlamSceneView()
     view._cache["entry"] = SimpleNamespace()
     view._locks["entry"] = MagicMock()
+    task = MagicMock()
+    view._tasks["entry"] = task
 
     view.clear_entry("entry")
     view.clear_entry("missing")
 
     assert view._cache == {}
     assert view._locks == {}
+    assert view._tasks == {}
+    task.cancel.assert_called_once_with()
     assert view._epochs == {"entry": 1, "missing": 1}
 
 
@@ -1236,6 +1489,7 @@ async def test_scene_purge_during_encoding_does_not_retain_private_payload() -> 
 
     assert response.status == HTTPStatus.NOT_FOUND
     assert view._cache == {}
+    assert view._tasks == {}
 
 
 async def test_scene_purge_rejects_waiters_without_duplicate_encoding() -> None:
@@ -1265,6 +1519,7 @@ async def test_scene_purge_rejects_waiters_without_duplicate_encoding() -> None:
     hass.async_add_executor_job.assert_awaited_once()
     assert view._cache == {}
     assert view._locks == {}
+    assert view._tasks == {}
 
 
 def test_scene_endpoint_paths_are_scoped_to_config_entry() -> None:
@@ -1527,6 +1782,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
         mapped_floors=(
             MappedFloor(1, "Main", current_token),
             MappedFloor(2, "Workshop", saved_snapshot.mission_token),
+            MappedFloor(3, "Annex", "2" * 64),
         ),
     )
     runtime.slam_history.catalog_for_mission.return_value = (snapshot,)
@@ -1599,6 +1855,14 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
                     }
                 ],
             },
+            {
+                "id": "saved-2",
+                "active": False,
+                "read_only": True,
+                "ordinal": 2,
+                "label": "Annex",
+                "snapshots": [],
+            },
         ],
     }
     response = await MaticSlamHistorySceneView().get(
@@ -1642,6 +1906,7 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
     assert [floor["id"] for floor in no_active_payload["floors"][1:]] == [
         "saved-1",
         "saved-2",
+        "saved-3",
     ]
 
     with pytest.raises(Unauthorized):

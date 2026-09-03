@@ -357,30 +357,33 @@ def resolve_robot_map_position(
     pose: RobotPose | None,
     current_area: str | None,
 ) -> tuple[float, float, str] | None:
-    """Return only a verified exact pose for a positional map marker.
+    """Return only a current-floor exact pose for a positional map marker.
 
     The robot's current-area label proves room presence, not a point inside the
     room. Rendering that label at the polygon center creates a stationary dot
-    that looks exact while the robot moves, especially after a floor change.
-    Keep ``current_area`` in the signature for callers that also use
-    :func:`robot_location_source`, but never turn it into coordinates here.
+    that looks exact while the robot moves. The label can also advance to the
+    commanded room before the robot crosses its boundary, so it must not veto
+    a stronger geometric pose. Callers establish mission/floor coherence.
+
+    A robot can legitimately travel through an unpartitioned gap, along an
+    exterior wall, or onto a dock outside the room polygons. Room partitions
+    therefore cannot define the valid pose envelope. Once callers have proven
+    the active SLAM mission and floor-plan identity match, keep every finite,
+    protocol-bounded pose. Never invent coordinates from ``current_area``.
     """
     del current_area
     if floor_plan is None or not floor_plan.rooms:
         return None
-    all_points = [point for room in floor_plan.rooms for point in room.boundary]
-    min_x = min(point[0] for point in all_points)
-    max_x = max(point[0] for point in all_points)
-    min_y = min(point[1] for point in all_points)
-    max_y = max(point[1] for point in all_points)
-    if (
-        pose is not None
-        and all(math.isfinite(value) for value in (pose.x, pose.y))
-        and min_x <= pose.x <= max_x
-        and min_y <= pose.y <= max_y
-    ):
-        return pose.x, pose.y, "exact_pose"
-    return None
+    valid_boundaries = tuple(
+        room.boundary for room in floor_plan.rooms if len(room.boundary) >= 3
+    )
+    if not valid_boundaries:
+        return None
+    if pose is None or not all(math.isfinite(value) for value in (pose.x, pose.y)):
+        return None
+    if abs(pose.x) > MAX_MAP_COORDINATE or abs(pose.y) > MAX_MAP_COORDINATE:
+        return None
+    return pose.x, pose.y, "exact_pose"
 
 
 def robot_location_source(

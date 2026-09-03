@@ -112,6 +112,110 @@ async def test_update_combines_required_and_optional_local_state(hass) -> None:
     assert state.telemetry.protocol_version == 25
 
 
+async def test_bag_observation_tracks_confirmed_full_and_replacement_edges(
+    hass,
+) -> None:
+    """Keep bag transition evidence available without registering entities."""
+    client = _client()
+    # Transitions are only counted from an observed clear bag, so the first
+    # poll has to report the flags rather than leaving them unknown.
+    client.async_get_state.return_value = replace(
+        client.async_get_state.return_value, bag_full=False, bag_missing=False
+    )
+    coordinator = _coordinator(hass, client)
+    initial = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(initial)
+
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        side_effect=(
+            datetime(2026, 9, 2, 10, 0, tzinfo=UTC),
+            datetime(2026, 9, 2, 10, 1, tzinfo=UTC),
+        ),
+    ):
+        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
+        assert coordinator.bag_observation["full_events_observed"] == 1
+        assert coordinator.bag_observation["replacement_events_observed"] == 0
+
+        # One clear followed by a full report is ignored as a transient pulse.
+        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
+        coordinator._async_track_bag_state(replace(initial.operational, bag_full=True))
+        assert coordinator.bag_observation["replacement_events_observed"] == 0
+
+        # A clear full flag while the bag is still missing is not a replacement.
+        coordinator._async_track_bag_state(
+            replace(initial.operational, bag_full=False, bag_missing=True)
+        )
+        assert coordinator.bag_observation["replacement_events_observed"] == 0
+
+        # Two consecutive clear reports identify a replacement transition.
+        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
+        coordinator._async_track_bag_state(replace(initial.operational, bag_full=False))
+
+    assert coordinator.bag_observation["full_events_observed"] == 1
+    assert coordinator.bag_observation["replacement_events_observed"] == 1
+    assert coordinator.bag_observation["last_full_at"] is not None
+    assert coordinator.bag_observation["last_replaced_at"] is not None
+    coordinator.data = replace(
+        initial,
+        operational=replace(initial.operational, bag_full=False, bag_missing=False),
+    )
+    assert coordinator.bag_observation["full"] is False
+    assert coordinator.bag_observation["missing"] is False
+
+
+async def test_bag_replacement_is_observed_when_the_only_error_clears(hass) -> None:
+    """A cleared bag-full error is evidence of a replacement, not unknown.
+
+    ``errors`` is a repeated field, so a firmware that omits it and one
+    reporting no active errors are wire-identical and the decoder can only
+    report the flags as unknown. Once the robot has reported an error it has
+    proven it populates the field, and an empty list afterwards means the bag
+    that was full no longer is -- the only signal a replacement produces.
+    """
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def poll(*error_codes: int) -> None:
+        reported = bool(error_codes)
+        client.async_get_state.return_value = replace(
+            client.async_get_state.return_value,
+            error_codes=tuple(error_codes),
+            bag_full=(206 in error_codes) if reported else None,
+            bag_missing=(205 in error_codes) if reported else None,
+        )
+        coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    # An unrelated fault proves the robot populates the field and establishes
+    # that the bag is not full. Each new error set costs a confirmation poll.
+    await poll(207)
+    await poll(207)
+    assert coordinator.data.operational.bag_full is False
+
+    await poll(206, 207)
+    await poll(206, 207)
+    assert coordinator.bag_observation["full_events_observed"] == 1
+
+    # The bag is replaced and the unrelated fault has cleared too, so the robot
+    # now reports an empty error list. Before the capability was tracked this
+    # read as unknown and the replacement could never be observed at all.
+    await poll()
+    await poll()
+    assert coordinator.data.operational.bag_full is False
+    assert coordinator.bag_observation["replacement_events_observed"] == 1
+    assert coordinator.bag_observation["last_replaced_at"] is not None
+
+
+async def test_bag_flags_stay_unknown_until_an_error_is_ever_reported(hass) -> None:
+    """Never claim the bag is fine on a robot that has reported nothing."""
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    state = await coordinator._async_update_data()
+
+    assert state.operational.bag_full is None
+    assert state.operational.bag_missing is None
+
+
 async def test_live_cues_state_emits_safe_entity_and_bus_events(hass) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
@@ -445,7 +549,11 @@ async def test_optional_telemetry_failure_does_not_hide_core_state(hass) -> None
 
 async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> None:
     client = _client()
-    fault = replace(client.async_get_state.return_value, error_codes=(207,))
+    fault = replace(
+        client.async_get_state.return_value,
+        error_codes=(207,),
+        bag_full=True,
+    )
     client.async_get_state.return_value = fault
     coordinator = _coordinator(hass, client)
 
@@ -457,7 +565,9 @@ async def test_transient_robot_errors_require_two_consecutive_polls(hass) -> Non
     repeated_once = await coordinator._async_update_data()
 
     assert first.operational.error_codes == ()
+    assert first.operational.bag_full is None
     assert second.operational.error_codes == (207,)
+    assert second.operational.bag_full is True
     assert cleared.operational.error_codes == ()
     assert repeated_once.operational.error_codes == ()
 

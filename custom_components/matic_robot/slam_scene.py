@@ -62,6 +62,27 @@ PRIVATE_NO_STORE_HEADERS = {
     "X-Content-Type-Options": "nosniff",
 }
 
+_MAP_SESSION_KEY_DOMAIN = b"matic-map-session-v1\0"
+
+
+def _map_session_key(runtime: MaticRuntimeData) -> str | None:
+    """Return a browser-safe identity for one verified SLAM coordinate frame."""
+    identity = runtime.slam_map.mission_identity
+    floor_plan = runtime.coordinator.data.floor_plan
+    if (
+        identity is None
+        or identity.mission_id is None
+        or floor_plan is None
+        or floor_plan.mission_id != identity.mission_id
+    ):
+        return None
+    return sha256(
+        _MAP_SESSION_KEY_DOMAIN
+        + str(identity.mission_id).encode("ascii")
+        + b"\0"
+        + floor_plan.partition_id_wire
+    ).hexdigest()
+
 
 def scene_api_url(entry_id: str) -> str:
     """Return the authenticated scene URL for one config entry."""
@@ -160,20 +181,58 @@ class MaticSlamSceneView(HomeAssistantView):
         self._cache: dict[str, _CachedScene] = {}
         self._versions: dict[str, deque[_CachedScene]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._tasks: dict[str, asyncio.Task[_CachedScene | None]] = {}
         self._epochs: dict[str, int] = {}
         self._generations: dict[str, _SceneGeneration] = {}
 
     def clear_entry(self, entry_id: str) -> None:
         """Forget all in-memory scene material retained for one robot."""
+        self._epochs[entry_id] = self._epochs.get(entry_id, 0) + 1
         self._cache.pop(entry_id, None)
         self._versions.pop(entry_id, None)
+        task = self._tasks.pop(entry_id, None)
+        try:
+            current_task = asyncio.current_task()
+        except RuntimeError:
+            current_task = None
+        if task is not None and task is not current_task:
+            task.cancel()
         self._locks.pop(entry_id, None)
         self._generations.pop(entry_id, None)
-        self._epochs[entry_id] = self._epochs.get(entry_id, 0) + 1
+
+    def _scene_task_done(
+        self,
+        entry_id: str,
+        task: asyncio.Task[_CachedScene | None],
+    ) -> None:
+        """Release one completed encoder and consume any detached exception."""
+        if self._tasks.get(entry_id) is task:
+            self._tasks.pop(entry_id, None)
+        try:
+            task.exception()
+        except asyncio.CancelledError:
+            pass
 
     def current_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
         """Return a monotonic revision covering SLAM and floor-plan changes."""
         key = _scene_snapshot_key(runtime)
+        return self._revision_for_key(entry_id, key)
+
+    def available_revision(self, entry_id: str, runtime: MaticRuntimeData) -> int:
+        """Return the newest safe scene a newly opened panel can receive now."""
+        key = _scene_snapshot_key(runtime)
+        cached = self._cache.get(entry_id)
+        if cached is not None and _scene_snapshot_is_publishable(
+            runtime,
+            cached.key[1],
+            cached.key[2],
+            cached.floor_plan_coherent,
+        ):
+            # Advertise the scene that a newly opened panel can receive now.
+            # A live map revision may advance much faster than its expensive
+            # binary encoder. The delta request will join the background build
+            # and advance from this safe base without blanking the workspace.
+            return cached.revision
         return self._revision_for_key(entry_id, key)
 
     def _revision_for_key(self, entry_id: str, key: _SceneKey) -> int:
@@ -201,9 +260,10 @@ class MaticSlamSceneView(HomeAssistantView):
         hass: HomeAssistant,
         entry_id: str,
         runtime: MaticRuntimeData,
+        *,
+        allow_stale: bool = False,
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
-        data = runtime.coordinator.data
         if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
             self.clear_entry(entry_id)
             return None
@@ -213,6 +273,50 @@ class MaticSlamSceneView(HomeAssistantView):
         if cached is not None and cached.key == key:
             return cached
         queued_after = cached
+        task = self._tasks.get(entry_id)
+        if task is None:
+            task = asyncio.create_task(
+                self._async_build_scene(
+                    hass,
+                    entry_id,
+                    runtime,
+                    epoch,
+                    queued_after,
+                )
+            )
+            self._tasks[entry_id] = task
+            task.add_done_callback(partial(self._scene_task_done, entry_id))
+        if (
+            allow_stale
+            and cached is not None
+            and _scene_snapshot_is_publishable(
+                runtime,
+                cached.key[1],
+                cached.key[2],
+                cached.floor_plan_coherent,
+            )
+        ):
+            return cached
+        try:
+            return await asyncio.shield(task)
+        except asyncio.CancelledError:
+            # A cancelled HTTP waiter must not own and discard an expensive
+            # scene build. Internal invalidation cancels the shared task and
+            # resolves remaining waiters as unavailable instead.
+            request_task = asyncio.current_task()
+            if request_task is not None and request_task.cancelling():
+                raise
+            return None
+
+    async def _async_build_scene(
+        self,
+        hass: HomeAssistant,
+        entry_id: str,
+        runtime: MaticRuntimeData,
+        epoch: int,
+        queued_after: _CachedScene | None,
+    ) -> _CachedScene | None:
+        """Build and publish one coherent scene independently of HTTP waiters."""
         lock = self._locks.setdefault(entry_id, asyncio.Lock())
         async with lock:
             if (
@@ -298,7 +402,12 @@ class MaticSlamSceneView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         try:
-            cached = await self.async_scene(hass, entry_id, runtime)
+            cached = await self.async_scene(
+                hass,
+                entry_id,
+                runtime,
+                allow_stale=request.headers.get("X-Matic-Prefer-Cached") == "1",
+            )
         except DecodeError:
             return web.Response(
                 status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
@@ -504,14 +613,22 @@ class MaticSlamHistoryView(HomeAssistantView):
                 "snapshots": _history_metadata(entry_id, current_snapshots),
             }
         ]
-        saved_ordinal = 0
-        for (
-            mission_token,
-            mission_snapshots,
-        ) in runtime.slam_history.catalogs_by_mission():
-            if mission_token == current_token:
-                continue
-            saved_ordinal += 1
+        history_by_mission = dict(runtime.slam_history.catalogs_by_mission())
+        saved_missions = [
+            mission_token
+            for mission_token in history_by_mission
+            if mission_token != current_token
+        ]
+        saved_missions.extend(
+            mapped_floor.mission_token
+            for mapped_floor in (
+                floor_plan.mapped_floors if floor_plan is not None else ()
+            )
+            if mapped_floor.mission_token != current_token
+            and mapped_floor.mission_token not in history_by_mission
+        )
+        for saved_ordinal, mission_token in enumerate(saved_missions, start=1):
+            mission_snapshots = history_by_mission.get(mission_token, ())
             floors.append(
                 {
                     "id": f"saved-{saved_ordinal}",
@@ -680,6 +797,9 @@ class MaticSlamPoseView(HomeAssistantView):
                 "pose_revision": cached.revision,
                 "pose_age_seconds": round(max(0.0, monotonic() - cached.fetched_at), 3),
                 "pose_freshness": cached.freshness,
+                "map_session_key": (
+                    _map_session_key(runtime) if floor_plan_coherent else None
+                ),
             },
             headers=PRIVATE_NO_STORE_HEADERS,
         )
@@ -732,6 +852,29 @@ class MaticSlamCatalogView(HomeAssistantView):
                 None,
             )
             floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
+            session_verified = getattr(
+                runtime.slam_map,
+                "live_session_verified",
+                floor_plan_coherent,
+            )
+            if floor_plan_coherent and session_verified:
+                map_block_reason = None
+            elif floor_plan is None:
+                map_block_reason = "floor_plan_unavailable"
+            elif (
+                health.photo_tiles == 0
+                and health.structure_tiles == 0
+                and getattr(health, "bootstrap_state", "not_started")
+                in {"complete", "partial", "failed"}
+            ):
+                map_block_reason = "bootstrap_empty"
+            elif map_identity is None or not session_verified:
+                map_block_reason = "map_session_unverified"
+            else:
+                map_block_reason = "floor_plan_mismatch"
+            serial_number = runtime.coordinator.data.info.serial_number
+            plan_snapshot = runtime.cleaning_plans.snapshot(serial_number)
+            telemetry = getattr(runtime.coordinator.data, "telemetry", None)
             entries.append(
                 {
                     "entry_id": entry.entry_id,
@@ -746,7 +889,7 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "history_floor_count": len(
                         runtime.slam_history.catalogs_by_mission()
                     ),
-                    "map_revision": self._scene_view.current_revision(
+                    "map_revision": self._scene_view.available_revision(
                         entry.entry_id, runtime
                     )
                     if self._scene_view is not None
@@ -754,10 +897,26 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "map_floor_coherent": floor_plan_coherent,
                     "selected_floor_ordinal": selected_floor_ordinal,
                     "map_floor_ordinal": map_floor_ordinal,
-                    "map_session_verified": getattr(
-                        runtime.slam_map,
-                        "live_session_verified",
-                        floor_plan_coherent,
+                    "map_session_verified": session_verified,
+                    "map_session_key": (
+                        _map_session_key(runtime) if session_verified else None
+                    ),
+                    "map_block_reason": map_block_reason,
+                    "runner_locked": runtime.cleaning_plans.lock(
+                        serial_number
+                    ).locked(),
+                    "stop_settle_pending": runtime.cleaning_plans.stop_pending(
+                        serial_number
+                    ),
+                    "active_plan": plan_snapshot.get("active_plan") is not None,
+                    "native_reconciliation_pending": (
+                        runtime.cleaning_plans.pending_native_reconciliation(
+                            serial_number
+                        )
+                        is not None
+                    ),
+                    "native_session_active": getattr(
+                        telemetry, "active_cleaning_session", None
                     ),
                     "map_health": health.state,
                     "map_complete": health.complete,
@@ -771,6 +930,16 @@ class MaticSlamCatalogView(HomeAssistantView):
                     "invalid_tiles": health.invalid_tiles,
                     "stream_state": health.stream_state,
                     "stream_failures": health.stream_failures,
+                    "bootstrap_state": getattr(
+                        health, "bootstrap_state", "not_started"
+                    ),
+                    "bootstrap_photo_seen": getattr(
+                        health, "bootstrap_photo_seen", False
+                    ),
+                    "bootstrap_structure_seen": getattr(
+                        health, "bootstrap_structure_seen", False
+                    ),
+                    "bootstrap_failures": getattr(health, "bootstrap_failures", 0),
                 }
             )
         return self.json({"entries": entries}, headers=PRIVATE_NO_STORE_HEADERS)
@@ -818,7 +987,7 @@ class MaticAreasView(HomeAssistantView):
         areas = []
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             status = area_binding_status(area, floor_plan)
-            can_rebind = area_binding_allows_review(area, floor_plan)
+            can_rebind = area_binding_allows_review(area, floor_plan, status=status)
             areas.append(
                 {
                     "id": area_id,

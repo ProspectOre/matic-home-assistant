@@ -21,6 +21,7 @@ async def async_get_config_entry_diagnostics(
     floor_plan = getattr(state, "floor_plan", None)
     endpoint_health = entry.runtime_data.client.endpoint_health
     command_health = entry.runtime_data.client.command_health
+    bag_observation = getattr(entry.runtime_data.coordinator, "bag_observation", None)
     return {
         "entry": {
             "port": entry.data.get("port"),
@@ -41,6 +42,11 @@ async def async_get_config_entry_diagnostics(
             "software_version": operational.software_version,
             "release_channel": operational.release_channel,
             "robot_profile": operational.robot_profile,
+            "bag_full": operational.bag_full,
+            "bag_missing": operational.bag_missing,
+            "bag_observation": (
+                bag_observation if isinstance(bag_observation, dict) else None
+            ),
         },
         "telemetry": {
             "software_version": telemetry.software_version,

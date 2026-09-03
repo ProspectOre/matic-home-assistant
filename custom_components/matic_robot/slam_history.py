@@ -410,10 +410,29 @@ def _decompress_scene(compressed: bytes) -> bytes:
 
 def _enforce_history_bounds(snapshots: list[SlamHistorySnapshot]) -> None:
     while len(snapshots) > MAX_HISTORY_ITEMS:
-        snapshots.pop(0)
+        snapshots.pop(_oldest_disposable_snapshot_index(snapshots))
     while (
         len(snapshots) > 1
         and sum(len(snapshot.compressed) for snapshot in snapshots)
         > MAX_HISTORY_COMPRESSED_BYTES
     ):
-        snapshots.pop(0)
+        snapshots.pop(_oldest_disposable_snapshot_index(snapshots))
+
+
+def _oldest_disposable_snapshot_index(
+    snapshots: list[SlamHistorySnapshot],
+) -> int:
+    """Prefer evicting duplicate floor samples over a floor's last scene."""
+    mission_counts: dict[str, int] = {}
+    for snapshot in snapshots:
+        if snapshot.mission_token is not None:
+            mission_counts[snapshot.mission_token] = (
+                mission_counts.get(snapshot.mission_token, 0) + 1
+            )
+    for index, snapshot in enumerate(snapshots):
+        mission_token = snapshot.mission_token
+        if mission_token is None or mission_counts.get(mission_token, 0) > 1:
+            return index
+    # More distinct floors than the global bound cannot all be retained. Drop
+    # the oldest one deterministically and preserve the newest floor set.
+    return 0

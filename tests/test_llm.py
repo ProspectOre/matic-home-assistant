@@ -313,17 +313,51 @@ async def test_operations_and_robot_resolution() -> None:
     assert robot["name"] == "Synthetic Robot"
     assert robot["coordinator_available"] is True
     assert robot["robot"] == {
-        "activity": "error",
+        "activity": "cleaning",
         "battery_percentage": 72,
         "current_room": "Study",
         "previous_room": "Kitchen",
         "error_codes": [207],
+        "bag_full": None,
+        "bag_missing": None,
         "native_session_active": True,
         "software_version": "172.13",
     }
     assert robot["managed_runner"]["lock_held"] is True
     assert robot["native_reconciliation"]["room"] == "Study"
     assert _entry_name(fallback) == "Fallback"
+
+
+async def test_operations_includes_read_only_bag_observation_when_available() -> None:
+    entry = _entry()
+    entry.runtime_data.coordinator.bag_observation = {
+        "full": False,
+        "missing": False,
+        "full_events_observed": 1,
+        "replacement_events_observed": 1,
+        "last_full_at": "2026-09-02T10:00:00+00:00",
+        "last_replaced_at": "2026-09-02T10:02:00+00:00",
+    }
+    hass = _hass(entry)
+
+    result = await MaticGetOperationsTool(MaticOperationsAPI(hass)).async_call(
+        hass, llm.ToolInput("MaticGetOperations", {}), _context()
+    )
+
+    assert result["robots"][0]["robot"]["bag_observation"] == {
+        "full": False,
+        "missing": False,
+        "full_events_observed": 1,
+        "replacement_events_observed": 1,
+        "last_full_at": "2026-09-02T10:00:00+00:00",
+        "last_replaced_at": "2026-09-02T10:02:00+00:00",
+    }
+
+
+async def test_robot_resolution_variants() -> None:
+    named = _entry()
+    fallback = _entry(name="", title="Fallback", entry_id="entry-two")
+    hass = _hass(named, fallback)
 
     assert _resolve_entry(_hass(named), None) is named
     with pytest.raises(HomeAssistantError, match="Specify one"):

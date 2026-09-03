@@ -1372,6 +1372,33 @@ async def test_multi_floor_read_selects_the_verified_active_mission(
     )
 
 
+async def test_multi_floor_read_ignores_unreferenced_coverage_partitions(
+    monkeypatch,
+) -> None:
+    client = MaticHermesClient("robot.invalid", 16320)
+    stale = FloorPlan(21, "stale", b"stale", ())
+    active = FloorPlan(42, "active", b"active", ())
+    active_floor = MappedFloor(42, "Main", "1" * 64)
+    client.async_get_property = AsyncMock(return_value=b"coverage")
+    client.async_get_tracked_collection_entries = AsyncMock(
+        return_value=(HermesCollectionEntry(b"state", b"state"),)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_floor_plans",
+        lambda _payload: (stale, active),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.decode_mission_client_state",
+        lambda _payload: MissionClientState(active_floor, (active_floor,)),
+    )
+
+    selected = await client.async_get_floor_plan()
+
+    assert selected.mission_id == 42
+    assert selected.floor_label == "Main"
+    assert selected.mapped_floors == (active_floor,)
+
+
 async def test_multi_floor_read_prefers_verified_live_map_mission(
     monkeypatch,
 ) -> None:
@@ -1466,7 +1493,10 @@ async def test_single_floor_read_needs_no_mission_catalog(monkeypatch) -> None:
             (HermesCollectionEntry(b"", b"state"),),
             MissionClientState(
                 MappedFloor(42, "Main", "1" * 64),
-                (MappedFloor(42, "Main", "1" * 64),),
+                (
+                    MappedFloor(42, "Main", "1" * 64),
+                    MappedFloor(126, "Other", "3" * 64),
+                ),
             ),
             "canonical floor identities disagree",
         ),

@@ -14,7 +14,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .area_selector import MaticAreaSelector
+from .area_selector import MaticAreaSelector, _RoomGeometryIndex
 from .client.models import FloorPlan
 from .const import DOMAIN
 
@@ -50,6 +50,8 @@ _GUARD_MARGIN_MILLIMETERS = math.ceil(
 )
 _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
+_NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
+_MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -380,8 +382,20 @@ def _area_geometry_components(
     center_tolerance: float = 0.0,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
+    rooms = [
+        {
+            "room_id": room.id,
+            "name": room.name,
+            "boundary": [list(point) for point in room.boundary],
+        }
+        for room in floor_plan.rooms
+    ]
+    room_geometry = _RoomGeometryIndex(rooms)
     normalized = _validate_area_circles(
-        floor_plan, circles, center_tolerance=center_tolerance
+        floor_plan,
+        circles,
+        center_tolerance=center_tolerance,
+        room_geometry=room_geometry,
     )
     ordered_float = sorted(
         (
@@ -420,17 +434,42 @@ def _area_geometry_components(
         )
         for x, y, radius in ordered_float
     )
-    room_boundaries = tuple(
-        [list(point) for point in room.boundary] for room in floor_plan.rooms
-    )
+    neighborhood_index: dict[tuple[int, int], set[int]] = {}
+    for index, neighborhood in enumerate(neighborhoods):
+        first_x = math.floor(neighborhood[0] / _NEIGHBORHOOD_INDEX_CELL_METERS)
+        first_y = math.floor(neighborhood[1] / _NEIGHBORHOOD_INDEX_CELL_METERS)
+        last_x = math.floor(neighborhood[2] / _NEIGHBORHOOD_INDEX_CELL_METERS)
+        last_y = math.floor(neighborhood[3] / _NEIGHBORHOOD_INDEX_CELL_METERS)
+        for cell_x in range(first_x, last_x + 1):
+            for cell_y in range(first_y, last_y + 1):
+                neighborhood_index.setdefault((cell_x, cell_y), set()).add(index)
 
     segments: list[_LocalSegment] = []
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            first_x = math.floor(
+                min(start[0], end[0]) / _NEIGHBORHOOD_INDEX_CELL_METERS
+            )
+            first_y = math.floor(
+                min(start[1], end[1]) / _NEIGHBORHOOD_INDEX_CELL_METERS
+            )
+            last_x = math.floor(max(start[0], end[0]) / _NEIGHBORHOOD_INDEX_CELL_METERS)
+            last_y = math.floor(max(start[1], end[1]) / _NEIGHBORHOOD_INDEX_CELL_METERS)
+            cell_count = (last_x - first_x + 1) * (last_y - first_y + 1)
+            candidate_neighborhoods = (
+                range(len(neighborhoods))
+                if cell_count > _MAX_NEIGHBORHOOD_QUERY_CELLS
+                else {
+                    neighborhood
+                    for cell_x in range(first_x, last_x + 1)
+                    for cell_y in range(first_y, last_y + 1)
+                    for neighborhood in neighborhood_index.get((cell_x, cell_y), ())
+                }
+            )
             if not any(
-                _clip_segment(start, end, neighborhood) is not None
-                for neighborhood in neighborhoods
+                _clip_segment(start, end, neighborhoods[index]) is not None
+                for index in candidate_neighborhoods
             ):
                 continue
             first = (
@@ -449,7 +488,7 @@ def _area_geometry_components(
     for x, y, radius in ordered_float:
         probes = _occupancy_probes(x, y, radius)
         occupancy = sum(
-            int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
+            int(room_geometry.contains(probe_x, probe_y)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         occupancy_values.append(occupancy)
@@ -582,9 +621,17 @@ def area_binding_status(
     return AreaBindingStatus.INVALID
 
 
-def area_binding_allows_review(area: Mapping[str, Any], floor_plan: FloorPlan) -> bool:
+def area_binding_allows_review(
+    area: Mapping[str, Any],
+    floor_plan: FloorPlan,
+    *,
+    status: AreaBindingStatus | None = None,
+) -> bool:
     """Return whether stale coordinates can be shown for local confirmation."""
-    if area_binding_status(area, floor_plan) is not AreaBindingStatus.GEOMETRY_CHANGED:
+    binding_status = (
+        status if status is not None else area_binding_status(area, floor_plan)
+    )
+    if binding_status is not AreaBindingStatus.GEOMETRY_CHANGED:
         return False
     try:
         _validate_area_circles(floor_plan, area["circles"])
@@ -1224,6 +1271,7 @@ def _validate_area_circles(
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> list[dict[str, float]]:
     """Validate saved circles against the mapped floor without exposing them."""
     rooms = [
@@ -1236,7 +1284,9 @@ def _validate_area_circles(
     ]
     try:
         return MaticAreaSelector({"rooms": rooms}).validate(
-            circles, center_tolerance=center_tolerance
+            circles,
+            center_tolerance=center_tolerance,
+            geometry=room_geometry,
         )
     except vol.Invalid as err:
         raise ValueError("area circles are invalid for the mapped floor") from err
@@ -1308,7 +1358,28 @@ def _canonical_polygon(boundary: tuple[tuple[float, float], ...]) -> _CanonicalP
 
 def _smallest_rotation(points: _CanonicalPolygon) -> _CanonicalPolygon:
     """Return the lexicographically smallest cyclic rotation."""
-    return min(points[index:] + points[:index] for index in range(len(points)))
+    count = len(points)
+    doubled = points + points
+    first = 0
+    second = 1
+    offset = 0
+    while first < count and second < count and offset < count:
+        first_value = doubled[first + offset]
+        second_value = doubled[second + offset]
+        if first_value == second_value:
+            offset += 1
+            continue
+        if first_value > second_value:
+            first += offset + 1
+            if first <= second:
+                first = second + 1
+        else:
+            second += offset + 1
+            if second <= first:
+                second = first + 1
+        offset = 0
+    start = min(first, second)
+    return points[start:] + points[:start]
 
 
 def _quantize_coordinate(value: float) -> int:

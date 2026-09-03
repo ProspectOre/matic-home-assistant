@@ -64,8 +64,28 @@ def test_decode_verified_kabuki_state_fields() -> None:
     assert state.paused is True
     assert state.cleaning is False
     assert state.returning is False
-    assert state.activity is RobotActivity.ERROR
+    assert state.activity is RobotActivity.DOCKED
     assert state.error_names == ("error_code_207",)
+
+
+def test_decode_verified_dust_bag_error_flags() -> None:
+    """Decode the native bag-full and bag-missing error values independently."""
+    state = _decode_operational_state(
+        KabukiOutputWire(errors=[205, 206]).SerializeToString()
+    )
+
+    assert state.bag_missing is True
+    assert state.bag_full is True
+
+
+def test_bag_flags_remain_unknown_without_an_error_field() -> None:
+    """Do not expose optional bag entities when firmware omits errors."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[106]).SerializeToString()
+    )
+
+    assert state.bag_missing is None
+    assert state.bag_full is None
 
 
 def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
@@ -82,10 +102,35 @@ def test_decode_absent_or_non_finite_battery_as_unknown() -> None:
     assert non_finite.battery_percentage is None
 
 
+def test_active_cleaning_remains_primary_when_firmware_retains_warning() -> None:
+    """Keep a non-blocking warning from hiding a mission still in progress."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[119], errors=[207]).SerializeToString()
+    )
+
+    assert state.cleaning is True
+    assert state.error_codes == (207,)
+    assert state.activity is RobotActivity.CLEANING
+
+
+def test_low_charge_cleaning_task_at_dock_is_recharge_and_resume() -> None:
+    """Model a retained task as suspended while physical charging wins."""
+    state = _decode_operational_state(
+        KabukiOutputWire(states=[107, 119, 206]).SerializeToString()
+    )
+
+    assert state.cleaning is True
+    assert state.charging is True
+    assert state.low_charge is True
+    assert state.recharge_and_resume is True
+    assert state.activity is RobotActivity.CHARGING
+
+
 @pytest.mark.parametrize(
     ("states", "activity"),
     [
-        ([106, 119], RobotActivity.CLEANING),
+        ([106, 119], RobotActivity.DOCKED),
+        ([107, 119, 206], RobotActivity.CHARGING),
         ([109, 200, 119], RobotActivity.PAUSED),
         ([104, 105], RobotActivity.RETURNING),
         ([104, 105, 106, 119], RobotActivity.RETURNING),

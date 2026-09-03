@@ -80,6 +80,7 @@ from .plans import (
 from .stop_return import schedule_dock_after_stop
 
 SERVICE_CLEAN = "clean"
+SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
 SERVICE_CLEAN_AREA = "clean_area"
 SERVICE_INTELLIGENT_CLEAN = "intelligent_clean"
 SERVICE_CLEAN_ENTIRE_PLAN = "clean_entire_plan"
@@ -179,6 +180,15 @@ SAVED_ROOM_SCHEMA = vol.Schema(
 
 SAVED_PLAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {vol.Optional("plan"): vol.All(cv.string, vol.Length(min=1, max=128))}
+)
+
+CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
+    {
+        vol.Required("rooms"): vol.All(
+            cv.ensure_list, [SAVED_ROOM_SCHEMA], vol.Length(min=1, max=100)
+        ),
+        vol.Optional("return_to_base", default=True): cv.boolean,
+    }
 )
 
 PLAN_TARGET_SCHEMA = cv.make_entity_service_schema({})
@@ -486,6 +496,94 @@ async def async_register_services(hass: HomeAssistant) -> None:
             floor_is_current=floor_is_current,
             floor_token=execution_floor_token,
         )
+
+    async def async_clean_room_sequence(call: ServiceCall) -> None:
+        """Run an unsaved ordered room sequence with per-room settings."""
+        entity_id, entry, serial_number, room_map = _saved_plan_context(
+            hass, call, require_current_floor=True
+        )
+        execution_floor_plan = _current_floor_plan(entry)
+        execution_floor_token = plan_floor_token(execution_floor_plan)
+
+        rooms = [
+            CleaningRoom(
+                room_id := _resolve_room_id(str(item["room"]), room_map),
+                room_map[room_id],
+                str(item["cleaning_mode"]),
+                str(item["coverage_setting"]),
+            )
+            for item in call.data["rooms"]
+        ]
+
+        def floor_is_current() -> bool:
+            floor_plan: FloorPlan | None = (
+                entry.runtime_data.coordinator.data.floor_plan
+            )
+            return (
+                floor_plan is not None
+                and plan_floor_token(floor_plan) == execution_floor_token
+                and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
+            )
+
+        execution_call = ServiceCall(
+            hass,
+            DOMAIN,
+            call.service,
+            {
+                "plan_id": "quick_clean",
+                "start_timeout": 120,
+                "completion_timeout": 21600,
+                "return_to_base": bool(call.data["return_to_base"]),
+            },
+            context=call.context,
+        )
+
+        async def async_managed_command(token: int, command: UserCommand) -> None:
+            async with manager.managed_command(serial_number, token):
+                await entry.runtime_data.client.async_send_user_command(command)
+                if command is UserCommand.STOP:
+                    await manager.async_mark_stop_pending(serial_number)
+                await entry.runtime_data.coordinator.async_request_refresh()
+            if command is UserCommand.STOP:
+                schedule_dock_after_stop(
+                    hass,
+                    client=entry.runtime_data.client,
+                    refresh=entry.runtime_data.coordinator.async_request_refresh,
+                    manager=manager,
+                    serial_number=serial_number,
+                    entity_id=entity_id,
+                )
+
+        await _async_execute_rooms(
+            hass,
+            execution_call,
+            manager,
+            entity_id,
+            serial_number,
+            rooms,
+            intelligent=False,
+            refresh=entry.runtime_data.coordinator.async_request_refresh,
+            active_session=(
+                entry.runtime_data.client.async_has_active_cleaning_session
+            ),
+            session_history=(
+                entry.runtime_data.client.async_get_cleaning_session_records
+            ),
+            confirm_room_completed=(
+                entry.runtime_data.coordinator.async_confirm_room_completed
+            ),
+            managed_user_command=async_managed_command,
+            mapped_room_names=tuple(room_map.values()),
+            floor_is_current=floor_is_current,
+            floor_token=execution_floor_token,
+        )
+
+    hass.services.async_register(
+        DOMAIN,
+        SERVICE_CLEAN_ROOM_SEQUENCE,
+        _require_matic_control(hass, async_clean_room_sequence),
+        schema=CLEAN_ROOM_SEQUENCE_SCHEMA,
+    )
 
     async def async_intelligent_clean(call: ServiceCall) -> None:
         """Continue with the least recently confirmed cleaning opportunity."""

@@ -352,8 +352,10 @@ least three successful runs. A stop below the configured threshold remains
 immediate; at or above it, the current room completes and the robot docks: the
 next leg is never dispatched, and inside a leg the managed STOP is sent at the
 observed room boundary so later rooms remain due. Until a confident compatible duration exists,
-enabling the policy means the current room finishes. Set the threshold to `0%`
-to always finish it. This is a time-based estimate, not a measured area
+enabling the policy means the current room finishes. At a configured boundary
+the estimate rounds down, so progress just below the threshold still stops
+immediately while the exact threshold finishes the room. Set the threshold to
+`0%` to always finish it. This is a time-based estimate, not a measured area
 percentage; pauses, recharge, and other delays can reduce its accuracy.
 
 Use **Run all — top to bottom** when every selected room should always clean in
@@ -482,6 +484,13 @@ Template-visible attributes and recorded history follow one deliberate model:
   writes both sensors immediately, and storage migration repairs older global
   records from the newest verified per-plan completion without crediting an
   unverified room.
+- **Dust-bag verification.** When the robot reports its error list, the
+  integration decodes full and missing-bag values and keeps a bounded,
+  read-only observation record in `MaticGetOperations`. It counts full alerts
+  and confirmed full-to-clear replacements, with timestamps. A replacement is
+  identified only after a confirmed full-to-clear transition, avoiding
+  single-poll glitches. Public HA bag entities and statistics remain withheld
+  until a real robot transition is caught and verified.
 
 ## Events and observability
 

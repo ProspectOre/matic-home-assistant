@@ -148,6 +148,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             if coordinator.data.floor_plan is not None
             else None
         )
+        await slam_map.async_prime(client)
         slam_history = SlamHistoryStore(hass, entry.entry_id)
         await slam_history.async_load()
         entry.runtime_data = MaticRuntimeData(
@@ -299,7 +300,9 @@ def _register_slam_map_floor_plan_sync(
                         # this task releases its guard.
                         last_attempted_identity = None
                         return
-                    await coordinator.async_request_floor_plan_refresh()
+                    await coordinator.async_request_floor_plan_refresh(
+                        identity.mission_id
+                    )
                     if slam_map.mission_identity != identity or not getattr(
                         slam_map, "live_session_verified", True
                     ):
@@ -337,7 +340,7 @@ def _register_slam_map_floor_plan_sync(
                     floor_plan
                 ):
                     return
-                await coordinator.async_request_floor_plan_refresh()
+                await coordinator.async_request_floor_plan_refresh(identity.mission_id)
                 if slam_map.mission_identity != identity or not getattr(
                     slam_map, "live_session_verified", True
                 ):

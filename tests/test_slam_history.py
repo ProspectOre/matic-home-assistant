@@ -22,6 +22,7 @@ from custom_components.matic_robot.slam_history import (
     SlamHistoryStore,
     _decode_history,
     _decompress_scene,
+    _enforce_history_bounds,
     async_collect_slam_history,
 )
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
@@ -207,6 +208,90 @@ async def test_history_bounds_items_and_total_bytes(hass) -> None:
             created_at=started + timedelta(hours=4),
         )
     assert [snapshot.revision for snapshot in store.catalog()] == [4]
+
+
+async def test_history_bounds_preserve_each_classified_floor(hass) -> None:
+    store = SlamHistoryStore(hass, "multi-floor-bounds-entry")
+    await store.async_load()
+    started = datetime(2026, 7, 26, tzinfo=UTC)
+    house = _identity(1)
+    shed = _identity(2)
+
+    with patch("custom_components.matic_robot.slam_history.MAX_HISTORY_ITEMS", 3):
+        await store.async_add(
+            _scene(page_x=1, mission_id=1),
+            1,
+            created_at=started,
+            mission_token=house.mission_token,
+        )
+        await store.async_add(
+            _scene(page_x=2, mission_id=2),
+            2,
+            created_at=started + timedelta(minutes=6),
+            mission_token=shed.mission_token,
+        )
+        for revision in range(3, 6):
+            await store.async_add(
+                _scene(page_x=revision, mission_id=1),
+                revision,
+                created_at=started + timedelta(minutes=revision * 6),
+                mission_token=house.mission_token,
+            )
+
+    assert [
+        (mission_token, [snapshot.revision for snapshot in snapshots])
+        for mission_token, snapshots in store.catalogs_by_mission()
+    ] == [
+        (house.mission_token, [4, 5]),
+        (shed.mission_token, [2]),
+    ]
+
+
+async def test_history_byte_bound_preserves_each_classified_floor(hass) -> None:
+    store = SlamHistoryStore(hass, "multi-floor-byte-bounds-entry")
+    await store.async_load()
+    started = datetime(2026, 7, 26, tzinfo=UTC)
+    house = _identity(1)
+    shed = _identity(2)
+
+    for revision, mission in ((1, house), (2, shed), (3, house)):
+        await store.async_add(
+            _scene(page_x=revision, mission_id=1 if mission is house else 2),
+            revision,
+            created_at=started + timedelta(minutes=revision * 6),
+            mission_token=mission.mission_token,
+        )
+    retained_floor_bytes = sum(
+        len(snapshot.compressed)
+        for snapshot in store.catalog()
+        if snapshot.revision in {2, 3}
+    )
+    with patch(
+        "custom_components.matic_robot.slam_history.MAX_HISTORY_COMPRESSED_BYTES",
+        retained_floor_bytes,
+    ):
+        _enforce_history_bounds(store._snapshots)
+
+    assert [snapshot.revision for snapshot in store.catalog()] == [2, 3]
+
+
+async def test_history_bound_keeps_newest_set_when_distinct_floors_exceed_it(
+    hass,
+) -> None:
+    store = SlamHistoryStore(hass, "many-floor-bounds-entry")
+    await store.async_load()
+    started = datetime(2026, 7, 26, tzinfo=UTC)
+
+    with patch("custom_components.matic_robot.slam_history.MAX_HISTORY_ITEMS", 2):
+        for revision in range(1, 4):
+            await store.async_add(
+                _scene(page_x=revision, mission_id=revision),
+                revision,
+                created_at=started + timedelta(minutes=revision * 6),
+                mission_token=_identity(revision).mission_token,
+            )
+
+    assert [snapshot.revision for snapshot in store.catalog()] == [2, 3]
 
 
 def test_history_decoder_repairs_invalid_private_storage() -> None:

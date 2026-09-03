@@ -1696,9 +1696,10 @@ def _import_native_room_activity(
     for room_id, (timestamp, ended_at, name) in candidates.items():
         global_room = robot["rooms"].setdefault(room_id, {})
         known = _latest_timestamp(
-            global_room.get("last_opportunity"), global_room.get("last_completed")
+            global_room.get("last_opportunity"),
+            global_room.get("last_completed"),
         )
-        if known is not None and known > timestamp:
+        if known is not None and known >= timestamp:
             continue
         updates = {"name": name, "last_opportunity": ended_at}
         if any(global_room.get(key) != value for key, value in updates.items()):
@@ -1745,7 +1746,7 @@ def _active_elapsed_seconds(active: Mapping[str, Any], now: datetime) -> int:
             segment_elapsed = (now - parsed).total_seconds()
             if math.isfinite(segment_elapsed):
                 elapsed += max(0.0, segment_elapsed)
-    return max(0, round(elapsed))
+    return max(0, math.floor(elapsed))
 
 
 def _duration_history(record: Mapping[str, Any]) -> list[int]:
@@ -1833,7 +1834,7 @@ def _estimated_progress(active: object, expected: object) -> int | None:
     if not isinstance(active, Mapping):
         return None
     elapsed = _active_elapsed_seconds(active, dt_util.utcnow())
-    return max(0, min(100, round((elapsed / expected) * 100)))
+    return max(0, min(100, math.floor((elapsed / expected) * 100)))
 
 
 def resolve_room_reference(

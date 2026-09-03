@@ -96,23 +96,37 @@ class RobotOperationalState:
     cues_voice_intent: CuesIntent | None = None
     cues_gesture_status: CuesGestureStatus | None = None
     following_person: bool | None = None
+    bag_full: bool | None = None
+    bag_missing: bool | None = None
 
     @property
     def activity(self) -> RobotActivity:
         """Return a conservative high-level state without inventing semantics."""
-        if self.error_codes:
-            return RobotActivity.ERROR
-        if self.paused:
+        if self.paused and not self.error_codes:
             return RobotActivity.PAUSED
         if self.returning:
             return RobotActivity.RETURNING
-        if self.cleaning:
-            return RobotActivity.CLEANING
+        # Firmware can retain task and warning flags while the robot is
+        # physically docked, both during recharge-and-resume and ordinary
+        # charging.  Physical charging must win as the HA vacuum activity;
+        # raw warning evidence remains available through ``error_codes``.
         if self.charging:
             return RobotActivity.CHARGING
         if self.charging_idle:
             return RobotActivity.DOCKED
+        # Firmware can retain a non-blocking warning code while it continues an
+        # accepted cleaning mission.  The active task is the primary HA vacuum
+        # activity; ``error_codes`` remains exposed separately as ``problem``.
+        if self.cleaning:
+            return RobotActivity.CLEANING
+        if self.error_codes:
+            return RobotActivity.ERROR
         return RobotActivity.READY
+
+    @property
+    def recharge_and_resume(self) -> bool:
+        """Return whether a low-charge cleaning task is suspended at the dock."""
+        return self.low_charge and self.cleaning and self.is_charging
 
     @property
     def is_charging(self) -> bool:

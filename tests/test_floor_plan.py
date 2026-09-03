@@ -28,7 +28,7 @@ from custom_components.matic_robot.client.floor_plan import (
     resolve_robot_map_position,
     robot_location_source,
 )
-from custom_components.matic_robot.client.models import FloorPlan, RobotPose
+from custom_components.matic_robot.client.models import FloorPlan, RobotPose, Room
 from tests.wire_builders import _field, _fixed32, _fixed64, _varint_field
 
 PARTITION_ID = UUID("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
@@ -189,6 +189,91 @@ def test_robot_position_requires_exact_coordinates_and_tracks_room_presence() ->
         floor_plan, None, "the Test room", width=256, height=256
     )
     assert fallback_marker == without_marker
+
+
+def test_robot_position_prefers_verified_geometry_over_reported_room() -> None:
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room("room-1", "Office", "one", b"one", ((0, 0), (2, 0), (2, 2), (0, 2))),
+            Room(
+                "room-2",
+                "Living room",
+                "two",
+                b"two",
+                ((3, 0), (5, 0), (5, 2), (3, 2)),
+            ),
+        ),
+    )
+    conflicting_pose = RobotPose(4, 1, 0)
+
+    assert resolve_robot_map_position(floor_plan, conflicting_pose, "Office") == (
+        4,
+        1,
+        "exact_pose",
+    )
+    assert robot_location_source(floor_plan, conflicting_pose, "Office") == (
+        "exact_pose"
+    )
+    assert resolve_robot_map_position(
+        floor_plan, conflicting_pose, "the Living room"
+    ) == (4, 1, "exact_pose")
+    assert resolve_robot_map_position(floor_plan, RobotPose(2, 1, 0), "Office") == (
+        2,
+        1,
+        "exact_pose",
+    )
+    assert resolve_robot_map_position(floor_plan, RobotPose(2.5, 1, 0), None) == (
+        2.5,
+        1,
+        "exact_pose",
+    )
+    assert resolve_robot_map_position(floor_plan, RobotPose(6, 1, 0), None) == (
+        6,
+        1,
+        "exact_pose",
+    )
+    assert (
+        resolve_robot_map_position(
+            floor_plan,
+            RobotPose(10_001, 1, 0),
+            None,
+        )
+        is None
+    )
+
+    duplicate_vertex_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room-1",
+                "Office",
+                "one",
+                b"one",
+                ((0, 0), (0, 0), (2, 0), (2, 2), (0, 2)),
+            ),
+        ),
+    )
+    assert resolve_robot_map_position(
+        duplicate_vertex_plan, RobotPose(1, 1, 0), "Office"
+    ) == (1, 1, "exact_pose")
+
+    incomplete_boundary_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (Room("room-1", "Office", "one", b"one", ((0, 0), (2, 2))),),
+    )
+    assert (
+        resolve_robot_map_position(
+            incomplete_boundary_plan, RobotPose(1, 1, 0), "Office"
+        )
+        is None
+    )
 
 
 def test_decode_rejects_plan_without_standard_partition() -> None:

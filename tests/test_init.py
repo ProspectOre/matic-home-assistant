@@ -179,6 +179,10 @@ async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> Non
         await scheduled[0]
 
     assert coordinator.async_request_floor_plan_refresh.await_count == 6
+    assert all(
+        request.args == (43,)
+        for request in coordinator.async_request_floor_plan_refresh.await_args_list
+    )
     assert sleep.await_args_list == [
         ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
         ((FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,), {}),
@@ -335,7 +339,7 @@ async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
     assert len(scheduled) == 1
     await scheduled[0]
 
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
     entry.async_on_unload.assert_called_once_with(remove_listener)
 
 
@@ -571,7 +575,7 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
     assert len(scheduled) == 1
     await scheduled[0]
 
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
     slam_map.floor_plan_is_current.assert_called_with(floor_plan)
 
 
@@ -823,7 +827,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 17
+    assert hass.services.async_register.call_count == 18
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -861,7 +865,8 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         DATA_SLAM_SCENE_VIEW,
         MANIFEST_VERSION,
         MATIC_MAP_PANEL_ELEMENT,
-        MATIC_MAP_STUDIO_PATH,
+        MATIC_MAP_STUDIO_V4_PATH,
+        MATIC_MAP_STUDIO_V4_ROOT_PATH,
         ROOM_PLAN_EDITOR_PATH,
         ROOM_PLAN_EDITOR_VERSION,
     )
@@ -874,12 +879,17 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         call.args[0] for call in hass.http.register_view.call_args_list
     }
     assert ROOM_PLAN_EDITOR_VERSION in ROOM_PLAN_EDITOR_PATH
+    registered_paths = {
+        config.url_path
+        for config in hass.http.async_register_static_paths.await_args.args[0]
+    }
+    assert MATIC_MAP_STUDIO_V4_ROOT_PATH in registered_paths
     assert ROOM_PLAN_EDITOR_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     assert panel.require_admin is True
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
-    assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_PATH
+    assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
 
 
 @pytest.mark.parametrize("native_history_error", [False, True])
@@ -970,6 +980,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
+        async_prime=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
         async_add_listener=MagicMock(return_value=map_unsubscribe),
@@ -1011,6 +1022,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
 
     decode.assert_called_once_with("test-credential")
     coordinator.async_config_entry_first_refresh.assert_awaited_once()
+    slam_map.async_prime.assert_awaited_once_with(client)
     assert plans.async_upgrade_area_bindings.await_count == 2
     assert plans.async_upgrade_area_bindings.await_args_list[0].args == (
         "synthetic-serial",
@@ -1241,6 +1253,7 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
     slam_map = SimpleNamespace(
         async_load=AsyncMock(),
         set_expected_mission_id=MagicMock(),
+        async_prime=AsyncMock(),
         async_collect=MagicMock(),
         async_shutdown=AsyncMock(),
     )
