@@ -179,6 +179,10 @@ async def test_slam_map_transition_recovers_after_fast_retry_budget(hass) -> Non
         await scheduled[0]
 
     assert coordinator.async_request_floor_plan_refresh.await_count == 6
+    assert all(
+        request.args == (43,)
+        for request in coordinator.async_request_floor_plan_refresh.await_args_list
+    )
     assert sleep.await_args_list == [
         ((FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,), {}),
         ((FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,), {}),
@@ -335,7 +339,7 @@ async def test_slam_map_sync_waits_for_live_session_revalidation(hass) -> None:
     assert len(scheduled) == 1
     await scheduled[0]
 
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
     entry.async_on_unload.assert_called_once_with(remove_listener)
 
 
@@ -571,7 +575,7 @@ async def test_slam_map_transition_refreshes_a_missing_cached_floor_plan(hass) -
     assert len(scheduled) == 1
     await scheduled[0]
 
-    coordinator.async_request_floor_plan_refresh.assert_awaited_once()
+    coordinator.async_request_floor_plan_refresh.assert_awaited_once_with(43)
     slam_map.floor_plan_is_current.assert_called_with(floor_plan)
 
 
