@@ -117,6 +117,18 @@ jobs:
               exit 1
               ;;
           esac
+          # A clean verdict must be the heading and the reviewed-commit line
+          # and nothing else. review-gate.yml anchors its match to the end of
+          # the body, so trailing prose would post a review the gate then
+          # silently ignores, which is indistinguishable from never having
+          # reviewed at all. Fail here instead, where the reason is visible.
+          if printf '%s' "$body" | head -n 1 | grep -qiE '^##[[:space:]]*Review result:[[:space:]]*No issues found\.[[:space:]]*$'; then
+            if [ "$(printf '%s\n' "$body" | grep -cvE '^[[:space:]]*$')" -ne 2 ]; then
+              echo "A clean verdict carried extra text; the gate would ignore it." >&2
+              printf '%s\n' "$body" >&2
+              exit 1
+            fi
+          fi
           # Take the reviewed commit straight from the trusted event context,
           # so the evidence can only ever name this pull request's exact head.
           gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
