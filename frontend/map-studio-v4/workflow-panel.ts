@@ -1,4 +1,5 @@
 import { LitElement, css, nothing } from "lit";
+import { base, tokens } from "./tokens";
 import { html, unsafeStatic } from "lit/static-html.js";
 
 import type {
@@ -26,9 +27,8 @@ export class MaticMapWorkflowV4 extends LitElement {
     localize: { attribute: false },
   };
 
-  static override styles = css`
+  static override styles = [tokens, base, css`
     :host { display: block; min-inline-size: 0; }
-    * { box-sizing: border-box; }
     button, input, select { font: inherit; }
     button, select, input[type="checkbox"] { cursor: pointer; }
     .stack { display: grid; gap: 0.7rem; }
@@ -135,7 +135,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     @media (forced-colors: active) {
       .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] { outline: 2px solid Highlight; }
     }
-  `;
+  `];
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;

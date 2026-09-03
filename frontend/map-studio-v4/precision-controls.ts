@@ -1,4 +1,5 @@
 import { LitElement, css, html } from "lit";
+import { base, tokens } from "./tokens";
 
 import {
   DRAW_BRUSH_MAX_METERS,
@@ -21,9 +22,8 @@ export class MaticPrecisionControlsV4 extends LitElement {
     compact: { type: Boolean, reflect: true },
   };
 
-  static override styles = css`
+  static override styles = [tokens, base, css`
     :host { display: block; color: var(--primary-text-color, #1f2933); }
-    * { box-sizing: border-box; }
     button, input { font: inherit; }
 
     .controls {
@@ -90,7 +90,7 @@ export class MaticPrecisionControlsV4 extends LitElement {
     @media (forced-colors: active) {
       button, .number, .controls { border-color: CanvasText; }
     }
-  `;
+  `];
 
   state: WorkspaceState = initialWorkspaceState();
   compact = false;

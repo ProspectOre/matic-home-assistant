@@ -1,4 +1,5 @@
 import { css, LitElement } from "lit";
+import { base, tokens } from "./tokens";
 import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
@@ -31,7 +32,7 @@ export class MaticMapPanelV4 extends LitElement {
   // branch's <style>, so on the v0.4 path the host stayed display:inline with
   // auto height and the shell's block-size:100% resolved against nothing --
   // the panel fell back to its 36rem minimum instead of filling the viewport.
-  static override styles = css`
+  static override styles = [tokens, base, css`
 :host { display: block; block-size: 100%; }
 .classic { position: relative; block-size: 100%; }
 .return-v4 {
@@ -49,7 +50,7 @@ export class MaticMapPanelV4 extends LitElement {
   cursor: pointer;
 }
 matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
-`;
+`];
 
   static override properties = {
     hass: { attribute: false },

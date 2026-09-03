@@ -1,4 +1,5 @@
 import { LitElement, css } from "lit";
+import { base, tokens } from "./tokens";
 import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
@@ -23,7 +24,7 @@ export class MaticMapStudioGalleryV4 extends LitElement {
     _workspace: { state: true },
   };
 
-  static override styles = css`
+  static override styles = [tokens, base, css`
     :host {
       display: block;
       color: #1f2933;
@@ -31,8 +32,6 @@ export class MaticMapStudioGalleryV4 extends LitElement {
       font-family: Inter, ui-sans-serif, system-ui, sans-serif;
     }
 
-    * { box-sizing: border-box; }
-    button { font: inherit; }
 
     .gallery-controls {
       display: flex;
@@ -70,7 +69,7 @@ export class MaticMapStudioGalleryV4 extends LitElement {
 
     :host([narrow]) .stage { max-inline-size: 24.375rem; block-size: 52.75rem; }
     .shell { block-size: 100%; }
-  `;
+  `];
 
   scenario: GalleryScenario = "ready";
   narrow = false;
