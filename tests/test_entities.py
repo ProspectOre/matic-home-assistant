@@ -498,6 +498,56 @@ async def test_bag_statistics_restore_and_count_full_transitions() -> None:
     assert count.native_value == 6
 
 
+async def test_bag_replacement_statistics_restore_previous_values() -> None:
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    replacement_count = sensor.MaticBagReplacementCountSensor(entry)
+    last_replaced = sensor.MaticBagLastReplacedSensor(entry)
+    replacement_count.async_write_ha_state = MagicMock()
+    last_replaced.async_write_ha_state = MagicMock()
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=False),
+    )
+    restored_at = sensor.dt_util.parse_datetime("2026-02-03T04:05:06+00:00")
+    with (
+        patch.object(MaticEntity, "async_added_to_hass", AsyncMock()),
+        patch.object(
+            sensor.MaticBagReplacementCountSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=SimpleNamespace(native_value=3)),
+        ),
+        patch.object(
+            sensor.MaticBagLastReplacedSensor,
+            "async_get_last_sensor_data",
+            AsyncMock(return_value=SimpleNamespace(native_value=restored_at)),
+        ),
+    ):
+        await replacement_count.async_added_to_hass()
+        await last_replaced.async_added_to_hass()
+
+    assert replacement_count.native_value == 3
+    assert last_replaced.native_value == restored_at
+
+    # A replacement observed after the restore continues from the stored count.
+    coordinator.data = replace(
+        coordinator.data,
+        operational=replace(coordinator.data.operational, bag_full=True),
+    )
+    replacement_count._async_coordinator_updated()
+    last_replaced._async_coordinator_updated()
+    for _ in range(2):
+        coordinator.data = replace(
+            coordinator.data,
+            operational=replace(coordinator.data.operational, bag_full=False),
+        )
+        replacement_count._async_coordinator_updated()
+        last_replaced._async_coordinator_updated()
+
+    assert replacement_count.native_value == 4
+    assert last_replaced.native_value != restored_at
+
+
 async def test_cues_event_entity_records_live_event(hass) -> None:
     entry = _entry()
     entity = event_platform.MaticCuesEventEntity(entry)
