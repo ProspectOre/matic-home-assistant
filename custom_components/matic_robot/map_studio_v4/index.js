@@ -767,7 +767,7 @@ line-height: var(--ms-lh-snug);
         </div>
         <div class="list" aria-label=${this.#C("plan_rooms","Plan rooms")}>
           ${t.map(({room:i,label:o,selected:a})=>{let A=a?e.rooms.findIndex(n=>n.roomId===i.roomId):-1;return s`
-              <div class="room plan-room" data-selected=${String(a)}>
+              <div class="room plan-room ms-row ms-row--stack" data-selected=${String(a)}>
                 <label class="room-choice">
                   <input type="checkbox" .checked=${a} @change=${()=>this.#A(i.roomId)}>
                   <strong>${a?`${A+1}. `:""}${o}</strong>

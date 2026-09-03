@@ -258,7 +258,7 @@ line-height: var(--ms-lh-snug);
               ? draft.rooms.findIndex((candidate) => candidate.roomId === room.roomId)
               : -1;
             return html`
-              <div class="room plan-room" data-selected=${String(selected)}>
+              <div class="room plan-room ms-row ms-row--stack" data-selected=${String(selected)}>
                 <label class="room-choice">
                   <input type="checkbox" .checked=${selected} @change=${() => this.#togglePlanRoom(room.roomId)}>
                   <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
