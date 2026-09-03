@@ -21,6 +21,12 @@ python -m venv .venv
 .venv/bin/python scripts/check_public_tree.py
 ```
 
+This project requires Python 3.14 and uses syntax that needs it. Unparenthesized
+multiple exception types, as in `except KeyError, ValueError:`, are PEP 758,
+valid from 3.14, and the house style throughout `custom_components/matic_robot`.
+They are neither a Python 2 remnant nor a syntax error; do not add parentheses
+to "fix" them.
+
 Keep runtime communication local and use Home Assistant's asynchronous APIs.
 Preserve TLS identity validation, certificate pinning, diagnostic redaction,
 clean config-entry unloading, and entity availability behavior.
