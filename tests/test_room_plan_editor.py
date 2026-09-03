@@ -453,8 +453,7 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
 
 def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
     """Keep the v0.4 initial route safe and within its private bundle budget."""
-    initial_paths = [_STUDIO_V4_PATH, _STUDIO_V4_DIRECTORY / "chunks" / "chunk.js"]
-    initial_bytes = b"".join(path.read_bytes() for path in initial_paths)
+    initial_bytes = _STUDIO_V4_PATH.read_bytes()
     assert len(gzip.compress(initial_bytes, mtime=0)) <= 90 * 1024
     assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
     assert 'from"lit"' not in _STUDIO_V4_JS

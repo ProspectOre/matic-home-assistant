@@ -1,4 +1,4 @@
-import { LitElement } from "lit";
+import { css, LitElement } from "lit";
 import { html, unsafeStatic } from "lit/static-html.js";
 import type { PropertyValues } from "lit";
 
@@ -27,6 +27,30 @@ import { translate } from "./localize";
 const shellTag = unsafeStatic(SHELL_TAG);
 
 export class MaticMapPanelV4 extends LitElement {
+  // The host must size itself on BOTH branches. This lived inside the classic
+  // branch's <style>, so on the v0.4 path the host stayed display:inline with
+  // auto height and the shell's block-size:100% resolved against nothing --
+  // the panel fell back to its 36rem minimum instead of filling the viewport.
+  static override styles = css`
+:host { display: block; block-size: 100%; }
+.classic { position: relative; block-size: 100%; }
+.return-v4 {
+  position: absolute;
+  z-index: 100;
+  inset-block-start: max(0.65rem, env(safe-area-inset-top));
+  inset-inline-end: max(0.65rem, env(safe-area-inset-right));
+  min-block-size: 2.75rem;
+  padding-inline: 0.85rem;
+  border: 1px solid var(--divider-color, #c2c8cc);
+  border-radius: 1.4rem;
+  color: var(--primary-text-color, #263238);
+  background: var(--card-background-color, #fff);
+  box-shadow: 0 5px 18px rgb(31 41 51 / 18%);
+  cursor: pointer;
+}
+matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
+`;
+
   static override properties = {
     hass: { attribute: false },
     narrow: { type: Boolean },
@@ -220,25 +244,6 @@ export class MaticMapPanelV4 extends LitElement {
   protected override render() {
     if (this._classic) {
       return html`
-        <style>
-          :host { display: block; block-size: 100%; }
-          .classic { position: relative; block-size: 100%; }
-          .return-v4 {
-            position: absolute;
-            z-index: 100;
-            inset-block-start: max(0.65rem, env(safe-area-inset-top));
-            inset-inline-end: max(0.65rem, env(safe-area-inset-right));
-            min-block-size: 2.75rem;
-            padding-inline: 0.85rem;
-            border: 1px solid var(--divider-color, #c2c8cc);
-            border-radius: 1.4rem;
-            color: var(--primary-text-color, #263238);
-            background: var(--card-background-color, #fff);
-            box-shadow: 0 5px 18px rgb(31 41 51 / 18%);
-            cursor: pointer;
-          }
-          matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
-        </style>
         <div class="classic">
           <button class="return-v4" type="button" @click=${this.#useV4}>${translate(this.hass?.localize, "v4_use_new", "Use Map Studio 0.4")}</button>
           <matic-map-panel-v0-3-1></matic-map-panel-v0-3-1>

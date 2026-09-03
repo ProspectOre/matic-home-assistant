@@ -24,5 +24,15 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
+      # The browser suite loads the committed bundle, so a source-only edit
+      # would pass every check while shipping the previous UI. Rebuild and fail
+      # if the result differs from what is committed.
+      - run: npm run build:map-studio-v4
+      - name: Committed bundle matches the frontend source
+        run: |
+          if ! git diff --exit-code -- custom_components/matic_robot/map_studio_v4/; then
+            echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
+            exit 1
+          fi
       - run: npx playwright install --with-deps chromium webkit
       - run: npm run test:browser
