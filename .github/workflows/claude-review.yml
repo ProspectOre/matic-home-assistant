@@ -75,7 +75,11 @@ jobs:
       # Post with the action's own token: it is the Claude App installation
       # token where one is available, which keeps the review authored by the
       # identity review-gate.yml checks for.
+      # Skipped when the action itself did not run, which is what happens on
+      # any pull request that edits this workflow file. A run that did happen
+      # but produced no usable verdict still fails below.
       - name: Publish the review verdict
+        if: steps.review.outputs.execution_file != ''
         env:
           GH_TOKEN: ${{ steps.review.outputs.github_token }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
@@ -84,8 +88,8 @@ jobs:
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
-          if [ -z "${EXECUTION_FILE:-}" ] || [ ! -s "$EXECUTION_FILE" ]; then
-            echo "No execution output file was produced." >&2
+          if [ ! -s "$EXECUTION_FILE" ]; then
+            echo "The execution output file $EXECUTION_FILE is missing or empty." >&2
             exit 1
           fi
           # Record the shape of the transcript so a future extraction failure
