@@ -803,6 +803,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("[aria-live=polite]")).toContainText("not available");
   });
 
+  test("distinguishes selected rows in every list", async ({ page }) => {
+    // Selected state lives on .ms-row[data-selected="true"], so a row that
+    // misses the class keeps the attribute and loses the distinction. Counting
+    // [data-selected] rows cannot see that, which is how the plan room list
+    // shipped looking identical whether a room was in the plan or not.
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: /Plans/ }).click();
+    const inspector = gallery.locator(".inspector");
+    const rows = inspector.locator(".plan-room");
+    await expect(rows.first()).toBeVisible();
+    const distinct = await rows.evaluateAll((elements) => {
+      const shade = (element) => {
+        const style = getComputedStyle(element);
+        return `${style.backgroundColor}|${style.borderTopColor}`;
+      };
+      const on = elements.filter((element) => element.dataset.selected === "true").map(shade);
+      const off = elements.filter((element) => element.dataset.selected !== "true").map(shade);
+      return on.length > 0 && off.length > 0 && !on.some((value) => off.includes(value));
+    });
+    expect(distinct).toBe(true);
+  });
+
   test("gives the map status overlay a readable surface", async ({ page }) => {
     // The overlay sits directly on the map, including the photo view, so it
     // needs its own background. It once inherited one from a shared rule that

@@ -1,4 +1,5 @@
 import { LitElement, css, nothing } from "lit";
+import { controls } from "./controls";
 import { base, tokens } from "./tokens";
 import { html, unsafeStatic } from "lit/static-html.js";
 
@@ -27,115 +28,41 @@ export class MaticMapWorkflowV4 extends LitElement {
     localize: { attribute: false },
   };
 
-  static override styles = [tokens, base, css`
-    :host { display: block; min-inline-size: 0; }
-    button, input, select { font: inherit; }
-    button, select, input[type="checkbox"] { cursor: pointer; }
-    .stack { display: grid; gap: 0.7rem; }
-    .subtle { margin: 0; color: var(--secondary-text-color, #687984); font-size: 0.76rem; line-height: 1.45; }
-    .loading, .empty, .problem, .notice {
-      padding: 0.75rem;
-      border-radius: 0.7rem;
-      background: var(--secondary-background-color, #f3f6f7);
-      font-size: 0.78rem;
-      line-height: 1.45;
-    }
-    .problem, .notice[data-tone="error"] {
-      color: var(--error-color, #b3261e);
-      background: color-mix(in srgb, var(--error-color, #b3261e) 9%, transparent);
-    }
-    .notice[data-tone="success"] {
-      color: var(--success-color, #218653);
-      background: color-mix(in srgb, var(--success-color, #218653) 10%, transparent);
-    }
-    .notice[data-tone="warning"] {
-      color: var(--warning-color, #8a5b00);
-      background: color-mix(in srgb, var(--warning-color, #8a5b00) 11%, transparent);
-    }
-    .field { display: grid; gap: 0.3rem; font-size: 0.76rem; font-weight: 650; }
-    .field input, .field select {
-      inline-size: 100%;
-      min-block-size: 2.75rem;
-      padding-inline: 0.7rem;
-      border: 1px solid var(--divider-color, #c3ccd1);
-      border-radius: 0.65rem;
-      color: var(--primary-text-color, #263238);
-      background: var(--card-background-color, #fff);
-    }
-    .split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
-    .list { display: grid; gap: 0.45rem; }
-    .list-button, .room, .plan-room, .floor, .snapshot {
-      min-block-size: 2.75rem;
-      border: 1px solid var(--divider-color, #d1d8dc);
-      border-radius: 0.7rem;
-      color: inherit;
-      background: var(--secondary-background-color, #f5f7f8);
-    }
-    .list-button, .floor, .snapshot {
-      display: flex;
-      align-items: center;
-      gap: 0.55rem;
-      inline-size: 100%;
-      padding: 0.55rem 0.7rem;
-      text-align: start;
-    }
-    .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] {
-      border-color: var(--primary-color, #0678ce);
-      background: color-mix(in srgb, var(--primary-color, #0678ce) 9%, transparent);
-    }
-    .room { display: grid; gap: 0.5rem; padding: 0.55rem 0.65rem; }
-    .room[data-selected="true"] {
-      border-color: color-mix(in srgb, var(--primary-color, #0678ce) 62%, transparent);
-      background: color-mix(in srgb, var(--primary-color, #0678ce) 8%, var(--secondary-background-color, #f5f7f8));
-    }
-    .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.6rem; min-block-size: 2.1rem; }
-    .room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
-    .room-settings { padding-block-start: 0.1rem; padding-inline-start: 1.8rem; }
-    .plan-options {
-      display: grid;
-      gap: 0.55rem;
-      padding: 0.7rem;
-      border: 1px solid var(--divider-color, #d1d8dc);
-      border-radius: 0.7rem;
-      background: var(--secondary-background-color, #f5f7f8);
-    }
-    .plan-room { display: grid; gap: 0.5rem; padding: 0.65rem; }
-    .plan-room-head { display: flex; align-items: center; gap: 0.4rem; min-inline-size: 0; }
-    .plan-room-head strong { overflow: hidden; flex: 1; text-overflow: ellipsis; white-space: nowrap; font-size: 0.78rem; }
-    .icon-button {
-      min-inline-size: 2.75rem;
-      min-block-size: 2.75rem;
-      border: 0;
-      border-radius: 0.6rem;
-      color: inherit;
-      background: transparent;
-    }
-    .toolbar { display: flex; flex-wrap: wrap; gap: 0.45rem; }
-    .toolbar button {
-      min-block-size: 2.75rem;
-      padding-inline: 0.75rem;
-      border: 1px solid var(--divider-color, #c3ccd1);
-      border-radius: 0.65rem;
-      color: inherit;
-      background: var(--card-background-color, #fff);
-    }
-    .toolbar .danger { color: var(--error-color, #b3261e); border-color: currentColor; }
-    .toolbar .primary { color: white; border-color: var(--primary-color, #0678ce); background: var(--primary-color, #0678ce); }
-    .checkbox { display: flex; align-items: center; gap: 0.5rem; min-block-size: 2.75rem; font-size: 0.76rem; font-weight: 650; }
-    .checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
-    .floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: var(--primary-text-color, #263238); font-weight: 500; }
-    .timeline { display: grid; gap: 0.55rem; }
-    .timeline input[type="range"] { inline-size: 100%; min-block-size: 2.75rem; }
-    .diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 0.45rem 0.7rem; margin: 0; font-size: 0.75rem; }
-    .diagnostics dt { color: var(--secondary-text-color, #687984); }
-    .diagnostics dd { margin: 0; font-weight: 650; }
-    details { border-block-start: 1px solid var(--divider-color, #d1d8dc); padding-block-start: 0.65rem; }
-    summary { min-block-size: 2.75rem; cursor: pointer; font-size: 0.78rem; font-weight: 650; }
-    @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
-    @media (forced-colors: active) {
-      .list-button[aria-pressed="true"], .floor[aria-pressed="true"], .snapshot[aria-current="true"] { outline: 2px solid Highlight; }
-    }
-  `];
+  static override styles = [tokens, base, controls, css`
+:host { display: block; min-inline-size: 0; }
+button, select, input[type="checkbox"] { cursor: pointer; }
+.stack { display: grid; gap: var(--ms-space-3); }
+.subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+.loading, .empty, .problem, .notice {
+--ms-local: var(--ms-surface-sunken);
+padding: var(--ms-space-3);
+border-radius: var(--ms-radius-md);
+background: var(--ms-local);
+font-size: var(--ms-t-sm);
+line-height: var(--ms-lh-snug);
+}
+.problem, .notice[data-tone="error"] { --ms-local: color-mix(in srgb, var(--ms-danger) 9%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-danger) 82%, var(--ms-text)); background: var(--ms-local); }
+.notice[data-tone="success"] { --ms-local: color-mix(in srgb, var(--ms-success) 10%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-success) 82%, var(--ms-text)); background: var(--ms-local); }
+.notice[data-tone="warning"] { --ms-local: color-mix(in srgb, var(--ms-warning) 11%, var(--ms-surface-card)); color: color-mix(in srgb, var(--ms-warning) 82%, var(--ms-text)); background: var(--ms-local); }
+.split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: var(--ms-space-2); }
+.list { display: grid; gap: var(--ms-space-2); }
+.room { display: grid; gap: var(--ms-space-2); }
+.room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control-sm); }
+.room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
+.room-settings { padding-block-start: 0.125rem; padding-inline-start: 1.8rem; }
+.plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-2); padding: var(--ms-space-3); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
+.plan-room { display: grid; gap: var(--ms-space-2); }
+.toolbar { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); }
+.checkbox { display: flex; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); }
+.checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
+.floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: color-mix(in srgb, var(--ms-text) 78%, var(--ms-local)); font-weight: var(--ms-w-regular); }
+.timeline { display: grid; gap: var(--ms-space-2); }
+.timeline input[type="range"] { inline-size: 100%; min-block-size: var(--ms-control); }
+.diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-2) var(--ms-space-3); margin: 0; font-size: var(--ms-t-xs); }
+.diagnostics dt { color: var(--ms-text-quiet); }
+.diagnostics dd { margin: 0; font-weight: var(--ms-w-medium); }
+@media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
+`];
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
@@ -187,7 +114,7 @@ export class MaticMapWorkflowV4 extends LitElement {
           ${(plans.value?.rooms || []).map((room) => {
             const checked = this.state.selection.roomIds.includes(room.roomId);
             return html`
-              <div class="room" data-selected=${String(checked)}>
+              <div class="room ms-row ms-row--stack" data-selected=${String(checked)}>
                 <label class="room-choice">
                   <input
                     type="checkbox"
@@ -215,7 +142,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   #roomSettings(roomId: string, room: PlanRoom) {
     return html`
       <div class="split room-settings">
-        <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+        <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
           <select
             aria-label=${this.#t("v4_room_cleaning_system", "Cleaning system for room")}
             .value=${room.cleaningMode}
@@ -226,7 +153,7 @@ export class MaticMapWorkflowV4 extends LitElement {
             })}
           >${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
         </label>
-        <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+        <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
           <select
             aria-label=${this.#t("v4_room_cleaning_mode", "Cleaning mode for room")}
             .value=${room.coverageSetting}
@@ -286,7 +213,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         <div class="split">
-          <label class="field">${this.#t("v4_saved_plan", "Saved plan")}
+          <label class="field ms-field">${this.#t("v4_saved_plan", "Saved plan")}
             <select
               .value=${this.state.selection.planId || ""}
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
@@ -295,9 +222,9 @@ export class MaticMapWorkflowV4 extends LitElement {
               ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.name}</option>`) }
             </select>
           </label>
-          <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ ${this.#t("plan_new", "New plan")}</button>
+          <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ ${this.#t("plan_new", "New plan")}</button>
         </div>
-        <label class="field">${this.#t("plan_name", "Plan name")}
+        <label class="field ms-field">${this.#t("plan_name", "Plan name")}
           <input
             maxlength="128"
             autocomplete="off"
@@ -306,7 +233,7 @@ export class MaticMapWorkflowV4 extends LitElement {
           >
         </label>
         <div class="split">
-          <label class="field">${this.#t("plan_run_behavior", "Run order")}
+          <label class="field ms-field">${this.#t("plan_run_behavior", "Run order")}
             <select
               .value=${draft.runBehavior}
               @change=${(event: Event) => this.#intent({
@@ -323,7 +250,7 @@ export class MaticMapWorkflowV4 extends LitElement {
         <div class="plan-options" aria-label=${this.#t("v4_completion_options", "Completion options")}>
           <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
           <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
-          ${draft.finishCurrentRoom ? html`<label class="field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
+          ${draft.finishCurrentRoom ? html`<label class="field ms-field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
         </div>
         <div class="list" aria-label=${this.#t("plan_rooms", "Plan rooms")}>
           ${roomRows.map(({ room, label, selected }) => {
@@ -331,23 +258,23 @@ export class MaticMapWorkflowV4 extends LitElement {
               ? draft.rooms.findIndex((candidate) => candidate.roomId === room.roomId)
               : -1;
             return html`
-              <div class="room plan-room" data-selected=${String(selected)}>
+              <div class="room plan-room ms-row ms-row--stack" data-selected=${String(selected)}>
                 <label class="room-choice">
                   <input type="checkbox" .checked=${selected} @change=${() => this.#togglePlanRoom(room.roomId)}>
                   <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
                   ${selected ? html`
                     <span>
-                      <button class="icon-button" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>↑</button>
-                      <button class="icon-button" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>↓</button>
+                      <button class="icon-button ms-btn ms-btn--icon ms-btn--sm" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>↑</button>
+                      <button class="icon-button ms-btn ms-btn--icon ms-btn--sm" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>↓</button>
                     </span>
                   ` : nothing}
                 </label>
                 ${selected ? html`
                   <div class="split room-settings">
-                    <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+                    <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
                       <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
-                    <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+                    <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
                       <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
@@ -359,7 +286,7 @@ export class MaticMapWorkflowV4 extends LitElement {
         <div class="toolbar">
           ${draft.id ? html`
             <button
-              class="danger"
+              class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
               aria-label=${this.#t("plan_delete", "Delete plan")}
               data-dialog-launcher="confirmDeletePlan"
@@ -380,6 +307,7 @@ export class MaticMapWorkflowV4 extends LitElement {
         <p class="subtle">${this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
         <div class="toolbar">
           <button
+            class="ms-btn ms-btn--secondary"
             type="button"
             ?disabled=${this.state.draw.circles.length === 0}
             @click=${() => this.#intent({ type: "clear-draft" })}
@@ -387,9 +315,9 @@ export class MaticMapWorkflowV4 extends LitElement {
         </div>
         ${this.#resource(areas.status, areas.problem, html`
           <div class="list" aria-label=${this.#t("area_workspace_title", "Saved custom areas")}>
-            <button class="list-button" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ ${this.#t("area_new", "New outline")}</button>
+            <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ ${this.#t("area_new", "New outline")}</button>
             ${(areas.value?.areas || []).map((area) => html`
-              <button class="list-button" type="button" @click=${() => {
+              <button class="list-button ms-row ms-row" type="button" @click=${() => {
                 this.#intent({ type: "select-area", areaId: area.id });
                 this.#intent({ type: "open-workflow", workflow: "areaReview" });
               }}>
@@ -411,23 +339,23 @@ export class MaticMapWorkflowV4 extends LitElement {
       <div class="stack">
         ${needsReview ? html`<div class="notice" data-tone="warning" role="status">${this.#t("area_review_required", "Review the saved outline on this current map, then confirm it.")}</div>` : nothing}
         ${stale ? html`<div class="problem" role="alert">${this.#t("area_redraw_required", "This outline no longer matches the current room map. Redraw it before saving.")}</div>` : nothing}
-        <label class="field">${this.#t("area_name", "Area name")}
+        <label class="field ms-field">${this.#t("area_name", "Area name")}
           <input maxlength="128" autocomplete="off" .value=${draft.name} @input=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { name: eventValue(event) } })}>
         </label>
         <div class="split">
-          <label class="field">${this.#t("v4_cleaning_system", "Cleaning system")}
+          <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
             <select .value=${draft.cleaningMode} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { cleaningMode: eventValue(event) as CleaningMode } })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === draft.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
           </label>
-          <label class="field">${this.#t("cleaning_mode", "Cleaning mode")}
+          <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
             <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === draft.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
         <p class="subtle">${this.#t("v4_private_marks", "{count} map-space marks. The outline stays private and floor-bound.", { count: this.state.draw.circles.length })}</p>
         <div class="toolbar">
-          <button type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
           ${draft.id ? html`
             <button
-              class="danger"
+              class="danger ms-btn ms-btn--secondary ms-btn--danger"
               type="button"
               aria-label=${this.#t("area_delete", "Delete area")}
               data-dialog-launcher="confirmDeleteArea"
@@ -456,7 +384,7 @@ export class MaticMapWorkflowV4 extends LitElement {
           <div class="list" role="listbox" aria-label=${this.#t("v4_mapped_floors", "Mapped floors")}>
             ${(catalog?.floors || []).map((candidate, index) => html`
               <button
-                class="floor"
+                class="floor ms-row ms-row"
                 type="button"
                 role="option"
                 aria-selected=${String(candidate.id === floor?.id)}
@@ -472,7 +400,7 @@ export class MaticMapWorkflowV4 extends LitElement {
           </div>
         ` : nothing}
         <div class="timeline">
-          <label class="field">${this.#t("map_timeline_label", "Map timeline")}
+          <label class="field ms-field">${this.#t("map_timeline_label", "Map timeline")}
             <input
               type="range"
               min="0"
@@ -487,9 +415,9 @@ export class MaticMapWorkflowV4 extends LitElement {
             >
           </label>
           <div class="list">
-            <button class="snapshot" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${this.#t("map_timeline_live_action", "Live")}</span><small>${this.#t("v4_current", "Current")}</small></button>
+            <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${this.#t("map_timeline_live_action", "Live")}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
-              <button class="snapshot" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
+              <button class="snapshot ms-row ms-row" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
                 <span>${this.#formatTime(snapshot.createdAt)}</span><small>${index + 1} of ${snapshots.length}</small>
               </button>
             `)}
