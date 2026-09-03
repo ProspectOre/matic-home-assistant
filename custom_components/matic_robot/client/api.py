@@ -586,9 +586,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             # therefore represents the currently displayed mission.
             mission_state = mission_states[-1]
             coverage_ids = {plan.mission_id for plan in floor_plans}
-            if coverage_ids != {
-                floor.mission_id for floor in mission_state.mapped_floors
-            }:
+            canonical_ids = {floor.mission_id for floor in mission_state.mapped_floors}
+            if not canonical_ids or not canonical_ids.issubset(coverage_ids):
                 raise DecodeError(
                     "coverage plan and canonical floor identities disagree"
                 )
