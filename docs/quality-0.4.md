@@ -3,7 +3,7 @@
 Date: 2026-09-04. Scope: workflow-recovery candidate based on RC8 (`0dbf1ca`).
 Status: software review and local validation; not installed or release-approved.
 Frontend bundle SHA-256:
-`5c61ee02dae8a6c7e36d14749e89af485e1b342e59f7caae3beea099447d4da9`.
+`35bb7d4b42f18cdc3d86ba820b5471b988ad949b73f5cb42007a23540915a60d`.
 
 ## Changes
 
@@ -14,6 +14,9 @@ Frontend bundle SHA-256:
   dialog; a second Back dismisses the dialog without losing the draft.
 - Forms disable their controls during a pending save.
 - History retry performs a new read and retains the selected floor's label.
+- Pruned history selections load a valid replacement; returning live clears
+  historical geometry before fetching the current scene. Successful plan
+  deletion clears the deleted draft identity, while failure preserves edits.
 - History navigation uses button semantics and meaningful timeline value text.
 - Room-setting labels identify the room; reorder buttons sit outside checkbox
   labels. Map help includes touch gestures.
@@ -27,6 +30,8 @@ Frontend bundle SHA-256:
 - Active cleaning, returning and recharge states keep Stop available after an
   uncertain start. Accepted starts have a separate state that blocks duplicate
   starts without delaying Stop. UI and service guards share the same rule.
+  The server resolves managed versus other cleaning at Stop time; stale UI
+  ownership cannot bypass a plan's finish-current-room policy.
 - Shell styling is separate from interaction logic; shared draft rules keep
   nested navigation and browser history consistent.
 
@@ -48,8 +53,8 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,240 passing tests with 100% coverage (11,369 statements).
-- Browser suite: 245 passing checks across desktop Chromium/WebKit and mobile
+- Python suite: 1,242 passing tests with 100% coverage (11,369 statements).
+- Browser suite: 255 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, and action/status visibility regressions.
 - Lifecycle reattachment waits for fresh reads; 20 repeated checks passed.

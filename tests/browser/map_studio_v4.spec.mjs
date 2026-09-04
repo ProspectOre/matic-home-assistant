@@ -279,9 +279,81 @@ test.describe("Map Studio v0.4 foundation", () => {
             return { failed, calls, command: store.value.command };
           } finally { effects.dispose(); }
         }, { managed, rejected });
-        expect(result).toEqual({ failed: rejected ? "failed" : "starting", calls: ["vacuum.start", managed ? "matic_robot.stop_intelligent_cleaning" : "vacuum.return_to_base"], command: "settling" });
+        expect(result).toEqual({ failed: rejected ? "failed" : "starting", calls: ["vacuum.start", "matic_robot.stop_intelligent_cleaning"], command: "settling" });
       });
     }
+  }
+  test("clears a deleted dirty plan identity only after successful deletion", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let reject = true;
+      let deleted = false;
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => deleted ? { ...initial.resources.plans.value, selectedPlan: null, plans: [] } : initial.resources.plans.value,
+        service: async () => { if (reject) throw new Error("Offline"); deleted = true; },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.refreshCatalog(true);
+        store.patch({ planDraft: { ...store.value.planDraft, name: "Keep on failure", dirty: true } });
+        await effects.deletePlan();
+        const failed = { id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name };
+        reject = false;
+        await effects.deletePlan();
+        return { failed, deleted: { selected: store.value.selection.planId, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name } };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ failed: { id: "daily", dirty: true, name: "Keep on failure" }, deleted: { selected: null, id: null, dirty: false, name: "" } });
+  });
+  for (const pruned of ["snapshot", "floor", "all", "navigation"]) {
+    test(`reconciles the scene and floor when history prunes the selected ${pruned}`, async ({ page }) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async ({ pruned }) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        initial.resources.entry = { ...initial.resources.entry, deltaUrl: null };
+        const store = new WorkspaceStore(initial);
+        let history = initial.resources.history.value;
+        const effects = new EffectController(store, {
+          catalog: async () => [initial.resources.entry],
+          history: async () => history,
+          scene: async (url, revision) => ({ scene: { ...initial.resources.scene.value, marker: url }, revision, floorCoherent: true }),
+          pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+          plans: async () => initial.resources.plans.value,
+          dispose() {},
+        });
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        try {
+          await effects.refreshCatalog(true);
+          await effects.selectFloor("saved-1");
+          const staleMarker = store.value.resources.scene.value.marker;
+          history = { ...history, floors: pruned === "all" ? [] : (pruned === "floor" || pruned === "navigation") ? history.floors.filter((floor) => floor.id !== "saved-1") : history.floors.map((floor) => floor.id !== "saved-1" ? floor : { ...floor, snapshots: [{ ...floor.snapshots[0], id: "replacement", sceneUrl: "/replacement-history", revision: 4 }] }) };
+          const recovery = effects.openWorkflow("history");
+          if (pruned === "navigation") {
+            await Promise.resolve();
+            store.dispatch({ type: "open-workflow", workflow: "support" });
+          }
+          await recovery;
+          return { staleMarker, marker: store.value.resources.scene.value?.marker, floor: store.value.selection.floorId, snapshot: store.value.selection.historyId, dataMode: store.value.dataMode, readOnly: store.value.floor.readOnly, label: store.value.floor.displayName, workflow: store.value.workflow, liveUrl: initial.resources.entry.sceneUrl };
+        } finally { effects.dispose(); }
+      }, { pruned });
+      expect(result.staleMarker).toBe("/synthetic-history-saved");
+      expect(result.marker).toBe(pruned === "snapshot" ? "/replacement-history" : result.liveUrl);
+      expect(result.floor).toBe(pruned === "snapshot" ? "saved-1" : "current");
+      expect(result.snapshot).toBe(pruned === "snapshot" ? "replacement" : null);
+      expect(result.dataMode).toBe(pruned === "snapshot" ? "history" : "live");
+      expect(result.readOnly).toBe(pruned === "snapshot");
+      expect(result.workflow).toBe(pruned === "navigation" ? "support" : "history");
+      if (pruned !== "snapshot") expect(result.label).not.toBe("Shed");
+    });
   }
   test("browser Back cancels draft confirmation without leaving the editor", async ({ page }) => {
     await loadEffectHarness(page);
@@ -3151,7 +3223,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.samples.some((sample) => sample.available && sample.scene !== "ready")).toBe(false);
   });
 
-  test("returns a direct room clean to base instead of using the managed-plan stop", async ({ page }) => {
+  test("routes Stop through the server even when the catalog has no managed plan", async ({ page }) => {
     const scene = syntheticScene("Direct room", 18);
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
@@ -3252,7 +3324,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     await expect.poll(async () => page.evaluate(() => window.__directStop.calls.length)).toBe(1);
     expect(await page.evaluate(() => window.__directStop.calls[0].slice(0, 2)))
-      .toEqual(["vacuum", "return_to_base"]);
+      .toEqual(["matic_robot", "stop_intelligent_cleaning"]);
+    expect(await page.evaluate(() => window.__directStop.calls[0][2].include_unmanaged)).toBe(true);
   });
 
   test("fails motion closed when the private catalog reports managed work", async ({ page }) => {

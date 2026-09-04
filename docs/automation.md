@@ -370,7 +370,9 @@ the visible saved order regardless of history.
 - `matic_robot.clean_entire_plan`: clean every selected room in saved order as a
   per-run override.
 - `matic_robot.stop_intelligent_cleaning`: apply the plan's immediate-or-finish
-  stop policy, never start another room, and dock.
+  stop policy, never start another room, and dock. With `include_unmanaged: true`,
+  also stop other cleaning when no managed plan is active. Map Studio uses this
+  option so the server chooses the current policy without relying on a cached UI.
 - `matic_robot.preview_plan`: return the exact next order and per-room settings
   without sending a robot command or changing history.
 - `matic_robot.reset_plan_history`: clear successful-room tracking without

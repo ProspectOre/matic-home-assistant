@@ -76,6 +76,11 @@ preview_plan:
 
 stop_intelligent_cleaning:
   target: *vacuum_target
+  fields:
+    include_unmanaged:
+      default: false
+      selector:
+        boolean:
 
 reset_plan_history:
   target: *vacuum_target

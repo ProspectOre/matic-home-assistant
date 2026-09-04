@@ -948,6 +948,12 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     plan["finish_current_room_threshold"] = 50
     await manager.async_save_plan("serial", plan_id, plan, select=False)
     services.async_call.reset_mock()
+    stop = ServiceCall(
+        hass,
+        DOMAIN,
+        "stop_intelligent_cleaning",
+        {"entity_id": ["vacuum.test"], "include_unmanaged": True},
+    )
     await lock.acquire()
     manager.prepare_run("serial")
     await manager.async_mark_started(
@@ -1033,6 +1039,41 @@ async def test_managed_actions_ignore_inactive_stop(hass) -> None:
             await _registered_handler(services, "preview_plan")(disabled)
         await _registered_handler(services, "stop_intelligent_cleaning")(stop)
     services.async_call.assert_not_awaited()
+
+
+@pytest.mark.parametrize("include_unmanaged", [False, True])
+async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
+    hass, include_unmanaged
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    services = await _registered_services(hass, manager)
+    coordinator = SimpleNamespace(async_discard_current_room=MagicMock())
+    entry = SimpleNamespace(runtime_data=SimpleNamespace(coordinator=coordinator))
+    stop = ServiceCall(
+        hass,
+        DOMAIN,
+        "stop_intelligent_cleaning",
+        {"entity_id": ["vacuum.test"], "include_unmanaged": include_unmanaged},
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", entry, "serial", {}),
+    ) as resolve:
+        await _registered_handler(services, "stop_intelligent_cleaning")(stop)
+    resolve.assert_called_once_with(hass, stop, require_rooms=False)
+    if include_unmanaged:
+        coordinator.async_discard_current_room.assert_called_once_with()
+        services.async_call.assert_awaited_once_with(
+            "vacuum",
+            "return_to_base",
+            {"entity_id": "vacuum.test"},
+            blocking=True,
+            context=stop.context,
+        )
+    else:
+        coordinator.async_discard_current_room.assert_not_called()
+        services.async_call.assert_not_awaited()
 
 
 async def test_room_native_plan_crud_is_complete(hass) -> None:

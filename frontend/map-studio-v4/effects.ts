@@ -644,10 +644,13 @@ export class EffectController {
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
       if (!this.#coherence.accepts(stamp) || history.entryId !== entry.entryId) return;
-      const selectedId = this.#store.value.selection.floorId;
-      const activeFloor = history.floors.find((floor) => floor.id === selectedId)
-        || history.floors.find((floor) => floor.active) || history.floors[0];
-      if (!activeFloor) return;
+      const state = this.#store.value;
+      const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
+      const selectedSnapshotExists = !state.selection.historyId
+        || selectedFloor?.snapshots.some((snapshot) => snapshot.id === state.selection.historyId);
+      const activeFloor = state.dataMode === "live"
+        ? history.floors.find((floor) => floor.active)
+        : selectedFloor;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
@@ -656,9 +659,17 @@ export class EffectController {
         floor: {
           ...this.#store.value.floor,
           classifiedCount: history.floors.length,
-          displayName: safeFloorName(activeFloor, 1),
+          ...(activeFloor ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
       });
+      if (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists)) {
+        const fallback = selectedFloor || history.floors.find((floor) => floor.active) || history.floors[0];
+        const selection = this.selectFloor(fallback?.id || "current");
+        if (!this.#disposed && state.workflow === "history") {
+          this.#store.dispatch({ type: "open-workflow", workflow: "history" });
+        }
+        await selection;
+      }
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
       this.#store.patch({
@@ -781,12 +792,12 @@ export class EffectController {
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;
     const floor = history.floors.find((candidate) => candidate.id === floorId);
-    if (!floor) return;
+    if (!floor && floorId !== "current") return;
     const currentState = this.#store.value;
     if ((currentState.workflow === "draw" && (currentState.draw.dirty || currentState.areaDraft.dirty))
       || (currentState.workflow === "areaReview"
         && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
-    if (floor.active) {
+    if (!floor || floor.active) {
       this.#entryIdentity = "";
       const state = this.#store.value;
       this.#store.patch({
@@ -794,7 +805,12 @@ export class EffectController {
           ...state.resources,
           plans: resource("idle", null),
           areas: resource("idle", null),
+          scene: resource("idle", null),
+          pose: resource("idle", null),
         },
+        map: { ...state.map, available: false, exactPose: false },
+        coherence: "verifying",
+        floor: { ...state.floor, readOnly: false, displayName: "Current floor" },
         workflow: "none",
         precisionOpen: false,
       });
@@ -1167,9 +1183,14 @@ export class EffectController {
 
   async deletePlan(): Promise<void> {
     const planId = this.#store.value.selection.planId;
+    const entryId = this.#store.value.selection.entryId;
     if (!planId) return;
     const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
-    if (deleted) await this.loadPlans();
+    if (deleted) {
+      if (this.#store.value.selection.entryId === entryId
+        && this.#store.value.planDraft.id === planId) this.selectPlan(null);
+      await this.loadPlans();
+    }
   }
 
   async executeAction(id: string): Promise<void> {
@@ -1187,12 +1208,7 @@ export class EffectController {
         return;
       }
       case "stop":
-        if (this.#store.value.resources.entry?.activePlan
-          || this.#store.value.resources.entry?.runnerLocked) {
-          await this.#motion("matic_robot", "stop_intelligent_cleaning", {});
-        } else {
-          await this.#motion("vacuum", "return_to_base", {});
-        }
+        await this.#motion("matic_robot", "stop_intelligent_cleaning", { include_unmanaged: true });
         return;
       case "resume":
         await this.#motion("vacuum", "start", {});
