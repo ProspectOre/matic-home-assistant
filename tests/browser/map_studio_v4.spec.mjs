@@ -1190,6 +1190,17 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
+    const navigation = gallery.getByRole("button", { name: "Open navigation" });
+    await expect(navigation).toBeVisible();
+    await page.evaluate((tag) => {
+      window.__navigationToggles = 0;
+      document.querySelector(tag).addEventListener("hass-toggle-menu", () => {
+        window.__navigationToggles += 1;
+      });
+    }, GALLERY_TAG);
+    await navigation.click();
+    expect(await page.evaluate(() => window.__navigationToggles)).toBe(1);
+
     await expect(gallery.getByRole("heading", { name: "What should the robot clean?", level: 2 })).toBeVisible();
     await expect(gallery.getByLabel("Choose robot")).toHaveCount(0);
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeVisible();

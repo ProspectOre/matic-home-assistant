@@ -22,6 +22,7 @@ import {
   mdiHistory,
   mdiInformationOutline,
   mdiMapMarkerOff,
+  mdiMenu,
   mdiMinus,
   mdiPause,
   mdiPlaylistCheck,
@@ -44,6 +45,7 @@ import {
 // dependency is dev-only; the bundle inlines just the paths named above.
 export const iconBack = mdiArrowLeft;
 export const iconOverflow = mdiDotsVertical;
+export const iconMenu = mdiMenu;
 export const iconWorkspace = mdiDockRight;
 export const iconChevronRight = mdiChevronRight;
 export const iconChevronUp = mdiChevronUp;

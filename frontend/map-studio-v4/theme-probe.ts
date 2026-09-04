@@ -60,23 +60,31 @@ export const rgba = (channel: Channel, alpha: number): string =>
 export const readCanvasPalette = (host: HTMLElement): CanvasPalette => {
   const forced = window.matchMedia?.("(forced-colors: active)").matches ?? false;
   if (!forced) {
-    // Reading the resolved custom properties from the existing host avoids
-    // mutating the DOM immediately before a computed-style read. The previous
-    // probe element forced a synchronous layout during every map boot.
-    const style = getComputedStyle(host);
+    // CSS custom properties preserve their authored syntax (for example
+    // `hsl()` or a named colour) when read directly. Resolve each token through
+    // the browser's colour parser before converting it to canvas channels.
+    const probe = document.createElement("span");
+    probe.setAttribute("aria-hidden", "true");
+    probe.style.cssText = "position:absolute;inline-size:0;block-size:0;overflow:hidden;visibility:hidden;pointer-events:none";
+    host.append(probe);
     const read = (key: PaletteKey): Channel => {
       const [token, , fallback] = SOURCES[key];
-      return parseColor(style.getPropertyValue(token)) ?? fallback;
+      probe.style.color = `var(${token}, transparent)`;
+      return parseColor(getComputedStyle(probe).color) ?? fallback;
     };
-    return {
-      accent: read("accent"),
-      onAccent: read("onAccent"),
-      text: read("text"),
-      quiet: read("quiet"),
-      plate: read("plate"),
-      roomFill: read("roomFill"),
-      forced,
-    };
+    try {
+      return {
+        accent: read("accent"),
+        onAccent: read("onAccent"),
+        text: read("text"),
+        quiet: read("quiet"),
+        plate: read("plate"),
+        roomFill: read("roomFill"),
+        forced,
+      };
+    } finally {
+      probe.remove();
+    }
   }
   const probe = document.createElement("span");
   probe.setAttribute("aria-hidden", "true");

@@ -28,6 +28,7 @@ import {
   iconCleaning,
   iconDiagnostics,
   iconHistory,
+  iconMenu,
   iconPlan,
   iconNewArea,
   iconOffline,
@@ -1000,6 +1001,13 @@ export class MaticMapShellV4 extends LitElement {
 
   // ---- App bar ------------------------------------------------------------
 
+  #toggleNavigation(): void {
+    this.dispatchEvent(new CustomEvent("hass-toggle-menu", {
+      bubbles: true,
+      composed: true,
+    }));
+  }
+
   #closeOverflow(restoreFocus: boolean): void {
     this._overflowOpen = false;
     if (restoreFocus) {
@@ -1467,6 +1475,15 @@ export class MaticMapShellV4 extends LitElement {
                   : this.#t("v4_hide_workspace", "Hide workspace")}
                 @click=${() => this.#intent({ type: state.fullMap ? "exit-full-map" : "enter-full-map" })}
               >${icon(iconWorkspace)}</button>
+            ` : nothing}
+            ${!state.precisionOpen ? html`
+              <button
+                class="nav nav--menu ms-btn ms-btn--icon"
+                type="button"
+                aria-label=${this.#t("v4_open_navigation", "Open navigation")}
+                title=${this.#t("v4_open_navigation", "Open navigation")}
+                @click=${this.#toggleNavigation}
+              >${icon(iconMenu)}</button>
             ` : nothing}
             <div class="overflow-wrap">
               <button
