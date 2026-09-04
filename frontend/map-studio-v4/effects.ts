@@ -927,7 +927,14 @@ export class EffectController {
         resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
       });
       const selectedId = this.#store.value.selection.areaId;
-      this.selectArea(areas.areas.some((area) => area.id === selectedId) ? selectedId : null);
+      const current = this.#store.value;
+      // A blank Draw draft is editable while the area catalog is loading. Do
+      // not replace that draft when the response arrives, or an early stroke
+      // would be silently discarded. Existing selections still reconcile to
+      // the returned catalog, including a deleted saved area.
+      if (selectedId !== null || (!current.draw.dirty && !current.areaDraft.dirty)) {
+        this.selectArea(areas.areas.some((area) => area.id === selectedId) ? selectedId : null);
+      }
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
