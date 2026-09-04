@@ -589,8 +589,10 @@ export class MaticMapCanvasV4 extends LitElement {
         </div>
       `;
     }
+    // On a phone the sheet's grip line already reads "N rooms", so the map
+    // chip would only duplicate it.
     const count = state.selection.roomIds.length;
-    if (state.workflow === "rooms" && count > 0) {
+    if (state.workflow === "rooms" && count > 0 && !this.narrow) {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
