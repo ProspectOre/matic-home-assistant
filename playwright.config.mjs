@@ -1,5 +1,7 @@
 import { defineConfig, devices } from "@playwright/test";
 
+// Project selection is tag-based: tests whose title carries `@mobile` run only
+// on the two mobile-device projects; everything else runs on the desktop ones.
 export default defineConfig({
   testDir: "./tests/browser",
   fullyParallel: true,
@@ -14,20 +16,28 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
+      grepInvert: /@mobile/,
       use: { ...devices["Desktop Chrome"] },
     },
     {
       // Map Studio relies on Safari-specific native gesture events as well as
-      // standard pointer input. Keep its complete suite on Desktop Safari;
-      // the small mobile project below remains focused on viewport behavior.
+      // standard pointer input. Keep its complete (non-@mobile) suite on
+      // Desktop Safari; the @mobile-tagged tests below cover real device
+      // viewports and touch input on both engines.
       name: "webkit",
       testMatch: "tests/browser/map_studio_v4.spec.mjs",
+      grepInvert: /@mobile/,
       use: { ...devices["Desktop Safari"] },
     },
     {
       name: "mobile-webkit",
-      grep: /mobile maps touch-first|does not paint when a touch|matches native mobile/,
+      grep: /@mobile/,
       use: { ...devices["iPhone 15"] },
+    },
+    {
+      name: "mobile-chrome",
+      grep: /@mobile/,
+      use: { ...devices["Pixel 7"] },
     },
   ],
   webServer: {
