@@ -330,6 +330,17 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => {
       const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
       shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "open-workflow", workflow: "rooms" },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect.poll(async () => page.evaluate(() =>
+      window.__lifecyclePanel.getWorkspaceSnapshot().workflow)).toBe("rooms");
+
+    await page.evaluate(() => {
+      const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
         detail: { type: "set-floor", floorId: "saved-floor" },
         bubbles: true,
         composed: true,
@@ -340,9 +351,10 @@ test.describe("Map Studio v0.4 foundation", () => {
       return {
         dataMode: state.dataMode,
         floorId: state.selection.floorId,
+        workflow: state.workflow,
         scene: state.resources.scene.status,
       };
-    })).toEqual({ dataMode: "history", floorId: "saved-floor", scene: "ready" });
+    })).toEqual({ dataMode: "history", floorId: "saved-floor", workflow: "none", scene: "ready" });
     const historical = { catalogRequests, sceneRequests, poseRequests };
     await page.evaluate(() => window.__lifecyclePanel.remove());
     await page.waitForTimeout(1_200);
@@ -670,6 +682,32 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator(".map-message")).toContainText("Saved map unavailable");
     await expect(gallery.locator(".map-message")).toContainText("Choose another snapshot or return to the live map.");
     await expect(scene).toHaveAttribute("aria-label", "This saved map is unavailable.");
+  });
+
+  test("keeps saved floors view-only and never opens cleaning workflows", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "history" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, workflow: "none" });
+    }, GALLERY_TAG);
+
+    await expect(gallery.getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
+    await expect(gallery).toContainText("Return to the live map below to choose rooms, run a plan, or draw a custom area.");
+    await expect(gallery.getByRole("button", { name: "One-time clean" })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Run a plan" })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Clean a custom area" })).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Return to the live map" })).toBeVisible();
+
+    const workflows = await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      return ["rooms", "plan", "draw", "areaReview"].map((workflow) =>
+        module.reduceWorkspace(state, { type: "open-workflow", workflow }).workflow,
+      );
+    }, GALLERY_TAG);
+    expect(workflows).toEqual(["none", "none", "none", "none"]);
   });
 
   test("uses accessible peek, half, and full mobile sheet detents", async ({ page }) => {
@@ -1454,7 +1492,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(quick.nth(0)).toHaveClass(/ms-row--featured/);
     await expect(quick.nth(1)).toHaveAccessibleName(/^Run a plan (1 saved routine|\d+ saved routines)/);
     await expect(gallery.getByRole("heading", { name: "Map tools", level: 3 })).toBeVisible();
-    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Clean a custom area Draw a precise area on the map/ })).toBeVisible();
+    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Clean a custom area Sketch a one-time zone on the map/ })).toBeVisible();
     await expect(gallery.locator(".shelf").getByRole("button", { name: /^Map history Saved maps are floor-scoped and read only/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run plan", exact: true })).toHaveCount(0);

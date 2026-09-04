@@ -55,6 +55,9 @@ const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
 
+const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
+  state.dataMode === "history" || state.floor.readOnly;
+
 interface StatusPresentation {
   readonly title: string;
   readonly detail: string;
@@ -131,6 +134,12 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "support":
       return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Private geometry is never included.") };
     case "none":
+      if (isReadOnlyWorkspace(state)) {
+        return {
+          title: t("v4_saved_map_read_only_title", "Saved map is read only"),
+          description: t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
+        };
+      }
       return { title: t("v4_what_to_clean", "What should the robot clean?"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
   }
 };
@@ -1177,9 +1186,14 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string) {
+  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string, disabled = false) {
     return html`
-      <button class="ms-row" type="button" @click=${onClick}>
+      <button
+        class="ms-row"
+        type="button"
+        aria-disabled=${disabled ? "true" : nothing}
+        @click=${() => { if (!disabled) onClick(); }}
+      >
         <span class="ms-row__lead">${icon(glyph)}</span>
         <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
         <span class="ms-row__trail">${icon(iconChevronRight)}</span>
@@ -1251,6 +1265,20 @@ export class MaticMapShellV4 extends LitElement {
         <div class="shelf">${historyRow}${diagnosticsRow}</div>
       `;
     }
+    if (isReadOnlyWorkspace(state)) {
+      return html`
+        ${this.#hostState(
+          t("v4_saved_map_read_only_notice", "Cleaning is unavailable on a saved map"),
+          t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
+        )}
+        <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
+        <div class="shelf">
+          ${historyRow}
+          ${diagnosticsRow}
+          ${narrow ? this.#floorSwitcher(state) : nothing}
+        </div>
+      `;
+    }
     const locating = state.coherence === "verifying" || state.coherence === "booting";
     const plansResource = state.resources.plans;
     const plans = plansResource.value;
@@ -1265,6 +1293,9 @@ export class MaticMapShellV4 extends LitElement {
     const planReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
       : null;
+    const customAreaReason = locating
+      ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
+      : t("v4_areas_quick_detail", "Sketch a one-time zone on the map");
     return html`
       ${state.activity === "problem"
         ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
@@ -1316,7 +1347,8 @@ export class MaticMapShellV4 extends LitElement {
           t("v4_custom_areas", "Clean a custom area"),
           iconNewArea,
           () => this.#workflow("draw"),
-          t("v4_areas_quick_detail", "Draw a precise area on the map"),
+          customAreaReason,
+          locating,
         )}
         ${historyRow}
         ${narrow ? this.#floorSwitcher(state) : nothing}

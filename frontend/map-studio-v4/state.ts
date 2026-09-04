@@ -19,6 +19,16 @@ const emptyResource = <T>(): { status: "idle"; value: T | null; problem: null } 
   problem: null,
 });
 
+const readOnlyWorkflows = new Set<WorkspaceState["workflow"]>([
+  "rooms",
+  "plan",
+  "draw",
+  "areaReview",
+]);
+
+const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
+  state.dataMode === "history" || state.floor.readOnly;
+
 const clamp = (value: number, minimum: number, maximum: number): number =>
   Math.max(minimum, Math.min(maximum, value));
 
@@ -184,6 +194,7 @@ export const reduceWorkspace = (
     case "toggle-labels":
       return { ...state, labelsVisible: !state.labelsVisible };
     case "open-workflow":
+      if (isReadOnlyWorkspace(state) && readOnlyWorkflows.has(intent.workflow)) return state;
       return {
         ...state,
         workflow: intent.workflow,
@@ -569,6 +580,15 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       kind: "primary",
       enabled: true,
     };
+  }
+  if (state.floor.readOnly && readOnlyWorkflows.has(state.workflow)) {
+    return disabledAction(
+      "read-only",
+      "Live map required",
+      "Return to the live map to edit cleaning tasks.",
+      "v4_action_live_map_required",
+      "v4_reason_live_map_required",
+    );
   }
   if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
     return stopAction(state);
