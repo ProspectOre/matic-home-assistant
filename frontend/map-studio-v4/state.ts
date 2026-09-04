@@ -575,11 +575,18 @@ const disabledAction = (
   reasonKey,
 });
 
+const hasStoppableWork = (state: WorkspaceState): boolean =>
+  state.command === "starting"
+  || state.activity === "cleaning" || state.activity === "paused"
+  || state.activity === "returning" || state.activity === "recharging"
+  || state.resources.entry?.runnerLocked === true
+  || state.resources.entry?.activePlan === true
+  || state.resources.entry?.nativeSessionActive === true;
+
 export const canStopMotion = (state: WorkspaceState): boolean =>
   state.host.connected && state.host.administrator && state.host.robotConnected
   && (state.command === "idle" || state.command === "failed" || state.command === "starting")
-  && (state.activity === "cleaning" || state.activity === "paused"
-    || state.activity === "returning" || state.activity === "recharging");
+  && hasStoppableWork(state);
 
 const stopAction = (state: WorkspaceState): PrimaryAction => {
   const enabled = canStopMotion(state);
@@ -612,7 +619,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_reason_live_map_required",
     );
   }
-  if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
+  if (state.activity !== "paused" && hasStoppableWork(state)) {
     return stopAction(state);
   }
   const editingDraft = (state.workflow === "plan" && state.planDraft.dirty)
@@ -811,9 +818,10 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   };
 };
 
-export const selectPausedSecondaryAction = (
+export const selectStopSecondaryAction = (
   state: WorkspaceState,
-): PrimaryAction | null => state.activity === "paused" ? stopAction(state) : null;
+): PrimaryAction | null => hasStoppableWork(state) && selectPrimaryAction(state).id !== "stop"
+  ? stopAction(state) : null;
 
 export const brushCursorPixels = (state: WorkspaceState): number =>
   state.draw.brushMeters

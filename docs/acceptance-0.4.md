@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
-Status: candidate, not stable-release sign-off. Baseline: `v0.4.0-rc8`
-(`0dbf1ca`). Run this checklist against the exact candidate being promoted.
+Status: candidate, not stable-release sign-off. Baseline: `v0.4.0-rc9`
+(`dc00269`). Run this checklist against the exact candidate being promoted.
 Automated coverage, browser emulation, and read-only live checks do not prove
 physical cleaning, native assistive technology, or affected reporter hardware.
 
@@ -18,18 +18,18 @@ physical cleaning, native assistive technology, or affected reporter hardware.
 
 ## User journeys and pass conditions
 
-| Journey | Required outcome | RC8 evidence / remaining work |
+| Journey | Required outcome | Candidate evidence / remaining work |
 | --- | --- | --- |
 | Install and upgrade | HACS candidate selection, installed-file parity, restart, available entities, useful failure recovery | Live upgrade/restart recorded; fresh-install packaging automated; fresh pairing on target hardware open |
 | First map | Live scene, coherent floor identity, verified pose, honest loading/error states | Live read-only check recorded; affected #65 hardware open |
 | Everyday navigation | 2D/3D, room/photo views, back navigation, floor selector, drafts and reopen preserve intent | Automated and live non-motion checks recorded |
 | Saved floor | History is read-only; no live pose or cleaning actions; return restores current-floor controls | Automated and live non-motion checks recorded |
-| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | Real run open |
+| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | RC9 interrupted run recorded; completed run and Stop-availability follow-up open |
 | Saved plan | Save/edit/reorder/reload preserves settings; preview matches actual mission legs; no unintended duplicate start | Preview recorded; real multi-leg execution open |
 | Custom area | Create/edit/save/reopen/run matches selected area; stale geometry blocks safely and offers recovery | Automated editing/fail-closed checks; real run open |
 | Immediate stop | Accepted stop settles, replacement work is protected, dock follows idle with native session clear | Regression tests; physical #71 retest open |
 | Finish-current-room | Below threshold stops immediately; exact threshold finishes only current room; next room never starts | Regression tests; physical boundary runs open |
-| Completion credit | Only verified completed rooms gain timestamps/durations; transit, interruption and rejected starts do not | Regression tests; real before/after credit comparison open |
+| Completion credit | Only verified completed rooms gain timestamps/durations; transit, interruption and rejected starts do not | RC9 interruption left completion count and selected room timestamp unchanged; completed-run comparison open |
 | Floor round trip | Floor A → B → A localizes; scene, pose, rooms, history and actions agree; no duplicate Repairs | Earlier stable proof exists; fresh 0.4 #54 proof open |
 | Recovery | Disconnect/reconnect, tab reopen and expired auth recover honestly; no stale floor actions or duplicate commands | Non-motion checks recorded; interruption during real run open |
 | Accessibility | Keyboard reaches all actions, focus returns correctly, readable labels and status; usable zoom/touch | Automated/emulated checks; native VoiceOver and real phone/tablet open |
@@ -40,7 +40,8 @@ physical cleaning, native assistive technology, or affected reporter hardware.
 1. Verify installed candidate and clean baseline: coordinator available, docked
    or idle, no errors, native session, managed lock, active plan, stop-settle or
    reconciliation marker. Record room-credit baseline privately.
-2. Complete a small one-time clean. Observe scene/pose throughout, reopen the
+2. Isolate presence/scheduled automations for the test and restore them afterward.
+   Complete a small one-time clean. Observe scene/pose throughout, reopen the
    panel once, and compare final completion with native history.
 3. Run a two-leg saved plan. Verify settings, handoff, per-room credit and final
    cleanup. Exercise immediate stop on a separate run; confirm no next leg.

@@ -238,6 +238,72 @@ test.describe("Map Studio v0.4 foundation", () => {
       }
     }
   });
+  for (const mobile of [false, true]) {
+    test(`keeps Stop reachable before vacuum state catches up${mobile ? " @mobile" : ""}`, async ({ page }) => {
+      const gallery = await loadGallery(page, { narrow: mobile });
+      for (const evidence of ["starting", "runnerLocked", "activePlan", "nativeSessionActive"]) {
+        for (const fullMap of [false, true]) {
+          await page.evaluate(({ tag, evidence, fullMap }) => {
+            const element = document.querySelector(tag);
+            const state = element.getWorkspaceSnapshot();
+            element.replaceWorkspaceState({
+              ...state, activity: "docked", command: evidence === "starting" ? "starting" : "idle",
+              fullMap, coherence: "verifying",
+              resources: { ...state.resources, entry: {
+                ...state.resources.entry, runnerLocked: evidence === "runnerLocked",
+                activePlan: evidence === "activePlan", nativeSessionActive: evidence === "nativeSessionActive",
+              } },
+            });
+          }, { tag: GALLERY_TAG, evidence, fullMap });
+          const stop = gallery.getByRole("button", { name: "Stop cleaning", exact: true });
+          await expect(stop).toBeVisible();
+          await expect(stop).not.toHaveAttribute("aria-disabled", "true");
+        }
+      }
+    });
+  }
+  for (const startRejects of [false, true]) {
+    for (const stopRejects of [false, true]) {
+      test(`stops an unresolved start and preserves the ${stopRejects ? "failed" : "accepted"} Stop after a late ${startRejects ? "rejection" : "acknowledgement"}`, async ({ page }) => {
+        await loadEffectHarness(page);
+        const result = await page.evaluate(async ({ startRejects, stopRejects }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const calls = [];
+          let completeStart;
+          const effects = new EffectController(store, {
+            catalog: async () => [initial.resources.entry],
+            history: async () => initial.resources.history.value,
+            scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+            pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+            plans: async () => initial.resources.plans.value,
+            service: async (domain, service) => {
+              calls.push(`${domain}.${service}`);
+              if (calls.length === 1) return new Promise((resolve, reject) => {
+                completeStart = () => startRejects ? reject(new Error("Late start error")) : resolve();
+              });
+              if (stopRejects) throw new Error("Stop acknowledgement lost");
+            },
+            dispose() {},
+          });
+          effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+          try {
+            await effects.refreshCatalog(true);
+            const start = effects.executeAction("resume");
+            const whileStarting = store.value.command;
+            await effects.executeAction("resume");
+            await effects.executeAction("stop");
+            const afterStop = { command: store.value.command, notice: store.value.notice };
+            completeStart();
+            await start;
+            return { calls, whileStarting, preserved: JSON.stringify(afterStop) === JSON.stringify({ command: store.value.command, notice: store.value.notice }), command: store.value.command };
+          } finally { effects.dispose(); }
+        }, { startRejects, stopRejects });
+        expect(result).toEqual({ calls: ["vacuum.start", "matic_robot.stop_intelligent_cleaning"], whileStarting: "starting", preserved: true, command: stopRejects ? "failed" : "settling" });
+      });
+    }
+  }
   for (const rejected of [false, true]) {
     for (const managed of [false, true]) {
       test(`allows ${managed ? "managed" : "direct"} Stop after a ${rejected ? "rejected" : "successful"} start acknowledgement without replaying Start`, async ({ page }) => {
@@ -283,6 +349,92 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
+  test("ignores an old start response after changing robots or closing the panel", async ({ page }) => {
+    await loadEffectHarness(page);
+    const results = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const results = [];
+      for (const close of [false, true]) {
+        for (const rejectLate of [false, true]) {
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const calls = [];
+          let completeStart;
+          const effects = new EffectController(store, {
+            catalog: async () => [initial.resources.entry],
+            history: async () => initial.resources.history.value,
+            scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+            pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+            plans: async () => initial.resources.plans.value,
+            service: (domain, service, data, entity) => {
+              calls.push([service, entity]);
+              return new Promise((resolve, reject) => {
+                completeStart = () => rejectLate ? reject(new Error("Old response")) : resolve();
+              });
+            },
+            dispose() {},
+          });
+          const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          const start = effects.executeAction("resume");
+          if (close) effects.dispose();
+          else {
+            effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
+            // The new robot's projection arrives before its catalog. Never
+            // dispatch using the old robot's workspace and the new target.
+            await effects.executeAction("stop");
+            await effects.refreshCatalog(true);
+          }
+          const command = store.value.command;
+          completeStart();
+          await start;
+          results.push({ calls, preserved: store.value.command === command });
+          effects.dispose();
+        }
+      }
+      return results;
+    });
+    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["start", "vacuum.synthetic"]], preserved: true })));
+  });
+  test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      const calls = [];
+      let finish;
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        service: async (domain, service) => {
+          calls.push(service);
+          await new Promise((resolve) => { finish = resolve; });
+        },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      const phases = [];
+      try {
+        for (const action of ["run-plan", "clean-rooms"]) {
+          await effects.refreshCatalog(true);
+          const room = initial.resources.plans.value.rooms[0];
+          store.patch({ selection: { ...store.value.selection, roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }] } });
+          const run = effects.executeAction(action);
+          phases.push(store.value.command);
+          finish();
+          await run;
+          phases.push(store.value.command);
+        }
+        return { calls, phases };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ calls: ["run_selected_plan", "clean_room_sequence"], phases: ["starting", "idle", "starting", "idle"] });
+  });
   test("clears a deleted dirty plan identity only after successful deletion", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {

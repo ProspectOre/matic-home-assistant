@@ -102,6 +102,7 @@ export class EffectController {
   #catalogTimer: number | null = null;
   #poseTimer: number | null = null;
   #settleTimer: number | null = null;
+  #motionRevision = 0;
   #catalogLoading = false;
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
@@ -121,6 +122,14 @@ export class EffectController {
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
+    if (this.#projection && this.#projection.entryKey !== projection.entryKey) {
+      this.#motionRevision += 1;
+      if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
+      this.#settleTimer = null;
+      if (this.#store.value.command === "starting" || this.#store.value.command === "settling") {
+        this.#store.patch({ command: "idle" });
+      }
+    }
     const wasConnected = this.#hostConnected;
     this.#hostConnected = projection.host.connected;
     this.#projection = projection;
@@ -1280,18 +1289,38 @@ export class EffectController {
     const entityId = this.#projection?.vacuumEntityId;
     const stopping = service === "stop_intelligent_cleaning"
       || (domain === "vacuum" && service === "return_to_base");
-    if (!entityId || (stopping ? !canStopMotion(state) : !canStartMotion(state))) return;
-    this.#store.patch({ command: "pending", notice: null });
+    if (!entityId || state.selection.entryId !== this.#projection?.entryKey
+      || (stopping ? !canStopMotion(state) : !canStartMotion(state))) return;
+    // HA may keep a room-sequence service call open for the whole run. Stop
+    // must be reachable before that call acknowledges, even while the last
+    // vacuum state still says docked. A newer Stop owns all subsequent UI
+    // updates; a late start response must never replace its outcome.
+    const revision = ++this.#motionRevision;
+    const entryKey = this.#projection?.entryKey;
+    const current = (): boolean => !this.#disposed
+      && revision === this.#motionRevision && entryKey === this.#projection?.entryKey;
+    const settlingCommand = stopping ? "settling" : "starting";
+    if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
+    this.#settleTimer = null;
+    this.#store.patch({ command: settlingCommand, notice: null });
     try {
       await this.#backend.service(domain, service, data, entityId);
-      const settlingCommand = stopping ? "settling" : "starting";
+      if (!current()) return;
+      if (domain === "matic_robot" && (service === "clean_room_sequence" || service === "run_selected_plan")) {
+        // These services return when their managed run ends, not when its
+        // initial command is accepted. Do not show a new Starting interval.
+        this.#store.patch({ command: "idle" });
+        void this.refreshCatalog(true);
+        return;
+      }
       this.#store.patch({ command: settlingCommand });
       if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
       this.#settleTimer = window.setTimeout(() => {
         this.#settleTimer = null;
-        if (this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
+        if (current() && this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
       }, 15_000);
     } catch {
+      if (!current()) return;
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });
     }
   }
