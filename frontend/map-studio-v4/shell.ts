@@ -59,7 +59,7 @@ const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
   state.dataMode === "history" || state.floor.readOnly;
 
 const hasUnsavedAreaChanges = (state: WorkspaceState): boolean =>
-  (state.workflow === "draw" && state.draw.dirty)
+  (state.workflow === "draw" && (state.draw.dirty || state.areaDraft.dirty))
   || (state.workflow === "areaReview" && (state.draw.dirty || state.areaDraft.dirty));
 
 interface StatusPresentation {

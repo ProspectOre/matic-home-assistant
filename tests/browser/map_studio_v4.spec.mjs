@@ -1172,13 +1172,15 @@ test.describe("Map Studio v0.4 foundation", () => {
         areaDraft: { ...state.areaDraft, dirty: true },
       });
     }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: "Edit outline" }).click();
+    await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
     await floor.selectOption("saved-1");
     await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toBeVisible();
     await gallery.getByRole("button", { name: "Keep editing" }).click();
     await expect(floor).toHaveValue("current");
     expect(await snapshot(page)).toMatchObject({
       dataMode: "live",
-      workflow: "areaReview",
+      workflow: "draw",
       areaDraft: { dirty: true },
     });
   });
