@@ -3,7 +3,7 @@
 Date: 2026-09-04. Scope: map-review and original-icon follow-up to RC10 (`ebf2a79`).
 Status: local follow-up; RC10 completed one bounded physical room run. Other physical gates remain open.
 Frontend bundle SHA-256:
-`6e164e4dd8c75327e09c96710268986f197257bce9f4653d43c2cabb98747049`.
+`c86e1ff00fcd780a072936946a652e4183a6caa60d59d2cdbc4c7dd1f3a0cbb6`.
 
 ## RC9 physical finding
 
@@ -23,8 +23,8 @@ native session, managed work and reconciliation cleared.
   a global HA Repair. Invalid/unreviewable areas and changed floor identity keep
   repairs; all existing cleaning validation remains in force. Reviewable areas
   show one confirmation instruction instead of simultaneous review/redraw text.
-- Original robot geometry supplies the sidebar and in-page glyph, with a
-  matching vector mark. A small global module registers the icon before the map
+- Original side-profile geometry supplies the sidebar and in-page glyph, with
+  matching SVG artwork and 256/512 px Home Assistant image assets. A small global module registers the icon before the map
   opens and preserves other integrations' icon namespaces.
 
 - Failed/blocked plan saves preserve edits; successful saves refresh the catalog.

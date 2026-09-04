@@ -142,7 +142,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       panelLoaded: !!customElements.get("matic-map-studio-gallery-v0-4-0"),
     }));
     expect(result.robot.viewBox).toBe("0 0 24 24");
-    expect(result.robot.path).toContain("M4 4H20");
+    expect(result.robot.path).toContain("M8.2 6.2H22.6");
     expect(result.unknown.path).toBe("");
     expect(result.list).toEqual([{ name: "robot", keywords: ["robot", "vacuum", "matic"] }]);
     expect(result.other.path).toBe("M1 1H2");

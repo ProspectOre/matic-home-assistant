@@ -1,23 +1,24 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" width="256" height="256">
-  <title>Local robot cleaner</title>
+  <title>Robot vacuum side profile</title>
   <rect x="8" y="8" width="240" height="240" rx="56" fill="#102234"/>
-  <ellipse cx="128" cy="211" rx="91" ry="10" fill="#091827"/>
-  <rect x="44" y="94" width="32" height="108" rx="15" fill="#26343d"/>
-  <rect x="180" y="94" width="32" height="108" rx="15" fill="#26343d"/>
-  <path d="M49 111H69M47 126H71M46 141H72M46 156H72M47 171H71M49 186H69M187 111H207M185 126H209M184 141H210M184 156H210M185 171H209M187 186H207" stroke="#111e27" stroke-width="3"/>
-  <path d="M55 68H201V108Q201 129 184 141V188H72V141Q55 129 55 108Z" fill="#f1efe7"/>
-  <path d="M181 137Q196 124 198 110V77H201V108Q201 129 184 141V188H178V151Q178 142 181 137Z" fill="#d4d5cd"/>
-  <path d="M55 60Q55 51 64 51H192Q201 51 201 60V77H55Z" fill="#202b33"/>
-  <path d="M65 52H191" stroke="#566269" stroke-width="2"/>
-  <circle cx="99" cy="64" r="7" fill="#101a21"/>
-  <circle cx="157" cy="64" r="7" fill="#101a21"/>
-  <circle cx="100" cy="63" r="2" fill="#a6bdc2"/>
-  <circle cx="158" cy="63" r="2" fill="#a6bdc2"/>
-  <rect x="115" y="61" width="26" height="6" rx="3" fill="#2b353c"/>
-  <path d="M107 154H149Q155 154 155 160V179H101V160Q101 154 107 154Z" fill="#d5d6ce"/>
-  <path d="M51 169H205Q218 169 218 183V203Q218 211 210 211H46Q38 211 38 203V183Q38 169 51 169Z" fill="#f6f2e9"/>
-  <path d="M38 195H218V203Q218 211 210 211H46Q38 211 38 203Z" fill="#273740"/>
-  <rect x="51" y="190" width="154" height="18" rx="6" fill="#12212a"/>
-  <path d="M57 196H199M57 202H199" stroke="#34444c" stroke-width="2"/>
-  <rect x="116" y="178" width="24" height="5" rx="2" fill="#68bdcd"/>
+  <g transform="translate(25 77) scale(.4)">
+    <ellipse cx="257" cy="272" rx="255" ry="8" fill="#091827"/>
+    <circle cx="474" cy="256" r="13" fill="#1d2931"/>
+    <path d="M414 224H493L489 248Q487 260 477 260H466Z" fill="#d4d6ce"/>
+    <path d="M159 31H510V189Q510 230 471 230H187Q159 230 159 201Z" fill="#f1f1e9"/>
+    <path d="M507 37H510V189Q510 230 471 230H394V226H468Q504 225 504 188Z" fill="#d0d4cf"/>
+    <path d="M159 8Q159 0 167 0H502Q510 0 510 8V35H159Z" fill="#252b2e"/>
+    <path d="M166 2H503" stroke="#556065" stroke-width="3"/>
+    <path d="M160 36H509" stroke="#b7bcb8" stroke-width="2"/>
+    <path d="M151 173L177 164L189 194L149 204Z" fill="#d9ddd5"/>
+    <path d="M28 123H105Q137 123 142 152L145 190Q146 216 122 223L93 230H31Q0 230 0 199V157Q0 123 28 123Z" fill="#f4f4ed"/>
+    <path d="M25 128H99Q128 128 133 151" fill="none" stroke="#fafaf5" stroke-width="6"/>
+    <path d="M103 181L141 172M104 181Q79 190 80 215L83 230" fill="none" stroke="#abb2ad" stroke-width="2"/>
+    <path d="M96 214L117 208L119 219L99 225Z" fill="#a7ada8"/>
+    <path d="M13 227Q39 236 74 230" stroke="#253037" stroke-width="4" fill="none"/>
+    <circle cx="248" cy="163" r="105" fill="#18252e"/>
+    <circle cx="248" cy="163" r="101" fill="none" stroke="#414b50" stroke-width="4" stroke-dasharray="5 8"/>
+    <circle cx="248" cy="163" r="94" fill="#e8ece7"/>
+    <circle cx="248" cy="163" r="91" fill="#f1f2ec"/>
+  </g>
 </svg>
