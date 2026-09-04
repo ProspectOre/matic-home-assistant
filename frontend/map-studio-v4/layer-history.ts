@@ -1,5 +1,6 @@
 import type { WorkspaceState } from "./contracts";
 import { WorkspaceStore } from "./state";
+import { needsDraftConfirmation } from "./draft-navigation";
 
 const layerDepth = (state: WorkspaceState): number =>
   (state.workflow === "none" ? 0 : 1)
@@ -81,6 +82,15 @@ export class LayerHistoryController {
       return;
     }
     if (this.#depth < 1) return;
+    if (needsDraftConfirmation(this.#store.value, { type: "dismiss-top-layer" })) {
+      // Back already consumed the workflow marker. Restore it before opening
+      // the confirmation, so a second Back closes only that dialog and never
+      // navigates away with a dirty draft.
+      const current = history.state && typeof history.state === "object" ? history.state : {};
+      history.pushState({ ...current, maticMapLayer: { owner: this.#owner, depth: this.#depth } }, "", window.location.href);
+      this.#store.dispatch({ type: "open-dialog", dialog: "discardDraft" });
+      return;
+    }
     this.#handlingPop = true;
     this.#store.dispatch({ type: "dismiss-top-layer" });
   };

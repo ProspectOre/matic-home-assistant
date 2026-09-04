@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { deflateSync } from "node:zlib";
+import { build } from "esbuild";
 
 import { pointer, touchDrag, twoFingerPinch } from "./touch.mjs";
 
@@ -66,6 +67,20 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
   return page.locator(GALLERY_TAG);
 }
 
+async function loadEffectHarness(page) {
+  const bundle = await build({
+    stdin: {
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+    resolveDir: process.cwd(),
+    },
+    bundle: true, format: "esm", write: false,
+  });
+  await page.route("**/plan-recovery-test.js", (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/");
+}
+
 async function snapshot(page) {
   return page.evaluate((tag) => document.querySelector(tag).getWorkspaceSnapshot(), GALLERY_TAG);
 }
@@ -113,6 +128,235 @@ function slowDrag(dy, x = 160, y = 20) {
 }
 
 test.describe("Map Studio v0.4 foundation", () => {
+  test("never offers a hidden stale plan while its catalog is loading or unavailable", async ({ page }) => {
+    const gallery = await loadGallery(page);
+    for (const workflow of ["plan", "rooms"]) {
+      for (const status of ["loading", "error", "empty"]) {
+        await page.evaluate(({ tag, workflow, status }) => {
+          const element = document.querySelector(tag);
+          const state = element.getWorkspaceSnapshot();
+          element.replaceWorkspaceState({ ...state, workflow, resources: { ...state.resources, plans: { status, value: null, problem: status === "error" ? "request-failed" : null } } });
+        }, { tag: GALLERY_TAG, workflow, status });
+        await expect(gallery.locator(".action-bar button")).toHaveAttribute("aria-disabled", "true");
+        await expect(gallery.locator(".action-bar")).not.toContainText("Run this plan");
+      }
+    }
+  });
+  test("recovers an uncertain action only after a successful status read without replaying it", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, command: "failed" });
+      let writes = 0;
+      let reject = true;
+      const effects = new EffectController(store, {
+        catalog: async () => { if (reject) throw new Error("Offline"); return [initial.resources.entry]; },
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        service: async () => { writes += 1; },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.executeAction("recheck-status");
+        const failed = store.value.command;
+        reject = false;
+        await effects.executeAction("recheck-status");
+        return { failed, recovered: store.value.command, writes };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ failed: "failed", recovered: "idle", writes: 0 });
+  });
+  test("browser Back cancels draft confirmation without leaving the editor", async ({ page }) => {
+    await loadEffectHarness(page);
+    await page.evaluate(async () => {
+      const { WorkspaceStore, LayerHistoryController, createGalleryState } = await import("/plan-recovery-test.js");
+      const store = new WorkspaceStore(createGalleryState("ready"));
+      const layers = new LayerHistoryController(store);
+      layers.start();
+      store.dispatch({ type: "open-workflow", workflow: "plan" });
+      store.dispatch({ type: "patch-plan-draft", patch: { name: "Keep on Back" } });
+      window.__draftNavigation = { store, layers };
+      history.back();
+    });
+    await expect.poll(() => page.evaluate(() => window.__draftNavigation.store.value.dialog)).toBe("discardDraft");
+    await page.evaluate(() => history.back());
+    await expect.poll(() => page.evaluate(() => window.__draftNavigation.store.value.dialog)).toBe(null);
+    expect(await page.evaluate(() => {
+      const { store, layers } = window.__draftNavigation;
+      layers.dispose();
+      return { workflow: store.value.workflow, name: store.value.planDraft.name, dirty: store.value.planDraft.dirty };
+    })).toEqual({ workflow: "plan", name: "Keep on Back", dirty: true });
+  });
+  test("keeps desktop plan actions visible while long forms scroll", async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, workflow: "plan", planDraft: { ...state.planDraft, dirty: true } });
+    }, GALLERY_TAG);
+    const save = gallery.getByRole("button", { name: "Save plan", exact: true });
+    await expect(save).toBeInViewport({ ratio: 1 });
+    const body = gallery.locator(".workflow-body");
+    expect(await body.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+    await body.evaluate((element) => { element.scrollTop = element.scrollHeight; });
+    await expect(save).toBeInViewport({ ratio: 1 });
+    await expect(gallery.getByRole("button", { name: "Delete plan", exact: true })).toBeInViewport();
+  });
+
+  test("distinguishes setup, robot problems and unavailable maps from localization", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "empty" });
+    await expect(gallery.locator(".action-bar")).toContainText("Set up a Matic robot");
+    await page.evaluate((tag) => document.querySelector(tag).setScenario("problem"), GALLERY_TAG);
+    await expect(gallery.locator(".action-bar")).toContainText("Check the robot");
+    await page.evaluate((tag) => document.querySelector(tag).setScenario("unsupported"), GALLERY_TAG);
+    await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
+    await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
+  });
+  test("retries history reads and retains the selected saved floor label", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let reads = 0;
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => { if (++reads === 1) throw new Error("Offline"); return initial.resources.history.value; },
+        // This test isolates catalog recovery from optional scene/pose reads.
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      try {
+        effects.sync({
+          host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en",
+          userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+        });
+        await effects.refreshCatalog(true);
+        // Catalog starts its optional reads concurrently; wait for the failed
+        // history request to settle before using the screen's retry action.
+        for (let i = 0; i < 20 && store.value.resources.history.status !== "error"; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+        const failed = store.value.resources.history.status;
+        await effects.openWorkflow("history");
+        const retried = { status: store.value.resources.history.status, reads };
+        await effects.selectFloor("saved-1");
+        await effects.openWorkflow("history");
+        return { failed, retried, floor: store.value.selection.floorId, label: store.value.floor.displayName, reads };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ failed: "error", retried: { status: "ready", reads: 2 }, floor: "saved-1", label: "Shed", reads: 3 });
+  });
+  test("protects plan drafts across nested selectors, back navigation and floor changes", async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, workflow: "plan", planDraft: { ...state.planDraft, name: "Keep these edits", dirty: true } });
+    }, GALLERY_TAG);
+    const dialog = gallery.getByRole("dialog", { name: "Discard plan changes?" });
+    const plan = gallery.getByRole("combobox", { name: "Saved plan", exact: true });
+    await plan.selectOption("");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep editing" }).click();
+    await expect(plan).toHaveValue("daily");
+    await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Keep these edits");
+    await gallery.getByRole("button", { name: "Back to all tasks" }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.press("Escape");
+    await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Keep these edits");
+    await gallery.getByRole("combobox", { name: "Choose floor" }).selectOption("saved-1");
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Keep editing" }).click();
+    await expect(gallery.getByRole("combobox", { name: "Choose floor" })).toHaveValue("current");
+    await gallery.getByRole("button", { name: "New plan", exact: true }).click();
+    await expect(dialog).toBeVisible();
+    await dialog.getByRole("button", { name: "Discard", exact: true }).click();
+    await expect(dialog).toHaveCount(0);
+    expect(await snapshot(page)).toMatchObject({ workflow: "plan", selection: { planId: null }, planDraft: { dirty: false } });
+  });
+
+  test("preserves dirty drafts on browser-layer dismissal and freezes forms during a save", async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate(async (tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const { reduceWorkspace } = await import("/map_studio_v4/index.js");
+      element.replaceWorkspaceState(reduceWorkspace({ ...state, workflow: "plan", planDraft: { ...state.planDraft, dirty: true } }, { type: "dismiss-top-layer" }));
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("dialog", { name: "Discard plan changes?" })).toBeVisible();
+    await gallery.getByRole("button", { name: "Keep editing" }).click();
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), command: "pending" });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("textbox", { name: "Plan name" })).toBeDisabled();
+    await expect(gallery.getByRole("combobox", { name: "Saved plan", exact: true })).toBeDisabled();
+    await expect(gallery.getByRole("combobox", { name: "Cleaning system for Kitchen", exact: true })).toBeDisabled();
+  });
+  test("preserves plan edits after a failed or blocked save and allows retry", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let reject = true;
+      let writes = 0;
+      let reloads = 0;
+      const effects = new EffectController(store, {
+        service: async () => { writes += 1; if (reject) throw new Error("Unavailable"); },
+        dispose() {},
+      });
+      effects.sync({
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      });
+      const draft = { ...initial.planDraft, name: "Unsaved changes", dirty: true };
+      store.patch({ planDraft: draft });
+      effects.loadPlans = async () => {
+        reloads += 1;
+        store.patch({ planDraft: initial.planDraft });
+      };
+      try {
+        await effects.savePlan();
+        const failure = { draft: store.value.planDraft, command: store.value.command, reloads };
+        store.patch({ command: "pending" });
+        await effects.savePlan();
+        const blocked = { draft: store.value.planDraft, writes, reloads };
+        store.patch({ command: "failed" });
+        reject = false;
+        await effects.savePlan();
+        const retry = { command: store.value.command, writes, reloads };
+        return { draft, failure, blocked, retry };
+      } finally { effects.dispose(); }
+    });
+    expect(result.failure).toEqual({ draft: result.draft, command: "failed", reloads: 0 });
+    expect(result.blocked).toEqual({ draft: result.draft, writes: 1, reloads: 0 });
+    expect(result.retry).toEqual({ command: "idle", writes: 2, reloads: 1 });
+  });
+
+  test("history exposes keyboard navigation buttons and meaningful timeline values", async ({ page, browserName }) => {
+    const gallery = await loadGallery(page, { scenario: "history" });
+    const floors = gallery.getByRole("group", { name: "Mapped floors" });
+    const current = floors.getByRole("button", { name: "House Live" });
+    const saved = floors.getByRole("button", { name: "Shed Read only" });
+    await current.focus();
+    // Safari's default keyboard preference uses Option-Tab for native buttons.
+    await current.press(browserName === "webkit" ? "Alt+Tab" : "Tab");
+    await expect(saved).toBeFocused();
+    await expect(saved).toHaveAttribute("aria-current", "true");
+    const timeline = gallery.getByRole("slider", { name: "Map timeline" });
+    await expect(timeline).toHaveAttribute("aria-valuetext", /2026/);
+    await expect(gallery.getByRole("button", { name: "Return to current floor Current" })).toBeVisible();
+    await saved.press("Enter");
+    expect((await snapshot(page)).selection.floorId).toBe("saved-1");
+  });
   test("registers the v0.4 panel and gallery without replacing v0.3 tags", async ({ page }) => {
     await page.goto("/");
     await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
@@ -610,7 +854,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       { dialog: null, precision: true, fullMap: true, workflow: "draw" },
       { dialog: null, precision: false, fullMap: true, workflow: "draw" },
       { dialog: null, precision: false, fullMap: false, workflow: "draw" },
-      { dialog: null, precision: false, fullMap: false, workflow: "none" },
+      { dialog: "discardDraft", precision: false, fullMap: false, workflow: "draw" },
     ]);
   });
 
@@ -1973,11 +2217,11 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.evaluate((element) => element.setScenario("rooms"));
     await expect.poll(async () => (await snapshot(page)).workflow).toBe("rooms");
     const inspector = gallery.locator(".inspector");
-    await expect(inspector.getByLabel("Cleaning system for room")).toHaveCount(0);
+    await expect(inspector.getByLabel(/^Cleaning system for /)).toHaveCount(0);
     await inspector.getByRole("checkbox", { name: "Kitchen" }).check();
-    await expect(inspector.getByLabel("Cleaning system for room")).toBeVisible();
-    await expect(inspector.getByLabel("Cleaning system for room")).toHaveValue("vacuum");
-    const mode = inspector.getByLabel("Cleaning mode for room");
+    await expect(inspector.getByLabel(/^Cleaning system for /)).toBeVisible();
+    await expect(inspector.getByLabel(/^Cleaning system for /)).toHaveValue("vacuum");
+    const mode = inspector.getByLabel(/^Cleaning mode for /);
     await expect(mode).toHaveValue("standard");
     await expect(mode.locator("option")).toHaveText(["Quick", "Optimal", "Heavy Duty"]);
   });
@@ -2962,6 +3206,15 @@ test.describe("Map Studio v0.4 foundation", () => {
 });
 
 test.describe("Map Studio v0.4 on touch @mobile", () => {
+  test("keeps offline status above the bottom sheet", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ha-offline", narrow: true });
+    await settleSheet(gallery);
+    const message = await gallery.locator(".map-message").boundingBox();
+    const sheet = await gallery.locator(".mobile-sheet").boundingBox();
+    expect(message.y).toBeGreaterThanOrEqual(0);
+    expect(message.y + message.height).toBeLessThan(sheet.y);
+  });
+
   // Runs on the iPhone 15 and Pixel 7 projects only (tag-selected). The
   // gallery's narrow stage is a fixed 390x844 frame for the desktop harness;
   // on a device the shell must fill the real viewport instead.

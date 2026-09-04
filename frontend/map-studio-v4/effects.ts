@@ -636,7 +636,9 @@ export class EffectController {
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
       if (!this.#coherence.accepts(stamp) || history.entryId !== entry.entryId) return;
-      const activeFloor = history.floors.find((floor) => floor.active) || history.floors[0];
+      const selectedId = this.#store.value.selection.floorId;
+      const activeFloor = history.floors.find((floor) => floor.id === selectedId)
+        || history.floors.find((floor) => floor.active) || history.floors[0];
       if (!activeFloor) return;
       this.#store.patch({
         resources: {
@@ -911,6 +913,14 @@ export class EffectController {
       this.selectArea(null);
     }
     this.#store.dispatch({ type: "open-workflow", workflow });
+    if (workflow === "history") {
+      const entry = this.#store.value.resources.entry;
+      const stamp = this.#coherence.current();
+      if (entry && stamp) {
+        this.#store.patch({ resources: { ...this.#store.value.resources, history: resource("loading", this.#store.value.resources.history.value) } });
+        await this.#loadHistory(entry, stamp);
+      }
+    }
     if (workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "draw" || workflow === "areaReview") await this.loadAreas();
   }
@@ -928,6 +938,10 @@ export class EffectController {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (!currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (this.#store.value.planDraft.dirty) {
+        this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
+        return;
+      }
       const planId = plans.selectedPlan || plans.plans[0]?.id || null;
       const plan = plans.plans.find((candidate) => candidate.id === planId);
       this.#store.patch({
@@ -1122,7 +1136,7 @@ export class EffectController {
     const plans = state.resources.plans.value;
     if (!plans || !draft.name.trim() || !draft.rooms.length || !canEditCoordinates(state)) return;
     const rooms: readonly PlanRoom[] = draft.rooms;
-    await this.#serviceMutation("save_plan", {
+    const saved = await this.#serviceMutation("save_plan", {
       ...(draft.id ? { plan_id: draft.id } : {}),
       name: draft.name.trim(),
       enabled: draft.enabled,
@@ -1137,18 +1151,33 @@ export class EffectController {
       finish_current_room_threshold: draft.finishCurrentRoomThreshold,
       select: !draft.id || plans.selectedPlan === draft.id,
     }, "Plan saved", "Plan could not be saved");
-    await this.loadPlans();
+    if (saved) {
+      this.#store.patch({ planDraft: { ...this.#store.value.planDraft, dirty: false } });
+      await this.loadPlans();
+    }
   }
 
   async deletePlan(): Promise<void> {
     const planId = this.#store.value.selection.planId;
     if (!planId) return;
-    await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
-    await this.loadPlans();
+    const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
+    if (deleted) await this.loadPlans();
   }
 
   async executeAction(id: string): Promise<void> {
     switch (id) {
+      case "recheck-status": {
+        const entryId = this.#store.value.selection.entryId;
+        await this.refreshCatalog(true);
+        const state = this.#store.value;
+        if (!this.#disposed && state.selection.entryId === entryId
+          && state.resources.catalog.status === "ready"
+          && state.host.connected && state.host.robotConnected
+          && state.coherence === "current" && state.command === "failed") {
+          this.#store.patch({ command: "idle", notice: { tone: "info", text: "Status refreshed. Review the robot state before trying again." } });
+        }
+        return;
+      }
       case "stop":
         if (this.#store.value.resources.entry?.activePlan
           || this.#store.value.resources.entry?.runnerLocked) {
@@ -1208,15 +1237,17 @@ export class EffectController {
     data: Readonly<Record<string, unknown>>,
     success: string,
     failure: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const entityId = this.#projection?.vacuumEntityId;
-    if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return;
+    if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return false;
     this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving…" } });
     try {
       await this.#backend.service("matic_robot", service, data, entityId);
       this.#store.patch({ command: "idle", notice: { tone: "success", text: success } });
+      return true;
     } catch {
       this.#store.patch({ command: "failed", notice: { tone: "error", text: failure } });
+      return false;
     }
   }
 
@@ -1242,7 +1273,7 @@ export class EffectController {
         if (this.#store.value.command === "settling") this.#store.patch({ command: "idle" });
       }, 15_000);
     } catch {
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: "The robot did not accept that action" } });
+      this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });
     }
   }
 

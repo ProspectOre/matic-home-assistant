@@ -67,6 +67,9 @@ the integration so instructions and behavior stay aligned with each release.
 
 ## Project
 
+- [0.4 UI quality review](quality-0.4.md) — Local fixes, screen matrix, and validation scope.
+- [0.4 end-to-end acceptance](acceptance-0.4.md) — Candidate evidence,
+  physical user journeys, and stable-release gates.
 - [Contributing](../CONTRIBUTING.md) — Set up development, run the required
   checks, and prepare a focused pull request.
 - [License](../LICENSE) — MIT License.

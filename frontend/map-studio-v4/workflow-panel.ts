@@ -28,6 +28,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   };
 
   static override styles = [tokens, base, controls, css`
+.workflow-fields { border: 0; margin: 0; padding: 0; min-inline-size: 0; }
 :host { display: block; min-inline-size: 0; container-type: inline-size; }
 button, select, input[type="checkbox"] { cursor: pointer; }
 .stack { display: grid; gap: var(--ms-space-3); }
@@ -47,10 +48,10 @@ line-height: var(--ms-lh-snug);
 .list { display: grid; gap: var(--ms-space-2); }
 .group { display: grid; gap: var(--ms-space-2); }
 .group-heading { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); letter-spacing: 0.04em; line-height: var(--ms-lh-snug); text-transform: uppercase; }
-.floor[aria-checked="true"] { border-color: var(--ms-accent); background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local)); }
+.floor[aria-current="true"] { border-color: var(--ms-accent); background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local)); }
 .problem p { margin: 0; }
 .copy-status { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
-@media (forced-colors: active) { .floor[aria-checked="true"] { forced-color-adjust: none; color: HighlightText; background: Highlight; border-color: Highlight; } }
+@media (forced-colors: active) { .floor[aria-current="true"] { forced-color-adjust: none; color: HighlightText; background: Highlight; border-color: Highlight; } }
 .room { display: grid; gap: var(--ms-space-2); }
 .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control-sm); }
 .room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
@@ -60,6 +61,8 @@ line-height: var(--ms-lh-snug);
 .plan-active .ms-row__body strong { font-size: var(--ms-t-sm); white-space: nowrap; }
 .plan-active .ms-row__body small { max-inline-size: 32ch; }
 .plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-3); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
+.plan-room .room-choice { grid-template-columns: minmax(0, 1fr) auto; }
+.plan-room-label { display: flex; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control); }
 .plan-room { display: grid; gap: var(--ms-space-2); }
 .plan-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--ms-space-2); }
 .plan-option input { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
@@ -210,11 +213,12 @@ line-height: var(--ms-lh-snug);
   }
 
   #roomSettings(roomId: string, room: PlanRoom) {
+    const name = this.state.resources.plans.value?.rooms.find((candidate) => candidate.roomId === roomId)?.name || this.#t("v4_room", "Room");
     return html`
       <div class="split room-settings">
         <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
           <select
-            aria-label=${this.#t("v4_room_cleaning_system", "Cleaning system for room")}
+            aria-label=${this.#t("v4_room_cleaning_system_named", "Cleaning system for {room}", { room: name })}
             .value=${room.cleaningMode}
             @change=${(event: Event) => this.#intent({
               type: "patch-room-settings",
@@ -225,7 +229,7 @@ line-height: var(--ms-lh-snug);
         </label>
         <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
           <select
-            aria-label=${this.#t("v4_room_cleaning_mode", "Cleaning mode for room")}
+            aria-label=${this.#t("v4_room_cleaning_mode_named", "Cleaning mode for {room}", { room: name })}
             .value=${room.coverageSetting}
             @change=${(event: Event) => this.#intent({
               type: "patch-room-settings",
@@ -285,6 +289,7 @@ line-height: var(--ms-lh-snug);
         <div class="split">
           <label class="field ms-field">${this.#t("v4_saved_plan", "Saved plan")}
             <select
+              name="saved-plan"
               .value=${this.state.selection.planId || ""}
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
             >
@@ -341,23 +346,25 @@ line-height: var(--ms-lh-snug);
               : -1;
             return html`
               <div class="room plan-room ms-row ms-row--stack" data-selected=${String(selected)}>
-                <label class="room-choice">
+                <div class="room-choice">
+                  <label class="plan-room-label">
                   <input type="checkbox" .checked=${selected} @change=${() => this.#togglePlanRoom(room.roomId)}>
                   <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
+                  </label>
                   ${selected ? html`
                     <span>
                       <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>${icon(iconMoveUp)}</button>
                       <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>${icon(iconMoveDown)}</button>
                     </span>
                   ` : nothing}
-                </label>
+                </div>
                 ${selected ? html`
                   <div class="split room-settings">
                     <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
-                      <select .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
+                      <select aria-label=${this.#t("v4_room_cleaning_system_named", "Cleaning system for {room}", { room: label })} .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
                     <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
-                      <select .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
+                      <select aria-label=${this.#t("v4_room_cleaning_mode_named", "Cleaning mode for {room}", { room: label })} .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
                 ` : nothing}
@@ -481,18 +488,21 @@ line-height: var(--ms-lh-snug);
     const position = this.state.selection.historyId
       ? Math.max(0, snapshots.findIndex((snapshot) => snapshot.id === this.state.selection.historyId))
       : snapshots.length;
+    const liveLabel = floor?.active
+      ? this.#t("map_timeline_live_action", "Live")
+      : this.#t("v4_return_current_floor", "Return to current floor");
+    const selectedSnapshot = snapshots[position];
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         ${(catalog?.floors.length || 0) > 1 ? html`
           <div class="group">
             <h3 class="group-heading" id="floors-heading">${this.#t("v4_mapped_floors", "Mapped floors")}</h3>
-            <div class="list" role="radiogroup" aria-labelledby="floors-heading">
+            <div class="list" role="group" aria-labelledby="floors-heading">
             ${(catalog?.floors || []).map((candidate, index) => html`
               <button
                 class="floor ms-row ms-row"
                 type="button"
-                role="radio"
-                aria-checked=${String(candidate.id === floor?.id)}
+                aria-current=${String(candidate.id === floor?.id)}
                 @click=${() => this.#intent({ type: "set-floor", floorId: candidate.id })}
               >
                 <span>${candidate.label || (candidate.active
@@ -512,6 +522,7 @@ line-height: var(--ms-lh-snug);
               max=${String(snapshots.length)}
               step="1"
               .value=${String(position)}
+              aria-valuetext=${selectedSnapshot ? this.#formatTime(selectedSnapshot.createdAt) : liveLabel}
               ?disabled=${!snapshots.length}
               @input=${(event: Event) => {
                 const index = Number(eventValue(event));
@@ -520,7 +531,7 @@ line-height: var(--ms-lh-snug);
             >
           </label>
           <div class="list">
-            <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${this.#t("map_timeline_live_action", "Live")}</span><small>${this.#t("v4_current", "Current")}</small></button>
+            <button class="snapshot ms-row ms-row" type="button" aria-current=${String(!this.state.selection.historyId && Boolean(floor?.active))} @click=${() => this.#intent({ type: "set-history", historyId: null })}><span>${liveLabel}</span><small>${this.#t("v4_current", "Current")}</small></button>
             ${snapshots.map((snapshot, index) => html`
               <button class="snapshot ms-row ms-row" type="button" aria-current=${String(snapshot.id === this.state.selection.historyId)} @click=${() => this.#intent({ type: "set-history", historyId: snapshot.id })}>
                 <span>${this.#formatTime(snapshot.createdAt)}</span><small>${index + 1} of ${snapshots.length}</small>
@@ -636,6 +647,10 @@ line-height: var(--ms-lh-snug);
   }
 
   protected override render() {
+    return html`<fieldset class="workflow-fields" ?disabled=${this.state.command === "pending"}>${this.#body()}</fieldset>`;
+  }
+
+  #body() {
     switch (this.state.workflow) {
       case "rooms": return this.#rooms();
       case "plan": return this.#plans();
