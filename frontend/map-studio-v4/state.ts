@@ -58,6 +58,7 @@ export const normalizeBrush = (value: number): number =>
   ) / 100;
 
 export const initialWorkspaceState = (): WorkspaceState => ({
+  owner: null,
   generation: 0,
   coherence: "verifying",
   dataMode: "live",

@@ -124,8 +124,9 @@ export class EffectController {
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
-    if (this.#projection && (this.#projection.entryKey !== projection.entryKey
-      || this.#projection.userKey !== projection.userKey)) {
+    const owner = this.#store.value.owner;
+    if (owner && (owner.entryKey !== projection.entryKey
+      || owner.userKey !== projection.userKey)) {
       this.#clearPrivate("context-changed");
     }
     const wasConnected = this.#hostConnected;
@@ -133,6 +134,7 @@ export class EffectController {
     this.#projection = projection;
     this.#panel = panel;
     this.#store.patch({
+      owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
       activity: projection.activity,
       batteryPercent: projection.batteryPercent,
@@ -160,13 +162,10 @@ export class EffectController {
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
       this.#poseQueued = false;
-      const mutationPending = (this.#controllers.has("area-mutation") || this.#controllers.has("plan-mutation"))
-        && this.#store.value.command === "pending";
       this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
       this.#store.patch({
-        command: mutationPending ? "idle" : state.command,
         coherence: retainedScene ? "degraded" : "unavailable",
         resources: {
           ...state.resources,
@@ -245,10 +244,15 @@ export class EffectController {
   }
 
   #abortResources(except: readonly string[] = []): void {
+    let mutationCancelled = false;
     for (const [name, controller] of this.#controllers) {
       if (except.includes(name)) continue;
+      mutationCancelled ||= name === "plan-mutation" || name === "area-mutation";
       controller.abort();
       this.#controllers.delete(name);
+    }
+    if (mutationCancelled && this.#store.value.command === "pending") {
+      this.#store.patch({ command: "idle" });
     }
   }
 

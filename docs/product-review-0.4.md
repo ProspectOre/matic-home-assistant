@@ -33,7 +33,7 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
 | Stop/completion | Ownership, uncertainty, cancellation, credit | Baseline tests; physical matrix still open |
 | Themes/accessibility | Contrast, keyboard, focus, zoom, forced colors | Header regressions added; broader pass underway |
 | Preferences/lifecycle | Detach, identity changes, persistence | Owner-scoped writes and draft clearing regressions pass |
-| Architecture | Contracts/state/effects/rendering boundaries | Inventory of 32 TS modules; detailed pass underway |
+| Architecture | Contracts/state/effects/rendering boundaries | 32 TS modules, no local import cycles; client has no HA imports; lifecycle fixes tested |
 | Packaging/upgrades | Artifact parity, HACS, cache changes | Baseline checks; new candidate checks pending |
 | Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
 
@@ -67,7 +67,13 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
     responses and settle timers, and close old dialogs/precision/full-map layers.
     Regressions cover late success, late failure, timers and open top layers.
 
-Validation: 1,263 Python tests at 100% coverage; 341 browser checks; strict
+12. Cancelling a pending plan mutation during saved-floor navigation left the
+    command pending forever. Resource cancellation now clears pending mutation
+    state before late results are ignored.
+13. Controller recreation forgot retained workspace ownership. Store the owner
+    with the workspace, preserving same-owner drafts and clearing other owners.
+
+Validation: 1,263 Python tests at 100% coverage; 349 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.

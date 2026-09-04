@@ -284,3 +284,51 @@ for (const outcome of ["success", "failure", "settle-timer"]) {
     })).toEqual({ command: "starting", text: "New floor action" });
   });
 }
+
+for (const sameOwner of [true, false]) {
+  test(`reattached controllers ${sameOwner ? "retain the same owner's" : "clear another owner's"} draft`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (sameOwner) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("draw");
+      const store = new WorkspaceStore(initial);
+      const backend = () => ({ catalog: async () => { throw new DOMException("Aborted", "AbortError"); }, dispose() {} });
+      const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
+      const first = new EffectController(store, backend());
+      first.sync(projection); first.dispose();
+      const second = new EffectController(store, backend());
+      second.sync({ ...projection, userKey: sameOwner ? "one" : "two" });
+      const result = { name: store.value.areaDraft.name, circles: store.value.draw.circles.length };
+      second.dispose();
+      return { ...result, originalCount: initial.draw.circles.length };
+    }, sameOwner);
+    expect(result.name).toBe(sameOwner ? "Entryway" : "");
+    expect(result.circles).toBe(sameOwner ? result.originalCount : 0);
+  });
+}
+
+for (const rejected of [false, true]) {
+  test(`floor navigation clears a cancelled plan mutation before late ${rejected ? "failure" : "success"}`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (rejected) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let finish;
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, { catalog: async () => [initial.resources.entry], scene: aborted, pose: aborted, history: aborted, plans: aborted,
+        service: () => new Promise((resolve, reject) => { finish = () => rejected ? reject(new Error("Late failure")) : resolve(); }), dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      const pending = effects.savePlan();
+      await effects.selectFloor("saved-1");
+      const saved = store.value.command;
+      await effects.selectFloor("current");
+      const live = store.value.command;
+      finish(); await pending;
+      const final = store.value.command;
+      effects.dispose();
+      return { saved, live, final };
+    }, rejected);
+    expect(result).toEqual({ saved: "idle", live: "idle", final: "idle" });
+  });
+}
