@@ -720,6 +720,14 @@ export class EffectController {
     if (!floor) return;
     if (floor.active) {
       this.#entryIdentity = "";
+      const state = this.#store.value;
+      this.#store.patch({
+        resources: {
+          ...state.resources,
+          plans: resource("idle", null),
+          areas: resource("idle", null),
+        },
+      });
       this.#store.dispatch({ type: "set-floor", floorId: "current" });
       await this.refreshCatalog(true);
       return;
@@ -750,6 +758,8 @@ export class EffectController {
         ...this.#store.value.resources,
         scene: resource(snapshot ? "loading" : "empty", null),
         pose: resource("idle", null),
+        plans: resource("idle", null),
+        areas: resource("idle", null),
       },
       map: {
         available: false,
