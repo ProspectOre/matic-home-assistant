@@ -1252,9 +1252,12 @@ export class MaticMapShellV4 extends LitElement {
       `;
     }
     const locating = state.coherence === "verifying" || state.coherence === "booting";
-    const plans = state.resources.plans.value;
+    const plansResource = state.resources.plans;
+    const plans = plansResource.value;
     const noRooms = plans !== null && plans.rooms.length === 0;
     const planCount = plans?.plans.length ?? 0;
+    const plansLoading = plansResource.status === "loading";
+    const plansUnavailable = plansResource.status === "error";
     const roomsDisabled = locating || noRooms;
     const roomsReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
@@ -1288,10 +1291,20 @@ export class MaticMapShellV4 extends LitElement {
             >
               <span class="ms-row__lead">${icon(iconPlan)}</span>
               <span class="ms-row__body">
-                <strong>${planCount ? t("v4_run_a_plan", "Run a plan") : t("v4_create_plan", "Create a plan")}</strong>
-                <small>${planReason ?? (planCount
-                  ? planCount === 1 ? t("v4_saved_routine", "1 saved routine") : t("v4_saved_routines", "{count} saved routines", { count: planCount })
-                  : t("v4_no_plans_hint", "Save a room routine you can repeat"))}</small>
+                <strong>${plansLoading
+                  ? t("v4_plans_loading", "Checking saved plans")
+                  : plansUnavailable
+                    ? t("v4_plans_unavailable", "Plans unavailable")
+                    : planCount
+                      ? t("v4_run_a_plan", "Run a plan")
+                      : t("v4_create_plan", "Create a plan")}</strong>
+                <small>${planReason ?? (plansLoading
+                  ? t("v4_plans_loading_hint", "Reading routines for this floor")
+                  : plansUnavailable
+                    ? t("v4_plans_unavailable_hint", "Try again to load saved routines")
+                    : planCount
+                      ? planCount === 1 ? t("v4_saved_routine", "1 saved routine") : t("v4_saved_routines", "{count} saved routines", { count: planCount })
+                      : t("v4_no_plans_hint", "Save a room routine you can repeat"))}</small>
               </span>
               <span class="ms-row__trail">${icon(iconChevronRight)}</span>
             </button>

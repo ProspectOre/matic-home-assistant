@@ -1238,6 +1238,26 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(cleanRooms).not.toHaveAttribute("disabled");
   });
 
+  test("keeps the plan action honest while saved routines are loading", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const element = document.querySelector(tag);
+      const state = module.createGalleryState("ready");
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          plans: { status: "loading", value: null, problem: null },
+        },
+      });
+    }, GALLERY_TAG);
+
+    const planAction = gallery.getByRole("button", { name: /^Checking saved plans/ });
+    await expect(planAction).toHaveAccessibleName("Checking saved plans Reading routines for this floor");
+    await expect(gallery.getByRole("button", { name: /Create a plan/ })).toHaveCount(0);
+  });
+
   test("keeps first-use supporting copy at AA contrast in light and dark themes", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 

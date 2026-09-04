@@ -410,6 +410,9 @@ export class EffectController {
       },
     });
     void this.#loadHistory(entry, stamp);
+    if (coherent && this.#store.value.resources.plans.status === "idle") {
+      void this.loadPlans();
+    }
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -439,6 +442,9 @@ export class EffectController {
         map: { ...state.map, available: true },
         notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE ? null : state.notice,
       });
+      if (this.#store.value.resources.plans.status === "idle") {
+        void this.loadPlans();
+      }
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
         void this.#streamDeltas(entry, stamp, response.scene, generation);
@@ -714,6 +720,14 @@ export class EffectController {
     if (!floor) return;
     if (floor.active) {
       this.#entryIdentity = "";
+      const state = this.#store.value;
+      this.#store.patch({
+        resources: {
+          ...state.resources,
+          plans: resource("idle", null),
+          areas: resource("idle", null),
+        },
+      });
       this.#store.dispatch({ type: "set-floor", floorId: "current" });
       await this.refreshCatalog(true);
       return;
@@ -744,6 +758,8 @@ export class EffectController {
         ...this.#store.value.resources,
         scene: resource(snapshot ? "loading" : "empty", null),
         pose: resource("idle", null),
+        plans: resource("idle", null),
+        areas: resource("idle", null),
       },
       map: {
         available: false,
@@ -837,6 +853,7 @@ export class EffectController {
   async loadPlans(): Promise<void> {
     const entry = this.#store.value.resources.entry;
     if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
+    if (this.#store.value.resources.plans.status === "loading") return;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
