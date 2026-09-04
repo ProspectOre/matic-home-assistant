@@ -1140,6 +1140,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("alert")).toContainText("Map history is unavailable right now. Try again shortly.");
   });
 
+  test("asks before switching floors with an unsaved custom-area draft", async ({ page }) => {
+    await page.setViewportSize({ width: 1180, height: 760 });
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    const floor = gallery.getByLabel("Choose floor", { exact: true });
+    await floor.selectOption("saved-1");
+
+    await expect(gallery.getByRole("dialog", { name: "Discard this area?" })).toBeVisible();
+    expect(await snapshot(page)).toMatchObject({
+      dataMode: "live",
+      workflow: "draw",
+      floor: { readOnly: false },
+      draw: { dirty: true },
+    });
+    await gallery.getByRole("button", { name: "Keep drawing" }).click();
+    await expect(gallery.getByRole("dialog", { name: "Discard this area?" })).toHaveCount(0);
+    expect(await snapshot(page)).toMatchObject({
+      dataMode: "live",
+      workflow: "draw",
+      draw: { dirty: true },
+    });
+  });
+
   test("falls back to selection copy when the Clipboard API rejects an HTTP origin", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate((tag) => {

@@ -663,6 +663,7 @@ export class MaticMapShellV4 extends LitElement {
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingWorkflow: Workflow | null = null;
+  #pendingFloorId: string | null = null;
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
@@ -800,6 +801,14 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #intent(intent: WorkspaceIntent): void {
+    if (intent.type === "set-floor"
+      && this.state.draw.dirty
+      && (this.state.workflow === "draw" || this.state.workflow === "areaReview")) {
+      this.#pendingFloorId = intent.floorId;
+      this.#pendingWorkflow = null;
+      this.#intent({ type: "open-dialog", dialog: "discardDraft" });
+      return;
+    }
     this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
       detail: intent,
       bubbles: true,
@@ -834,15 +843,20 @@ export class MaticMapShellV4 extends LitElement {
 
   #discardAndContinue(): void {
     const pending = this.#pendingWorkflow;
+    const pendingFloorId = this.#pendingFloorId;
     this.#pendingWorkflow = null;
+    this.#pendingFloorId = null;
     this.#intent({ type: "discard-draft" });
     if (pending) {
       queueMicrotask(() => this.#intent({ type: "open-workflow", workflow: pending }));
+    } else if (pendingFloorId) {
+      queueMicrotask(() => this.#intent({ type: "set-floor", floorId: pendingFloorId }));
     }
   }
 
   #keepDraft(): void {
     this.#pendingWorkflow = null;
+    this.#pendingFloorId = null;
     this.#dismissDialog();
   }
 
