@@ -143,6 +143,27 @@ test.describe("Map Studio v0.4 foundation", () => {
       .toBe(true);
   });
 
+  test("rebuilds the live workspace after a cold browser reload", async ({ page }) => {
+    const errors = [];
+    page.on("pageerror", (error) => errors.push(error.message));
+    page.on("console", (message) => {
+      if (message.type() === "error") errors.push(message.text());
+    });
+
+    await page.goto("/map-studio-v4-audit");
+    const gallery = page.locator(GALLERY_TAG);
+    await expect(gallery).toBeVisible();
+    await expect(gallery.getByRole("heading", { name: "What should the robot clean?" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "One-time clean" })).toBeVisible();
+
+    await page.reload();
+    const reloaded = page.locator(GALLERY_TAG);
+    await expect(reloaded).toBeVisible();
+    await expect(reloaded.getByRole("heading", { name: "What should the robot clean?" })).toBeVisible();
+    await expect(reloaded.getByRole("button", { name: "One-time clean" })).toBeVisible();
+    expect(errors).toEqual([]);
+  });
+
   test("disposes polling on unload and reattaches with fresh controllers", async ({ page }) => {
     const scene = syntheticScene("Room", 10);
     let catalogRequests = 0;

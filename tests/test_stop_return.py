@@ -145,6 +145,88 @@ async def test_waits_for_an_active_session_to_end_before_docking(hass) -> None:
     client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
 
 
+async def test_rechecks_stop_fence_before_reading_native_session(hass) -> None:
+    """A replacement that wins before the read prevents any native query."""
+    hass.states.async_set(ENTITY, "idle", {})
+    manager = _manager()
+    manager.command_lock = MagicMock(return_value=asyncio.Lock())
+    manager.stop_pending.side_effect = [True, False]
+    client = _client(session=False)
+
+    assert await _run(hass, client, manager) is False
+    client.async_has_active_cleaning_session.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+
+
+async def test_rechecks_entity_state_before_reading_native_session(hass) -> None:
+    """A state transition while taking the command lock fails closed."""
+    hass.states.async_set(ENTITY, "idle", {})
+    manager = _manager()
+
+    class StateChangingLock:
+        async def __aenter__(self):
+            hass.states.async_set(ENTITY, "cleaning", {})
+            return self
+
+        async def __aexit__(self, *_args):
+            return False
+
+    manager.command_lock = MagicMock(return_value=StateChangingLock())
+    client = _client(session=False)
+
+    assert await _run(hass, client, manager) is False
+    client.async_has_active_cleaning_session.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+
+
+async def test_rechecks_entity_state_after_native_session_read(hass) -> None:
+    """A state transition during the read cannot be followed by DOCK."""
+    hass.states.async_set(ENTITY, "idle", {})
+    manager = _manager()
+    manager.command_lock = MagicMock(return_value=asyncio.Lock())
+    client = _client()
+
+    async def read_active_session() -> bool:
+        hass.states.async_set(ENTITY, "cleaning", {})
+        return False
+
+    client.async_has_active_cleaning_session = AsyncMock(
+        side_effect=read_active_session
+    )
+
+    assert await _run(hass, client, manager) is False
+    client.async_send_user_command.assert_not_awaited()
+
+
+async def test_replacement_during_session_read_cannot_trigger_stale_dock(hass) -> None:
+    """A replacement that starts during the native read wins the race."""
+    hass.states.async_set(ENTITY, "idle", {})
+    manager = _manager()
+    manager.command_lock = MagicMock(return_value=asyncio.Lock())
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def read_active_session() -> bool:
+        entered.set()
+        await release.wait()
+        return False
+
+    client = _client()
+    client.async_has_active_cleaning_session = AsyncMock(
+        side_effect=read_active_session
+    )
+    task = asyncio.create_task(_run(hass, client, manager))
+    await entered.wait()
+    # The replacement path invalidates the stop fence before it waits for the
+    # same command lock. The watcher must observe that invalidation after the
+    # blocked session read and decline to send DOCK.
+    manager.stop_pending.return_value = False
+    release.set()
+
+    assert await task is False
+    client.async_send_user_command.assert_not_awaited()
+
+
 async def test_missing_entity_and_unreadable_session_never_dock(
     hass, monkeypatch: pytest.MonkeyPatch
 ) -> None:
