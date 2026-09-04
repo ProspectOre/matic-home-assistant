@@ -59,7 +59,19 @@ async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
             await entity.async_send_command("clean_all", {PLAN_FLOOR_TOKEN: value})
 
 
-@pytest.mark.parametrize("change", ["coherence", "identity"])
+@pytest.mark.parametrize(
+    "change",
+    [
+        "coherence",
+        "identity",
+        "partition",
+        "partition_wire",
+        "room_id",
+        "room_protocol",
+        "room_wire",
+        "removed_room",
+    ],
+)
 async def test_managed_clean_rechecks_floor_inside_command_lock(
     hass, change: str
 ) -> None:
@@ -89,9 +101,30 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
     if change == "coherence":
         entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     else:
+        if change == "identity":
+            updated = replace(floor_plan, mission_id=floor_plan.mission_id + 1)
+        elif change == "partition":
+            updated = replace(floor_plan, partition_protocol_id="replacement-partition")
+        elif change == "partition_wire":
+            updated = replace(floor_plan, partition_id_wire=b"replacement-partition")
+        elif change == "removed_room":
+            updated = replace(floor_plan, rooms=floor_plan.rooms[:1])
+        else:
+            field, value = {
+                "room_id": ("id", "replacement-room"),
+                "room_protocol": ("protocol_id", "replacement-room"),
+                "room_wire": ("id_wire", b"replacement-room"),
+            }[change]
+            updated = replace(
+                floor_plan,
+                rooms=(
+                    floor_plan.rooms[0],
+                    replace(floor_plan.rooms[1], **{field: value}),
+                ),
+            )
         entry.runtime_data.coordinator.data = replace(
             entry.runtime_data.coordinator.data,
-            floor_plan=replace(floor_plan, mission_id=floor_plan.mission_id + 1),
+            floor_plan=updated,
         )
     command_lock.release()
 
@@ -99,6 +132,61 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
         await task
     assert excinfo.value.translation_key == "room_plan_unavailable"
     entry.runtime_data.coordinator.client.async_start_coverage.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "change", ["refinement", "target_refinement", "vertex_order", "room_order"]
+)
+async def test_queued_room_clean_uses_fresh_map_after_geometry_update(hass, change):
+    """Native room targets survive geometry-only updates while awaiting dispatch."""
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    floor = entry.runtime_data.coordinator.data.floor_plan
+    assert floor is not None
+    token = manager.begin_managed_motion("synthetic-serial")
+    lock = manager.command_lock("synthetic-serial")
+    await lock.acquire()
+    task = asyncio.create_task(
+        entity.async_send_command(
+            "clean_rooms",
+            {
+                "rooms": ["Study"],
+                PLAN_MOTION_TOKEN: token,
+                PLAN_FLOOR_TOKEN: plan_floor_token(floor),
+            },
+        )
+    )
+    await asyncio.sleep(0)
+    if change == "room_order":
+        updated = replace(floor, rooms=tuple(reversed(floor.rooms)))
+    else:
+        room_index = 1 if change == "target_refinement" else 0
+        room = floor.rooms[room_index]
+        boundary = (
+            tuple((x + 0.025, y) for x, y in room.boundary)
+            if change in {"refinement", "target_refinement"}
+            else tuple(reversed(room.boundary))
+        )
+        updated = replace(
+            floor,
+            rooms=tuple(
+                replace(item, boundary=boundary) if index == room_index else item
+                for index, item in enumerate(floor.rooms)
+            ),
+        )
+    entry.runtime_data.coordinator.data = replace(
+        entry.runtime_data.coordinator.data,
+        floor_plan=updated,
+    )
+    lock.release()
+    await task
+    dispatched = entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    assert dispatched.args[0] is updated
+    assert dispatched.args[1] == ["protocol-2"]
+    assert manager.managed_motion_is_current("synthetic-serial", token)
 
 
 async def test_room_commands_prefer_stable_ids_and_reject_ambiguous_names() -> None:

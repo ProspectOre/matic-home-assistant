@@ -42,7 +42,7 @@ STORAGE_MINOR_VERSION = 4
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
-_PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v1\0"
+_PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
 MAX_SAVED_PLANS_PER_ROBOT = 256
@@ -70,7 +70,13 @@ class CleaningRoom:
 
 
 def plan_floor_token(floor_plan: FloorPlan) -> str:
-    """Return a private opaque binding for one native room-command map."""
+    """Bind native room commands to floor and room identities, not render geometry.
+
+    Normal coverage sends mission, partition and room IDs, never boundaries.
+    Geometry refinement must not invalidate those targets between plan legs or
+    while waiting for the command lock. Coordinate-based custom areas use their
+    separate local-geometry binding and must not use this token.
+    """
     digest = hashlib.sha256(_PLAN_FLOOR_TOKEN_DOMAIN)
 
     def add(value: bytes) -> None:
@@ -85,18 +91,14 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
             room.id_wire,
             room.protocol_id.encode(),
             room.id.encode(),
-            tuple(room.boundary),
         )
         for room in floor_plan.rooms
     )
     digest.update(struct.pack(">I", len(room_identities)))
-    for id_wire, protocol_id, room_id, boundary in room_identities:
+    for id_wire, protocol_id, room_id in room_identities:
         add(id_wire)
         add(protocol_id)
         add(room_id)
-        digest.update(struct.pack(">I", len(boundary)))
-        for x, y in boundary:
-            digest.update(struct.pack(">dd", x, y))
     return digest.hexdigest()
 
 

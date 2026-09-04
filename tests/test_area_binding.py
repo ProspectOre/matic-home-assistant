@@ -1406,6 +1406,49 @@ def test_area_issue_sync_preserves_unknown_state_and_clears_verified_state() -> 
         create.assert_not_called()
 
 
+@pytest.mark.parametrize("blocked", [False, True])
+def test_reviewable_map_drift_does_not_raise_a_global_repair(blocked: bool) -> None:
+    hass = MagicMock()
+    original = _floor_plan()
+    area = {
+        **_area(original),
+        "circles": [{"x": 0.5, "y": 0.5, "radius": 0.1}],
+    }
+    changed = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.01, 0.0), *original.rooms[0].boundary[1:]),
+            ),
+            original.rooms[1],
+        ),
+    )
+    if blocked:
+        area["circles"] = [{"x": 20.0, "y": 20.0, "radius": 0.1}]
+    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    assert area_binding_allows_review(area, changed) is not blocked
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_create_issue"
+        ) as create,
+        patch(
+            "custom_components.matic_robot.area_binding.ir.async_delete_issue"
+        ) as delete,
+    ):
+        assert async_sync_custom_area_issue(hass, "entry", {"area": area}, changed) == (
+            1 if blocked else 0
+        )
+    if blocked:
+        create.assert_called_once()
+        delete.assert_not_called()
+    else:
+        create.assert_not_called()
+        delete.assert_called_once_with(hass, DOMAIN, custom_area_issue_id("entry"))
+    # Hiding a global notification never authorizes these saved coordinates.
+    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_area_issue_sync_ignores_areas_bound_to_other_mapped_floors() -> None:
     hass = MagicMock()
     active = replace(

@@ -1,6 +1,7 @@
 """Automation action coverage for room-native cleaning plans."""
 
 import asyncio
+from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -909,6 +910,14 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     floor_guard = execute.await_args_list[0].kwargs["floor_is_current"]
     assert execute.await_args_list[0].kwargs["floor_token"] == plan_floor_token(
         floor_plan
+    )
+    assert floor_guard() is True
+    coordinator.data.floor_plan = replace(
+        floor_plan,
+        rooms=tuple(
+            replace(room, boundary=tuple((x + 0.025, y) for x, y in room.boundary))
+            for room in floor_plan.rooms
+        ),
     )
     assert floor_guard() is True
     coordinator.data.floor_plan = _area_floor_plan(mission_id=43)

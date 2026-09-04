@@ -92,10 +92,13 @@ def async_sync_custom_area_issue(
     areas: Mapping[str, Any],
     floor_plan: FloorPlan | None,
 ) -> int | None:
-    """Create, update, or clear one privacy-safe stale-area Repair.
+    """Create, update, or clear one privacy-safe blocked-area Repair.
 
     A missing or unusable live map cannot establish compatibility, so it never
-    creates or clears an existing issue. The Repair exposes only a count.
+    creates or clears an existing issue. Same-map outlines that can be reviewed
+    stay in the area workspace; routine geometry updates are not HA repairs.
+    They remain blocked from cleaning until explicitly confirmed. The Repair
+    exposes only the count of areas that require stronger recovery.
     """
     if floor_plan is None:
         return None
@@ -112,10 +115,7 @@ def async_sync_custom_area_issue(
     )
     stale_count = sum(
         assigned_mission == floor_plan.mission_id
-        and (
-            not isinstance(area, Mapping)
-            or area_binding_status(area, floor_plan) is not AreaBindingStatus.CURRENT
-        )
+        and _area_requires_repair(area, floor_plan)
         for area, assigned_mission in zip(
             areas.values(), assigned_missions, strict=True
         )
@@ -162,6 +162,16 @@ def async_sync_custom_area_issue(
             continue
         ir.async_delete_issue(hass, DOMAIN, existing_issue_id)
     return stale_count
+
+
+def _area_requires_repair(area: object, floor_plan: FloorPlan) -> bool:
+    """Keep reviewable geometry drift local without changing motion guards."""
+    if not isinstance(area, Mapping):
+        return True
+    status = area_binding_status(area, floor_plan)
+    return status is not AreaBindingStatus.CURRENT and not area_binding_allows_review(
+        area, floor_plan, status=status
+    )
 
 
 def _area_repair_mission(

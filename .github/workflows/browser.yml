@@ -30,7 +30,7 @@ jobs:
       - run: npm run build:map-studio-v4
       - name: Committed bundle matches the frontend source
         run: |
-          if ! git diff --exit-code -- custom_components/matic_robot/map_studio_v4/; then
+          if ! git diff --exit-code -- custom_components/matic_robot/map_studio_v4/ custom_components/matic_robot/matic_icons.js; then
             echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
             exit 1
           fi

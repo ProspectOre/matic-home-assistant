@@ -1,9 +1,9 @@
 # 0.4 UI quality review
 
-Date: 2026-09-04. Scope: stop-availability follow-up to RC9 (`dc00269`).
-Status: local follow-up; RC9 is installed but has not passed physical acceptance.
+Date: 2026-09-04. Scope: map-review and original-icon follow-up to RC10 (`ebf2a79`).
+Status: local follow-up; RC10 completed one bounded physical room run. Other physical gates remain open.
 Frontend bundle SHA-256:
-`ce99868ce031265868862a738476a0af841969475304a37b0c93ac255bd4725f`.
+`c86e1ff00fcd780a072936946a652e4183a6caa60d59d2cdbc4c7dd1f3a0cbb6`.
 
 ## RC9 physical finding
 
@@ -12,9 +12,29 @@ served-bundle parity and clean native readback. A bounded one-time run exposed
 a long-lived service request that hid Stop before acknowledgement. Reloading
 restored Stop; cancellation recorded no completed-room credit. A presence
 automation then started separate work, so it must be isolated for repeat tests.
-The operator confirmed the robot stopped and docked. Full-run acceptance is open.
+The operator confirmed the robot stopped and docked. RC10 subsequently completed
+a bounded room run: immediate Stop visibility, verified map, reopen without
+replay, one native completed room and one matching integration credit; final
+native session, managed work and reconciliation cleared.
 
 ## Changes
+
+- Native room commands are bound to mission, partition and room identities.
+  Boundary refinement and polygon ordering do not change the command target;
+  hashing them previously rejected valid queued commands and later plan legs.
+  Dispatch still uses the fresh coherent floor under the command lock. Changed
+  native identities, removed rooms and Stop supersession remain guarded.
+  Coordinate-based custom areas retain their separate local-geometry validation.
+  Regressions cover target/distant refinement, vertex/room ordering, fresh-map
+  dispatch and rejection of changed mission/partition/room identities.
+
+- Same-map outlines that can be confirmed remain in the area workspace without
+  a global HA Repair. Invalid/unreviewable areas and changed floor identity keep
+  repairs; all existing cleaning validation remains in force. Reviewable areas
+  show one confirmation instruction instead of simultaneous review/redraw text.
+- Original side-profile geometry supplies the sidebar and in-page glyph, with
+  matching SVG artwork and 256/512 px Home Assistant image assets. A small global module registers the icon before the map
+  opens and preserves other integrations' icon namespaces.
 
 - Failed/blocked plan saves preserve edits; successful saves refresh the catalog.
 - Plan and area navigation share draft protection across nested controls,
@@ -71,8 +91,8 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,251 passing tests with 100% coverage (11,394 statements).
-- Follow-up browser suite: 275 passing checks across desktop Chromium/WebKit and mobile
+- Python suite: 1,263 passing tests with 100% coverage (11,399 statements).
+- Follow-up browser suite: 281 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, delayed start/Stop responses, robot switches,
   and action/status visibility regressions. No retries were needed.

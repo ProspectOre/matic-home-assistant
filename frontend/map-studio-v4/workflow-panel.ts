@@ -443,7 +443,7 @@ line-height: var(--ms-lh-snug);
   #areaReview() {
     const draft = this.state.areaDraft;
     const needsReview = draft.canRebind || draft.status === "review";
-    const stale = draft.status === "stale" || draft.status === "unknown";
+    const stale = !needsReview && (draft.status === "stale" || draft.status === "unknown");
     return html`
       <div class="stack">
         ${needsReview ? html`<div class="notice" data-tone="warning" role="status">${this.#t("area_review_required", "Review the saved outline on this current map, then confirm it.")}</div>` : nothing}

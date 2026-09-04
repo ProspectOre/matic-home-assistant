@@ -864,6 +864,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         DATA_SLAM_POSE_VIEW,
         DATA_SLAM_SCENE_VIEW,
         MANIFEST_VERSION,
+        MATIC_ICONS_PATH,
         MATIC_MAP_PANEL_ELEMENT,
         MATIC_MAP_STUDIO_V4_PATH,
         MATIC_MAP_STUDIO_V4_ROOT_PATH,
@@ -884,9 +885,12 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         for config in hass.http.async_register_static_paths.await_args.args[0]
     }
     assert MATIC_MAP_STUDIO_V4_ROOT_PATH in registered_paths
+    assert MATIC_ICONS_PATH in registered_paths
+    assert MATIC_ICONS_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     assert ROOM_PLAN_EDITOR_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     assert panel.require_admin is True
+    assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH

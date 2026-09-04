@@ -1,4 +1,4 @@
-/*! Icon geometry from Material Design Icons. SPDX-License-Identifier: Apache-2.0 */
+/*! Material Design Icons geometry: Apache-2.0. Original robot geometry: MIT. */
 import { html, type TemplateResult } from "lit";
 import {
   mdiArrowDown,
@@ -29,7 +29,6 @@ import {
   mdiPlay,
   mdiPlus,
   mdiRedo,
-  mdiRobotVacuum,
   mdiRotateLeft,
   mdiRotateRight,
   mdiShapePolygonPlus,
@@ -73,7 +72,7 @@ export const iconNewArea = mdiShapePolygonPlus;
 export const iconHistory = mdiHistory;
 export const iconPlan = mdiPlaylistCheck;
 export const iconDiagnostics = mdiInformationOutline;
-export const iconRobot = mdiRobotVacuum;
+export { iconRobot } from "./robot-icon";
 export const iconCleaning = mdiPlay;
 export const iconPaused = mdiPause;
 export const iconCharging = mdiBatteryCharging50;

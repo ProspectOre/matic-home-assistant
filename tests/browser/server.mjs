@@ -7,6 +7,10 @@ const testDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = join(testDirectory, "..", "..");
 const scripts = new Map([
   [
+    "/matic_icons.js",
+    join(repositoryRoot, "custom_components", "matic_robot", "matic_icons.js"),
+  ],
+  [
     "/matic_map_studio.js",
     join(repositoryRoot, "custom_components", "matic_robot", "matic_map_studio.js"),
   ],

@@ -128,6 +128,46 @@ function slowDrag(dy, x = 160, y = 20) {
 }
 
 test.describe("Map Studio v0.4 foundation", () => {
+  test("registers the sidebar robot before opening the map without replacing other icon sets", async ({ page }) => {
+    await page.goto("/");
+    await page.evaluate(() => {
+      window.customIcons = { other: { getIcon: async () => ({ path: "M1 1H2" }) } };
+    });
+    await page.addScriptTag({ url: "/matic_icons.js", type: "module" });
+    const result = await page.evaluate(async () => ({
+      robot: await window.customIcons.matic.getIcon("robot"),
+      unknown: await window.customIcons.matic.getIcon("unknown"),
+      list: await window.customIcons.matic.getIconList(),
+      other: await window.customIcons.other.getIcon("existing"),
+      panelLoaded: !!customElements.get("matic-map-studio-gallery-v0-4-0"),
+    }));
+    expect(result.robot.viewBox).toBe("0 0 24 24");
+    expect(result.robot.path).toContain("M8.2 6.2H22.6");
+    expect(result.unknown.path).toBe("");
+    expect(result.list).toEqual([{ name: "robot", keywords: ["robot", "vacuum", "matic"] }]);
+    expect(result.other.path).toBe("M1 1H2");
+    expect(result.panelLoaded).toBe(false);
+  });
+
+  for (const canRebind of [true, false]) {
+    test(`shows one actionable area recovery instruction when review is ${canRebind}`, async ({ page }) => {
+      const gallery = await loadGallery(page, { scenario: "ready" });
+      await page.evaluate(({ tag, reviewable }) => {
+        const element = document.querySelector(tag);
+        const state = element.getWorkspaceSnapshot();
+        element.replaceWorkspaceState({
+          ...state,
+          workflow: "areaReview",
+          areaDraft: { ...state.areaDraft, status: "stale", canRebind: reviewable },
+        });
+      }, { tag: GALLERY_TAG, reviewable: canRebind });
+      const review = gallery.getByText("Review the saved outline on this current map, then confirm it.", { exact: true });
+      const redraw = gallery.getByText("This outline no longer matches the current room map. Redraw it before saving.", { exact: true });
+      await expect(canRebind ? review : redraw).toBeVisible();
+      await expect(canRebind ? redraw : review).toHaveCount(0);
+    });
+  }
+
   test("never offers a hidden stale plan while its catalog is loading or unavailable", async ({ page }) => {
     const gallery = await loadGallery(page);
     for (const workflow of ["plan", "rooms"]) {

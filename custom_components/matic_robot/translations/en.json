@@ -1198,7 +1198,7 @@
     },
     "custom_area_map_changed": {
       "title": "Matic custom areas need map review",
-      "description": "Saved custom areas requiring review: {count}. Their mission, partition, or nearby map geometry no longer matches the robot's current room map, so Home Assistant will not start them. Open **Matic Map > Custom areas**, review and confirm the saved outline when offered, or redraw it on the current map."
+      "description": "Saved custom areas requiring recovery: {count}. Their floor identity changed, their saved data is invalid, or their outline cannot be reviewed on the current map. Home Assistant will not start them. Open **Matic Map > Custom areas** and redraw the affected areas. Same-map outlines that can be confirmed are shown only in that workspace, without this Repair."
     }
   },
   "services": {
