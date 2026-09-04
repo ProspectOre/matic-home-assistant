@@ -228,6 +228,7 @@
     "v4_map_history": "Map history",
     "v4_map_history_detail": "Saved maps are floor-scoped and read only.",
     "v4_map_options": "Map options",
+    "v4_open_navigation": "Open navigation",
     "v4_map_state": "Map state",
     "v4_map_support": "Map support",
     "v4_map_support_detail": "Private geometry is never included.",
