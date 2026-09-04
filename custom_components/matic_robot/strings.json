@@ -467,6 +467,10 @@
     "v4_plan_can_run_on": "Available from Run a plan, automations, and Home Assistant services.",
     "v4_plan_can_run_off": "Paused. Turn this on to make the plan available.",
     "v4_reason_run_plan_paused": "This plan is paused. Enable it to run.",
+    "v4_plans_loading": "Checking saved plans",
+    "v4_plans_loading_hint": "Reading routines for this floor",
+    "v4_plans_unavailable": "Plans unavailable",
+    "v4_plans_unavailable_hint": "Try again to load saved routines",
     "v4_saved_routine": "1 saved routine"
   },
   "config": {

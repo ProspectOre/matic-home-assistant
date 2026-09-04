@@ -410,6 +410,9 @@ export class EffectController {
       },
     });
     void this.#loadHistory(entry, stamp);
+    if (coherent && this.#store.value.resources.plans.status === "idle") {
+      void this.loadPlans();
+    }
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
