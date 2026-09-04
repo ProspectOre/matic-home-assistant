@@ -916,7 +916,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(quick).toHaveCount(2);
     await expect(quick.nth(0)).toHaveAccessibleName(/^Clean rooms Choose rooms on the map and start now/);
     await expect(quick.nth(0)).toHaveClass(/ms-row--featured/);
-    await expect(quick.nth(1)).toHaveAccessibleName(/^Run a plan \d+ saved routines/);
+    await expect(quick.nth(1)).toHaveAccessibleName(/^Run a plan (1 saved routine|\d+ saved routines)/);
     await expect(gallery.getByRole("heading", { name: "More", level: 3 })).toBeVisible();
     await expect(gallery.locator(".shelf").getByRole("button", { name: "Custom areas" })).toBeVisible();
     await expect(gallery.locator(".shelf").getByRole("button", { name: "Map history" })).toBeVisible();
@@ -2414,11 +2414,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
       await page.setViewportSize({ width, height: 740 });
       const gallery = await loadPhone(page, { scenario: "ready" });
       const showMore = gallery.getByRole("button", { name: "Show more of the map workspace" });
-      // Known exception: the plan room reorder arrows are the workflow panel's
-      // compact icon buttons (44x36). The panel has no narrow-layout mode of
-      // its own; the whole row they sit in is still 44px tall. Everything
-      // else on a phone must be a full 44px target.
-      const allowed = [/^Move .* (earlier|later)$/];
+      const allowed = [];
       const undersized = [];
       const sweep = async (label) => {
         // Open the sheet fully so the panel's own buttons are on screen too.

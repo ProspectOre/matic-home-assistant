@@ -21,10 +21,12 @@ import {
   mdiFullscreenExit,
   mdiHelpCircleOutline,
   mdiHistory,
+  mdiInformationOutline,
   mdiMapMarkerOff,
   mdiMenu,
   mdiMinus,
   mdiPause,
+  mdiPlaylistCheck,
   mdiPlay,
   mdiPlus,
   mdiRedo,
@@ -71,6 +73,8 @@ export const iconMoveDown = mdiArrowDown;
 export const iconCopy = mdiContentCopy;
 export const iconNewArea = mdiShapePolygonPlus;
 export const iconHistory = mdiHistory;
+export const iconPlan = mdiPlaylistCheck;
+export const iconDiagnostics = mdiInformationOutline;
 export const iconRobot = mdiRobotVacuum;
 export const iconCleaning = mdiPlay;
 export const iconPaused = mdiPause;

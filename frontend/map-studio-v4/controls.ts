@@ -113,6 +113,52 @@ background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
 .ms-row:hover:not(:disabled):not([aria-disabled="true"]) { border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line)); background: color-mix(in srgb, var(--ms-text) 7%, var(--ms-local)); }
 }
 .ms-row[aria-pressed="true"], .ms-row[aria-current="true"], .ms-row[data-selected="true"] { border-color: var(--ms-accent); background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local)); }
+.ms-switch {
+position: relative;
+flex: none;
+inline-size: 3.25rem;
+block-size: var(--ms-control);
+padding: 0;
+border: 0;
+background: transparent;
+cursor: pointer;
+-webkit-tap-highlight-color: transparent;
+}
+.ms-switch::before {
+content: "";
+position: absolute;
+inset-inline: 0.25rem;
+inset-block-start: 50%;
+block-size: 1.5rem;
+translate: 0 -50%;
+border: 1px solid var(--ms-line-strong);
+border-radius: var(--ms-radius-pill);
+background: color-mix(in srgb, var(--ms-text) 14%, var(--ms-local));
+transition: background-color var(--ms-fast) var(--ms-ease), border-color var(--ms-fast) var(--ms-ease);
+}
+.ms-switch::after {
+content: "";
+position: absolute;
+inset-inline-start: 0.4375rem;
+inset-block-start: 50%;
+inline-size: 1.125rem;
+block-size: 1.125rem;
+translate: 0 -50%;
+border-radius: 50%;
+background: var(--ms-surface-card);
+box-shadow: var(--ms-shadow-1);
+transition: translate var(--ms-fast) var(--ms-ease);
+}
+.ms-switch[aria-checked="true"]::before { border-color: var(--ms-accent); background: var(--ms-accent); }
+.ms-switch[aria-checked="true"]::after { translate: 1.25rem -50%; background: var(--ms-on-accent); }
+.ms-switch:focus-visible { outline: 0; }
+.ms-switch:focus-visible::before { outline: 2px solid var(--ms-accent); outline-offset: 2px; }
+.ms-switch:disabled, .ms-switch[aria-disabled="true"] { cursor: default; opacity: 0.55; }
+@media (forced-colors: active) {
+.ms-switch::before { border-color: ButtonBorder; }
+.ms-switch[aria-checked="true"]::before { forced-color-adjust: none; background: Highlight; border-color: Highlight; }
+.ms-switch[aria-checked="true"]::after { background: HighlightText; }
+}
 .ms-surface { --ms-local: var(--ms-surface-card); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-lg); background: var(--ms-local); }
 .ms-surface--floating { box-shadow: var(--ms-shadow-2); }
 .ms-surface--overlay { border-radius: var(--ms-radius-md); box-shadow: var(--ms-shadow-3); }

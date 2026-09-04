@@ -1,6 +1,6 @@
 import { LitElement, css, html, nothing } from "lit";
 import { controls } from "./controls";
-import { icon, iconCopy } from "./icons";
+import { icon, iconCopy, iconMoveDown, iconMoveUp, iconPlus } from "./icons";
 import { base, tokens } from "./tokens";
 
 import type {
@@ -243,10 +243,10 @@ line-height: var(--ms-lh-snug);
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
             >
               <option value="">${this.#t("plan_new", "New plan")}</option>
-              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.name}</option>`) }
+              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
             </select>
           </label>
-          <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>＋ ${this.#t("plan_new", "New plan")}</button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>${icon(iconPlus)}<span class="ms-btn__label">${this.#t("plan_new", "New plan")}</span></button>
         </div>
         <label class="field ms-field">${this.#t("plan_name", "Plan name")}
           <input
@@ -269,7 +269,23 @@ line-height: var(--ms-lh-snug);
               <option value="ordered">${this.#t("plan_ordered", "Listed order")}</option>
             </select>
           </label>
-          <label class="checkbox"><input type="checkbox" .checked=${draft.enabled} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { enabled: eventChecked(event) } })}>${this.#t("plan_enabled", "Enabled")}</label>
+          <div class="ms-row plan-active" data-active=${String(draft.enabled)}>
+            <div class="ms-row__body">
+              <strong id="plan-active-title">${this.#t("v4_plan_can_run", "Plan can run")}</strong>
+              <small id="plan-active-desc">${draft.enabled
+                ? this.#t("v4_plan_can_run_on", "Runs from Run a plan, automations and Home Assistant services.")
+                : this.#t("v4_plan_can_run_off", "Paused. It stays saved, but nothing can start it.")}</small>
+            </div>
+            <button
+              class="ms-switch"
+              type="button"
+              role="switch"
+              aria-checked=${String(draft.enabled)}
+              aria-labelledby="plan-active-title"
+              aria-describedby="plan-active-desc"
+              @click=${() => this.#intent({ type: "patch-plan-draft", patch: { enabled: !draft.enabled } })}
+            ></button>
+          </div>
         </div>
         <h3 class="group-heading" id="plan-rooms-heading">${this.#t("plan_rooms", "Plan rooms")}</h3>
         <div class="list" role="group" aria-labelledby="plan-rooms-heading">
@@ -284,8 +300,8 @@ line-height: var(--ms-lh-snug);
                   <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
                   ${selected ? html`
                     <span>
-                      <button class="icon-button ms-btn ms-btn--icon ms-btn--sm" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>↑</button>
-                      <button class="icon-button ms-btn ms-btn--icon ms-btn--sm" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>↓</button>
+                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#t("move_room_up", "Move {room} earlier", { room: label })} ?disabled=${index === 0} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, -1); }}>${icon(iconMoveUp)}</button>
+                      <button class="icon-button ms-btn ms-btn--icon" type="button" aria-label=${this.#t("move_room_down", "Move {room} later", { room: label })} ?disabled=${index === draft.rooms.length - 1} @click=${(event: Event) => { event.preventDefault(); this.#movePlanRoom(index, 1); }}>${icon(iconMoveDown)}</button>
                     </span>
                   ` : nothing}
                 </label>

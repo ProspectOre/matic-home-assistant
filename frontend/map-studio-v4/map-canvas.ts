@@ -209,13 +209,15 @@ export class MaticMapCanvasV4 extends LitElement {
       white-space: nowrap;
     }
 
+/* Four labelled buttons span most of the map at desktop width; icons with tooltips keep the rail a narrow column. */
+.map-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
 @container (max-width: 29rem) {
 .map-tools button, .map-dock .draw-tools button { padding-inline: 0; inline-size: var(--ms-control); }
 /* Collapse the label to assistive text, never display:none. Hiding it would
    delete the accessible name and break every getByRole({ name }) query at
    narrow widths -- which is what the previous font-size:0 plus ::first-letter
    trick did, while also rendering the toolbar as "P E M U R D". */
-.map-tools .ms-btn__label, .map-dock .draw-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
+.map-dock .draw-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (forced-colors: active) {
 /* The map is painted to canvas, so the UA would otherwise invert it. The
@@ -521,6 +523,7 @@ export class MaticMapCanvasV4 extends LitElement {
                   this.#renderer?.fit();
                   this.#intent({ type: "fit-map" });
                 }}
+                title=${this.#t("v4_fit_map", "Fit map")}
               >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
             ` : nothing}
             ${!locating && showExtras ? html`
@@ -529,6 +532,7 @@ export class MaticMapCanvasV4 extends LitElement {
                 type="button"
                 aria-pressed=${String(state.labelsVisible)}
                 @click=${() => this.#intent({ type: "toggle-labels" })}
+                title=${this.#t("v4_room_names", "Room names")}
               >${icon(iconRoomNames)}<span class="ms-btn__label">${this.#t("v4_room_names", "Room names")}</span></button>
               <button
                 class="help ms-btn ms-btn--icon"
@@ -537,6 +541,7 @@ export class MaticMapCanvasV4 extends LitElement {
                 aria-expanded=${String(this.#navigationHelp)}
                 aria-controls=${NAVIGATION_HELP_ID}
                 @click=${this.#toggleHelp}
+                title=${helpTitle}
               >${icon(iconHelp)}</button>
             ` : nothing}
             <button
@@ -545,6 +550,7 @@ export class MaticMapCanvasV4 extends LitElement {
               aria-label=${this.#t("v4_full_map", "Full map")}
               aria-pressed=${String(state.fullMap)}
               @click=${this.#toggleFullMap}
+              title=${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}
             >${icon(state.fullMap ? iconExitFullMap : iconFullMap)}<span class="ms-btn__label">${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}</span></button>
           </div>
         ` : nothing}

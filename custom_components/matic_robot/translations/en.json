@@ -447,7 +447,12 @@
     "v4_returns_to_dock": "returns to the dock",
     "v4_skip_to_map": "Skip to the map",
     "v4_skip_to_workspace": "Skip to the map workspace",
-    "v4_brush_width_slider": "Brush width slider"
+    "v4_brush_width_slider": "Brush width slider",
+    "v4_plan_can_run": "Plan can run",
+    "v4_plan_can_run_on": "Runs from Run a plan, automations and Home Assistant services.",
+    "v4_plan_can_run_off": "Paused. It stays saved, but nothing can start it.",
+    "v4_reason_run_plan_paused": "This plan is paused. Turn on Plan can run to run it.",
+    "v4_saved_routine": "1 saved routine"
   },
   "config": {
     "abort": {

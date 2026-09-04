@@ -26,7 +26,9 @@ import {
   iconChevronRight,
   iconChevronUp,
   iconCleaning,
+  iconDiagnostics,
   iconHistory,
+  iconPlan,
   iconMenu,
   iconNewArea,
   iconOffline,
@@ -145,7 +147,7 @@ const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
   draw: "peek",
   plan: "full",
   areaReview: "half",
-  history: "peek",
+  history: "half",
   support: "full",
 };
 
@@ -500,6 +502,8 @@ export class MaticMapShellV4 extends LitElement {
     .dialog dd { margin: 0; color: var(--ms-text-quiet); }
     .dialog-actions { display: flex; justify-content: flex-end; gap: var(--ms-space-2); }
 
+    /* Programmatic focus after a workflow change is for assistive tech; a ring on a heading reads as a control. */
+    h2[tabindex="-1"]:focus { outline: 0; }
     .narrow .app { grid-template-rows: 3.35rem minmax(0, 1fr); min-block-size: 28rem; }
     .narrow .workspace { grid-template-columns: minmax(0, 1fr); }
     .narrow .inspector { border-inline-start: 0; }
@@ -1209,7 +1213,7 @@ export class MaticMapShellV4 extends LitElement {
     const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
       this.#t(key, fallback, placeholders);
     const historyRow = this.#shelfRow(t("v4_map_history", "Map history"), iconHistory, () => this.#workflow("history"));
-    const diagnosticsRow = this.#shelfRow(t("v4_map_diagnostics", "Map diagnostics"), iconHistory, () => this.#workflow("support"));
+    const diagnosticsRow = this.#shelfRow(t("v4_map_diagnostics", "Map diagnostics"), iconDiagnostics, () => this.#workflow("support"));
     const { host } = state;
     if (!host.connected) return this.#hostState(t("v4_reconnecting_title", "Reconnecting to Home Assistant"), t("v4_reconnecting_body", "The last verified map stays read-only until the connection returns."));
     if (!host.administrator) return this.#hostState(t("v4_admin_title", "Administrator access required"), t("v4_admin_body", "Ask a Home Assistant administrator to open this map."));
@@ -1262,11 +1266,11 @@ export class MaticMapShellV4 extends LitElement {
               aria-disabled=${locating ? "true" : nothing}
               @click=${() => { if (!locating) this.#workflow("plan"); }}
             >
-              <span class="ms-row__lead">${icon(iconHistory)}</span>
+              <span class="ms-row__lead">${icon(iconPlan)}</span>
               <span class="ms-row__body">
                 <strong>${planCount ? t("v4_run_a_plan", "Run a plan") : t("v4_create_plan", "Create a plan")}</strong>
                 <small>${planReason ?? (planCount
-                  ? t("v4_saved_routines", "{count} saved routines", { count: planCount })
+                  ? planCount === 1 ? t("v4_saved_routine", "1 saved routine") : t("v4_saved_routines", "{count} saved routines", { count: planCount })
                   : t("v4_no_plans_hint", "Save a room routine you can repeat"))}</small>
               </span>
               <span class="ms-row__trail">${icon(iconChevronRight)}</span>
@@ -1346,6 +1350,9 @@ export class MaticMapShellV4 extends LitElement {
     if (state.workflow === "rooms" && state.selection.roomIds.length) {
       line = `${this.#t("v4_rooms_selected", "{count} rooms selected", { count: state.selection.roomIds.length })} · ${this.#roomNames(state).join(", ")}`;
     }
+    // With the body open the h2 already names the workflow, so the grip line
+    // carries the robot instead of repeating the title directly above it.
+    if (this._sheetDetent !== "peek") return status.detail ? `${status.title} · ${status.detail}` : status.title;
     return status.notable ? `${status.title} · ${line}` : line;
   }
 

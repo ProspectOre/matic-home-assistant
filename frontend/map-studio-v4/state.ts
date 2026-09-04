@@ -686,9 +686,11 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       labelKey: "v4_action_run_plan",
       kind: "primary",
       enabled: canStartMotion(state) && state.planDraft.enabled,
-      ...(canStartMotion(state)
-        ? {}
-        : { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }),
+      ...(!canStartMotion(state)
+        ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
+        : !state.planDraft.enabled
+          ? { reason: "This plan is paused. Turn on Plan can run to run it.", reasonKey: "v4_reason_run_plan_paused" }
+          : {}),
     };
   }
   if (state.workflow === "areaReview") {
