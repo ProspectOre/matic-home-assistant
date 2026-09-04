@@ -67,7 +67,7 @@ export const readCanvasPalette = (host: HTMLElement): CanvasPalette => {
     const canvas = document.createElement("canvas");
     canvas.width = 1;
     canvas.height = 1;
-    const context = canvas.getContext("2d", { colorSpace: "srgb" });
+    const context = canvas.getContext("2d", { colorSpace: "srgb", willReadFrequently: true });
     probe.setAttribute("aria-hidden", "true");
     probe.style.cssText = "position:absolute;inline-size:0;block-size:0;overflow:hidden;visibility:hidden;pointer-events:none";
     host.append(probe);
