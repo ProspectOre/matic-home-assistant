@@ -1302,15 +1302,20 @@ async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
 
     runtime = _runtime()
     runtime.coordinator.data.floor_plan = None
-    assert (
-        await view.get(_request(_hass(_entry(runtime))), "entry")
-    ).status == HTTPStatus.CONFLICT
+    response = await view.get(_request(_hass(_entry(runtime))), "entry")
+    assert response.status == HTTPStatus.CONFLICT
+    assert response.headers["X-Matic-Plans-Conflict"] == "map-rechecking"
     runtime.coordinator.data.floor_plan = _floor_plan()
     runtime.slam_map.floor_plan_is_current.side_effect = None
     runtime.slam_map.floor_plan_is_current.return_value = False
-    assert (
-        await view.get(_request(_hass(_entry(runtime))), "entry")
-    ).status == HTTPStatus.CONFLICT
+    response = await view.get(_request(_hass(_entry(runtime))), "entry")
+    assert response.status == HTTPStatus.CONFLICT
+    assert response.headers["X-Matic-Plans-Conflict"] == "map-rechecking"
+    runtime.coordinator.data.floor_plan = replace(_floor_plan(), rooms=())
+    runtime.slam_map.floor_plan_is_current.return_value = True
+    response = await view.get(_request(_hass(_entry(runtime))), "entry")
+    assert response.status == HTTPStatus.CONFLICT
+    assert response.headers["X-Matic-Plans-Conflict"] == "no-rooms"
 
 
 async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> None:

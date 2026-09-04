@@ -1129,14 +1129,18 @@ class MaticPlansView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
-        if (
-            floor_plan is None
-            or not floor_plan.rooms
-            or not runtime.slam_map.floor_plan_is_current(floor_plan)
-        ):
-            return web.Response(
-                status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
-            )
+        if floor_plan is None or not runtime.slam_map.floor_plan_is_current(floor_plan):
+            headers = {
+                **PRIVATE_NO_STORE_HEADERS,
+                "X-Matic-Plans-Conflict": "map-rechecking",
+            }
+            return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
+        if not floor_plan.rooms:
+            headers = {
+                **PRIVATE_NO_STORE_HEADERS,
+                "X-Matic-Plans-Conflict": "no-rooms",
+            }
+            return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
         serial_number = str(runtime.coordinator.data.info.serial_number)
         plans = []
         for plan_id, plan in runtime.cleaning_plans.plans(serial_number).items():
