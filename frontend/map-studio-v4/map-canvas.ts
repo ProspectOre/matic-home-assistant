@@ -580,7 +580,7 @@ export class MaticMapCanvasV4 extends LitElement {
     if (!showScene) return nothing;
     if (state.workflow === "draw" && !this.narrow) {
       return html`
-        <div class="map-dock" data-map-control>
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           ${renderDrawTools(state, {
             intent: (intent) => this.#intent(intent),
             openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
@@ -592,7 +592,7 @@ export class MaticMapCanvasV4 extends LitElement {
     const count = state.selection.roomIds.length;
     if (state.workflow === "rooms" && count > 0) {
       return html`
-        <div class="map-dock" data-map-control>
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
             <span>${this.#t("v4_rooms_selected", "{count} rooms selected").replace("{count}", String(count))}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#clearSelection()}>${this.#t("v4_clear", "Clear")}</button>

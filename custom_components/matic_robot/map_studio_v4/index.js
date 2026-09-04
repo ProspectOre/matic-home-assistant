@@ -580,11 +580,11 @@ font-size: var(--ms-t-sm);
         `:d}
       </div>
     `}#l(H){let V=this.state;if(!H)return d;if(V.workflow==="draw"&&!this.narrow)return Z`
-        <div class="map-dock" data-map-control>
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           ${o3(V,{intent:r=>this.#i(r),openBrush:()=>this.#i({type:"set-precision-open",value:!V.precisionOpen}),t:(r,M)=>this.#r(r,M)},"row")}
         </div>
       `;let e=V.selection.roomIds.length;return V.workflow==="rooms"&&e>0?Z`
-        <div class="map-dock" data-map-control>
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
             <span>${this.#r("v4_rooms_selected","{count} rooms selected").replace("{count}",String(e))}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${()=>this.#u()}>${this.#r("v4_clear","Clear")}</button>
