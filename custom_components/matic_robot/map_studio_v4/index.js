@@ -1657,7 +1657,7 @@ line-height: var(--ms-lh-snug);
                     </select>
                   </label>
                   <button class="ms-row ms-row--menu" type="button" @click=${()=>this.#T("support")}>${this.#C("v4_map_diagnostics","Map diagnostics")}</button>
-                  <button class="ms-row ms-row--menu" type="button" @click=${()=>this.#T("classic")}>${this.#C("v4_switch_classic","Switch to Map Studio 0.3")}</button>
+                  <button class="ms-row ms-row--menu" type="button" @click=${()=>this.#T("classic")}>${this.#C("v4_switch_classic","Open classic map view")}</button>
                   <button class="ms-row ms-row--menu" type="button" @click=${()=>this.#T("fullscreen")}>${this._browserFullscreen?this.#C("v4_leave_full_screen","Leave full screen"):this.#C("v4_full_screen","Full screen")}</button>
                 </div>
               `:l}
