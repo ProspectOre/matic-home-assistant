@@ -773,8 +773,9 @@ export class EffectController {
     const floor = history.floors.find((candidate) => candidate.id === floorId);
     if (!floor) return;
     const currentState = this.#store.value;
-    if (currentState.draw.dirty
-      && (currentState.workflow === "draw" || currentState.workflow === "areaReview")) return;
+    if ((currentState.workflow === "draw" && currentState.draw.dirty)
+      || (currentState.workflow === "areaReview"
+        && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
     if (floor.active) {
       this.#entryIdentity = "";
       const state = this.#store.value;

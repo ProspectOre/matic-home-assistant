@@ -291,6 +291,8 @@ export const reduceWorkspace = (
           undo: [],
           redo: [],
         }),
+        areaDraft: initialWorkspaceState().areaDraft,
+        selection: { ...state.selection, areaId: null },
         dialog: null,
         workflow: "none",
         precisionOpen: false,

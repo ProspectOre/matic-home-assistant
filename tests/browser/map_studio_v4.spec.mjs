@@ -1146,20 +1146,40 @@ test.describe("Map Studio v0.4 foundation", () => {
     const floor = gallery.getByLabel("Choose floor", { exact: true });
     await floor.selectOption("saved-1");
 
-    await expect(gallery.getByRole("dialog", { name: "Discard this area?" })).toBeVisible();
+    await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toBeVisible();
     expect(await snapshot(page)).toMatchObject({
       dataMode: "live",
       workflow: "draw",
       floor: { readOnly: false },
       draw: { dirty: true },
     });
-    await gallery.getByRole("button", { name: "Keep drawing" }).click();
-    await expect(gallery.getByRole("dialog", { name: "Discard this area?" })).toHaveCount(0);
+    await gallery.getByRole("button", { name: "Keep editing" }).click();
+    await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toHaveCount(0);
     await expect(floor).toHaveValue("current");
     expect(await snapshot(page)).toMatchObject({
       dataMode: "live",
       workflow: "draw",
       draw: { dirty: true },
+    });
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "areaReview",
+        draw: { ...state.draw, dirty: false },
+        areaDraft: { ...state.areaDraft, dirty: true },
+      });
+    }, GALLERY_TAG);
+    await floor.selectOption("saved-1");
+    await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toBeVisible();
+    await gallery.getByRole("button", { name: "Keep editing" }).click();
+    await expect(floor).toHaveValue("current");
+    expect(await snapshot(page)).toMatchObject({
+      dataMode: "live",
+      workflow: "areaReview",
+      areaDraft: { dirty: true },
     });
   });
 

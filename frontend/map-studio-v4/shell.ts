@@ -58,6 +58,10 @@ const workflowTag = unsafeStatic(WORKFLOW_TAG);
 const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
   state.dataMode === "history" || state.floor.readOnly;
 
+const hasUnsavedAreaChanges = (state: WorkspaceState): boolean =>
+  (state.workflow === "draw" && state.draw.dirty)
+  || (state.workflow === "areaReview" && (state.draw.dirty || state.areaDraft.dirty));
+
 interface StatusPresentation {
   readonly title: string;
   readonly detail: string;
@@ -210,9 +214,9 @@ const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize): Dial
   switch (dialog) {
     case "discardDraft":
       return {
-        title: t("v4_discard_area", "Discard this area?"),
-        detail: t("v4_discard_area_detail", "The outline has not been saved. You can keep drawing or discard it."),
-        cancelLabel: t("v4_keep_drawing", "Keep drawing"),
+        title: t("v4_discard_area", "Discard area changes?"),
+        detail: t("v4_discard_area_detail", "Your area changes have not been saved. Keep editing or discard them."),
+        cancelLabel: t("v4_keep_area_editing", "Keep editing"),
         confirmLabel: t("v4_discard", "Discard"),
         action: "discard",
       };
@@ -802,8 +806,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #intent(intent: WorkspaceIntent): void {
     if (intent.type === "set-floor"
-      && this.state.draw.dirty
-      && (this.state.workflow === "draw" || this.state.workflow === "areaReview")) {
+      && hasUnsavedAreaChanges(this.state)) {
       this.#pendingFloorId = intent.floorId;
       this.#pendingWorkflow = null;
       this.#intent({ type: "open-dialog", dialog: "discardDraft" });
@@ -830,8 +833,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #workflow(workflow: Workflow): void {
-    if (this.state.workflow === "draw"
-      && this.state.draw.dirty
+    if (hasUnsavedAreaChanges(this.state)
       && workflow !== "draw"
       && workflow !== "areaReview") {
       this.#pendingWorkflow = workflow;
