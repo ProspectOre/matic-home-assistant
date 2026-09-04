@@ -82,6 +82,7 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 const POSE_POLL_INTERVAL_MS = 1_000;
+const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plan", "draw", "areaReview"];
 
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
@@ -771,6 +772,10 @@ export class EffectController {
     if (!history || !entry) return;
     const floor = history.floors.find((candidate) => candidate.id === floorId);
     if (!floor) return;
+    const currentState = this.#store.value;
+    if ((currentState.workflow === "draw" && (currentState.draw.dirty || currentState.areaDraft.dirty))
+      || (currentState.workflow === "areaReview"
+        && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
     if (floor.active) {
       this.#entryIdentity = "";
       const state = this.#store.value;
@@ -780,6 +785,8 @@ export class EffectController {
           plans: resource("idle", null),
           areas: resource("idle", null),
         },
+        workflow: "none",
+        precisionOpen: false,
       });
       this.#store.dispatch({ type: "set-floor", floorId: "current" });
       await this.refreshCatalog(true);
@@ -814,6 +821,8 @@ export class EffectController {
         plans: resource("idle", null),
         areas: resource("idle", null),
       },
+      workflow: "none",
+      precisionOpen: false,
       map: {
         available: false,
         complete: true,
@@ -894,6 +903,9 @@ export class EffectController {
   }
 
   async openWorkflow(workflow: Workflow): Promise<void> {
+    const state = this.#store.value;
+    if ((state.dataMode === "history" || state.floor.readOnly)
+      && READ_ONLY_WORKFLOWS.includes(workflow)) return;
     const previousWorkflow = this.#store.value.workflow;
     if (workflow === "draw" && previousWorkflow !== "draw" && previousWorkflow !== "areaReview") {
       this.selectArea(null);

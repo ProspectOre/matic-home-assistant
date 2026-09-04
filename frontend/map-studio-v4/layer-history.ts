@@ -29,6 +29,7 @@ export class LayerHistoryController {
   #depth = 0;
   #unsubscribe: (() => void) | null = null;
   #handlingPop = false;
+  #consumingDirectClose = false;
 
   constructor(store: WorkspaceStore) {
     this.#store = store;
@@ -48,6 +49,20 @@ export class LayerHistoryController {
       this.#depth = next;
       return;
     }
+    // Effects can close a workflow while changing floors (for example when a
+    // saved floor becomes read-only). The workflow's history marker still
+    // exists in the browser stack, so consume it before the next Back press;
+    // otherwise Back traverses a stale marker without changing the UI.
+    if (next < this.#depth) {
+      const marker = markerFrom(history.state);
+      if (marker?.owner === this.#owner && marker.depth === this.#depth) {
+        const delta = next - this.#depth;
+        this.#depth = next;
+        this.#consumingDirectClose = true;
+        history.go(delta);
+        return;
+      }
+    }
     if (next > this.#depth) {
       for (let depth = this.#depth + 1; depth <= next; depth += 1) {
         const current = history.state && typeof history.state === "object" ? history.state : {};
@@ -61,6 +76,10 @@ export class LayerHistoryController {
   }
 
   readonly #popState = (): void => {
+    if (this.#consumingDirectClose) {
+      this.#consumingDirectClose = false;
+      return;
+    }
     if (this.#depth < 1) return;
     this.#handlingPop = true;
     this.#store.dispatch({ type: "dismiss-top-layer" });
@@ -82,6 +101,7 @@ export class LayerHistoryController {
     this.#unsubscribe = null;
     window.removeEventListener("popstate", this.#popState);
     this.#depth = 0;
+    this.#consumingDirectClose = false;
   }
 }
 

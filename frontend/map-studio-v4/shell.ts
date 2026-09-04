@@ -55,6 +55,13 @@ const mapCanvasTag = unsafeStatic(MAP_CANVAS_TAG);
 const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 const workflowTag = unsafeStatic(WORKFLOW_TAG);
 
+const isReadOnlyWorkspace = (state: WorkspaceState): boolean =>
+  state.dataMode === "history" || state.floor.readOnly;
+
+const hasUnsavedAreaChanges = (state: WorkspaceState): boolean =>
+  (state.workflow === "draw" && (state.draw.dirty || state.areaDraft.dirty))
+  || (state.workflow === "areaReview" && (state.draw.dirty || state.areaDraft.dirty));
+
 interface StatusPresentation {
   readonly title: string;
   readonly detail: string;
@@ -131,6 +138,12 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "support":
       return { title: t("v4_map_diagnostics", "Map diagnostics"), description: t("v4_map_support_detail", "Private geometry is never included.") };
     case "none":
+      if (isReadOnlyWorkspace(state)) {
+        return {
+          title: t("v4_saved_map_read_only_title", "Saved map is read only"),
+          description: t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
+        };
+      }
       return { title: t("v4_what_to_clean", "What should the robot clean?"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
   }
 };
@@ -201,9 +214,9 @@ const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize): Dial
   switch (dialog) {
     case "discardDraft":
       return {
-        title: t("v4_discard_area", "Discard this area?"),
-        detail: t("v4_discard_area_detail", "The outline has not been saved. You can keep drawing or discard it."),
-        cancelLabel: t("v4_keep_drawing", "Keep drawing"),
+        title: t("v4_discard_area", "Discard area changes?"),
+        detail: t("v4_discard_area_detail", "Your area changes have not been saved. Keep editing or discard them."),
+        cancelLabel: t("v4_keep_area_editing", "Keep editing"),
         confirmLabel: t("v4_discard", "Discard"),
         action: "discard",
       };
@@ -654,6 +667,7 @@ export class MaticMapShellV4 extends LitElement {
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingWorkflow: Workflow | null = null;
+  #pendingFloorId: string | null = null;
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
@@ -751,6 +765,16 @@ export class MaticMapShellV4 extends LitElement {
             ?? this.renderRoot.querySelector<HTMLElement>(".dialog button"))?.focus();
         });
       } else if (previous?.dialog && !this.state.dialog) {
+        if (previous.dialog === "discardDraft") {
+          // Browser Back dismisses the dialog through the layer controller,
+          // bypassing the button/keyboard handler. Clear the pending intent
+          // and restore the native selector so it cannot show a floor that
+          // the store did not select.
+          const restoreFloor = this.#pendingFloorId !== null;
+          this.#pendingWorkflow = null;
+          this.#pendingFloorId = null;
+          if (restoreFloor) this.#restoreFloorSelector();
+        }
         // Safari does not focus a button on a pointing-device click. Use the
         // explicit workflow launcher if there was no nested active element.
         const launcher = this.#dialogLauncher?.isConnected
@@ -791,6 +815,13 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #intent(intent: WorkspaceIntent): void {
+    if (intent.type === "set-floor"
+      && hasUnsavedAreaChanges(this.state)) {
+      this.#pendingFloorId = intent.floorId;
+      this.#pendingWorkflow = null;
+      this.#intent({ type: "open-dialog", dialog: "discardDraft" });
+      return;
+    }
     this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
       detail: intent,
       bubbles: true,
@@ -812,8 +843,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #workflow(workflow: Workflow): void {
-    if (this.state.workflow === "draw"
-      && this.state.draw.dirty
+    if (hasUnsavedAreaChanges(this.state)
       && workflow !== "draw"
       && workflow !== "areaReview") {
       this.#pendingWorkflow = workflow;
@@ -825,16 +855,29 @@ export class MaticMapShellV4 extends LitElement {
 
   #discardAndContinue(): void {
     const pending = this.#pendingWorkflow;
+    const pendingFloorId = this.#pendingFloorId;
     this.#pendingWorkflow = null;
+    this.#pendingFloorId = null;
     this.#intent({ type: "discard-draft" });
     if (pending) {
       queueMicrotask(() => this.#intent({ type: "open-workflow", workflow: pending }));
+    } else if (pendingFloorId) {
+      queueMicrotask(() => this.#intent({ type: "set-floor", floorId: pendingFloorId }));
     }
   }
 
   #keepDraft(): void {
     this.#pendingWorkflow = null;
+    this.#pendingFloorId = null;
     this.#dismissDialog();
+    this.#restoreFloorSelector();
+  }
+
+  #restoreFloorSelector(): void {
+    void this.updateComplete.then(() => {
+      const selector = this.renderRoot.querySelector<HTMLSelectElement>(".floor-switcher");
+      if (selector) selector.value = this.state.selection.floorId;
+    });
   }
 
   #dismissDialog(): void {
@@ -1090,6 +1133,10 @@ export class MaticMapShellV4 extends LitElement {
       this._helpOpen = false;
       return;
     }
+    if (this.state.dialog === "discardDraft") {
+      this.#keepDraft();
+      return;
+    }
     this.#intent({ type: "dismiss-top-layer" });
   }
 
@@ -1177,9 +1224,14 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string) {
+  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string, disabled = false) {
     return html`
-      <button class="ms-row" type="button" @click=${onClick}>
+      <button
+        class="ms-row"
+        type="button"
+        aria-disabled=${disabled ? "true" : nothing}
+        @click=${() => { if (!disabled) onClick(); }}
+      >
         <span class="ms-row__lead">${icon(glyph)}</span>
         <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
         <span class="ms-row__trail">${icon(iconChevronRight)}</span>
@@ -1251,6 +1303,20 @@ export class MaticMapShellV4 extends LitElement {
         <div class="shelf">${historyRow}${diagnosticsRow}</div>
       `;
     }
+    if (isReadOnlyWorkspace(state)) {
+      return html`
+        ${this.#hostState(
+          t("v4_saved_map_read_only_notice", "Cleaning is unavailable on a saved map"),
+          t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
+        )}
+        <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
+        <div class="shelf">
+          ${historyRow}
+          ${diagnosticsRow}
+          ${narrow ? this.#floorSwitcher(state) : nothing}
+        </div>
+      `;
+    }
     const locating = state.coherence === "verifying" || state.coherence === "booting";
     const plansResource = state.resources.plans;
     const plans = plansResource.value;
@@ -1265,6 +1331,9 @@ export class MaticMapShellV4 extends LitElement {
     const planReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
       : null;
+    const customAreaReason = locating
+      ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
+      : t("v4_areas_quick_detail", "Sketch a one-time zone on the map");
     return html`
       ${state.activity === "problem"
         ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
@@ -1316,7 +1385,8 @@ export class MaticMapShellV4 extends LitElement {
           t("v4_custom_areas", "Clean a custom area"),
           iconNewArea,
           () => this.#workflow("draw"),
-          t("v4_areas_quick_detail", "Draw a precise area on the map"),
+          customAreaReason,
+          locating,
         )}
         ${historyRow}
         ${narrow ? this.#floorSwitcher(state) : nothing}
