@@ -2268,13 +2268,15 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await settleSheet(gallery);
 
     // 75px is nowhere near the full detent, but ~1.5 px/ms is a flick.
-    await touchDrag(page, grip, [[160, 20], [160, -5], [160, -30], [160, -55]], { stepMs: 16 });
+    // No spacing between moves: the flick is defined by wall-clock velocity,
+    // and a slow CI runner must not turn it into a drag.
+    await touchDrag(page, grip, [[160, 20], [160, -5], [160, -30], [160, -55]], { stepMs: 0 });
     await expect(sheet).toHaveAttribute("data-detent", "full");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
     // A flick down from full is one step, to half, never straight to peek.
-    await touchDrag(page, grip, [[160, 20], [160, 45], [160, 70], [160, 95]], { stepMs: 16 });
+    await touchDrag(page, grip, [[160, 20], [160, 45], [160, 70], [160, 95]], { stepMs: 0 });
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 

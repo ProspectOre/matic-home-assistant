@@ -154,6 +154,11 @@ const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
 // Faster than this on release and the sheet goes to the next detent in the
 // direction of travel regardless of where the finger let go.
 const FLICK_VELOCITY = 0.5;
+// Velocity is read over the samples from this many ms before release, not
+// from the last pair of pointermoves alone: browsers deliver moves in bursts,
+// and one late frame at the end of a real flick would otherwise read as a
+// slow drag.
+const FLICK_WINDOW_MS = 100;
 const TAP_SLOP = 6;
 const BODY_SWIPE_DISTANCE = 48;
 
@@ -162,9 +167,7 @@ interface SheetDrag {
   readonly startY: number;
   readonly startHeight: number;
   readonly heights: Readonly<Record<SheetDetent, number>>;
-  lastY: number;
-  lastTime: number;
-  velocity: number;
+  samples: { y: number; t: number }[];
   moved: boolean;
 }
 
@@ -899,9 +902,7 @@ export class MaticMapShellV4 extends LitElement {
       startY: event.clientY,
       startHeight: sheet.offsetHeight,
       heights: this.#detentHeights(sheet),
-      lastY: event.clientY,
-      lastTime: event.timeStamp,
-      velocity: 0,
+      samples: [{ y: event.clientY, t: event.timeStamp }],
       moved: false,
     };
     (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
@@ -915,10 +916,8 @@ export class MaticMapShellV4 extends LitElement {
     if (!sheet) return;
     const dy = event.clientY - drag.startY;
     if (!drag.moved && Math.abs(dy) > TAP_SLOP) drag.moved = true;
-    const elapsed = Math.max(1, event.timeStamp - drag.lastTime);
-    drag.velocity = (event.clientY - drag.lastY) / elapsed;
-    drag.lastY = event.clientY;
-    drag.lastTime = event.timeStamp;
+    drag.samples.push({ y: event.clientY, t: event.timeStamp });
+    while (drag.samples.length > 2 && event.timeStamp - (drag.samples[1]?.t ?? 0) > FLICK_WINDOW_MS) drag.samples.shift();
     if (!drag.moved) return;
     // Positive = the sheet moves down. It may not rise above the full detent
     // or sink below peek. Translate, never resize: a height change here would
@@ -945,8 +944,11 @@ export class MaticMapShellV4 extends LitElement {
     }
     const dy = event.clientY - drag.startY;
     const index = DETENTS.indexOf(this._sheetDetent);
-    if (Math.abs(drag.velocity) > FLICK_VELOCITY) {
-      const next = Math.max(0, Math.min(DETENTS.length - 1, index + (drag.velocity < 0 ? 1 : -1)));
+    const first = drag.samples[0];
+    const last = drag.samples[drag.samples.length - 1];
+    const velocity = first && last && last !== first ? (last.y - first.y) / Math.max(1, last.t - first.t) : 0;
+    if (Math.abs(velocity) > FLICK_VELOCITY) {
+      const next = Math.max(0, Math.min(DETENTS.length - 1, index + (velocity < 0 ? 1 : -1)));
       this.#setDetent(DETENTS[next] ?? this._sheetDetent);
       return;
     }
