@@ -825,6 +825,10 @@ export class EffectController {
   }
 
   async openWorkflow(workflow: Workflow): Promise<void> {
+    const previousWorkflow = this.#store.value.workflow;
+    if (workflow === "draw" && previousWorkflow !== "draw" && previousWorkflow !== "areaReview") {
+      this.selectArea(null);
+    }
     this.#store.dispatch({ type: "open-workflow", workflow });
     if (workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "draw" || workflow === "areaReview") await this.loadAreas();
@@ -842,14 +846,22 @@ export class EffectController {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (!currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      const planId = plans.selectedPlan || plans.plans[0]?.id || null;
+      const plan = plans.plans.find((candidate) => candidate.id === planId);
       this.#store.patch({
         resources: { ...this.#store.value.resources, plans: resource("ready", plans) },
         selection: {
           ...this.#store.value.selection,
-          planId: plans.selectedPlan || plans.plans[0]?.id || null,
+          planId,
+        },
+        planDraft: plan ? this.#draftForPlan(plan) : {
+          ...this.#store.value.planDraft,
+          id: null,
+          name: "",
+          rooms: [],
+          dirty: false,
         },
       });
-      this.selectPlan(plans.selectedPlan || plans.plans[0]?.id || null);
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
@@ -914,7 +926,8 @@ export class EffectController {
       this.#store.patch({
         resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
       });
-      this.selectArea(areas.areas[0]?.id || null);
+      const selectedId = this.#store.value.selection.areaId;
+      this.selectArea(areas.areas.some((area) => area.id === selectedId) ? selectedId : null);
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;

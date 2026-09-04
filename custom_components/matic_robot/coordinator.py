@@ -663,7 +663,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     def _device_id(self, serial_number: str) -> str | None:
         """Return the Home Assistant device id for event payloads."""
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, serial_number)})
+        device = registry.async_get_device_by_identifier(
+            (DOMAIN, serial_number), self.config_entry.entry_id
+        )
         return device.id if device is not None else None
 
     def _async_update_device_software(self, version: str, serial_number: str) -> None:
@@ -671,7 +673,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         if version == self._device_software_version:
             return
         registry = dr.async_get(self.hass)
-        device = registry.async_get_device(identifiers={(DOMAIN, serial_number)})
+        device = registry.async_get_device_by_identifier(
+            (DOMAIN, serial_number), self.config_entry.entry_id
+        )
         if device is None:
             return
         registry.async_update_device(device.id, sw_version=version)

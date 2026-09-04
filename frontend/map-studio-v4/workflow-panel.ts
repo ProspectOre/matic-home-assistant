@@ -112,20 +112,52 @@ line-height: var(--ms-lh-snug);
     ` : nothing;
   }
 
+  #resourceCopy(): { readonly loading: string; readonly unavailable: string; readonly empty: string } {
+    switch (this.state.workflow) {
+      case "rooms":
+      case "plan":
+        return {
+          loading: this.#t("v4_loading_rooms_plans", "Loading rooms and plans…"),
+          unavailable: this.#t("v4_rooms_plans_unavailable", "Rooms and plans are unavailable right now."),
+          empty: this.#t("v4_no_rooms_plans", "No rooms or plans are available yet."),
+        };
+      case "draw":
+      case "areaReview":
+        return {
+          loading: this.#t("v4_loading_areas", "Loading saved areas…"),
+          unavailable: this.#t("v4_areas_unavailable", "Saved areas are unavailable right now."),
+          empty: this.#t("v4_no_saved_areas", "No saved areas yet. Draw one on the map."),
+        };
+      case "history":
+        return {
+          loading: this.#t("v4_loading_history", "Loading map history…"),
+          unavailable: this.#t("v4_history_unavailable", "Map history is unavailable right now."),
+          empty: this.#t("v4_no_map_history", "No saved map snapshots yet."),
+        };
+      default:
+        return {
+          loading: this.#t("map_loading", "Loading…"),
+          unavailable: this.#t("v4_workspace_unavailable", "This workspace is unavailable right now."),
+          empty: this.#t("v4_nothing_saved", "Nothing saved yet."),
+        };
+    }
+  }
+
   #resource(status: string, problem: string | null, body: unknown) {
-    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${this.#t("map_loading", "Loading…")}</div>`;
+    const copy = this.#resourceCopy();
+    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${copy.loading}</div>`;
     if (status === "error") {
       const workflow = this.state.workflow;
       return html`
         <div class="stack">
-          <div class="problem" role="alert">${this.#t("v4_workspace_unavailable", "This workspace is unavailable right now.")} ${problem === "request-failed" ? this.#t("v4_try_again", "Try again shortly.") : this.#t("v4_return_live_retry", "Return to the live map and retry.")}</div>
+          <div class="problem" role="alert">${copy.unavailable} ${problem === "request-failed" ? this.#t("v4_try_again", "Try again shortly.") : this.#t("v4_return_live_retry", "Return to the live map and retry.")}</div>
           <div class="toolbar">
             <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow })}>${this.#t("v4_retry", "Try again")}</button>
           </div>
         </div>
       `;
     }
-    if (status === "empty") return html`<div class="empty">${this.#t("v4_nothing_saved", "Nothing saved yet.")}</div>`;
+    if (status === "empty") return html`<div class="empty">${copy.empty}</div>`;
     return body;
   }
 
@@ -242,8 +274,8 @@ line-height: var(--ms-lh-snug);
               .value=${this.state.selection.planId || ""}
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
             >
-              <option value="">${this.#t("plan_new", "New plan")}</option>
-              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
+              <option value="" ?selected=${!this.state.selection.planId}>${this.#t("plan_new", "New plan")}</option>
+              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id} ?selected=${plan.id === this.state.selection.planId}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
             </select>
           </label>
           <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>${icon(iconPlus)}<span class="ms-btn__label">${this.#t("plan_new", "New plan")}</span></button>
@@ -510,24 +542,41 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  #copySummary(): void {
+  #legacyCopy(summary: string): boolean {
+    if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
+    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const textarea = document.createElement("textarea");
+    textarea.value = summary;
+    textarea.readOnly = true;
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.style.cssText = "position:fixed;inset-block-start:-1000px;inline-size:1px;block-size:1px;opacity:0";
+    document.body.append(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, summary.length);
+    try {
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      textarea.remove();
+      active?.focus({ preventScroll: true });
+    }
+  }
+
+  async #copySummary(): Promise<void> {
     const summary = this.#supportRows().map(([label, value]) => `${label}: ${value}`).join("\n");
     const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
-    if (!clipboard || typeof clipboard.writeText !== "function") {
-      this.#setCopyStatus("failed");
-      return;
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(summary);
+        this.#setCopyStatus("copied");
+        return;
+      } catch {
+        // HTTP LAN origins may expose the API but reject writes. Fall through
+        // to the selection-based copy path supported by those browsers.
+      }
     }
-    let pending: Promise<void>;
-    try {
-      pending = clipboard.writeText(summary);
-    } catch {
-      this.#setCopyStatus("failed");
-      return;
-    }
-    pending.then(
-      () => this.#setCopyStatus("copied"),
-      () => this.#setCopyStatus("failed"),
-    );
+    this.#setCopyStatus(this.#legacyCopy(summary) ? "copied" : "failed");
   }
 
   #support() {
@@ -544,7 +593,7 @@ line-height: var(--ms-lh-snug);
           ${rows.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}
         </dl>
         <div class="toolbar">
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#copySummary()}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#copySummary()}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
         </div>
         <p class="copy-status" role="status" aria-live="polite">${copyStatus}</p>
       </div>

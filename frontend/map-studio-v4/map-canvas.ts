@@ -1,7 +1,7 @@
 import { LitElement, css, html, nothing } from "lit";
 import { controls } from "./controls";
 import { renderDrawTools } from "./draw-tools";
-import { icon, iconExitFullMap, iconFit, iconFullMap, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
+import { icon, iconFit, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
 import { RovingFocusController } from "./roving-focus";
 import { readCanvasPalette } from "./theme-probe";
 import { base, tokens } from "./tokens";
@@ -27,14 +27,19 @@ const NAVIGATION_HELP_ID = "navigation-help";
 const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
-  if (!canShowLiveMap(state)) return t("v4_private_map_unavailable", "The current private map is not available.");
   if (state.dataMode === "history") {
+    if (!state.map.available) {
+      return state.resources.scene.status === "loading"
+        ? t("v4_saved_map_loading_description", "The saved map is loading.")
+        : t("v4_saved_map_unavailable_description", "This saved map is unavailable.");
+    }
     return t(
       "v4_saved_map_description",
       "Saved read-only map for {floor}. Live robot position is hidden.",
       { floor: state.floor.displayName },
     );
   }
+  if (!canShowLiveMap(state)) return t("v4_private_map_unavailable", "The current private map is not available.");
   const pose = canShowExactPose(state)
     ? t("v4_robot_position_verified", "The robot position is verified.")
     : t("v4_robot_position_hidden", "The robot position is not shown.");
@@ -50,7 +55,7 @@ export class MaticMapCanvasV4 extends LitElement {
     localize: { attribute: false },
     // Reflected so the stylesheet can anchor the rail with :host([narrow]).
     // On a phone the sheet owns the drawing tools, appearance switch, room
-    // names and help; the map keeps only view, fit and full map.
+    // names and help; the map keeps only view and fit.
     narrow: { type: Boolean, reflect: true },
   };
 
@@ -231,7 +236,6 @@ export class MaticMapCanvasV4 extends LitElement {
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
   narrow = false;
-  #fullMapLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #renderer: RendererController | null = null;
   #gestures: GestureController | null = null;
@@ -239,6 +243,8 @@ export class MaticMapCanvasV4 extends LitElement {
   #focusHelpOnUpdate = false;
   #themeObserver: MutationObserver | null = null;
   #themeQueries: MediaQueryList[] = [];
+  #paletteFrame: number | null = null;
+  #paletteTimer: number | null = null;
 
   constructor() {
     super();
@@ -296,8 +302,8 @@ export class MaticMapCanvasV4 extends LitElement {
       }),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
     });
-    this.#applyPalette();
     this.#renderer.setState(this.state);
+    this.#schedulePalette();
   }
 
   override disconnectedCallback(): void {
@@ -315,25 +321,40 @@ export class MaticMapCanvasV4 extends LitElement {
       this.renderRoot.querySelector<HTMLElement>(".navigation-help button")?.focus();
     }
     if (!changed.has("state")) return;
-    const previous = changed.get("state") as WorkspaceState | undefined;
-    if (previous?.fullMap && !this.state.fullMap && this.#fullMapLauncher) {
-      this.#fullMapLauncher.focus();
-    }
     this.#renderer?.setState(this.state);
   }
 
   // Canvas 2D cannot read CSS custom properties, so the renderer is handed a
-  // palette probed from the design tokens. The probe span lives inside the
-  // shadow root so the --ms-* tokens resolve; it is re-read whenever Home
-  // Assistant rewrites its theme variables on <html>, or the OS flips colour
-  // scheme / forced colours.
+  // palette probed from the design tokens. The read is deferred until after
+  // the next paint: firstUpdated and Home Assistant theme mutations both leave
+  // styles dirty, so reading computed style synchronously there forces a full
+  // layout before the browser can paint. The renderer's matching fallback
+  // palette covers that first frame.
   #applyPalette(): void {
     const root = this.renderRoot?.querySelector<HTMLElement>(".map-root");
     if (!root || !this.#renderer) return;
     this.#renderer.setPalette(readCanvasPalette(root));
   }
 
-  readonly #onThemeChange = (): void => { this.#applyPalette(); };
+  #schedulePalette(): void {
+    this.#cancelScheduledPalette();
+    this.#paletteFrame = window.requestAnimationFrame(() => {
+      this.#paletteFrame = null;
+      this.#paletteTimer = window.setTimeout(() => {
+        this.#paletteTimer = null;
+        this.#applyPalette();
+      }, 0);
+    });
+  }
+
+  #cancelScheduledPalette(): void {
+    if (this.#paletteFrame !== null) window.cancelAnimationFrame(this.#paletteFrame);
+    if (this.#paletteTimer !== null) window.clearTimeout(this.#paletteTimer);
+    this.#paletteFrame = null;
+    this.#paletteTimer = null;
+  }
+
+  readonly #onThemeChange = (): void => { this.#schedulePalette(); };
 
   #watchTheme(): void {
     if (typeof document === "undefined" || this.#themeObserver) return;
@@ -348,6 +369,7 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   #unwatchTheme(): void {
+    this.#cancelScheduledPalette();
     this.#themeObserver?.disconnect();
     this.#themeObserver = null;
     for (const query of this.#themeQueries) query.removeEventListener("change", this.#onThemeChange);
@@ -368,11 +390,6 @@ export class MaticMapCanvasV4 extends LitElement {
       bubbles: true,
       composed: true,
     }));
-  }
-
-  #toggleFullMap(event: Event): void {
-    this.#fullMapLauncher = event.currentTarget as HTMLElement;
-    this.#intent({ type: this.state.fullMap ? "exit-full-map" : "enter-full-map" });
   }
 
   #toggleHelp(event: Event): void {
@@ -435,6 +452,15 @@ export class MaticMapCanvasV4 extends LitElement {
     if (this.state.host.robotCount === 0) {
       return { title: this.#t("v4_no_robot", "No Matic robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
     }
+    if (this.state.dataMode === "history") {
+      if (!this.state.map.available && this.state.resources.scene.status === "loading") {
+        return { title: this.#t("v4_loading_saved_map", "Loading saved map"), detail: this.#t("v4_loading_saved_map_detail", "This read-only snapshot is still preparing.") };
+      }
+      if (!this.state.map.available) {
+        return { title: this.#t("v4_saved_map_unavailable", "Saved map unavailable"), detail: this.#t("v4_saved_map_unavailable_detail", "Choose another snapshot or return to the live map.") };
+      }
+      return null;
+    }
     if (!this.state.host.robotConnected) {
       return { title: this.#t("v4_robot_offline", "Robot offline"), detail: this.#t("v4_robot_offline_detail", "The last verified map stays read only and has no live position.") };
     }
@@ -459,12 +485,12 @@ export class MaticMapCanvasV4 extends LitElement {
     const draw = state.workflow === "draw";
     const helpTitle = this.#t("v4_how_to_move", "How to move the map");
     // Draw forces the top view, so the view, appearance and camera groups are
-    // noise there; the sheet owns the tools on a phone. Both leave the rail
-    // as [Fit] + [Full map].
+    // noise there; the sheet owns the tools on a phone. Both leave only Fit
+    // in the map rail because workspace visibility belongs to the app bar.
     const showView = showScene && !draw;
     const showAppearance = showView && !narrow && state.view === "top";
     const showCamera = showView && state.view === "three";
-    const showTools = !locating || state.fullMap;
+    const showTools = !locating;
     const showExtras = !narrow && !draw;
     if (!showView && !showTools) return nothing;
     return html`
@@ -487,7 +513,7 @@ export class MaticMapCanvasV4 extends LitElement {
         ` : nothing}
 
         ${showAppearance ? html`
-          <div class="appearance-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_style_label", "2D map style")}>
+          <div class="appearance-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_style_label", "Map style")}>
             <button
               class="ms-btn"
               type="button"
@@ -499,7 +525,7 @@ export class MaticMapCanvasV4 extends LitElement {
               type="button"
               aria-pressed=${String(state.appearance === "rooms")}
               @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
-            >${this.#t("map_style_room_colours", "Room colours")}</button>
+            >${this.#t("map_style_room_colours", "Floor plan")}</button>
           </div>
         ` : nothing}
 
@@ -544,14 +570,6 @@ export class MaticMapCanvasV4 extends LitElement {
                 title=${helpTitle}
               >${icon(iconHelp)}</button>
             ` : nothing}
-            <button
-              class="full-map ms-btn"
-              type="button"
-              aria-label=${this.#t("v4_full_map", "Full map")}
-              aria-pressed=${String(state.fullMap)}
-              @click=${this.#toggleFullMap}
-              title=${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}
-            >${icon(state.fullMap ? iconExitFullMap : iconFullMap)}<span class="ms-btn__label">${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}</span></button>
           </div>
         ` : nothing}
 

@@ -49,7 +49,9 @@ async def test_entity_ids_migrate_once_to_descriptive_canonical_names() -> None:
     ]
     registry.async_get.side_effect = [object(), None]
     device_registry = SimpleNamespace(
-        async_get_device=MagicMock(return_value=SimpleNamespace(name="Matic"))
+        async_get_device_by_identifier=MagicMock(
+            return_value=SimpleNamespace(name="Matic")
+        )
     )
     hass = _hass()
     entry = _entry()
@@ -72,6 +74,9 @@ async def test_entity_ids_migrate_once_to_descriptive_canonical_names() -> None:
 
     registry.async_update_entity.assert_called_once_with(
         "vacuum.matic_3", new_entity_id="vacuum.matic"
+    )
+    device_registry.async_get_device_by_identifier.assert_called_once_with(
+        ("matic_robot", "serial"), "entry"
     )
     hass.config_entries.async_update_entry.assert_called_once_with(
         entry, minor_version=2
@@ -96,7 +101,9 @@ async def test_missing_serial_and_device_fall_back_safely() -> None:
     registry = SimpleNamespace(
         async_get=MagicMock(return_value=None), async_update_entity=MagicMock()
     )
-    device_registry = SimpleNamespace(async_get_device=MagicMock(return_value=None))
+    device_registry = SimpleNamespace(
+        async_get_device_by_identifier=MagicMock(return_value=None)
+    )
     hass = _hass()
     entry = _entry()
     entry.data = {}

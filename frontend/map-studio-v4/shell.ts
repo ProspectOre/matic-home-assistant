@@ -29,12 +29,12 @@ import {
   iconDiagnostics,
   iconHistory,
   iconPlan,
-  iconMenu,
   iconNewArea,
   iconOffline,
   iconOverflow,
   iconPaused,
   iconRobot,
+  iconWorkspace,
 } from "./icons";
 import {
   WORKSPACE_ACTION_EVENT,
@@ -435,7 +435,7 @@ export class MaticMapShellV4 extends LitElement {
     .quick-actions .ms-row--featured .ms-row__body small { color: color-mix(in srgb, var(--ms-text-quiet) 70%, var(--ms-text)); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__lead { color: var(--ms-text-disabled); background: color-mix(in srgb, var(--ms-text) 6%, var(--ms-local)); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__body strong { color: var(--ms-text-disabled); }
-    .shelf-heading { margin: var(--ms-space-5) 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-bold); letter-spacing: 0.04em; text-transform: uppercase; }
+    .shelf-heading { margin: var(--ms-space-5) 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
     .host-state { display: grid; gap: var(--ms-space-2); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); }
     .host-state h3 { margin: 0; font-size: var(--ms-t-md); }
     .host-state p { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-sm); line-height: var(--ms-lh-normal); }
@@ -729,6 +729,11 @@ export class MaticMapShellV4 extends LitElement {
       if (previous?.precisionOpen && !this.state.precisionOpen) {
         this.#brushLauncher()?.focus();
       }
+      if (previous?.fullMap && !this.state.fullMap) {
+        void this.updateComplete.then(() => {
+          requestAnimationFrame(() => this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")?.focus({ preventScroll: true }));
+        });
+      }
       if (!previous?.dialog && this.state.dialog) {
         const active = deepActiveElement(this.shadowRoot || document);
         if (active?.hasAttribute("data-dialog-launcher")) this.#dialogLauncher = active;
@@ -995,25 +1000,6 @@ export class MaticMapShellV4 extends LitElement {
 
   // ---- App bar ------------------------------------------------------------
 
-  #navigation(): void {
-    if (this.state.precisionOpen || this.state.fullMap) {
-      this.#intent({ type: "dismiss-top-layer" });
-      return;
-    }
-    if (this.state.workflow !== "none") {
-      this.#workflow("none");
-      return;
-    }
-    this.#toggleNavigation();
-  }
-
-  #toggleNavigation(): void {
-    this.dispatchEvent(new CustomEvent("hass-toggle-menu", {
-      bubbles: true,
-      composed: true,
-    }));
-  }
-
   #closeOverflow(restoreFocus: boolean): void {
     this._overflowOpen = false;
     if (restoreFocus) {
@@ -1170,11 +1156,11 @@ export class MaticMapShellV4 extends LitElement {
     `;
   }
 
-  #shelfRow(label: string, glyph: string, onClick: () => void) {
+  #shelfRow(label: string, glyph: string, onClick: () => void, detail?: string) {
     return html`
       <button class="ms-row" type="button" @click=${onClick}>
         <span class="ms-row__lead">${icon(glyph)}</span>
-        <span class="ms-row__body"><strong>${label}</strong></span>
+        <span class="ms-row__body"><strong>${label}</strong>${detail ? html`<small>${detail}</small>` : nothing}</span>
         <span class="ms-row__trail">${icon(iconChevronRight)}</span>
       </button>
     `;
@@ -1198,6 +1184,7 @@ export class MaticMapShellV4 extends LitElement {
     return html`
       <select
         class="ms-select context-switcher floor-switcher"
+        name="map-floor"
         aria-label=${this.#t("v4_choose_floor", "Choose floor")}
         ?disabled=${floorChoices.length <= 1}
         .value=${state.selection.floorId}
@@ -1214,8 +1201,18 @@ export class MaticMapShellV4 extends LitElement {
   #entry(state: WorkspaceState, narrow: boolean) {
     const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
       this.#t(key, fallback, placeholders);
-    const historyRow = this.#shelfRow(t("v4_map_history", "Map history"), iconHistory, () => this.#workflow("history"));
-    const diagnosticsRow = this.#shelfRow(t("v4_map_diagnostics", "Map diagnostics"), iconDiagnostics, () => this.#workflow("support"));
+    const historyRow = this.#shelfRow(
+      t("v4_map_history", "Map history"),
+      iconHistory,
+      () => this.#workflow("history"),
+      t("v4_map_history_detail", "Saved maps are floor-scoped and read only."),
+    );
+    const diagnosticsRow = this.#shelfRow(
+      t("v4_map_diagnostics", "Map diagnostics"),
+      iconDiagnostics,
+      () => this.#workflow("support"),
+      t("v4_map_support_detail", "Private geometry is never included."),
+    );
     const { host } = state;
     if (!host.connected) return this.#hostState(t("v4_reconnecting_title", "Reconnecting to Home Assistant"), t("v4_reconnecting_body", "The last verified map stays read-only until the connection returns."));
     if (!host.administrator) return this.#hostState(t("v4_admin_title", "Administrator access required"), t("v4_admin_body", "Ask a Home Assistant administrator to open this map."));
@@ -1229,7 +1226,7 @@ export class MaticMapShellV4 extends LitElement {
     if (!host.robotConnected) {
       return html`
         ${this.#hostState(t("v4_robot_offline_title", "Robot offline"), t("v4_robot_offline_body", "Showing the last verified map. Cleaning is unavailable until the robot reconnects."))}
-        <h3 class="shelf-heading">${t("v4_more", "More")}</h3>
+        <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">${historyRow}${diagnosticsRow}</div>
       `;
     }
@@ -1257,8 +1254,8 @@ export class MaticMapShellV4 extends LitElement {
             >
               <span class="ms-row__lead">${icon(iconRobot)}</span>
               <span class="ms-row__body">
-                <strong>${t("v4_clean_rooms", "Clean rooms")}</strong>
-                <small>${roomsReason ?? t("v4_clean_rooms_hint", "Choose rooms on the map and start now")}</small>
+                <strong>${t("v4_clean_rooms", "One-time clean")}</strong>
+                <small>${roomsReason ?? t("v4_clean_rooms_hint", "Choose rooms for this run")}</small>
               </span>
               <span class="ms-row__trail">${icon(iconChevronRight)}</span>
             </button>
@@ -1279,9 +1276,14 @@ export class MaticMapShellV4 extends LitElement {
             </button>
           </div>
         `}
-      <h3 class="shelf-heading">${t("v4_more", "More")}</h3>
+      <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
       <div class="shelf">
-        ${this.#shelfRow(t("v4_custom_areas", "Custom areas"), iconNewArea, () => this.#workflow("draw"))}
+        ${this.#shelfRow(
+          t("v4_custom_areas", "Clean a custom area"),
+          iconNewArea,
+          () => this.#workflow("draw"),
+          t("v4_areas_quick_detail", "Draw a precise area on the map"),
+        )}
         ${historyRow}
         ${narrow ? this.#floorSwitcher(state) : nothing}
       </div>
@@ -1300,7 +1302,7 @@ export class MaticMapShellV4 extends LitElement {
               type="button"
               aria-pressed=${String(state.appearance === "rooms")}
               @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
-            >${t("v4_room_colours", "Room colours")}</button>
+            >${t("v4_room_colours", "Floor plan")}</button>
           </div>
           <label class="ms-checkbox">
             <input type="checkbox" .checked=${state.labelsVisible} @change=${() => this.#intent({ type: "toggle-labels" })}>
@@ -1413,7 +1415,9 @@ export class MaticMapShellV4 extends LitElement {
     const footerSecondary = statusAction && statusAction === secondary ? null : (secondary ?? clearDrawing);
     const locatingInFullMap = state.fullMap
       && (state.coherence === "verifying" || state.coherence === "booting");
-    const navigationBack = state.fullMap || state.precisionOpen;
+    const canToggleWorkspace = state.fullMap || (
+      state.host.administrator && state.host.robotCount > 0 && state.map.available
+    );
     const dialog = dialogCopy(state.dialog, this.localize);
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
@@ -1424,16 +1428,19 @@ export class MaticMapShellV4 extends LitElement {
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToWorkspace}>${this.#t("v4_skip_to_workspace", "Skip to the map workspace")}</button>
         <div class="app" ?inert=${Boolean(dialog) || this._helpOpen}>
           <header class="app-bar">
-            <button
-              class="nav ms-btn ms-btn--icon"
-              type="button"
-              aria-label=${navigationBack ? this.#t("v4_back", "Back") : this.#t("v4_open_navigation", "Open navigation")}
-              @click=${this.#navigation}
-            >${icon(navigationBack ? iconBack : iconMenu)}</button>
+            ${state.precisionOpen ? html`
+              <button
+                class="nav ms-btn ms-btn--icon"
+                type="button"
+                aria-label=${this.#t("v4_back", "Back")}
+                @click=${() => this.#intent({ type: "dismiss-top-layer" })}
+              >${icon(iconBack)}</button>
+            ` : nothing}
             <h1 class="title">${this.#t("map_studio_title", "Matic Map")}</h1>
             ${state.robots.length > 1 ? html`
               <select
                 class="ms-select context-switcher robot-switcher"
+                name="matic-robot"
                 aria-label=${this.#t("v4_choose_robot", "Choose robot")}
                 .value=${state.selection.entryId || ""}
                 @change=${(event: Event) => this.#intent({
@@ -1446,6 +1453,21 @@ export class MaticMapShellV4 extends LitElement {
             ` : nothing}
             ${narrow ? nothing : this.#floorSwitcher(state)}
             <span class="spacer"></span>
+            ${canToggleWorkspace ? html`
+              <button
+                class="workspace-toggle ms-btn ms-btn--icon"
+                type="button"
+                aria-label=${state.fullMap
+                  ? this.#t("v4_show_workspace", "Show workspace")
+                  : this.#t("v4_hide_workspace", "Hide workspace")}
+                aria-controls="map-workspace"
+                aria-expanded=${String(!state.fullMap)}
+                title=${state.fullMap
+                  ? this.#t("v4_show_workspace", "Show workspace")
+                  : this.#t("v4_hide_workspace", "Hide workspace")}
+                @click=${() => this.#intent({ type: state.fullMap ? "exit-full-map" : "enter-full-map" })}
+              >${icon(iconWorkspace)}</button>
+            ` : nothing}
             <div class="overflow-wrap">
               <button
                 class="overflow ms-btn ms-btn--icon"
@@ -1515,6 +1537,7 @@ export class MaticMapShellV4 extends LitElement {
               mode.
             -->
             <aside
+              id="map-workspace"
               class=${narrow ? "inspector mobile-sheet" : "inspector"}
               data-detent=${narrow ? this._sheetDetent : nothing}
               data-workflow=${state.workflow}

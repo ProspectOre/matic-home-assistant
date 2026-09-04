@@ -32,6 +32,7 @@ from custom_components.matic_robot.client.models import (
     RobotTelemetry,
     Room,
 )
+from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.coordinator import MaticCoordinator, MaticCuesEvent
 
 
@@ -938,7 +939,9 @@ async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
         software_version="v168.11", protocol_version=25
     )
     registry = SimpleNamespace(
-        async_get_device=MagicMock(return_value=SimpleNamespace(id="device")),
+        async_get_device_by_identifier=MagicMock(
+            return_value=SimpleNamespace(id="device")
+        ),
         async_update_device=MagicMock(),
     )
     coordinator = _coordinator(hass, client)
@@ -950,4 +953,7 @@ async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
         await coordinator._async_update_data()
         await coordinator._async_update_data()
 
+    registry.async_get_device_by_identifier.assert_called_once_with(
+        (DOMAIN, "synthetic"), "entry"
+    )
     registry.async_update_device.assert_called_once_with("device", sw_version="v168.11")
