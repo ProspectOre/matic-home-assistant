@@ -1246,7 +1246,7 @@ line-height: var(--ms-lh-snug);
 
     .narrow .app { grid-template-rows: 3.35rem minmax(0, 1fr); min-block-size: 28rem; }
     .narrow .workspace { grid-template-columns: minmax(0, 1fr); }
-    .narrow .inspector { display: none; }
+    .narrow .inspector { border-inline-start: 0; }
     .narrow .mobile-sheet {
       position: absolute;
       z-index: 7;
@@ -1413,65 +1413,81 @@ line-height: var(--ms-lh-snug);
               </div>
             `:l}
 
-            <aside class="inspector" aria-label="Map workspace">
-              <div class="status-strip">
-                <span class="status-icon" aria-hidden="true">\u25c6</span>
-                <span><strong>${e.title}</strong><small>${e.detail}</small></span>
-                ${i?s`
-                  <button
-                    class="status-action"
-                    type="button"
-                    ?disabled=${!i.enabled}
-                    title=${i.reason??""}
-                    @click=${()=>this.#s(i)}
-                  >${this.#C("v4_stop","Stop")}</button>
-                `:l}
-              </div>
-              <section class="workflow">
-                <div class="workflow-heading">
-                  ${H.workflow!=="none"?s`
-                    <button
-                      class="workflow-back"
-                      type="button"
-                      aria-label=${this.#C("v4_back","Back")}
-                      @click=${()=>this.#v("none")}
-                    >\u2190</button>
-                  `:l}
-                  <h2 tabindex="-1">${r.title}</h2>
+            <!--
+              One panel element, not two. It is a grid column when wide and a
+              bottom sheet when narrow. Rendering both and hiding one with
+              display:none meant two live workflow panels at all times, which
+              made #dialogLauncherFor pick the hidden copy on narrow -- so
+              cancelling a delete dialog on a phone restored focus to nothing --
+              and left every primary action ambiguous under Playwright's strict
+              mode.
+            -->
+            <aside
+              class=${V?"inspector mobile-sheet":"inspector"}
+              data-detent=${V?this._sheetDetent:l}
+              aria-label="Map workspace"
+            >
+              ${V?s`
+                <button
+                  class="sheet-toggle"
+                  type="button"
+                  aria-label=${this.#C("v4_workspace_height","Map workspace, {height} height",{height:this._sheetDetent})}
+                  aria-expanded=${String(this._sheetDetent!=="peek")}
+                  @click=${this.#f}
+                >
+                  <span class="sheet-handle" aria-hidden="true"></span>
+                  <span class="sheet-title">${r.title}</span>
+                  <span class="sheet-description">${r.description}</span>
+                </button>
+                <div class="sheet-body">
+                  <!--
+                    Draw still omits the body on narrow. Restoring it puts two
+                    "Clear" controls on screen at once -- the map's precision
+                    chip and the panel's own -- so the saved-areas list stays
+                    unreachable here until the sheet's per-workflow content
+                    model decides which surface owns the drawing controls.
+                  -->
+                  ${H.workflow==="draw"?l:this.#S(H)}
                 </div>
-                <p>${r.description}</p>
-                ${this.#S(H)}
                 <div class="primary-stack">
                   ${o?this.#b(o):l}
                   ${a?this.#b(a,"secondary-action"):l}
                 </div>
-              </section>
+              `:s`
+                <div class="status-strip">
+                  <span class="status-icon" aria-hidden="true">\u25c6</span>
+                  <span><strong>${e.title}</strong><small>${e.detail}</small></span>
+                  ${i?s`
+                    <button
+                      class="status-action"
+                      type="button"
+                      ?disabled=${!i.enabled}
+                      title=${i.reason??""}
+                      @click=${()=>this.#s(i)}
+                    >${this.#C("v4_stop","Stop")}</button>
+                  `:l}
+                </div>
+                <section class="workflow">
+                  <div class="workflow-heading">
+                    ${H.workflow!=="none"?s`
+                      <button
+                        class="workflow-back"
+                        type="button"
+                        aria-label=${this.#C("v4_back","Back")}
+                        @click=${()=>this.#v("none")}
+                      >\u2190</button>
+                    `:l}
+                    <h2 tabindex="-1">${r.title}</h2>
+                  </div>
+                  <p>${r.description}</p>
+                  ${this.#S(H)}
+                  <div class="primary-stack">
+                    ${o?this.#b(o):l}
+                    ${a?this.#b(a,"secondary-action"):l}
+                  </div>
+                </section>
+              `}
             </aside>
-
-            <section
-              class="mobile-sheet"
-              data-detent=${this._sheetDetent}
-              aria-label="Map workspace"
-            >
-              <button
-                class="sheet-toggle"
-                type="button"
-                aria-label=${this.#C("v4_workspace_height","Map workspace, {height} height",{height:this._sheetDetent})}
-                aria-expanded=${String(this._sheetDetent!=="peek")}
-                @click=${this.#f}
-              >
-                <span class="sheet-handle" aria-hidden="true"></span>
-                <span class="sheet-title">${r.title}</span>
-                <span class="sheet-description">${r.description}</span>
-              </button>
-              <div class="sheet-body">
-                ${H.workflow==="draw"?l:this.#S(H)}
-              </div>
-              <div class="primary-stack">
-                ${o?this.#b(o):l}
-                ${a?this.#b(a,"secondary-action"):l}
-              </div>
-            </section>
 
             ${H.fullMap?s`
               <section
