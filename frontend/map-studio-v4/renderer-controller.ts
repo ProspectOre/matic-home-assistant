@@ -1,5 +1,6 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
 import type { MapQuality, MapView, WorkspaceState } from "./contracts";
+import { rgba, type CanvasPalette } from "./theme-probe";
 
 export interface MapPoint {
   readonly x: number;
@@ -67,6 +68,18 @@ const qualityScale = (quality: MapQuality): number => {
     case "maximum":
     case "auto": return 1;
   }
+};
+
+// Matches the literal colours the overlay shipped with, so nothing changes
+// until a host wires `readCanvasPalette()` through `setPalette()`.
+const DEFAULT_PALETTE: CanvasPalette = {
+  accent: [6, 120, 206],
+  onAccent: [255, 255, 255],
+  text: [38, 50, 56],
+  quiet: [75, 92, 105],
+  plate: [250, 252, 253],
+  roomFill: [231, 238, 242],
+  forced: false,
 };
 
 const PERSPECTIVE_FIELD_OF_VIEW = Math.PI / 3.15;
@@ -210,6 +223,7 @@ export class RendererController {
   #viewport = { width: 1, height: 1, left: 0, top: 0 };
   #fitActive = true;
   #disposed = false;
+  #palette: CanvasPalette = DEFAULT_PALETTE;
 
   constructor(
     sceneCanvas: HTMLCanvasElement,
@@ -714,6 +728,7 @@ export class RendererController {
     context.setTransform(ratio, 0, 0, ratio, 0, 0);
     context.clearRect(0, 0, bounds.width, bounds.height);
     if (!scene || !state) return;
+    const palette = this.#palette;
     if (this.#mode === "canvas2d" && this.#fallbackCanvas
       && !(state.view === "top" && state.appearance === "rooms")) {
       const zoom = this.#homeTop / this.#camera.distance;
@@ -732,12 +747,12 @@ export class RendererController {
       const occupied: DOMRect[] = [];
       for (const room of scene.metadata.rooms) {
         const selected = selectedNames.has(room.name.toLocaleLowerCase());
-        context.strokeStyle = selected ? "#0678ce" : "rgba(75, 92, 105, .7)";
+        context.strokeStyle = selected ? rgba(palette.accent, 1) : rgba(palette.quiet, .7);
         context.fillStyle = selected
-          ? "rgba(6, 120, 206, .26)"
+          ? rgba(palette.accent, .26)
           : state.view === "top" && state.appearance === "rooms"
-            ? "rgba(231, 238, 242, .94)"
-            : "rgba(255, 255, 255, .04)";
+            ? rgba(palette.roomFill, .94)
+            : rgba(palette.plate, .04);
         context.beginPath();
         const step = Math.max(1, Math.ceil(room.boundary.length / 512));
         let started = false;
@@ -768,16 +783,16 @@ export class RendererController {
           && labelBounds.top < other.bottom + 4
           && labelBounds.bottom + 4 > other.top)) continue;
         occupied.push(labelBounds);
-        context.fillStyle = "rgba(250, 252, 253, .88)";
+        context.fillStyle = rgba(palette.plate, .88);
         context.fillRect(labelBounds.x, labelBounds.y, labelBounds.width, labelBounds.height);
-        context.fillStyle = "#263238";
+        context.fillStyle = rgba(palette.text, 1);
         context.fillText(room.name, center.x, center.y);
       }
     }
     const circles = state.draw.circles;
     if ((state.workflow === "draw" || state.workflow === "areaReview") && circles.length) {
-      context.fillStyle = "rgba(6, 120, 206, .22)";
-      context.strokeStyle = "rgba(6, 120, 206, .92)";
+      context.fillStyle = rgba(palette.accent, .22);
+      context.strokeStyle = rgba(palette.accent, .92);
       context.lineWidth = 1.5;
       for (const circle of circles) this.#drawCircle(context, circle);
     }
@@ -787,7 +802,7 @@ export class RendererController {
       if (center && edge) {
         context.beginPath();
         context.arc(center.x, center.y, Math.max(2, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
-        context.strokeStyle = "#0678ce";
+        context.strokeStyle = rgba(palette.accent, 1);
         context.lineWidth = 2;
         context.stroke();
       }
@@ -801,9 +816,9 @@ export class RendererController {
       if (marker) {
         context.beginPath();
         context.arc(marker.x, marker.y, 7, 0, Math.PI * 2);
-        context.fillStyle = "#0678ce";
+        context.fillStyle = rgba(palette.accent, 1);
         context.fill();
-        context.strokeStyle = "#fff";
+        context.strokeStyle = rgba(palette.onAccent, 1);
         context.lineWidth = 3;
         context.stroke();
       }
@@ -825,6 +840,11 @@ export class RendererController {
     context.arc(center.x, center.y, Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
     context.fill();
     context.stroke();
+  }
+
+  setPalette(palette: CanvasPalette): void {
+    this.#palette = palette;
+    this.requestRender();
   }
 
   setCursor(point: MapPoint | null): void {
