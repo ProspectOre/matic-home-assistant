@@ -1,8 +1,7 @@
-import { LitElement, css, nothing } from "lit";
+import { LitElement, css, html, nothing } from "lit";
 import { controls } from "./controls";
 import { icon, iconCopy } from "./icons";
 import { base, tokens } from "./tokens";
-import { html, unsafeStatic } from "lit/static-html.js";
 
 import type {
   CleaningMode,
@@ -10,9 +9,8 @@ import type {
   PlanRoom,
 } from "./backend-contracts";
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
-import { PRECISION_CONTROLS_TAG, WORKFLOW_TAG } from "./element-tags";
+import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import "./precision-controls";
 import { initialWorkspaceState } from "./state";
 import { translate } from "./localize";
 
@@ -21,7 +19,6 @@ const coverage: readonly CoverageSetting[] = ["quick", "standard", "heavy_duty"]
 
 const eventValue = (event: Event): string => (event.currentTarget as HTMLInputElement).value;
 const eventChecked = (event: Event): boolean => (event.currentTarget as HTMLInputElement).checked;
-const precisionControlsTag = unsafeStatic(PRECISION_CONTROLS_TAG);
 
 export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
@@ -332,16 +329,7 @@ line-height: var(--ms-lh-snug);
     const areas = this.state.resources.areas;
     return html`
       <div class="stack">
-        <${precisionControlsTag} .state=${this.state} .localize=${this.localize}></${precisionControlsTag}>
         <p class="subtle">${this.#t("v4_draw_floor_hint", "Paint only on the mapped floor. Zoom and pan never change the saved outline.")}</p>
-        <div class="toolbar">
-          <button
-            class="ms-btn ms-btn--secondary"
-            type="button"
-            ?disabled=${this.state.draw.circles.length === 0}
-            @click=${() => this.#intent({ type: "clear-draft" })}
-          >${this.#t("clear", "Clear")}</button>
-        </div>
         ${this.#resource(areas.status, areas.problem, html`
           <div class="group">
             <h3 class="group-heading" id="areas-heading">${this.#t("area_workspace_title", "Saved custom areas")}</h3>
