@@ -165,11 +165,11 @@ automatically while mission,
 partition, and nearby-geometry changes still fail closed. An exactly current
 legacy v1 or hash-only v2 binding upgrades to the v3 scoped signature safely at
 integration startup, so an area does not need to be repainted just to migrate.
-Home Assistant raises
-one privacy-safe Repair with only the number of affected areas and directs an
-administrator to **Matic Map → Custom areas**. A same-mission area whose saved
-marks remain valid is shown for review and can be rebound with **Confirm on
-current map** without repainting. A mission or partition change, invalid
+Same-map geometry updates that leave the saved marks valid appear only in
+**Matic Map → Custom areas** for review. They do not raise a global HA Repair
+and remain blocked from cleaning until **Confirm on current map** is used.
+Areas that cannot be reviewed retain one privacy-safe Repair with only their
+count. Confirmation stores a fresh local binding without repainting. A mission or partition change, invalid
 geometry, or marks outside the current floor still requires a redraw; no
 automatic coordinate transform or cross-floor migration is attempted. A
 temporarily unavailable live map reports that condition without creating or

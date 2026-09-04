@@ -1,9 +1,9 @@
 # 0.4 UI quality review
 
-Date: 2026-09-04. Scope: stop-availability follow-up to RC9 (`dc00269`).
-Status: local follow-up; RC9 is installed but has not passed physical acceptance.
+Date: 2026-09-04. Scope: map-review and original-icon follow-up to RC10 (`ebf2a79`).
+Status: local follow-up; RC10 completed one bounded physical room run. Other physical gates remain open.
 Frontend bundle SHA-256:
-`ce99868ce031265868862a738476a0af841969475304a37b0c93ac255bd4725f`.
+`6e164e4dd8c75327e09c96710268986f197257bce9f4653d43c2cabb98747049`.
 
 ## RC9 physical finding
 
@@ -12,9 +12,20 @@ served-bundle parity and clean native readback. A bounded one-time run exposed
 a long-lived service request that hid Stop before acknowledgement. Reloading
 restored Stop; cancellation recorded no completed-room credit. A presence
 automation then started separate work, so it must be isolated for repeat tests.
-The operator confirmed the robot stopped and docked. Full-run acceptance is open.
+The operator confirmed the robot stopped and docked. RC10 subsequently completed
+a bounded room run: immediate Stop visibility, verified map, reopen without
+replay, one native completed room and one matching integration credit; final
+native session, managed work and reconciliation cleared.
 
 ## Changes
+
+- Same-map outlines that can be confirmed remain in the area workspace without
+  a global HA Repair. Invalid/unreviewable areas and changed floor identity keep
+  repairs; all existing cleaning validation remains in force. Reviewable areas
+  show one confirmation instruction instead of simultaneous review/redraw text.
+- Original robot geometry supplies the sidebar and in-page glyph, with a
+  matching vector mark. A small global module registers the icon before the map
+  opens and preserves other integrations' icon namespaces.
 
 - Failed/blocked plan saves preserve edits; successful saves refresh the catalog.
 - Plan and area navigation share draft protection across nested controls,
@@ -71,8 +82,8 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,251 passing tests with 100% coverage (11,394 statements).
-- Follow-up browser suite: 275 passing checks across desktop Chromium/WebKit and mobile
+- Python suite: 1,253 passing tests with 100% coverage (11,402 statements).
+- Follow-up browser suite: 281 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, delayed start/Stop responses, robot switches,
   and action/status visibility regressions. No retries were needed.

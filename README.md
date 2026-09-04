@@ -1,4 +1,4 @@
-<p align="center"><img src="custom_components/matic_robot/brand/logo.svg" alt="" width="140"></p>
+<p align="center"><img src="custom_components/matic_robot/brand/robot-mark.svg" alt="" width="140"></p>
 
 # Matic (Unofficial) for Home Assistant
 

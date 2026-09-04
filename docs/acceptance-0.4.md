@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
-Status: candidate, not stable-release sign-off. Baseline: `v0.4.0-rc9`
-(`dc00269`). Run this checklist against the exact candidate being promoted.
+Status: candidate, not stable-release sign-off. Baseline: `v0.4.0-rc10`
+(`ebf2a79`). Run this checklist against the exact candidate being promoted.
 Automated coverage, browser emulation, and read-only live checks do not prove
 physical cleaning, native assistive technology, or affected reporter hardware.
 
@@ -24,12 +24,12 @@ physical cleaning, native assistive technology, or affected reporter hardware.
 | First map | Live scene, coherent floor identity, verified pose, honest loading/error states | Live read-only check recorded; affected #65 hardware open |
 | Everyday navigation | 2D/3D, room/photo views, back navigation, floor selector, drafts and reopen preserve intent | Automated and live non-motion checks recorded |
 | Saved floor | History is read-only; no live pose or cleaning actions; return restores current-floor controls | Automated and live non-motion checks recorded |
-| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | RC9 interrupted run recorded; completed run and Stop-availability follow-up open |
+| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | RC10 completed one bounded room with Stop immediately available, verified map and reopen without replay |
 | Saved plan | Save/edit/reorder/reload preserves settings; preview matches actual mission legs; no unintended duplicate start | Preview recorded; real multi-leg execution open |
 | Custom area | Create/edit/save/reopen/run matches selected area; stale geometry blocks safely and offers recovery | Automated editing/fail-closed checks; real run open |
 | Immediate stop | Accepted stop settles, replacement work is protected, dock follows idle with native session clear | Regression tests; physical #71 retest open |
 | Finish-current-room | Below threshold stops immediately; exact threshold finishes only current room; next room never starts | Regression tests; physical boundary runs open |
-| Completion credit | Only verified completed rooms gain timestamps/durations; transit, interruption and rejected starts do not | RC9 interruption left completion count and selected room timestamp unchanged; completed-run comparison open |
+| Completion credit | Only verified completed rooms gain timestamps/durations; transit, interruption and rejected starts do not | RC9 interruption gained no completion credit; RC10 native completion gained exactly one credit with cancellations unchanged |
 | Floor round trip | Floor A → B → A localizes; scene, pose, rooms, history and actions agree; no duplicate Repairs | Earlier stable proof exists; fresh 0.4 #54 proof open |
 | Recovery | Disconnect/reconnect, tab reopen and expired auth recover honestly; no stale floor actions or duplicate commands | Non-motion checks recorded; interruption during real run open |
 | Accessibility | Keyboard reaches all actions, focus returns correctly, readable labels and status; usable zoom/touch | Automated/emulated checks; native VoiceOver and real phone/tablet open |

@@ -28,6 +28,10 @@ from .slam_scene import (
 MANIFEST_VERSION = json.loads(
     Path(__file__).with_name("manifest.json").read_text(encoding="utf-8")
 )["version"]
+MATIC_ICONS_VERSION = sha256(
+    Path(__file__).with_name("matic_icons.js").read_bytes()
+).hexdigest()[:12]
+MATIC_ICONS_PATH = f"/matic_robot/{MANIFEST_VERSION}-{MATIC_ICONS_VERSION}/icons.js"
 ROOM_PLAN_EDITOR_VERSION = sha256(
     Path(__file__).with_name("room_plan_editor.js").read_bytes()
 ).hexdigest()[:12]
@@ -90,6 +94,11 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     studio_path = Path(__file__).with_name("matic_map_studio.js")
     await hass.http.async_register_static_paths(
         [
+            StaticPathConfig(
+                MATIC_ICONS_PATH,
+                str(Path(__file__).with_name("matic_icons.js")),
+                cache_headers=True,
+            ),
             StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True),
             StaticPathConfig(
                 MATIC_MAP_STUDIO_PATH, str(studio_path), cache_headers=True
@@ -118,6 +127,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
         ROOM_PLAN_EDITOR_PATH,
     )
     frontend.add_extra_js_url(hass, MATIC_MAP_STUDIO_PATH)
+    frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for config flows and headless installations.
     from homeassistant.components.panel_custom import async_register_panel
 
@@ -127,7 +137,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             frontend_url_path="matic-map",
             webcomponent_name=MATIC_MAP_PANEL_ELEMENT,
             sidebar_title="Matic Map",
-            sidebar_icon="mdi:robot-vacuum",
+            sidebar_icon="matic:robot",
             module_url=MATIC_MAP_STUDIO_V4_PATH,
             require_admin=True,
             handle_safe_area=True,
