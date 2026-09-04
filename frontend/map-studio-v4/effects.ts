@@ -326,6 +326,13 @@ export class EffectController {
             classifiedCount: Math.max(1, selected.historyFloorCount),
           },
         });
+        // The plans endpoint intentionally fails closed while the coordinator
+        // is still revalidating the active floor.  A catalog refresh is the
+        // next authoritative coherence check, so retry that transient result
+        // instead of leaving the workspace stuck on "Plans unavailable".
+        if (coherent && this.#store.value.resources.plans.problem === "map-rechecking") {
+          void this.loadPlans();
+        }
         return;
       }
       this.#entryIdentity = identity;
@@ -442,7 +449,8 @@ export class EffectController {
         map: { ...state.map, available: true },
         notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE ? null : state.notice,
       });
-      if (this.#store.value.resources.plans.status === "idle") {
+      const plans = this.#store.value.resources.plans;
+      if (plans.status === "idle" || plans.problem === "map-rechecking") {
         void this.loadPlans();
       }
       if (entry.deltaUrl) {
@@ -882,10 +890,17 @@ export class EffectController {
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      // A 409 means the coordinator has not finished proving that the
+      // floor-scoped catalog belongs to the current map session.  Keep the
+      // user-facing state recoverable and let the next catalog/scene refresh
+      // retry it; other failures remain actionable errors.
+      const problem = error instanceof BackendError && error.status === 409
+        ? "map-rechecking"
+        : problemCode(error, "plans-unavailable");
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
-          plans: resource("error", null, problemCode(error, "plans-unavailable")),
+          plans: resource("error", null, problem),
         },
       });
     } finally {
