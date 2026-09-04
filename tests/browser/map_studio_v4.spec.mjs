@@ -1406,13 +1406,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await expect(gallery.locator("#sheet-body")).toBeVisible();
 
-    // Each workflow opens at its own default detent: a task performed on the
-    // map starts at peek, a form starts at full.
+    // Room choices are immediately visible; long forms start at full height.
     await page.evaluate(async (tag) => {
       const module = await import("/map_studio_v4/index.js");
       document.querySelector(tag).replaceWorkspaceState(module.createGalleryState("rooms"));
     }, GALLERY_TAG);
-    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    await expect(sheet).toHaveAttribute("data-detent", "half");
+    await expect(gallery.locator("#sheet-body")).toBeVisible();
     await page.evaluate(async (tag) => {
       const module = await import("/map_studio_v4/index.js");
       document.querySelector(tag).replaceWorkspaceState({ ...module.createGalleryState("ready"), workflow: "plan" });
@@ -3959,7 +3959,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     const sheet = gallery.locator(".mobile-sheet");
     const showMore = gallery.getByRole("button", { name: "Show more of the map workspace" });
     await expect(gallery.getByRole("button", { name: "Collapse the map workspace" })).toHaveCount(0);
-    await showMore.click();
+    await expect(sheet).toHaveAttribute("data-detent", "half");
     await showMore.click();
     await expect(sheet).toHaveAttribute("data-detent", "full");
     const scrim = gallery.getByRole("button", { name: "Collapse the map workspace" });

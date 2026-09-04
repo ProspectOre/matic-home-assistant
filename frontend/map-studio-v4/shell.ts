@@ -153,11 +153,11 @@ type SheetDetent = "peek" | "half" | "full";
 const DETENTS: readonly SheetDetent[] = ["peek", "half", "full"];
 
 // Where the sheet rests when a workflow opens. The map is the document, so a
-// task that is mostly performed ON the map (rooms, draw, history) starts at
-// peek; a task that is mostly a form (plan, diagnostics) starts at full.
+// drawing starts at peek; room choices stay visible at half height, while
+// longer forms (plans, diagnostics) start at full height.
 const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
   none: "half",
-  rooms: "peek",
+  rooms: "half",
   draw: "peek",
   plan: "full",
   areaReview: "half",
@@ -902,7 +902,7 @@ export class MaticMapShellV4 extends LitElement {
           floorId: (event.currentTarget as HTMLSelectElement).value,
         })}
       >${floorChoices.map((floor) => html`
-        <option value=${floor.id} ?disabled=${floor.disabled}>${floor.label}</option>
+        <option value=${floor.id} ?selected=${floor.id === state.selection.floorId} ?disabled=${floor.disabled}>${floor.label}</option>
       `)}</select>
     `;
   }
@@ -1078,7 +1078,7 @@ export class MaticMapShellV4 extends LitElement {
             class="panel-back ms-btn ms-btn--secondary"
             type="button"
             aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-            @click=${() => this.#workflow(state.workflow === "areaReview" ? "draw" : "none")}
+            @click=${() => this.#workflow("none")}
           >${icon(iconBack)}<span class="ms-btn__label">${this.#t("v4_all_tasks", "All tasks")}</span></button>
         ` : nothing}
         <h2 tabindex="-1">${workflow.title}</h2>
@@ -1190,7 +1190,7 @@ export class MaticMapShellV4 extends LitElement {
                   entryId: (event.currentTarget as HTMLSelectElement).value,
                 })}
               >${state.robots.map((robot) => html`
-                <option value=${robot.entryId}>${robot.label}</option>
+                <option value=${robot.entryId} ?selected=${robot.entryId === state.selection.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}
             ${narrow ? nothing : this.#floorSwitcher(state)}

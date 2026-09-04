@@ -102,10 +102,11 @@ export class PreferenceStore {
 
   schedule(value: MapPreferences): void {
     if (this.#saveTimer !== null) window.clearTimeout(this.#saveTimer);
+    const key = preferencesKey(this.#userKey);
     this.#saveTimer = window.setTimeout(() => {
       this.#saveTimer = null;
       try {
-        window.localStorage.setItem(preferencesKey(this.#userKey), JSON.stringify(value));
+        window.localStorage.setItem(key, JSON.stringify(value));
       } catch {
         // A full or denied store never changes map safety or availability.
       }

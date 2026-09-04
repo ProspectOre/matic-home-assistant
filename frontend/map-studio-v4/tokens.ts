@@ -27,7 +27,8 @@ export const tokens = css`
 --ms-surface-app: var(--primary-background-color, #f3f6f8);
 --ms-surface-card: var(--card-background-color, #fff);
 --ms-surface-sunken: var(--secondary-background-color, #eef2f4);
---ms-surface-bar: var(--app-header-background-color, var(--card-background-color, #fff));
+--ms-surface-bar: var(--app-header-background-color, var(--ms-surface-card));
+--ms-bar-text: var(--app-header-text-color, var(--ms-text));
 --ms-local: var(--card-background-color, #fff);
 --ms-text: var(--primary-text-color, #1f2933);
 --ms-text-quiet: var(--secondary-text-color, #5b6b75);
@@ -76,6 +77,7 @@ export const tokens = css`
 @media (prefers-color-scheme: dark) {
 :host {
 --ms-accent: var(--primary-color, #58a6e8);
+--ms-on-accent: var(--text-primary-color, #102234);
 --ms-surface-app: var(--primary-background-color, #101a20);
 --ms-surface-card: var(--card-background-color, #1a262d);
 --ms-surface-sunken: var(--secondary-background-color, #141e23);
@@ -107,6 +109,7 @@ export const tokens = css`
 --ms-surface-card: Canvas;
 --ms-surface-sunken: Canvas;
 --ms-surface-bar: Canvas;
+--ms-bar-text: CanvasText;
 --ms-local: Canvas;
 --ms-text: CanvasText;
 --ms-text-quiet: CanvasText;

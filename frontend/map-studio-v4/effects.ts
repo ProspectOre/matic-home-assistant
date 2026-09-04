@@ -22,6 +22,7 @@ import {
   canStartMotion,
   canStopMotion,
   CoherenceMachine,
+  initialWorkspaceState,
   WorkspaceStore,
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
@@ -123,13 +124,9 @@ export class EffectController {
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
-    if (this.#projection && this.#projection.entryKey !== projection.entryKey) {
-      this.#motionRevision += 1;
-      if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
-      this.#settleTimer = null;
-      if (this.#store.value.command === "starting" || this.#store.value.command === "settling") {
-        this.#store.patch({ command: "idle" });
-      }
+    if (this.#projection && (this.#projection.entryKey !== projection.entryKey
+      || this.#projection.userKey !== projection.userKey)) {
+      this.#clearPrivate("context-changed");
     }
     const wasConnected = this.#hostConnected;
     this.#hostConnected = projection.host.connected;
@@ -163,13 +160,13 @@ export class EffectController {
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
       this.#poseQueued = false;
-      const areaMutationPending = this.#controllers.has("area-mutation")
+      const mutationPending = (this.#controllers.has("area-mutation") || this.#controllers.has("plan-mutation"))
         && this.#store.value.command === "pending";
       this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
       this.#store.patch({
-        command: areaMutationPending ? "idle" : state.command,
+        command: mutationPending ? "idle" : state.command,
         coherence: retainedScene ? "degraded" : "unavailable",
         resources: {
           ...state.resources,
@@ -256,11 +253,21 @@ export class EffectController {
   }
 
   #clearPrivate(problem: string): void {
+    this.#motionRevision += 1;
+    if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
+    this.#settleTimer = null;
     this.#abortResources();
     this.#coherence.invalidate();
     this.#entryIdentity = "";
     const state = this.#store.value;
+    const empty = initialWorkspaceState();
     this.#store.patch({
+      command: "idle",
+      workflow: "none",
+      notice: null,
+      draw: empty.draw,
+      planDraft: empty.planDraft,
+      areaDraft: empty.areaDraft,
       generation: this.#coherence.generation,
       coherence: state.host.administrator ? "unavailable" : "blocked",
       fullMap: false,
@@ -282,7 +289,7 @@ export class EffectController {
         exactPose: false,
       },
       selection: {
-        ...state.selection,
+        ...empty.selection,
         entryId: null,
         floorId: "current",
         historyId: null,
@@ -382,7 +389,7 @@ export class EffectController {
         return;
       }
       this.#entryIdentity = identity;
-      this.#beginLiveGeneration(selected);
+      this.#beginLiveGeneration(selected, currentEntry);
     } catch (error) {
       if (isAbort(error)) return;
       this.#store.patch({
@@ -408,9 +415,8 @@ export class EffectController {
     }
   }
 
-  #beginLiveGeneration(entry: MapEntry): void {
+  #beginLiveGeneration(entry: MapEntry, previousEntry: MapEntry | null): void {
     const previousState = this.#store.value;
-    const previousEntry = previousState.resources.entry;
     const sameResourceBoundary = Boolean(previousEntry
       && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
     const coherent = entry.mapFloorCoherent && entry.mapSessionVerified;
@@ -434,9 +440,19 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
+    const resetDrafts = previousEntry !== null && !sameResourceBoundary;
+    const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
     const state = this.#store.value;
     this.#store.patch({
+      ...(resetDrafts ? {
+        command: "idle" as const,
+        workflow: "none" as const,
+        draw: empty.draw,
+        planDraft: empty.planDraft,
+        areaDraft: empty.areaDraft,
+        notice: { tone: "info" as const, text: "The active floor changed. Choose a task on this map." },
+      } : {}),
       managedLock: entryManagedLock(entry),
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
@@ -468,6 +484,7 @@ export class EffectController {
         floorId: "current",
         historyId: null,
         roomIds: sameResourceBoundary ? state.selection.roomIds : [],
+        roomSettings: sameResourceBoundary ? state.selection.roomSettings : [],
         planId: sameResourceBoundary ? state.selection.planId : null,
         areaId: sameResourceBoundary ? state.selection.areaId : null,
       },
@@ -971,7 +988,7 @@ export class EffectController {
     try {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
-      if (!currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       if (this.#store.value.planDraft.dirty) {
         this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
         return;
@@ -994,7 +1011,7 @@ export class EffectController {
       });
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       // The backend labels only floor revalidation conflicts as recoverable.
       // Other conflicts (for example, a valid floor with no rooms) remain
       // actionable errors and must not trigger an unbounded retry loop.
@@ -1056,7 +1073,7 @@ export class EffectController {
     try {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
-      if (!currentEntry
+      if (controller.signal.aborted || this.#disposed || !currentEntry
         || entryBoundaryKey(currentEntry) !== boundary
         || areas.sceneUrl !== currentEntry.sceneUrl) return;
       this.#store.patch({
@@ -1073,7 +1090,7 @@ export class EffectController {
       }
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
-      if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (isAbort(error) || controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
@@ -1126,8 +1143,9 @@ export class EffectController {
     const state = this.#store.value;
     const entry = state.resources.entry;
     const draft = state.areaDraft;
-    if (!entry || !canEditCoordinates(state) || !draft.name.trim() || !state.draw.circles.length) return;
+    if (!entry || state.command === "pending" || !canEditCoordinates(state) || !draft.name.trim() || !state.draw.circles.length) return;
     const controller = this.#controller("area-mutation");
+    const current = (): boolean => !this.#disposed && !controller.signal.aborted;
     this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving area…" } });
     try {
       const id = await this.#backend.saveArea(entry.areasUrl, {
@@ -1137,11 +1155,12 @@ export class EffectController {
         cleaningMode: draft.cleaningMode,
         coverageSetting: draft.coverageSetting,
       }, controller.signal);
+      if (!current()) return;
       this.#store.patch({ command: "idle", notice: { tone: "success", text: "Area saved" } });
       await this.loadAreas();
-      this.selectArea(id);
+      if (current()) this.selectArea(id);
     } catch (error) {
-      if (isAbort(error)) return;
+      if (isAbort(error) || !current()) return;
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be saved" } });
     } finally {
       this.#release("area-mutation", controller);
@@ -1151,14 +1170,17 @@ export class EffectController {
   async deleteArea(): Promise<void> {
     const entry = this.#store.value.resources.entry;
     const areaId = this.#store.value.selection.areaId;
-    if (!entry || !areaId || !canEditCoordinates(this.#store.value)) return;
+    if (!entry || !areaId || this.#store.value.command === "pending" || !canEditCoordinates(this.#store.value)) return;
     const controller = this.#controller("area-mutation");
+    const current = (): boolean => !this.#disposed && !controller.signal.aborted;
+    this.#store.patch({ command: "pending", notice: null });
     try {
       await this.#backend.deleteArea(entry.areasUrl, areaId, controller.signal);
-      this.#store.patch({ notice: { tone: "success", text: "Area deleted" } });
+      if (!current()) return;
+      this.#store.patch({ command: "idle", notice: { tone: "success", text: "Area deleted" } });
       await this.loadAreas();
     } catch (error) {
-      if (!isAbort(error)) this.#store.patch({ notice: { tone: "error", text: "Area could not be deleted" } });
+      if (!isAbort(error) && current()) this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be deleted" } });
     } finally {
       this.#release("area-mutation", controller);
     }
@@ -1176,10 +1198,10 @@ export class EffectController {
       enabled: draft.enabled,
       run_behavior: draft.runBehavior,
       rooms: rooms.map((room) => ({
-        room: plans.rooms.find((candidate) => candidate.roomId === room.roomId)?.name,
+        room: room.roomId,
         cleaning_mode: room.cleaningMode,
         coverage_setting: room.coverageSetting,
-      })).filter((room) => room.room),
+      })),
       return_to_base: draft.returnToBase,
       finish_current_room: draft.finishCurrentRoom,
       finish_current_room_threshold: draft.finishCurrentRoomThreshold,
@@ -1230,13 +1252,12 @@ export class EffectController {
         return;
       }
       case "clean-rooms": {
-        const plans = this.#store.value.resources.plans.value;
         const selected = this.#store.value.selection.roomSettings;
         const rooms = selected.map((room) => ({
-          room: plans?.rooms.find((candidate) => candidate.roomId === room.roomId)?.name,
+          room: room.roomId,
           cleaning_mode: room.cleaningMode,
           coverage_setting: room.coverageSetting,
-        })).filter((room) => room.room);
+        }));
         if (rooms.length) await this.#motion("matic_robot", "clean_room_sequence", {
           rooms,
           return_to_base: true,
@@ -1274,14 +1295,22 @@ export class EffectController {
   ): Promise<boolean> {
     const entityId = this.#projection?.vacuumEntityId;
     if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return false;
+    const controller = this.#controller("plan-mutation");
+    const entryKey = this.#projection?.entryKey;
+    const userKey = this.#projection?.userKey;
+    const current = (): boolean => !this.#disposed && !controller.signal.aborted
+      && entryKey === this.#projection?.entryKey && userKey === this.#projection?.userKey;
     this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving…" } });
     try {
       await this.#backend.service("matic_robot", service, data, entityId);
+      if (!current()) return false;
       this.#store.patch({ command: "idle", notice: { tone: "success", text: success } });
       return true;
     } catch {
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: failure } });
+      if (current()) this.#store.patch({ command: "failed", notice: { tone: "error", text: failure } });
       return false;
+    } finally {
+      this.#release("plan-mutation", controller);
     }
   }
 

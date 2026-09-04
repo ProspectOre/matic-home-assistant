@@ -65,7 +65,7 @@ export class MaticMapCanvasV4 extends LitElement {
       min-width: 0;
       min-height: 0;
       block-size: 100%;
-      color: var(--primary-text-color, #1f2933);
+      color: var(--ms-text);
     }
 
 
@@ -150,7 +150,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .navigation-help h3 { margin: 0; font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
     .navigation-help dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.65rem; margin: 0; }
     .navigation-help dt { font-weight: 750; }
-    .navigation-help dd { margin: 0; color: var(--secondary-text-color, #687984); }
+    .navigation-help dd { margin: 0; color: var(--ms-text-quiet); }
 
     .scene-window {
       position: absolute;
@@ -181,7 +181,7 @@ export class MaticMapCanvasV4 extends LitElement {
       border: 0;
       background: transparent;
       box-shadow: none;
-      color: var(--secondary-text-color, #53636d);
+      color: var(--ms-text-quiet);
       font-size: 0.7rem;
       font-weight: 650;
     }
@@ -202,7 +202,7 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
     .map-message strong { display: block; margin-block-end: 0.35rem; }
-    .map-message span { color: var(--secondary-text-color, #687984); font-size: 0.82rem; }
+    .map-message span { color: var(--ms-text-quiet); font-size: 0.82rem; }
 
     .sr-only {
       position: absolute;
