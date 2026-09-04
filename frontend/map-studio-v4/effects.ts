@@ -101,6 +101,8 @@ export class EffectController {
   #poseTimer: number | null = null;
   #settleTimer: number | null = null;
   #catalogLoading = false;
+  #catalogForceInFlight = false;
+  #catalogRefreshQueued = false;
   #poseLoading = false;
   #poseQueued = false;
   #entryIdentity = "";
@@ -146,12 +148,27 @@ export class EffectController {
     }
     if (!projection.host.connected) {
       this.#stopPolling();
+      this.#catalogRefreshQueued = false;
+      this.#poseQueued = false;
+      const areaMutationPending = this.#controllers.has("area-mutation")
+        && this.#store.value.command === "pending";
+      this.#abortResources();
       const state = this.#store.value;
       const retainedScene = state.resources.scene.value;
       this.#store.patch({
+        command: areaMutationPending ? "idle" : state.command,
         coherence: retainedScene ? "degraded" : "unavailable",
         resources: {
           ...state.resources,
+          catalog: state.resources.catalog.status === "loading"
+            ? resource("idle", state.resources.catalog.value)
+            : state.resources.catalog,
+          plans: state.resources.plans.status === "loading"
+            ? resource("idle", state.resources.plans.value)
+            : state.resources.plans,
+          areas: state.resources.areas.status === "loading"
+            ? resource("idle", state.resources.areas.value)
+            : state.resources.areas,
           pose: resource("idle", null),
         },
         map: {
@@ -261,8 +278,22 @@ export class EffectController {
   }
 
   async refreshCatalog(force = false): Promise<void> {
-    if (this.#disposed || this.#catalogLoading || !this.#projection?.host.administrator) return;
+    if (this.#disposed
+      || !this.#projection?.host.administrator
+      || !this.#projection.host.connected
+      || this.#projection.host.robotCount === 0) return;
+    if (this.#catalogLoading) {
+      if (force && !this.#catalogForceInFlight) {
+        // A robot switch or reconnect must supersede a stale reattach read.
+        // Abort the old request and let its finally block start one forced
+        // refresh after the loading guard has been released.
+        this.#catalogRefreshQueued = true;
+        this.#controllers.get("catalog")?.abort();
+      }
+      return;
+    }
     this.#catalogLoading = true;
+    this.#catalogForceInFlight = force;
     const controller = this.#controller("catalog");
     const previous = this.#store.value.resources.catalog.value;
     this.#store.patch({
@@ -349,6 +380,12 @@ export class EffectController {
     } finally {
       this.#release("catalog", controller);
       this.#catalogLoading = false;
+      const forceQueued = this.#catalogRefreshQueued;
+      this.#catalogForceInFlight = false;
+      if (forceQueued && !this.#disposed) {
+        this.#catalogRefreshQueued = false;
+        void this.refreshCatalog(true);
+      }
     }
   }
 
@@ -633,6 +670,7 @@ export class EffectController {
   }
 
   async #loadPose(entry: MapEntry, stamp: ResourceStamp): Promise<void> {
+    if (this.#disposed || !this.#hostConnected || !this.#projection?.host.connected) return;
     if (this.#poseLoading) {
       this.#poseQueued = true;
       return;
@@ -711,11 +749,18 @@ export class EffectController {
     } finally {
       this.#release("pose", controller);
       this.#poseLoading = false;
-      if (this.#poseQueued && !this.#disposed) {
+      if (this.#poseQueued
+        && !this.#disposed
+        && this.#hostConnected
+        && this.#projection?.host.connected
+        && this.#projection.host.administrator
+        && this.#projection.host.robotCount > 0) {
         this.#poseQueued = false;
         const latestEntry = this.#store.value.resources.entry;
         const latestStamp = this.#coherence.current();
         if (latestEntry && latestStamp) void this.#loadPose(latestEntry, latestStamp);
+      } else {
+        this.#poseQueued = false;
       }
     }
   }

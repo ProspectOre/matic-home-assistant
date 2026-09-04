@@ -98,11 +98,29 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
 
   #startControllers(): void {
     if (this.#effects) return;
+    // A panel can be detached while Home Assistant updates its properties.
+    // Recompute from the current values before deciding whether any private
+    // request is safe; the last projection may still describe a connected
+    // host from before the detach.
+    this.#projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
     this.#backend = new MaticBackend(() => this.hass);
     this.#effects = new EffectController(this.#store, this.#backend);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
-    if (this.#projection) this.#effects.sync(this.#projection, this.panel);
+    if (this.#projection) {
+      this.#effects.sync(this.#projection, this.panel);
+      // A detached panel keeps its last verified workspace state, but its
+      // controllers and authenticated requests are intentionally disposed.
+      // Revalidate the catalog on reattach so a reused DOM node cannot present
+      // stale floor/session metadata as current.
+      const { host } = this.#projection;
+      if (host.connected && host.administrator && host.robotCount > 0) {
+        // Historical floors are read-only and must remain selected while the
+        // catalog is refreshed. The non-forced path updates catalog metadata
+        // but intentionally leaves the history scene and selection untouched.
+        void this.#effects.refreshCatalog(this.#store.value.selection.floorId === "current");
+      }
+    }
   }
 
   #stopControllers(): void {
