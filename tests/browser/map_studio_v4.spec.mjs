@@ -1261,6 +1261,10 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("retries a plan catalog after a transient floor-recheck conflict", async ({ page }) => {
     const scene = syntheticScene("Current room", 18);
     let plansRequests = 0;
+    let releasePlanRecovery = () => {};
+    const planRecovery = new Promise((resolve) => {
+      releasePlanRecovery = resolve;
+    });
     const entry = {
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
@@ -1323,7 +1327,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         floors: [{ id: "current", active: true, read_only: false, live_available: true, snapshots: [] }],
       }),
     }));
-    await page.route("**/api/matic_robot/plans/synthetic-entry", (route) => {
+    await page.route("**/api/matic_robot/plans/synthetic-entry", async (route) => {
       plansRequests += 1;
       if (plansRequests === 1) {
         return route.fulfill({
@@ -1333,6 +1337,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           body: "{}",
         });
       }
+      await planRecovery;
       return route.fulfill({
         status: 200,
         contentType: "application/json",
@@ -1369,6 +1374,9 @@ test.describe("Map Studio v0.4 foundation", () => {
       window.__transientPlansPanel.getWorkspaceSnapshot().resources.plans.problem)).toBe("map-rechecking");
     // The catalog poll is the authoritative next coherence check. It should
     // recover the transient 409 without requiring the user to open the plan.
+    // Hold the recovery response until the intermediate state is observed so
+    // this assertion cannot race the production retry path.
+    releasePlanRecovery();
     await expect.poll(() => plansRequests, { timeout: 8_000 }).toBe(2);
     await expect.poll(async () => page.evaluate(() =>
       window.__transientPlansPanel.getWorkspaceSnapshot().resources.plans.status)).toBe("ready");
