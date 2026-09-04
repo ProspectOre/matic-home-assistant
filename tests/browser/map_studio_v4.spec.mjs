@@ -222,6 +222,67 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
+  test("keeps Stop enabled after failed and accepted starts in every active state and layout", async ({ page }) => {
+    const gallery = await loadGallery(page);
+    for (const command of ["failed", "starting"]) {
+      for (const activity of ["cleaning", "returning", "recharging", "paused"]) {
+        for (const fullMap of [false, true]) {
+          await page.evaluate(({ tag, activity, fullMap, command }) => {
+            const element = document.querySelector(tag);
+            element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), activity, command, fullMap });
+          }, { tag: GALLERY_TAG, activity, fullMap, command });
+          const stop = gallery.getByRole("button", { name: "Stop cleaning", exact: true });
+          await expect(stop).toBeVisible();
+          await expect(stop).not.toHaveAttribute("aria-disabled", "true");
+        }
+      }
+    }
+  });
+  for (const rejected of [false, true]) {
+    for (const managed of [false, true]) {
+      test(`allows ${managed ? "managed" : "direct"} Stop after a ${rejected ? "rejected" : "successful"} start acknowledgement without replaying Start`, async ({ page }) => {
+        await loadEffectHarness(page);
+        const result = await page.evaluate(async ({ managed, rejected }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const calls = [];
+          const effects = new EffectController(store, {
+            catalog: async () => [initial.resources.entry],
+            history: async () => initial.resources.history.value,
+            scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+            pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+            plans: async () => initial.resources.plans.value,
+            service: async (domain, service) => {
+              calls.push(`${domain}.${service}`);
+              if (rejected && calls.length === 1) throw new Error("Acknowledgement lost");
+            },
+            dispose() {},
+          });
+          const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
+          effects.sync(projection);
+          try {
+            await effects.refreshCatalog(true);
+            await effects.executeAction("resume");
+            const failed = store.value.command;
+            effects.sync({ ...projection, activity: "cleaning" });
+            store.patch({ resources: { ...store.value.resources, entry: { ...store.value.resources.entry, activePlan: managed, runnerLocked: managed } } });
+            await effects.executeAction("resume");
+            const host = store.value.host;
+            for (const key of ["connected", "administrator", "robotConnected"]) {
+              store.patch({ host: { ...host, [key]: false } });
+              await effects.executeAction("stop");
+            }
+            store.patch({ host });
+            await effects.executeAction("stop");
+            await effects.executeAction("stop");
+            return { failed, calls, command: store.value.command };
+          } finally { effects.dispose(); }
+        }, { managed, rejected });
+        expect(result).toEqual({ failed: rejected ? "failed" : "starting", calls: ["vacuum.start", managed ? "matic_robot.stop_intelligent_cleaning" : "vacuum.return_to_base"], command: "settling" });
+      });
+    }
+  }
   test("browser Back cancels draft confirmation without leaving the editor", async ({ page }) => {
     await loadEffectHarness(page);
     await page.evaluate(async () => {

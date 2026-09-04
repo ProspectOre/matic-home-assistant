@@ -571,8 +571,14 @@ const disabledAction = (
   reasonKey,
 });
 
+export const canStopMotion = (state: WorkspaceState): boolean =>
+  state.host.connected && state.host.administrator && state.host.robotConnected
+  && (state.command === "idle" || state.command === "failed" || state.command === "starting")
+  && (state.activity === "cleaning" || state.activity === "paused"
+    || state.activity === "returning" || state.activity === "recharging");
+
 const stopAction = (state: WorkspaceState): PrimaryAction => {
-  const enabled = state.command === "idle";
+  const enabled = canStopMotion(state);
   return {
     id: "stop",
     label: "Stop",
@@ -602,6 +608,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_reason_live_map_required",
     );
   }
+  if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
+    return stopAction(state);
+  }
   const editingDraft = (state.workflow === "plan" && state.planDraft.dirty)
     || ((state.workflow === "draw" || state.workflow === "areaReview")
       && (state.draw.dirty || state.areaDraft.dirty));
@@ -616,9 +625,6 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       reasonKey: "v4_recheck_robot_reason",
     };
   }
-  if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
-    return stopAction(state);
-  }
   if (state.activity === "stopping" || state.command === "settling") {
     return disabledAction(
       "stopping",
@@ -627,6 +633,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_action_stopping",
       "v4_reason_stopping",
     );
+  }
+  if (state.command === "starting") {
+    return disabledAction("starting", "Starting", "Waiting for the robot to begin.", "v4_action_starting", "v4_reason_starting");
   }
   if (state.activity === "paused") {
     return {

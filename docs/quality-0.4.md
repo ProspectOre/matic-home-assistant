@@ -3,7 +3,7 @@
 Date: 2026-09-04. Scope: workflow-recovery candidate based on RC8 (`0dbf1ca`).
 Status: software review and local validation; not installed or release-approved.
 Frontend bundle SHA-256:
-`9369ff2f44f9ff8ac52f80308dc3e5b8a840c232be185d378d6444f70882a488`.
+`5c61ee02dae8a6c7e36d14749e89af485e1b342e59f7caae3beea099447d4da9`.
 
 ## Changes
 
@@ -24,6 +24,9 @@ Frontend bundle SHA-256:
 - Unconfirmed actions offer a read-only status recheck. A failed recheck stays
   blocked; a successful recheck never replays the original command. Rechecks
   await overlapping and queued forced catalog reads before clearing failure.
+- Active cleaning, returning and recharge states keep Stop available after an
+  uncertain start. Accepted starts have a separate state that blocks duplicate
+  starts without delaying Stop. UI and service guards share the same rule.
 - Shell styling is separate from interaction logic; shared draft rules keep
   nested navigation and browser history consistent.
 
@@ -46,7 +49,7 @@ status problems; both have dedicated browser regressions.
 ## Validation and limits
 
 - Python suite: 1,240 passing tests with 100% coverage (11,369 statements).
-- Browser suite: 235 passing checks across desktop Chromium/WebKit and mobile
+- Browser suite: 245 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, and action/status visibility regressions.
 - Lifecycle reattachment waits for fresh reads; 20 repeated checks passed.

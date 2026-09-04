@@ -19,6 +19,7 @@ import {
   canEditCoordinates,
   canReadFloorResources,
   canStartMotion,
+  canStopMotion,
   CoherenceMachine,
   WorkspaceStore,
 } from "./state";
@@ -1263,21 +1264,16 @@ export class EffectController {
     const entityId = this.#projection?.vacuumEntityId;
     const stopping = service === "stop_intelligent_cleaning"
       || (domain === "vacuum" && service === "return_to_base");
-    const stopAllowed = stopping
-      && state.command === "idle"
-      && (state.activity === "cleaning"
-        || state.activity === "paused"
-        || state.activity === "returning"
-        || state.activity === "recharging");
-    if (!entityId || (!stopAllowed && !canStartMotion(state))) return;
+    if (!entityId || (stopping ? !canStopMotion(state) : !canStartMotion(state))) return;
     this.#store.patch({ command: "pending", notice: null });
     try {
       await this.#backend.service(domain, service, data, entityId);
-      this.#store.patch({ command: "settling" });
+      const settlingCommand = stopping ? "settling" : "starting";
+      this.#store.patch({ command: settlingCommand });
       if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
       this.#settleTimer = window.setTimeout(() => {
         this.#settleTimer = null;
-        if (this.#store.value.command === "settling") this.#store.patch({ command: "idle" });
+        if (this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
       }, 15_000);
     } catch {
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });

@@ -52,7 +52,7 @@ export type Workflow =
   | "history"
   | "support";
 
-export type CommandState = "idle" | "pending" | "settling" | "failed";
+export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
 export type DrawTool = "paint" | "erase" | "pan";
 export type DialogKind =
   | "discardDraft"
