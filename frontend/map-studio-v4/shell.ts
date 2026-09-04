@@ -858,6 +858,10 @@ export class MaticMapShellV4 extends LitElement {
     this.#pendingWorkflow = null;
     this.#pendingFloorId = null;
     this.#dismissDialog();
+    void this.updateComplete.then(() => {
+      const selector = this.renderRoot.querySelector<HTMLSelectElement>(".floor-switcher");
+      if (selector) selector.value = this.state.selection.floorId;
+    });
   }
 
   #dismissDialog(): void {

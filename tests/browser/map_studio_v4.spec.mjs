@@ -1155,6 +1155,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     await gallery.getByRole("button", { name: "Keep drawing" }).click();
     await expect(gallery.getByRole("dialog", { name: "Discard this area?" })).toHaveCount(0);
+    await expect(floor).toHaveValue("current");
     expect(await snapshot(page)).toMatchObject({
       dataMode: "live",
       workflow: "draw",
