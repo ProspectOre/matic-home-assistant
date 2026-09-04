@@ -442,6 +442,9 @@ export class EffectController {
         map: { ...state.map, available: true },
         notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE ? null : state.notice,
       });
+      if (this.#store.value.resources.plans.status === "idle") {
+        void this.loadPlans();
+      }
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
         void this.#streamDeltas(entry, stamp, response.scene, generation);
@@ -840,6 +843,7 @@ export class EffectController {
   async loadPlans(): Promise<void> {
     const entry = this.#store.value.resources.entry;
     if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
+    if (this.#store.value.resources.plans.status === "loading") return;
     const boundary = entryBoundaryKey(entry);
     const controller = this.#controller("plans");
     this.#store.patch({
