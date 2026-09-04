@@ -63,8 +63,11 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
 
 10. A newly rendered narrow floor selector defaulted to the first option even
     while a saved floor was displayed. Initialize selected options explicitly.
+11. Review found two incomplete floor-change cleanup paths: invalidate motion
+    responses and settle timers, and close old dialogs/precision/full-map layers.
+    Regressions cover late success, late failure, timers and open top layers.
 
-Validation: 1,263 Python tests at 100% coverage; 335 browser checks; strict
+Validation: 1,263 Python tests at 100% coverage; 341 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.

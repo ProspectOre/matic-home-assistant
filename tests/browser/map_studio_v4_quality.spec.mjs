@@ -225,17 +225,17 @@ test("a changed live floor clears the previous floor's drafts and scene", async 
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
     const initial = createGalleryState("draw");
-    const store = new WorkspaceStore(initial);
+    const store = new WorkspaceStore({ ...initial, precisionOpen: true, dialog: "delete-area", fullMap: true });
     const next = { ...initial.resources.entry, selectedFloorOrdinal: 9, mapFloorOrdinal: 9, mapSessionKey: "next-floor" };
     const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
     const effects = new EffectController(store, { catalog: async () => [next], scene: aborted, pose: aborted, history: aborted, plans: aborted, dispose() {} });
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     await effects.refreshCatalog(true);
-    const result = { circles: store.value.draw.circles, planName: store.value.planDraft.name, areaName: store.value.areaDraft.name, scene: store.value.resources.scene.value, rooms: store.value.selection.roomSettings, workflow: store.value.workflow };
+    const result = { circles: store.value.draw.circles, planName: store.value.planDraft.name, areaName: store.value.areaDraft.name, scene: store.value.resources.scene.value, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, precisionOpen: store.value.precisionOpen, dialog: store.value.dialog, fullMap: store.value.fullMap };
     effects.dispose();
     return result;
   });
-  expect(result).toEqual({ circles: [], planName: "", areaName: "", scene: null, rooms: [], workflow: "none" });
+  expect(result).toEqual({ circles: [], planName: "", areaName: "", scene: null, rooms: [], workflow: "none", precisionOpen: false, dialog: null, fullMap: false });
 });
 
 
@@ -250,3 +250,37 @@ test("a newly rendered narrow floor selector matches the saved map", async ({ pa
   });
   await expect(gallery.getByRole("combobox", { name: "Choose floor", exact: true })).toHaveValue("saved-1");
 });
+
+
+for (const outcome of ["success", "failure", "settle-timer"]) {
+  test(`floor change invalidates old motion ${outcome}`, async ({ page }) => {
+    await loadQualityModules(page);
+    await page.clock.install();
+    const result = await page.evaluate(async (outcome) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("draw");
+      const store = new WorkspaceStore(initial);
+      let finish;
+      const next = { ...initial.resources.entry, selectedFloorOrdinal: 9, mapFloorOrdinal: 9, mapSessionKey: "next-floor" };
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, { catalog: async () => [next], scene: aborted, pose: aborted, history: aborted, plans: aborted,
+        service: () => new Promise((resolve, reject) => { finish = () => outcome === "failure" ? reject(new Error("Late failure")) : resolve(); }), dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      const pending = effects.executeAction("run-area");
+      if (outcome === "settle-timer") { finish(); await pending; }
+      await effects.refreshCatalog(true);
+      store.patch({ command: "starting", notice: { tone: "info", text: "New floor action" } });
+      if (outcome !== "settle-timer") { finish(); await pending; }
+      window.qualityMotion = { store, effects };
+      return store.value.command;
+    }, outcome);
+    expect(result).toBe("starting");
+    await page.clock.fastForward(16000);
+    expect(await page.evaluate(() => {
+      const { store, effects } = window.qualityMotion;
+      const result = { command: store.value.command, text: store.value.notice?.text };
+      effects.dispose(); delete window.qualityMotion;
+      return result;
+    })).toEqual({ command: "starting", text: "New floor action" });
+  });
+}

@@ -252,10 +252,14 @@ export class EffectController {
     }
   }
 
-  #clearPrivate(problem: string): void {
+  #invalidateMotion(): void {
     this.#motionRevision += 1;
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
     this.#settleTimer = null;
+  }
+
+  #clearPrivate(problem: string): void {
+    this.#invalidateMotion();
     this.#abortResources();
     this.#coherence.invalidate();
     this.#entryIdentity = "";
@@ -264,6 +268,7 @@ export class EffectController {
     this.#store.patch({
       command: "idle",
       workflow: "none",
+      dialog: null,
       notice: null,
       draw: empty.draw,
       planDraft: empty.planDraft,
@@ -441,6 +446,7 @@ export class EffectController {
       entry.mapRevision,
     );
     const resetDrafts = previousEntry !== null && !sameResourceBoundary;
+    if (resetDrafts) this.#invalidateMotion();
     const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
     const state = this.#store.value;
@@ -448,6 +454,9 @@ export class EffectController {
       ...(resetDrafts ? {
         command: "idle" as const,
         workflow: "none" as const,
+        dialog: null,
+        precisionOpen: false,
+        fullMap: false,
         draw: empty.draw,
         planDraft: empty.planDraft,
         areaDraft: empty.areaDraft,
