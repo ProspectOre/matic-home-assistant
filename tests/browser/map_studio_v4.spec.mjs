@@ -792,7 +792,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(inspector.locator("details")).toHaveCount(0);
     // Completion options now FOLLOW the room list: choose what to clean first,
     // then how the run should end.
-    await expect(inspector.getByRole("heading", { name: "Completion options", level: 3 })).toBeVisible();
+    await expect(inspector.getByRole("heading", { name: "When a run ends", level: 3 })).toBeVisible();
     const options = inspector.locator(".plan-options");
     await expect(options).toHaveAttribute("role", "group");
     expect(await options.evaluate((element) =>

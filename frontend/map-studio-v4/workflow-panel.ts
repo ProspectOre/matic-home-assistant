@@ -28,7 +28,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   };
 
   static override styles = [tokens, base, controls, css`
-:host { display: block; min-inline-size: 0; }
+:host { display: block; min-inline-size: 0; container-type: inline-size; }
 button, select, input[type="checkbox"] { cursor: pointer; }
 .stack { display: grid; gap: var(--ms-space-3); }
 .subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
@@ -55,8 +55,21 @@ line-height: var(--ms-lh-snug);
 .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control-sm); }
 .room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
 .room-settings { padding-block-start: 0.125rem; padding-inline-start: 1.8rem; }
-.plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-2); padding: var(--ms-space-3); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
+.plan-meta { align-items: stretch; }
+.plan-active { min-inline-size: 0; }
+.plan-active .ms-row__body strong { font-size: var(--ms-t-sm); white-space: nowrap; }
+.plan-active .ms-row__body small { max-inline-size: 32ch; }
+.plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-3); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
 .plan-room { display: grid; gap: var(--ms-space-2); }
+.plan-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--ms-space-2); }
+.plan-option input { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
+.plan-option-copy, .plan-threshold-copy { display: grid; gap: var(--ms-space-1); min-inline-size: 0; }
+.plan-option-copy strong, .plan-threshold-copy strong { font-size: var(--ms-t-sm); line-height: var(--ms-lh-snug); }
+.plan-option-copy small, .plan-threshold-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-snug); }
+.plan-threshold { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-1) var(--ms-space-3); align-items: start; }
+.plan-threshold .plan-threshold-copy { grid-column: 1; }
+.plan-threshold .threshold-value { color: var(--ms-text); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
+.plan-threshold > input[type="range"] { grid-column: 1 / -1; inline-size: 100%; min-block-size: var(--ms-control-sm); }
 .toolbar { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); }
 .checkbox { display: flex; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); }
 .checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
@@ -67,6 +80,7 @@ line-height: var(--ms-lh-snug);
 .diagnostics dt { color: var(--ms-text-quiet); }
 .diagnostics dd { margin: 0; font-weight: var(--ms-w-medium); }
 @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
+@container (max-width: 38rem) { .plan-meta { grid-template-columns: 1fr; } }
 `];
 
   state: WorkspaceState = initialWorkspaceState();
@@ -288,8 +302,8 @@ line-height: var(--ms-lh-snug);
             @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { name: eventValue(event) } })}
           >
         </label>
-        <div class="split">
-          <label class="field ms-field">${this.#t("plan_run_behavior", "Run order")}
+        <div class="split plan-meta">
+          <label class="field ms-field">${this.#t("plan_run_behavior", "Cleaning order")}
             <select
               .value=${draft.runBehavior}
               @change=${(event: Event) => this.#intent({
@@ -297,16 +311,16 @@ line-height: var(--ms-lh-snug);
                 patch: { runBehavior: eventValue(event) === "ordered" ? "ordered" : "intelligent" },
               })}
             >
-              <option value="intelligent">${this.#t("plan_intelligent", "Smart rotation")}</option>
-              <option value="ordered">${this.#t("plan_ordered", "Listed order")}</option>
+              <option value="intelligent">${this.#t("plan_intelligent", "Intelligent rotation")}</option>
+              <option value="ordered">${this.#t("plan_ordered", "Saved order")}</option>
             </select>
           </label>
           <div class="ms-row plan-active" data-active=${String(draft.enabled)}>
             <div class="ms-row__body">
-              <strong id="plan-active-title">${this.#t("v4_plan_can_run", "Plan can run")}</strong>
+              <strong id="plan-active-title">${this.#t("v4_plan_can_run", "Plan enabled")}</strong>
               <small id="plan-active-desc">${draft.enabled
-                ? this.#t("v4_plan_can_run_on", "Runs from Run a plan, automations and Home Assistant services.")
-                : this.#t("v4_plan_can_run_off", "Paused. It stays saved, but nothing can start it.")}</small>
+                ? this.#t("v4_plan_can_run_on", "Available from Run a plan, automations, and Home Assistant services.")
+                : this.#t("v4_plan_can_run_off", "Paused. Turn this on to make the plan available.")}</small>
             </div>
             <button
               class="ms-switch"
@@ -351,11 +365,32 @@ line-height: var(--ms-lh-snug);
             `;
           })}
         </div>
-        <h3 class="group-heading" id="completion-heading">${this.#t("v4_completion_options", "Completion options")}</h3>
+        <h3 class="group-heading" id="completion-heading">${this.#t("v4_completion_options", "When a run ends")}</h3>
         <div class="plan-options" role="group" aria-labelledby="completion-heading">
-          <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
-          <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
-          ${draft.finishCurrentRoom ? html`<label class="field ms-field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
+          <label class="plan-option">
+            <input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>
+            <span class="plan-option-copy">
+              <strong>${this.#t("plan_return_to_base", "Return to the dock when finished")}</strong>
+              <small>${this.#t("plan_return_to_base_hint", "After the last selected room, the robot returns to the dock.")}</small>
+            </span>
+          </label>
+          <label class="plan-option">
+            <input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>
+            <span class="plan-option-copy">
+              <strong>${this.#t("plan_finish_room", "Finish the current room after Stop")}</strong>
+              <small>${this.#t("plan_finish_room_hint", "When enough of the room is complete, finish it before docking. Never start another room.")}</small>
+            </span>
+          </label>
+          ${draft.finishCurrentRoom ? html`
+            <label class="plan-threshold ms-field">
+              <span class="plan-threshold-copy">
+                <strong>${this.#t("plan_threshold", "Minimum room progress")}</strong>
+                <small>${this.#t("plan_threshold_hint", "Stop waits for this much progress; below it, the robot stops immediately.")}</small>
+              </span>
+              <span class="threshold-value">${draft.finishCurrentRoomThreshold}%</span>
+              <input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} aria-label=${this.#t("plan_threshold", "Minimum room progress")} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}>
+            </label>
+          ` : nothing}
         </div>
         <div class="toolbar">
           ${draft.id ? html`

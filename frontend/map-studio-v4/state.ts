@@ -689,7 +689,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       ...(!canStartMotion(state)
         ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
         : !state.planDraft.enabled
-          ? { reason: "This plan is paused. Turn on Plan can run to run it.", reasonKey: "v4_reason_run_plan_paused" }
+          ? { reason: "This plan is paused. Enable it to run.", reasonKey: "v4_reason_run_plan_paused" }
           : {}),
     };
   }
