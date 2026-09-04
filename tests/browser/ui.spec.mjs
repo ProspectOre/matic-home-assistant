@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { deflateSync } from "node:zlib";
+import { pointer } from "./touch.mjs";
 
 const ROOMS = [
   {
@@ -169,10 +170,6 @@ async function loadStudio(page, states = {}, { areaEditor = true } = {}) {
     window.__studio = studio;
   }, states);
   return page.locator("matic-map-panel-v0-3-1");
-}
-
-function pointer(type, pointerId, x, y) {
-  return { type, init: { bubbles: true, cancelable: true, pointerId, pointerType: "touch", isPrimary: pointerId === 11, button: 0, clientX: x, clientY: y } };
 }
 
 function syntheticScene(roomName = "Synthetic room", pointX = 10) {
@@ -388,7 +385,7 @@ test.describe("custom-area editor", () => {
     expect(afterWheel[2]).not.toBeCloseTo(afterTrackpad[2], 5);
   });
 
-  test("does not paint when a touch becomes a two-finger map gesture", async ({ page }) => {
+  test("does not paint when a touch becomes a two-finger map gesture @mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const editor = await loadAreaEditor(page);
     await page.evaluate(() => {
@@ -459,7 +456,7 @@ test.describe("custom-area editor", () => {
     expect(await page.evaluate(() => window.__areaEditor.value.length)).toBe(committed);
   });
 
-  test("matches native mobile double-tap zoom, drag zoom, and pan momentum", async ({ page }) => {
+  test("matches native mobile double-tap zoom, drag zoom, and pan momentum @mobile", async ({ page }) => {
     await page.setViewportSize({ width: 390, height: 844 });
     const editor = await loadAreaEditor(page);
     const map = editor.locator(".map");
@@ -2577,7 +2574,7 @@ test.describe("map studio", () => {
     }))).toEqual({ header: 56, menuOpen: false, cameraStepsVisible: false });
   });
 
-  test("keeps mobile maps touch-first and moves area settings into a bottom sheet", async ({ page }) => {
+  test("keeps mobile maps touch-first and moves area settings into a bottom sheet @mobile", async ({ page }) => {
     const sceneUrl = "/api/matic_robot/slam_scene/mobile";
     const areasUrl = "/api/matic_robot/areas/mobile";
     await page.setViewportSize({ width: 390, height: 844 });
