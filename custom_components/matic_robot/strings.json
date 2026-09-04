@@ -328,7 +328,7 @@
     "v4_startup_photo": "Startup photo layer",
     "v4_startup_structure": "Startup structure layer",
     "v4_stop": "Stop",
-    "v4_stop_cleaning": "Stop cleaning",
+    "v4_stop_cleaning": "Stop cleaning?",
     "v4_stop_cleaning_detail": "The robot may take a moment to settle before another action is available.",
     "v4_stopping": "Stopping",
     "v4_stream_failures": "Stream failures",
@@ -336,7 +336,7 @@
     "v4_switch_classic": "Switch to Map Studio 0.3",
     "v4_trackpad": "Trackpad",
     "v4_trackpad_help": "Scroll to pan · pinch to zoom · twist to rotate",
-    "v4_try_again": "Try again",
+    "v4_try_again": "Try again shortly.",
     "v4_unknown": "Unknown",
     "v4_use_classic": "Use classic Map Studio",
     "v4_use_new": "Use Map Studio 0.4",
@@ -434,7 +434,10 @@
     "map_view_top": "2D",
     "map_viewport_aria": "Interactive Matic 3D map",
     "map_viewport_aria_rooms": "Matic labeled room map",
-    "map_viewport_aria_top": "Interactive top-down Matic map"
+    "map_viewport_aria_top": "Interactive top-down Matic map",
+    "v4_stop_cleaning_label": "Stop cleaning",
+    "v4_retry": "Try again",
+    "v4_copy_failed": "The summary could not be copied. Select the text to copy it by hand."
   },
   "config": {
     "abort": {
