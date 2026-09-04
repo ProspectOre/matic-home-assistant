@@ -1119,6 +1119,10 @@ export class MaticMapShellV4 extends LitElement {
       this._helpOpen = false;
       return;
     }
+    if (this.state.dialog === "discardDraft") {
+      this.#keepDraft();
+      return;
+    }
     this.#intent({ type: "dismiss-top-layer" });
   }
 

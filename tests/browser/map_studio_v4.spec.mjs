@@ -1153,7 +1153,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       floor: { readOnly: false },
       draw: { dirty: true },
     });
-    await gallery.getByRole("button", { name: "Keep editing" }).click();
+    await gallery.getByRole("dialog", { name: "Discard area changes?" }).press("Escape");
     await expect(gallery.getByRole("dialog", { name: "Discard area changes?" })).toHaveCount(0);
     await expect(floor).toHaveValue("current");
     expect(await snapshot(page)).toMatchObject({
