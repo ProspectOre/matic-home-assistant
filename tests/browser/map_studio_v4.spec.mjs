@@ -1671,7 +1671,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     const menu = gallery.locator("#map-options");
     await expect(menu).not.toHaveAttribute("role", /menu/);
     await expect(menu.getByRole("menuitem")).toHaveCount(0);
-    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Switch to Map Studio 0.3", "Full screen"]);
+    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Open classic map view", "Full screen"]);
     await menu.getByRole("button", { name: "Full screen", exact: true }).click();
     expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
   });
