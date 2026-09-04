@@ -11,6 +11,7 @@ import {
   mdiChevronDown,
   mdiChevronRight,
   mdiChevronUp,
+  mdiCircleOutline,
   mdiContentCopy,
   mdiCursorMove,
   mdiDotsVertical,
@@ -59,6 +60,7 @@ export const iconOrbitRight = mdiRotateRight;
 export const iconUndo = mdiUndo;
 export const iconRedo = mdiRedo;
 export const iconPaint = mdiBrush;
+export const iconBrush = mdiCircleOutline;
 export const iconErase = mdiEraser;
 export const iconMoveMap = mdiCursorMove;
 export const iconDone = mdiCheck;
