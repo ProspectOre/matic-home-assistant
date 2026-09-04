@@ -143,6 +143,221 @@ test.describe("Map Studio v0.4 foundation", () => {
       .toBe(true);
   });
 
+  test("disposes polling on unload and reattaches with fresh controllers", async ({ page }) => {
+    const scene = syntheticScene("Room", 10);
+    let catalogRequests = 0;
+    let sceneRequests = 0;
+    let poseRequests = 0;
+    const entry = {
+      entry_id: "synthetic-entry",
+      scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
+      pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
+      history_url: "/api/matic_robot/slam_history/synthetic-entry",
+      areas_url: "/api/matic_robot/areas/synthetic-entry",
+      plans_url: "/api/matic_robot/plans/synthetic-entry",
+      map_revision: 1,
+      map_floor_coherent: true,
+      map_session_verified: true,
+      map_session_key: "a".repeat(64),
+      runner_locked: false,
+      stop_settle_pending: false,
+      active_plan: false,
+      native_reconciliation_pending: false,
+      native_session_active: false,
+      map_complete: true,
+      map_truncated: false,
+      selected_floor_ordinal: 1,
+      map_floor_ordinal: 1,
+      history_count: 0,
+      history_floor_count: 1,
+      map_health: "ready",
+      stream_state: "connected",
+      stream_failures: 0,
+    };
+    await page.route("**/api/matic_robot/slam_entries", (route) => {
+      catalogRequests += 1;
+      return route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({ entries: [entry] }),
+      });
+    });
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", (route) => {
+      sceneRequests += 1;
+      return route.fulfill({
+        status: 200,
+        body: scene,
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Revision": "1",
+          "X-Matic-Floor-Coherent": "1",
+        },
+      });
+    });
+    await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => {
+      poseRequests += 1;
+      // Keep the first request open long enough for the one-second polling
+      // tick to queue a retry. Removing the panel must abort that request and
+      // clear the queued retry instead of issuing a pose read while detached.
+      const response = {
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          position: null,
+          source: "current_area",
+          revision: 1,
+          pose_revision: poseRequests,
+          map_floor_coherent: true,
+          pose_freshness: "live",
+          map_session_key: "a".repeat(64),
+        }),
+      };
+      if (poseRequests === 1) {
+        return new Promise((resolve) => {
+          setTimeout(() => {
+            void route.fulfill(response).catch(() => {});
+            resolve();
+          }, 1_500);
+        });
+      }
+      return route.fulfill(response);
+    });
+    await page.route("**/api/matic_robot/slam_history/synthetic-entry", (route) => route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        entry_id: "synthetic-entry",
+        live_available: true,
+        floors: [
+          { id: "current", active: true, read_only: false, live_available: true, snapshots: [] },
+          {
+            id: "saved-floor",
+            active: false,
+            read_only: true,
+            live_available: false,
+            label: "Saved floor",
+            ordinal: 2,
+            snapshots: [{
+              id: "saved-snapshot",
+              created_at: "2026-08-29T14:00:00Z",
+              revision: 1,
+              point_count: 4,
+              scene_url: "/synthetic-history-saved",
+            }],
+          },
+        ],
+      }),
+    }));
+    await page.route("**/synthetic-history-saved", (route) => route.fulfill({
+      status: 200,
+      body: scene,
+      headers: {
+        "Content-Type": "application/vnd.matic.slam-scene",
+        "X-Matic-Revision": "1",
+        "X-Matic-Floor-Coherent": "1",
+      },
+    }));
+
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async () => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "synthetic-user", is_admin: true },
+        states: {
+          "vacuum.synthetic": {
+            state: "docked",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+          },
+        },
+        fetchWithAuth: (path, init) => fetch(path, init),
+      };
+      document.body.append(panel);
+      window.__lifecyclePanel = panel;
+    });
+
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__lifecyclePanel.getWorkspaceSnapshot();
+      return { coherence: state.coherence, scene: state.resources.scene.status };
+    })).toEqual({ coherence: "current", scene: "ready" });
+    const mounted = { catalogRequests, sceneRequests, poseRequests };
+
+    await page.evaluate(() => window.__lifecyclePanel.remove());
+    // Allow disconnectedCallback to abort the current requests and clear both
+    // polling timers before checking that detached panels stay completely quiet.
+    await page.waitForTimeout(1_200);
+    const detached = { catalogRequests, sceneRequests, poseRequests };
+    expect(detached).toEqual(mounted);
+
+    await page.evaluate(() => document.body.append(window.__lifecyclePanel));
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__lifecyclePanel.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        scene: state.resources.scene.status,
+      };
+    })).toMatchObject({ coherence: "current", scene: "ready" });
+    const reattached = { catalogRequests, sceneRequests, poseRequests };
+    expect(reattached.catalogRequests).toBeGreaterThan(mounted.catalogRequests);
+    expect(reattached.sceneRequests).toBeGreaterThan(mounted.sceneRequests);
+    expect(reattached.poseRequests).toBeGreaterThan(mounted.poseRequests);
+
+    await page.evaluate(() => {
+      const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: { type: "set-floor", floorId: "saved-floor" },
+        bubbles: true,
+        composed: true,
+      }));
+    });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__lifecyclePanel.getWorkspaceSnapshot();
+      return {
+        dataMode: state.dataMode,
+        floorId: state.selection.floorId,
+        scene: state.resources.scene.status,
+      };
+    })).toEqual({ dataMode: "history", floorId: "saved-floor", scene: "ready" });
+    const historical = { catalogRequests, sceneRequests, poseRequests };
+    await page.evaluate(() => window.__lifecyclePanel.remove());
+    await page.waitForTimeout(1_200);
+    expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(historical);
+    await page.evaluate(() => document.body.append(window.__lifecyclePanel));
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__lifecyclePanel.getWorkspaceSnapshot();
+      return {
+        dataMode: state.dataMode,
+        floorId: state.selection.floorId,
+        scene: state.resources.scene.status,
+      };
+    })).toEqual({ dataMode: "history", floorId: "saved-floor", scene: "ready" });
+    expect(catalogRequests).toBeGreaterThan(historical.catalogRequests);
+    expect(sceneRequests).toBe(historical.sceneRequests);
+    expect(poseRequests).toBe(historical.poseRequests);
+
+    await page.evaluate(() => window.__lifecyclePanel.remove());
+    const beforeOfflineReattach = { catalogRequests, sceneRequests, poseRequests };
+    // Update the HA projection while the element is detached, then reattach it
+    // synchronously so connectedCallback must use current properties rather
+    // than the stale connected projection from its previous mount.
+    await page.evaluate(() => {
+      const panel = window.__lifecyclePanel;
+      panel.hass = { ...panel.hass, connected: false };
+      document.body.append(panel);
+    });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__lifecyclePanel.getWorkspaceSnapshot();
+      return { connected: state.host.connected, coherence: state.coherence };
+    })).toEqual({ connected: false, coherence: "degraded" });
+    await page.waitForTimeout(1_200);
+    expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(beforeOfflineReattach);
+    await page.evaluate(() => window.__lifecyclePanel.remove());
+  });
+
   test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     const overlay = gallery.locator("matic-map-canvas-v4 .overlay-canvas");
@@ -2135,7 +2350,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     releaseHeldFullScene();
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().resources.scene.value?.revision)).toBe(3);
+    const requestsBeforeSessionChange = poseRequests;
     poseSessionKey = "b".repeat(64);
+    await expect.poll(() => poseRequests, { timeout: 5_000 })
+      .toBeGreaterThan(requestsBeforeSessionChange);
     await expect.poll(async () => page.evaluate(() =>
       window.__deltaPanel.getWorkspaceSnapshot().map.exactPose), { timeout: 5_000 }).toBe(false);
     await page.evaluate(() => window.__deltaPanel.remove());
