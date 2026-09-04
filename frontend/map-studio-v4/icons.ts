@@ -15,10 +15,9 @@ import {
   mdiContentCopy,
   mdiCursorMove,
   mdiDotsVertical,
+  mdiDockRight,
   mdiEraser,
   mdiFormatText,
-  mdiFullscreen,
-  mdiFullscreenExit,
   mdiHelpCircleOutline,
   mdiHistory,
   mdiInformationOutline,
@@ -44,9 +43,10 @@ import {
 // Sourced from @mdi/js at build time instead of pasted here, so the geometry is
 // the canonical shape and a typo cannot silently render a wrong glyph. The
 // dependency is dev-only; the bundle inlines just the paths named above.
-export const iconMenu = mdiMenu;
 export const iconBack = mdiArrowLeft;
 export const iconOverflow = mdiDotsVertical;
+export const iconMenu = mdiMenu;
+export const iconWorkspace = mdiDockRight;
 export const iconChevronRight = mdiChevronRight;
 export const iconChevronUp = mdiChevronUp;
 export const iconChevronDown = mdiChevronDown;
@@ -55,8 +55,6 @@ export const iconTiltDown = mdiChevronDown;
 export const iconFit = mdiArrowExpandAll;
 export const iconRoomNames = mdiFormatText;
 export const iconHelp = mdiHelpCircleOutline;
-export const iconFullMap = mdiFullscreen;
-export const iconExitFullMap = mdiFullscreenExit;
 export const iconOrbitLeft = mdiRotateLeft;
 export const iconOrbitRight = mdiRotateRight;
 export const iconUndo = mdiUndo;

@@ -34,7 +34,9 @@ def _async_migrate_entity_ids(hass: HomeAssistant, entry: ConfigEntry) -> None:
     serial_number = entry.data.get(CONF_SERIAL_NUMBER)
     if serial_number is None:
         return
-    device = dr.async_get(hass).async_get_device(identifiers={(DOMAIN, serial_number)})
+    device = dr.async_get(hass).async_get_device_by_identifier(
+        (DOMAIN, serial_number), entry.entry_id
+    )
     device_name = (device.name if device is not None else None) or "Matic"
     registry = er.async_get(hass)
     prefix = f"{serial_number}_"

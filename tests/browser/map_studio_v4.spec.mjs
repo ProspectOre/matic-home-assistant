@@ -251,7 +251,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
 
     await gallery.getByRole("button", { name: "2D", exact: true }).click();
-    await gallery.getByRole("button", { name: "Room colours", exact: true }).click();
+    await gallery.getByRole("button", { name: "Floor plan", exact: true }).click();
     await gallery.getByRole("button", { name: "Room names", exact: true }).click();
     // Double-click the scene itself: the map root now also hosts the control
     // rail and dock, so its centre is not guaranteed to be bare map.
@@ -335,7 +335,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   });
 
-  test("dismisses dialog, precision, Full map, and workflow one layer at a time", async ({ page }) => {
+  test("dismisses dialog, precision, expanded map, and workflow one layer at a time", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
       const module = await import("/map_studio_v4/index.js");
@@ -394,6 +394,46 @@ test.describe("Map Studio v0.4 foundation", () => {
       closedWorkflow: "none",
       closedHistory: "saved-map",
     });
+  });
+
+  test("describes saved maps as saved and gives history-specific recovery copy", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "history" });
+    const scene = gallery.locator("matic-map-canvas-v4 .scene-window");
+    await expect(scene).toHaveAttribute(
+      "aria-label",
+      "Saved read-only map for House. Live robot position is hidden.",
+    );
+    await expect(gallery.getByText("The current private map is not available.", { exact: true })).toHaveCount(0);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        map: { ...state.map, available: false },
+        resources: {
+          ...state.resources,
+          scene: { ...state.resources.scene, status: "loading", value: null, problem: null },
+        },
+      });
+    }, GALLERY_TAG);
+    await expect(gallery.locator(".map-message")).toContainText("Loading saved map");
+    await expect(scene).toHaveAttribute("aria-label", "The saved map is loading.");
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          scene: { ...state.resources.scene, status: "error", value: null, problem: "request-failed" },
+        },
+      });
+    }, GALLERY_TAG);
+    await expect(gallery.locator(".map-message")).toContainText("Saved map unavailable");
+    await expect(gallery.locator(".map-message")).toContainText("Choose another snapshot or return to the live map.");
+    await expect(scene).toHaveAttribute("aria-label", "This saved map is unavailable.");
   });
 
   test("uses accessible peek, half, and full mobile sheet detents", async ({ page }) => {
@@ -503,7 +543,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(deletePlan).toBeFocused();
   });
 
-  test("preserves Draw state through Full map and restores focus in Escape order", async ({ page }) => {
+  test("preserves Draw state through the workspace toggle and restores focus in Escape order", async ({ page }) => {
     await page.setViewportSize({ width: 1180, height: 760 });
     const gallery = await loadGallery(page, { scenario: "draw" });
     // Precision is a brush popover opened from the dock's Brush button; the
@@ -526,16 +566,18 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect.poll(async () => (await snapshot(page)).precisionOpen).toBe(false);
     await expect(gallery.getByRole("button", { name: /^Brush width, 0\.20 m/ })).toBeFocused();
 
-    const fullMap = gallery.getByRole("button", { name: "Full map" });
-    await fullMap.click();
+    const workspaceToggle = gallery.locator(".workspace-toggle");
+    await expect(workspaceToggle).toHaveAccessibleName("Hide workspace");
+    await workspaceToggle.click();
     await expect.poll(async () => (await snapshot(page)).fullMap).toBe(true);
     await expect(gallery.locator(".inspector")).toBeHidden();
+    await expect(workspaceToggle).toHaveAccessibleName("Show workspace");
     const precision = gallery.getByRole("button", { name: /^Brush width, 0\.20 m/ });
     await expect(precision).toBeVisible();
     await precision.click();
     await expect.poll(async () => (await snapshot(page)).precisionOpen).toBe(true);
 
-    // Escape order: brush field -> Brush button -> Full map.
+    // Escape order: brush field -> Brush button -> expanded map.
     await gallery.getByLabel("Brush width in meters").press("Escape");
     await expect.poll(async () => (await snapshot(page)).precisionOpen).toBe(false);
     await expect.poll(async () => (await snapshot(page)).fullMap).toBe(true);
@@ -548,7 +590,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       dirty: true,
       strokeCount: 3,
     });
-    await expect(fullMap).toBeFocused();
+    await expect(workspaceToggle).toBeFocused();
   });
 
   test("owns trackpad pinch over the map and keeps focal zoom bounded", async ({ page }) => {
@@ -722,7 +764,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps workflow navigation and Stop together in the inspector", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "cleaning" });
-    await gallery.getByRole("button", { name: /^Clean rooms/ }).click();
+    await gallery.getByRole("button", { name: /^One-time clean/ }).click();
     const inspector = gallery.locator(".inspector");
     await expect(inspector.getByRole("button", { name: "Back to all tasks" })).toBeVisible();
     await expect(inspector.getByRole("button", { name: "Back to all tasks" })).toHaveText("All tasks");
@@ -750,7 +792,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(inspector.locator("details")).toHaveCount(0);
     // Completion options now FOLLOW the room list: choose what to clean first,
     // then how the run should end.
-    await expect(inspector.getByRole("heading", { name: "Completion options", level: 3 })).toBeVisible();
+    await expect(inspector.getByRole("heading", { name: "When a run ends", level: 3 })).toBeVisible();
     const options = inspector.locator(".plan-options");
     await expect(options).toHaveAttribute("role", "group");
     expect(await options.evaluate((element) =>
@@ -758,9 +800,255 @@ test.describe("Map Studio v0.4 foundation", () => {
     )).toBe(true);
   });
 
-  test("keeps Stop reachable while paused and strips transition Full map to safety controls", async ({ page }) => {
+  test("keeps the saved-plan selector aligned with the loaded draft", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    const selector = gallery.getByLabel("Saved plan");
+    await expect(selector).toHaveValue("daily");
+    await expect(selector.locator("option:checked")).toHaveText("Daily clean");
+    await expect(selector.locator('option[value="daily"]')).toHaveAttribute("selected", "");
+
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const element = document.querySelector(tag);
+      const current = element.getWorkspaceSnapshot();
+      const ready = module.createGalleryState("ready");
+      element.replaceWorkspaceState({
+        ...current,
+        resources: {
+          ...current.resources,
+          plans: { status: "loading", value: null, problem: null },
+        },
+      });
+      await element.updateComplete;
+      element.replaceWorkspaceState({
+        ...current,
+        resources: { ...current.resources, plans: ready.resources.plans },
+      });
+    }, GALLERY_TAG);
+    await expect(selector).toHaveValue("daily");
+    await expect(selector.locator("option:checked")).toHaveText("Daily clean");
+  });
+
+  test("uses task-specific loading, empty, and error messages", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "plan",
+        resources: { ...state.resources, plans: { status: "loading", value: null, problem: null } },
+      });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "draw",
+        resources: { ...state.resources, areas: { status: "empty", value: null, problem: null } },
+      });
+    }, GALLERY_TAG);
+    await expect(gallery.getByText("No saved areas yet. Draw one on the map.", { exact: true })).toBeVisible();
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "history",
+        resources: { ...state.resources, history: { status: "error", value: null, problem: "request-failed" } },
+      });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("alert")).toContainText("Map history is unavailable right now. Try again shortly.");
+  });
+
+  test("falls back to selection copy when the Clipboard API rejects an HTTP origin", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, workflow: "support" });
+      Object.defineProperty(navigator, "clipboard", {
+        configurable: true,
+        value: { writeText: () => Promise.reject(new DOMException("denied", "NotAllowedError")) },
+      });
+      window.__legacyCopies = [];
+      document.execCommand = (command) => {
+        const textarea = document.querySelector('textarea[aria-hidden="true"]');
+        window.__legacyCopies.push({ command, value: textarea?.value || "" });
+        return command === "copy";
+      };
+    }, GALLERY_TAG);
+    const copyButton = gallery.getByRole("button", { name: "Copy summary" });
+    await copyButton.click();
+    await expect(gallery.getByRole("status")).toHaveText("Copied");
+    await expect(copyButton).toBeFocused();
+    expect(await page.evaluate(() => window.__legacyCopies)).toEqual([{
+      command: "copy",
+      value: expect.stringContaining("Connection: Connected"),
+    }]);
+    expect(await page.evaluate(() => ({
+      temporaryTextareas: document.querySelectorAll('textarea[aria-hidden="true"]').length,
+      containsPrivateNames: window.__legacyCopies[0].value.includes("House")
+        || window.__legacyCopies[0].value.includes("Kitchen"),
+    }))).toEqual({ temporaryTextareas: 0, containsPrivateNames: false });
+  });
+
+  test("opens Custom areas on a blank draft and preserves only an explicit edit", async ({ page }) => {
+    const scene = syntheticScene("Room", 10);
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async (sceneBytes) => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const entry = {
+        entry_id: "synthetic-entry",
+        scene_url: "/api/matic_robot/slam_scene/synthetic-entry",
+        pose_url: "/api/matic_robot/slam_pose/synthetic-entry",
+        history_url: "/api/matic_robot/slam_history/synthetic-entry",
+        areas_url: "/api/matic_robot/areas/synthetic-entry",
+        plans_url: "/api/matic_robot/plans/synthetic-entry",
+        map_revision: 1,
+        map_floor_coherent: true,
+        map_session_verified: true,
+        map_session_key: "a".repeat(64),
+        runner_locked: false,
+        stop_settle_pending: false,
+        active_plan: false,
+        native_reconciliation_pending: false,
+        native_session_active: false,
+        map_complete: true,
+        map_truncated: false,
+        selected_floor_ordinal: 1,
+        map_floor_ordinal: 1,
+        history_count: 0,
+        history_floor_count: 1,
+        map_health: "ready",
+        stream_state: "connected",
+        stream_failures: 0,
+      };
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "synthetic-user", is_admin: true },
+        states: {
+          "vacuum.synthetic": {
+            state: "docked",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+          },
+        },
+        fetchWithAuth: async (path) => {
+          if (path === "/api/matic_robot/slam_entries") {
+            return new Response(JSON.stringify({ entries: [entry] }), {
+              status: 200,
+              headers: { "Content-Type": "application/json" },
+            });
+          }
+          if (path === entry.scene_url) {
+            return new Response(new Uint8Array(sceneBytes), {
+              status: 200,
+              headers: {
+                "Content-Type": "application/vnd.matic.slam-scene",
+                "X-Matic-Revision": "1",
+                "X-Matic-Floor-Coherent": "1",
+              },
+            });
+          }
+          if (path === entry.pose_url) {
+            return new Response(JSON.stringify({
+              position: null,
+              source: "current_area",
+              revision: 1,
+              pose_revision: 1,
+              map_floor_coherent: true,
+              pose_freshness: "live",
+              map_session_key: "a".repeat(64),
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+          if (path === entry.history_url) {
+            return new Response(JSON.stringify({
+              entry_id: "synthetic-entry",
+              live_available: true,
+              floors: [{ id: "current", active: true, read_only: false, live_available: true, snapshots: [] }],
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+          if (path === entry.areas_url) {
+            return new Response(JSON.stringify({
+              scene_url: entry.scene_url,
+              rooms: [{
+                room_id: "room-1",
+                name: "Room",
+                boundary: [[0, 0], [4, 0], [4, 4], [0, 4]],
+              }],
+              areas: [{
+                id: "saved-area",
+                name: "Saved area",
+                circles: [{ x: 1, y: 1, radius: 0.3 }],
+                cleaning_mode: "vacuum",
+                coverage_setting: "standard",
+                status: "current",
+                can_rebind: false,
+              }],
+            }), { status: 200, headers: { "Content-Type": "application/json" } });
+          }
+          return new Response("", { status: 404 });
+        },
+      };
+      document.body.append(panel);
+      window.__areaPanel = panel;
+    }, [...scene]);
+    await expect.poll(async () => page.evaluate(() =>
+      window.__areaPanel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+
+    const dispatch = (detail) => page.evaluate((intent) => {
+      const shell = window.__areaPanel.shadowRoot.querySelector("matic-map-shell-v4");
+      shell.dispatchEvent(new CustomEvent("matic-workspace-intent", {
+        detail: intent,
+        bubbles: true,
+        composed: true,
+      }));
+    }, detail);
+
+    await dispatch({ type: "open-workflow", workflow: "draw" });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__areaPanel.getWorkspaceSnapshot();
+      return {
+        status: state.resources.areas.status,
+        areaId: state.selection.areaId,
+        circles: state.draw.circles.length,
+      };
+    })).toEqual({ status: "ready", areaId: null, circles: 0 });
+
+    await dispatch({ type: "select-area", areaId: "saved-area" });
+    await dispatch({ type: "open-workflow", workflow: "areaReview" });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__areaPanel.getWorkspaceSnapshot();
+      return { workflow: state.workflow, areaId: state.selection.areaId, circles: state.draw.circles.length };
+    })).toEqual({ workflow: "areaReview", areaId: "saved-area", circles: 1 });
+
+    await dispatch({ type: "open-workflow", workflow: "draw" });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__areaPanel.getWorkspaceSnapshot();
+      return { workflow: state.workflow, areaId: state.selection.areaId, circles: state.draw.circles.length };
+    })).toEqual({ workflow: "draw", areaId: "saved-area", circles: 1 });
+
+    await dispatch({ type: "open-workflow", workflow: "none" });
+    await dispatch({ type: "open-workflow", workflow: "draw" });
+    await expect.poll(async () => page.evaluate(() => {
+      const state = window.__areaPanel.getWorkspaceSnapshot();
+      return { workflow: state.workflow, areaId: state.selection.areaId, circles: state.draw.circles.length };
+    })).toEqual({ workflow: "draw", areaId: null, circles: 0 });
+    await page.evaluate(() => window.__areaPanel.remove());
+  });
+
+  test("keeps Stop reachable while paused and strips transition expanded map to safety controls", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "paused" });
-    await gallery.getByRole("button", { name: "Full map" }).click();
+    await gallery.getByRole("button", { name: "Hide workspace" }).click();
     await expect(gallery.getByRole("button", { name: "Resume cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
 
@@ -773,8 +1061,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }, GALLERY_TAG);
     await expect.poll(async () => (await snapshot(page)).fullMap).toBe(true);
-    await expect(gallery.locator(".map-tools button")).toHaveCount(1);
-    await expect(gallery.getByRole("button", { name: "Full map" })).toHaveText("Exit full map");
+    await expect(gallery.locator(".map-tools button")).toHaveCount(0);
+    await expect(gallery.getByRole("button", { name: "Show workspace" })).toBeVisible();
     await expect(gallery.locator(".full-map-hud")).toContainText("Locating");
     await expect(gallery.locator(".map-message")).toHaveCount(0);
   });
@@ -876,13 +1164,13 @@ test.describe("Map Studio v0.4 foundation", () => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await gallery.getByRole("complementary", { name: "Map workspace" })
-      .getByRole("button", { name: /^Clean rooms Choose rooms on the map and start now/ }).click();
+      .getByRole("button", { name: /^One-time clean Choose rooms for this run/ }).click();
     await gallery.getByRole("button", { name: "2D", exact: true }).click();
-    const appearance = gallery.getByRole("group", { name: "2D map style" });
-    await expect(appearance.getByRole("button")).toHaveText(["Photo", "Room colours"]);
-    await appearance.getByRole("button", { name: "Room colours", exact: true }).click();
+    const appearance = gallery.getByRole("group", { name: "Map style" });
+    await expect(appearance.getByRole("button")).toHaveText(["Photo", "Floor plan"]);
+    await appearance.getByRole("button", { name: "Floor plan", exact: true }).click();
     await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
-    await expect(appearance.getByRole("button", { name: "Room colours" })).toHaveAttribute("aria-pressed", "true");
+    await expect(appearance.getByRole("button", { name: "Floor plan" })).toHaveAttribute("aria-pressed", "true");
 
     const options = gallery.getByRole("button", { name: "Map options" });
     await expect(options).toHaveAttribute("aria-controls", "map-options");
@@ -902,24 +1190,36 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
+    const navigation = gallery.getByRole("button", { name: "Open navigation" });
+    await expect(navigation).toBeVisible();
+    await page.evaluate((tag) => {
+      window.__navigationToggles = 0;
+      document.querySelector(tag).addEventListener("hass-toggle-menu", () => {
+        window.__navigationToggles += 1;
+      });
+    }, GALLERY_TAG);
+    await navigation.click();
+    expect(await page.evaluate(() => window.__navigationToggles)).toBe(1);
+
     await expect(gallery.getByRole("heading", { name: "What should the robot clean?", level: 2 })).toBeVisible();
     await expect(gallery.getByLabel("Choose robot")).toHaveCount(0);
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeVisible();
+    await expect(gallery.getByLabel("Choose floor", { exact: true })).toHaveAttribute("name", "map-floor");
     await expect(gallery.getByLabel("Choose floor", { exact: true })).toBeEnabled();
     await expect(gallery.getByLabel("Choose floor", { exact: true }).locator("option"))
       .toHaveText(["House", "Shed", "Annex · Visit floor to capture"]);
     await expect(gallery.getByLabel("Choose floor", { exact: true }).locator('option[value="saved-2"]'))
       .toBeDisabled();
-    // Two featured choices, then a "More" shelf. The entry never offers a
+    // Two featured choices, then a plainly named map-tools shelf. The entry never offers a
     // phantom "Run this plan" before a plan has been chosen.
     const quick = gallery.locator(".quick-actions").getByRole("button");
     await expect(quick).toHaveCount(2);
-    await expect(quick.nth(0)).toHaveAccessibleName(/^Clean rooms Choose rooms on the map and start now/);
+    await expect(quick.nth(0)).toHaveAccessibleName(/^One-time clean Choose rooms for this run/);
     await expect(quick.nth(0)).toHaveClass(/ms-row--featured/);
     await expect(quick.nth(1)).toHaveAccessibleName(/^Run a plan (1 saved routine|\d+ saved routines)/);
-    await expect(gallery.getByRole("heading", { name: "More", level: 3 })).toBeVisible();
-    await expect(gallery.locator(".shelf").getByRole("button", { name: "Custom areas" })).toBeVisible();
-    await expect(gallery.locator(".shelf").getByRole("button", { name: "Map history" })).toBeVisible();
+    await expect(gallery.getByRole("heading", { name: "Map tools", level: 3 })).toBeVisible();
+    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Clean a custom area Draw a precise area on the map/ })).toBeVisible();
+    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Map history Saved maps are floor-scoped and read only/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run plan", exact: true })).toHaveCount(0);
 
@@ -928,7 +1228,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await gallery.getByLabel("Choose floor", { exact: true }).selectOption("current");
     await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("current");
 
-    await gallery.getByRole("button", { name: /^Clean rooms Choose rooms on the map and start now/ }).click();
+    await gallery.getByRole("button", { name: /^One-time clean Choose rooms for this run/ }).click();
     await expect(gallery.getByRole("heading", { name: "Choose rooms" })).toBeVisible();
     // Disabled actions stay focusable and explain themselves: aria-disabled
     // plus an aria-describedby reason, which is stronger than `disabled`.
@@ -1313,6 +1613,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const strings = {
         map_studio_title: "Mapa Matic",
         v4_how_to_move: "Cómo mover el mapa",
+        v4_hide_workspace: "Ocultar espacio de trabajo",
         v4_trackpad: "Panel táctil",
         v4_trackpad_help: "Desplázate para mover · pellizca para ampliar · gira para rotar",
         v4_clean_rooms: "Limpiar habitaciones",
@@ -1323,7 +1624,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       shell.requestUpdate();
     });
     await expect(gallery.getByRole("heading", { name: "Mapa Matic" })).toBeVisible();
-    await expect(gallery.getByRole("button", { name: "Full map" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Ocultar espacio de trabajo" })).toBeVisible();
     const help = gallery.getByRole("button", { name: "Cómo mover el mapa" });
     await help.click();
     await expect(gallery.getByRole("dialog", { name: "Cómo mover el mapa" }))

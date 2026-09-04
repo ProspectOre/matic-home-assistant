@@ -28,7 +28,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   };
 
   static override styles = [tokens, base, controls, css`
-:host { display: block; min-inline-size: 0; }
+:host { display: block; min-inline-size: 0; container-type: inline-size; }
 button, select, input[type="checkbox"] { cursor: pointer; }
 .stack { display: grid; gap: var(--ms-space-3); }
 .subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
@@ -55,8 +55,21 @@ line-height: var(--ms-lh-snug);
 .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control-sm); }
 .room-choice input { inline-size: 1.2rem; block-size: 1.2rem; }
 .room-settings { padding-block-start: 0.125rem; padding-inline-start: 1.8rem; }
-.plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-2); padding: var(--ms-space-3); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
+.plan-meta { align-items: stretch; }
+.plan-active { min-inline-size: 0; }
+.plan-active .ms-row__body strong { font-size: var(--ms-t-sm); white-space: nowrap; }
+.plan-active .ms-row__body small { max-inline-size: 32ch; }
+.plan-options { --ms-local: var(--ms-surface-sunken); display: grid; gap: var(--ms-space-3); padding: var(--ms-space-4); border: 1px solid var(--ms-line); border-radius: var(--ms-radius-md); background: var(--ms-local); }
 .plan-room { display: grid; gap: var(--ms-space-2); }
+.plan-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--ms-space-2); }
+.plan-option input { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
+.plan-option-copy, .plan-threshold-copy { display: grid; gap: var(--ms-space-1); min-inline-size: 0; }
+.plan-option-copy strong, .plan-threshold-copy strong { font-size: var(--ms-t-sm); line-height: var(--ms-lh-snug); }
+.plan-option-copy small, .plan-threshold-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-snug); }
+.plan-threshold { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-1) var(--ms-space-3); align-items: start; }
+.plan-threshold .plan-threshold-copy { grid-column: 1; }
+.plan-threshold .threshold-value { color: var(--ms-text); font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
+.plan-threshold > input[type="range"] { grid-column: 1 / -1; inline-size: 100%; min-block-size: var(--ms-control-sm); }
 .toolbar { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); }
 .checkbox { display: flex; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); }
 .checkbox input { inline-size: 1.2rem; block-size: 1.2rem; }
@@ -67,6 +80,7 @@ line-height: var(--ms-lh-snug);
 .diagnostics dt { color: var(--ms-text-quiet); }
 .diagnostics dd { margin: 0; font-weight: var(--ms-w-medium); }
 @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
+@container (max-width: 38rem) { .plan-meta { grid-template-columns: 1fr; } }
 `];
 
   state: WorkspaceState = initialWorkspaceState();
@@ -112,20 +126,52 @@ line-height: var(--ms-lh-snug);
     ` : nothing;
   }
 
+  #resourceCopy(): { readonly loading: string; readonly unavailable: string; readonly empty: string } {
+    switch (this.state.workflow) {
+      case "rooms":
+      case "plan":
+        return {
+          loading: this.#t("v4_loading_rooms_plans", "Loading rooms and plans…"),
+          unavailable: this.#t("v4_rooms_plans_unavailable", "Rooms and plans are unavailable right now."),
+          empty: this.#t("v4_no_rooms_plans", "No rooms or plans are available yet."),
+        };
+      case "draw":
+      case "areaReview":
+        return {
+          loading: this.#t("v4_loading_areas", "Loading saved areas…"),
+          unavailable: this.#t("v4_areas_unavailable", "Saved areas are unavailable right now."),
+          empty: this.#t("v4_no_saved_areas", "No saved areas yet. Draw one on the map."),
+        };
+      case "history":
+        return {
+          loading: this.#t("v4_loading_history", "Loading map history…"),
+          unavailable: this.#t("v4_history_unavailable", "Map history is unavailable right now."),
+          empty: this.#t("v4_no_map_history", "No saved map snapshots yet."),
+        };
+      default:
+        return {
+          loading: this.#t("map_loading", "Loading…"),
+          unavailable: this.#t("v4_workspace_unavailable", "This workspace is unavailable right now."),
+          empty: this.#t("v4_nothing_saved", "Nothing saved yet."),
+        };
+    }
+  }
+
   #resource(status: string, problem: string | null, body: unknown) {
-    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${this.#t("map_loading", "Loading…")}</div>`;
+    const copy = this.#resourceCopy();
+    if (status === "loading" || status === "idle") return html`<div class="loading" role="status">${copy.loading}</div>`;
     if (status === "error") {
       const workflow = this.state.workflow;
       return html`
         <div class="stack">
-          <div class="problem" role="alert">${this.#t("v4_workspace_unavailable", "This workspace is unavailable right now.")} ${problem === "request-failed" ? this.#t("v4_try_again", "Try again shortly.") : this.#t("v4_return_live_retry", "Return to the live map and retry.")}</div>
+          <div class="problem" role="alert">${copy.unavailable} ${problem === "request-failed" ? this.#t("v4_try_again", "Try again shortly.") : this.#t("v4_return_live_retry", "Return to the live map and retry.")}</div>
           <div class="toolbar">
             <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow })}>${this.#t("v4_retry", "Try again")}</button>
           </div>
         </div>
       `;
     }
-    if (status === "empty") return html`<div class="empty">${this.#t("v4_nothing_saved", "Nothing saved yet.")}</div>`;
+    if (status === "empty") return html`<div class="empty">${copy.empty}</div>`;
     return body;
   }
 
@@ -242,8 +288,8 @@ line-height: var(--ms-lh-snug);
               .value=${this.state.selection.planId || ""}
               @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
             >
-              <option value="">${this.#t("plan_new", "New plan")}</option>
-              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
+              <option value="" ?selected=${!this.state.selection.planId}>${this.#t("plan_new", "New plan")}</option>
+              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id} ?selected=${plan.id === this.state.selection.planId}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
             </select>
           </label>
           <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>${icon(iconPlus)}<span class="ms-btn__label">${this.#t("plan_new", "New plan")}</span></button>
@@ -256,8 +302,8 @@ line-height: var(--ms-lh-snug);
             @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { name: eventValue(event) } })}
           >
         </label>
-        <div class="split">
-          <label class="field ms-field">${this.#t("plan_run_behavior", "Run order")}
+        <div class="split plan-meta">
+          <label class="field ms-field">${this.#t("plan_run_behavior", "Cleaning order")}
             <select
               .value=${draft.runBehavior}
               @change=${(event: Event) => this.#intent({
@@ -265,16 +311,16 @@ line-height: var(--ms-lh-snug);
                 patch: { runBehavior: eventValue(event) === "ordered" ? "ordered" : "intelligent" },
               })}
             >
-              <option value="intelligent">${this.#t("plan_intelligent", "Smart rotation")}</option>
-              <option value="ordered">${this.#t("plan_ordered", "Listed order")}</option>
+              <option value="intelligent">${this.#t("plan_intelligent", "Intelligent rotation")}</option>
+              <option value="ordered">${this.#t("plan_ordered", "Saved order")}</option>
             </select>
           </label>
           <div class="ms-row plan-active" data-active=${String(draft.enabled)}>
             <div class="ms-row__body">
-              <strong id="plan-active-title">${this.#t("v4_plan_can_run", "Plan can run")}</strong>
+              <strong id="plan-active-title">${this.#t("v4_plan_can_run", "Plan enabled")}</strong>
               <small id="plan-active-desc">${draft.enabled
-                ? this.#t("v4_plan_can_run_on", "Runs from Run a plan, automations and Home Assistant services.")
-                : this.#t("v4_plan_can_run_off", "Paused. It stays saved, but nothing can start it.")}</small>
+                ? this.#t("v4_plan_can_run_on", "Available from Run a plan, automations, and Home Assistant services.")
+                : this.#t("v4_plan_can_run_off", "Paused. Turn this on to make the plan available.")}</small>
             </div>
             <button
               class="ms-switch"
@@ -319,11 +365,32 @@ line-height: var(--ms-lh-snug);
             `;
           })}
         </div>
-        <h3 class="group-heading" id="completion-heading">${this.#t("v4_completion_options", "Completion options")}</h3>
+        <h3 class="group-heading" id="completion-heading">${this.#t("v4_completion_options", "When a run ends")}</h3>
         <div class="plan-options" role="group" aria-labelledby="completion-heading">
-          <label class="checkbox"><input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>${this.#t("plan_return_to_base", "Return to the dock when finished")}</label>
-          <label class="checkbox"><input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>${this.#t("plan_finish_room", "Finish the active room after Stop")}</label>
-          ${draft.finishCurrentRoom ? html`<label class="field ms-field">${this.#t("plan_threshold", "Finish threshold")} · ${draft.finishCurrentRoomThreshold}%<input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}></label>` : nothing}
+          <label class="plan-option">
+            <input type="checkbox" .checked=${draft.returnToBase} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { returnToBase: eventChecked(event) } })}>
+            <span class="plan-option-copy">
+              <strong>${this.#t("plan_return_to_base", "Return to the dock when finished")}</strong>
+              <small>${this.#t("plan_return_to_base_hint", "After the last selected room, the robot returns to the dock.")}</small>
+            </span>
+          </label>
+          <label class="plan-option">
+            <input type="checkbox" .checked=${draft.finishCurrentRoom} @change=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoom: eventChecked(event) } })}>
+            <span class="plan-option-copy">
+              <strong>${this.#t("plan_finish_room", "Finish the current room after Stop")}</strong>
+              <small>${this.#t("plan_finish_room_hint", "When enough of the room is complete, finish it before docking. Never start another room.")}</small>
+            </span>
+          </label>
+          ${draft.finishCurrentRoom ? html`
+            <label class="plan-threshold ms-field">
+              <span class="plan-threshold-copy">
+                <strong>${this.#t("plan_threshold", "Minimum room progress")}</strong>
+                <small>${this.#t("plan_threshold_hint", "When Stop is requested, the robot checks this progress: below it stops now; at or above it finishes this room before docking.")}</small>
+              </span>
+              <span class="threshold-value">${draft.finishCurrentRoomThreshold}%</span>
+              <input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} aria-label=${this.#t("plan_threshold", "Minimum room progress")} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}>
+            </label>
+          ` : nothing}
         </div>
         <div class="toolbar">
           ${draft.id ? html`
@@ -510,24 +577,41 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  #copySummary(): void {
+  #legacyCopy(summary: string, restoreTarget?: HTMLElement | null): boolean {
+    if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
+    const active = restoreTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
+    const textarea = document.createElement("textarea");
+    textarea.value = summary;
+    textarea.readOnly = true;
+    textarea.setAttribute("aria-hidden", "true");
+    textarea.style.cssText = "position:fixed;inset-block-start:-1000px;inline-size:1px;block-size:1px;opacity:0";
+    document.body.append(textarea);
+    textarea.select();
+    textarea.setSelectionRange(0, summary.length);
+    try {
+      return document.execCommand("copy");
+    } catch {
+      return false;
+    } finally {
+      textarea.remove();
+      active?.focus({ preventScroll: true });
+    }
+  }
+
+  async #copySummary(source?: EventTarget | null): Promise<void> {
     const summary = this.#supportRows().map(([label, value]) => `${label}: ${value}`).join("\n");
     const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
-    if (!clipboard || typeof clipboard.writeText !== "function") {
-      this.#setCopyStatus("failed");
-      return;
+    if (clipboard && typeof clipboard.writeText === "function") {
+      try {
+        await clipboard.writeText(summary);
+        this.#setCopyStatus("copied");
+        return;
+      } catch {
+        // HTTP LAN origins may expose the API but reject writes. Fall through
+        // to the selection-based copy path supported by those browsers.
+      }
     }
-    let pending: Promise<void>;
-    try {
-      pending = clipboard.writeText(summary);
-    } catch {
-      this.#setCopyStatus("failed");
-      return;
-    }
-    pending.then(
-      () => this.#setCopyStatus("copied"),
-      () => this.#setCopyStatus("failed"),
-    );
+    this.#setCopyStatus(this.#legacyCopy(summary, source instanceof HTMLElement ? source : null) ? "copied" : "failed");
   }
 
   #support() {
@@ -544,7 +628,7 @@ line-height: var(--ms-lh-snug);
           ${rows.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}
         </dl>
         <div class="toolbar">
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#copySummary()}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => void this.#copySummary(event.currentTarget)}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
         </div>
         <p class="copy-status" role="status" aria-live="polite">${copyStatus}</p>
       </div>
