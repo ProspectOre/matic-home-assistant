@@ -532,67 +532,138 @@ export const canStartMotion = (state: WorkspaceState): boolean =>
   && state.command === "idle"
   && (state.activity === "idle" || state.activity === "docked");
 
-const disabledAction = (id: string, label: string, reason: string): PrimaryAction => ({
+const disabledAction = (
+  id: string,
+  label: string,
+  reason: string,
+  labelKey: string,
+  reasonKey: string,
+): PrimaryAction => ({
   id,
   label,
+  labelKey,
   kind: "neutral",
   enabled: false,
   reason,
+  reasonKey,
 });
+
+const stopAction = (state: WorkspaceState): PrimaryAction => {
+  const enabled = state.command === "idle";
+  return {
+    id: "stop",
+    label: "Stop",
+    labelKey: "v4_action_stop",
+    kind: "danger",
+    enabled,
+    ...(enabled ? {} : { reason: "The robot is already stopping.", reasonKey: "v4_reason_stop" }),
+  };
+};
 
 export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   if (state.dataMode === "history") {
-    return { id: "return-live", label: "Return to Live", kind: "primary", enabled: true };
+    return {
+      id: "return-live",
+      label: "Return to the live map",
+      labelKey: "v4_action_return_live",
+      kind: "primary",
+      enabled: true,
+    };
   }
   if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
-    return { id: "stop", label: "Stop", kind: "danger", enabled: state.command === "idle" };
+    return stopAction(state);
   }
   if (state.activity === "stopping" || state.command === "settling") {
-    return disabledAction("stopping", "Stopping…", "Waiting for the robot to settle");
+    return disabledAction(
+      "stopping",
+      "Stopping",
+      "Waiting for the robot to settle.",
+      "v4_action_stopping",
+      "v4_reason_stopping",
+    );
   }
   if (state.activity === "paused") {
-    return { id: "resume", label: "Resume", kind: "primary", enabled: state.command === "idle" };
+    return {
+      id: "resume",
+      label: "Resume cleaning",
+      labelKey: "v4_action_resume",
+      kind: "primary",
+      enabled: state.command === "idle",
+    };
   }
   if (!state.host.connected) {
-    return disabledAction("reconnecting", "Reconnecting…", "Home Assistant is offline");
+    return disabledAction(
+      "reconnecting",
+      "Reconnecting",
+      "Home Assistant is offline.",
+      "v4_action_reconnecting",
+      "v4_reason_reconnecting",
+    );
   }
   if (!state.host.administrator) {
-    return disabledAction("administrator", "Administrator required", "This map is private");
+    return disabledAction(
+      "administrator",
+      "Administrator access required",
+      "Ask a Home Assistant administrator to open this map.",
+      "v4_action_administrator",
+      "v4_reason_administrator",
+    );
   }
   if (!state.host.robotConnected) {
-    return disabledAction("robot-offline", "Robot offline", "Reconnect the robot first");
+    return disabledAction(
+      "robot-offline",
+      "Robot offline",
+      "Reconnect the robot to start cleaning.",
+      "v4_action_robot_offline",
+      "v4_reason_robot_offline",
+    );
   }
   if (state.coherence !== "current") {
-    return disabledAction("locating", "Locating…", "Waiting for the current map");
+    return disabledAction(
+      "locating",
+      "Finding the map",
+      "Waiting for the robot to confirm which floor it is on.",
+      "v4_action_locating",
+      "v4_reason_locating",
+    );
   }
   if (state.workflow === "draw") {
+    const drawFirst = { reason: "Draw the area first.", reasonKey: "v4_reason_save_area_draw" };
     if (state.fullMap || state.narrowHint) {
       return {
         id: "review-area",
-        label: "Review details",
+        label: "Name and save",
+        labelKey: "v4_action_review_area",
         kind: "primary",
         enabled: state.draw.dirty,
-        ...(state.draw.dirty ? {} : { reason: "Draw an area first" }),
+        ...(state.draw.dirty ? {} : drawFirst),
       };
     }
     return {
       id: "save-area",
       label: "Save area",
+      labelKey: "v4_action_save_area",
       kind: "primary",
       enabled: state.draw.dirty && canEditCoordinates(state),
-      ...(state.draw.dirty ? {} : { reason: "Draw an area first" }),
+      ...(state.draw.dirty ? {} : drawFirst),
     };
   }
   if (state.workflow === "rooms") {
-    const ready = canStartMotion(state) && state.selection.roomIds.length > 0;
+    const count = state.selection.roomIds.length;
+    const ready = canStartMotion(state) && count > 0;
+    // The counted label carries a placeholder the view cannot fill through
+    // `t(labelKey, label)`, so it ships without a key and falls back to English.
     return {
       id: "clean-rooms",
-      label: state.selection.roomIds.length
-        ? `Clean ${state.selection.roomIds.length} room${state.selection.roomIds.length === 1 ? "" : "s"}`
-        : "Choose rooms",
+      label: count ? `Clean ${count} room${count === 1 ? "" : "s"}` : "Clean selected rooms",
+      ...(count ? {} : { labelKey: "v4_action_clean_rooms" }),
       kind: "primary",
       enabled: ready,
-      ...(ready ? {} : { reason: state.selection.roomIds.length ? "Map verification is required" : "Select at least one room" }),
+      ...(ready
+        ? {}
+        : count
+          ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
+          : { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }),
     };
   }
   if (state.workflow === "plan") {
@@ -603,17 +674,23 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       return {
         id: "save-plan",
         label: "Save plan",
+        labelKey: "v4_action_save_plan",
         kind: "primary",
         enabled: valid,
-        ...(valid ? {} : { reason: "Add a name and at least one room" }),
+        ...(valid ? {} : { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }),
       };
     }
     return {
       id: "run-plan",
-      label: "Run plan",
+      label: "Run this plan",
+      labelKey: "v4_action_run_plan",
       kind: "primary",
       enabled: canStartMotion(state) && state.planDraft.enabled,
-      ...(canStartMotion(state) ? {} : { reason: "Map verification is required" }),
+      ...(!canStartMotion(state)
+        ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
+        : !state.planDraft.enabled
+          ? { reason: "This plan is paused. Turn on Plan can run to run it.", reasonKey: "v4_reason_run_plan_paused" }
+          : {}),
     };
   }
   if (state.workflow === "areaReview") {
@@ -624,34 +701,40 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       return {
         id: "save-area",
         label: state.areaDraft.canRebind ? "Confirm on this map" : "Save area",
+        labelKey: state.areaDraft.canRebind ? "v4_action_save_area_confirm" : "v4_action_save_area",
         kind: "primary",
         enabled: valid,
-        ...(valid ? {} : { reason: "Add a name and at least one mark" }),
+        ...(valid
+          ? {}
+          : { reason: "Add an area name and at least one mark.", reasonKey: "v4_reason_save_area_details" }),
       };
     }
     const current = state.areaDraft.status === "current";
     return {
       id: "run-area",
-      label: "Clean area",
+      label: "Clean this area",
+      labelKey: "v4_action_run_area",
       kind: "primary",
       enabled: current && canStartMotion(state),
-      ...(current ? {} : { reason: "Review or redraw this area first" }),
+      ...(current
+        ? {}
+        : { reason: "Confirm this outline on the current map first.", reasonKey: "v4_reason_run_area" }),
     };
   }
   return {
     id: "choose-cleaning",
     label: "Choose what to clean",
+    labelKey: "v4_action_choose_cleaning",
     kind: "neutral",
     enabled: false,
-    reason: "Choose rooms, a plan, or a custom area",
+    reason: "Choose rooms, a plan, or a custom area.",
+    reasonKey: "v4_reason_choose_cleaning",
   };
 };
 
 export const selectPausedSecondaryAction = (
   state: WorkspaceState,
-): PrimaryAction | null => state.activity === "paused"
-  ? { id: "stop", label: "Stop", kind: "danger", enabled: state.command === "idle" }
-  : null;
+): PrimaryAction | null => state.activity === "paused" ? stopAction(state) : null;
 
 export const brushCursorPixels = (state: WorkspaceState): number =>
   state.draw.brushMeters

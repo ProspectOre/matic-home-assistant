@@ -1,6 +1,9 @@
 import { LitElement, css, html, nothing } from "lit";
 import { controls } from "./controls";
-import { icon, iconExitFullMap, iconFit, iconFullMap, iconHelp, iconMoveMap, iconOrbitLeft, iconOrbitRight, iconPaint, iconRedo, iconRoomNames, iconTiltDown, iconTiltUp, iconUndo, iconErase, iconDone } from "./icons";
+import { renderDrawTools } from "./draw-tools";
+import { icon, iconExitFullMap, iconFit, iconFullMap, iconHelp, iconOrbitLeft, iconOrbitRight, iconRoomNames, iconTiltDown, iconTiltUp } from "./icons";
+import { RovingFocusController } from "./roving-focus";
+import { readCanvasPalette } from "./theme-probe";
 import { base, tokens } from "./tokens";
 import type { PropertyValues } from "lit";
 
@@ -18,6 +21,8 @@ import { translate } from "./localize";
 
 export const WORKSPACE_INTENT_EVENT = "matic-workspace-intent";
 export const WORKSPACE_ACTION_EVENT = "matic-workspace-action";
+
+const NAVIGATION_HELP_ID = "navigation-help";
 
 const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
@@ -43,6 +48,10 @@ export class MaticMapCanvasV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
+    // Reflected so the stylesheet can anchor the rail with :host([narrow]).
+    // On a phone the sheet owns the drawing tools, appearance switch, room
+    // names and help; the map keeps only view, fit and full map.
+    narrow: { type: Boolean, reflect: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -81,33 +90,62 @@ export class MaticMapCanvasV4 extends LitElement {
       outline-offset: -3px;
     }
 
-.map-tools, .view-switch, .appearance-switch, .camera-steps, .draw-tools, .map-scale, .map-message { position: absolute; z-index: 4; }
+    /* One self-packing rail replaces the old ladder of absolutely positioned
+       siblings whose offsets (0.75 / 4.25 / 7.2rem) encoded which of the
+       others happened to be visible. Groups simply stack; a hidden group
+       leaves no hole. */
+    .map-rail {
+      position: absolute;
+      z-index: 4;
+      inset-block-start: 0.75rem;
+      inset-inline-end: 0.75rem;
+      display: flex;
+      flex-direction: column;
+      gap: var(--ms-space-2);
+      align-items: flex-end;
+      max-inline-size: calc(100% - 1.5rem);
+    }
+    :host([narrow]) .map-rail,
+    .map-root[data-narrow] .map-rail {
+      inset-block-start: auto;
+      inset-block-end: calc(0.75rem + var(--map-sheet-offset, 0px));
+      inset-inline-end: 0.75rem;
+    }
 
-.map-tools { inset-block-start: 0.75rem; inset-inline-end: 0.75rem; display: flex; }
+    .map-tools, .view-switch, .appearance-switch, .camera-steps { display: flex; }
+
+    .map-dock, .map-scale, .map-message { position: absolute; z-index: 4; }
+
+    .map-dock {
+      inset-inline-start: 50%;
+      inset-block-end: calc(0.75rem + var(--map-sheet-offset, 0px));
+      translate: -50% 0;
+      max-inline-size: calc(100% - 1rem);
+    }
+    .map-dock .draw-tools--row { flex-direction: row; gap: var(--ms-space-1); }
+    .map-dock .draw-tools button { padding-inline: var(--ms-space-2); }
+    .selection-chip {
+      display: flex;
+      align-items: center;
+      gap: var(--ms-space-3);
+      padding: var(--ms-space-1) var(--ms-space-1) var(--ms-space-1) var(--ms-space-3);
+      font-size: var(--ms-t-sm);
+      font-weight: var(--ms-w-bold);
+      white-space: nowrap;
+    }
 
     .navigation-help {
-      position: absolute;
-      z-index: 5;
-      inset-block-start: 4.25rem;
-      inset-inline-end: 0.75rem;
-      inline-size: min(22rem, calc(100% - 1.5rem));
+      inline-size: 22rem;
+      max-inline-size: 100%;
       padding: 0.8rem 0.9rem;
-      border: 1px solid var(--divider-color, rgb(60 75 85 / 16%));
-      border-radius: 0.8rem;
-      color: var(--primary-text-color, #263238);
-      background: var(--card-background-color, rgb(255 255 255 / 98%));
-      box-shadow: 0 10px 26px rgb(31 41 51 / 18%);
       font-size: 0.74rem;
       line-height: 1.45;
     }
+    .navigation-help header { display: flex; align-items: center; justify-content: space-between; gap: var(--ms-space-2); margin-block-end: 0.5rem; }
+    .navigation-help h3 { margin: 0; font-size: var(--ms-t-sm); font-weight: var(--ms-w-bold); }
     .navigation-help dl { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.35rem 0.65rem; margin: 0; }
     .navigation-help dt { font-weight: 750; }
     .navigation-help dd { margin: 0; color: var(--secondary-text-color, #687984); }
-
-.view-switch { inset-block-start: 4.25rem; inset-inline-end: 0.75rem; display: grid; grid-template-columns: 1fr 1fr; }
-.appearance-switch, .camera-steps { position: absolute; z-index: 4; inset-block-start: 7.2rem; inset-inline-end: 0.75rem; display: grid; }
-.appearance-switch { grid-template-columns: 1fr 1fr; }
-.camera-steps { grid-template-columns: repeat(2, var(--ms-control)); }
 
     .scene-window {
       position: absolute;
@@ -150,19 +188,6 @@ export class MaticMapCanvasV4 extends LitElement {
       border-block-end: 2px solid currentColor;
     }
 
-.draw-tools {
-inset-inline-start: 50%;
-inset-block-end: calc(0.75rem + var(--map-sheet-offset, 0px));
-translate: -50% 0;
-display: grid;
-grid-template-columns: repeat(6, minmax(var(--ms-control), auto));
-max-inline-size: calc(100% - 1rem);
-}
-.draw-tools button { padding-inline: var(--ms-space-2); }
-
-    .map-root[data-full-map="true"] .draw-tools { inset-block-end: 5.75rem; }
-    .map-root[data-full-map="true"] .map-scale { inset-block-end: 10rem; }
-
     .map-message {
       inset: 50% auto auto 50%;
       translate: -50% -50%;
@@ -184,13 +209,15 @@ max-inline-size: calc(100% - 1rem);
       white-space: nowrap;
     }
 
+/* Four labelled buttons span most of the map at desktop width; icons with tooltips keep the rail a narrow column. */
+.map-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
 @container (max-width: 29rem) {
-.map-tools button, .draw-tools button { padding-inline: 0; inline-size: var(--ms-control); }
+.map-tools button, .map-dock .draw-tools button { padding-inline: 0; inline-size: var(--ms-control); }
 /* Collapse the label to assistive text, never display:none. Hiding it would
    delete the accessible name and break every getByRole({ name }) query at
    narrow widths -- which is what the previous font-size:0 plus ::first-letter
    trick did, while also rendering the toolbar as "P E M U R D". */
-.ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
+.map-dock .draw-tools .ms-btn__label { position: absolute; overflow: hidden; inline-size: 1px; block-size: 1px; margin: -1px; padding: 0; border: 0; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (forced-colors: active) {
 /* The map is painted to canvas, so the UA would otherwise invert it. The
@@ -203,13 +230,31 @@ max-inline-size: calc(100% - 1rem);
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
+  narrow = false;
   #fullMapLauncher: HTMLElement | null = null;
+  #helpLauncher: HTMLElement | null = null;
   #renderer: RendererController | null = null;
   #gestures: GestureController | null = null;
   #navigationHelp = false;
+  #focusHelpOnUpdate = false;
+  #themeObserver: MutationObserver | null = null;
+  #themeQueries: MediaQueryList[] = [];
+
+  constructor() {
+    super();
+    new RovingFocusController(this, {
+      container: () => this.renderRoot?.querySelector<HTMLElement>(".camera-steps") ?? null,
+      items: "button",
+    });
+  }
 
   #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
     return translate(this.localize, key, fallback, placeholders);
+  }
+
+  override connectedCallback(): void {
+    super.connectedCallback();
+    this.#watchTheme();
   }
 
   protected override firstUpdated(): void {
@@ -251,10 +296,12 @@ max-inline-size: calc(100% - 1rem);
       }),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
     });
+    this.#applyPalette();
     this.#renderer.setState(this.state);
   }
 
   override disconnectedCallback(): void {
+    this.#unwatchTheme();
     this.#gestures?.dispose();
     this.#gestures = null;
     this.#renderer?.dispose();
@@ -263,12 +310,48 @@ max-inline-size: calc(100% - 1rem);
   }
 
   protected override updated(changed: PropertyValues<this>): void {
+    if (this.#focusHelpOnUpdate) {
+      this.#focusHelpOnUpdate = false;
+      this.renderRoot.querySelector<HTMLElement>(".navigation-help button")?.focus();
+    }
     if (!changed.has("state")) return;
     const previous = changed.get("state") as WorkspaceState | undefined;
     if (previous?.fullMap && !this.state.fullMap && this.#fullMapLauncher) {
       this.#fullMapLauncher.focus();
     }
     this.#renderer?.setState(this.state);
+  }
+
+  // Canvas 2D cannot read CSS custom properties, so the renderer is handed a
+  // palette probed from the design tokens. The probe span lives inside the
+  // shadow root so the --ms-* tokens resolve; it is re-read whenever Home
+  // Assistant rewrites its theme variables on <html>, or the OS flips colour
+  // scheme / forced colours.
+  #applyPalette(): void {
+    const root = this.renderRoot?.querySelector<HTMLElement>(".map-root");
+    if (!root || !this.#renderer) return;
+    this.#renderer.setPalette(readCanvasPalette(root));
+  }
+
+  readonly #onThemeChange = (): void => { this.#applyPalette(); };
+
+  #watchTheme(): void {
+    if (typeof document === "undefined" || this.#themeObserver) return;
+    this.#themeObserver = new MutationObserver(this.#onThemeChange);
+    this.#themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ["style", "class"] });
+    if (typeof window.matchMedia !== "function") return;
+    this.#themeQueries = [
+      window.matchMedia("(prefers-color-scheme: dark)"),
+      window.matchMedia("(forced-colors: active)"),
+    ];
+    for (const query of this.#themeQueries) query.addEventListener("change", this.#onThemeChange);
+  }
+
+  #unwatchTheme(): void {
+    this.#themeObserver?.disconnect();
+    this.#themeObserver = null;
+    for (const query of this.#themeQueries) query.removeEventListener("change", this.#onThemeChange);
+    this.#themeQueries = [];
   }
 
   #intent(intent: WorkspaceIntent): void {
@@ -292,6 +375,28 @@ max-inline-size: calc(100% - 1rem);
     this.#intent({ type: this.state.fullMap ? "exit-full-map" : "enter-full-map" });
   }
 
+  #toggleHelp(event: Event): void {
+    this.#helpLauncher = event.currentTarget as HTMLElement;
+    this.#navigationHelp = !this.#navigationHelp;
+    this.#focusHelpOnUpdate = this.#navigationHelp;
+    this.requestUpdate();
+  }
+
+  #closeHelp(): void {
+    if (!this.#navigationHelp) return;
+    this.#navigationHelp = false;
+    this.requestUpdate();
+    const launcher = this.#helpLauncher;
+    if (launcher?.isConnected) launcher.focus();
+  }
+
+  #clearSelection(): void {
+    // The store has no clear-selection intent; every room is toggled off.
+    for (const roomId of this.state.selection.roomIds) {
+      this.#intent({ type: "toggle-room", roomId });
+    }
+  }
+
   #orbit(horizontal: number, vertical: number): void {
     this.#renderer?.orbitBy(horizontal, vertical);
   }
@@ -301,8 +406,7 @@ max-inline-size: calc(100% - 1rem);
     if (event.key === "Escape") {
       event.preventDefault();
       if (this.#navigationHelp) {
-        this.#navigationHelp = false;
-        this.requestUpdate();
+        this.#closeHelp();
         return;
       }
       this.#intent({ type: "dismiss-top-layer" });
@@ -349,71 +453,24 @@ max-inline-size: calc(100% - 1rem);
     return null;
   }
 
-  protected override render() {
+  #renderRail(showScene: boolean, locating: boolean) {
     const state = this.state;
-    const scale = mapScale(state);
-    const message = this.#message();
-    const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
-    const showDraw = state.workflow === "draw" && showScene;
-    const locating = state.coherence === "verifying" || state.coherence === "booting";
+    const narrow = this.narrow;
+    const draw = state.workflow === "draw";
+    const helpTitle = this.#t("v4_how_to_move", "How to move the map");
+    // Draw forces the top view, so the view, appearance and camera groups are
+    // noise there; the sheet owns the tools on a phone. Both leave the rail
+    // as [Fit] + [Full map].
+    const showView = showScene && !draw;
+    const showAppearance = showView && !narrow && state.view === "top";
+    const showCamera = showView && state.view === "three";
+    const showTools = !locating || state.fullMap;
+    const showExtras = !narrow && !draw;
+    if (!showView && !showTools) return nothing;
     return html`
-      <section
-        class="map-root"
-        tabindex="0"
-        role="application"
-        aria-label=${describeMap(state, this.localize)}
-        data-full-map=${String(state.fullMap)}
-        data-workflow=${state.workflow}
-        data-draw-tool=${state.draw.tool}
-        @keydown=${this.#keyboard}
-      >
-        ${!locating || state.fullMap ? html`<nav class="map-tools ms-surface ms-surface--floating ms-segment" aria-label="Map tools">
-          ${!locating ? html`
-            <button class="ms-btn" type="button" @click=${() => {
-              this.#renderer?.fit();
-              this.#intent({ type: "fit-map" });
-            }}>${icon(iconFit)}<span class="ms-btn__label">${this.#t("map_home_view", "Fit")}</span></button>
-            <button
-              class="labels ms-btn"
-              type="button"
-              aria-pressed=${String(state.labelsVisible)}
-              @click=${() => this.#intent({ type: "toggle-labels" })}
-            >${icon(iconRoomNames)}<span class="ms-btn__label">${this.#t("map_labels", "Labels")}</span></button>
-            <button
-              class="help ms-btn ms-btn--icon"
-              type="button"
-              aria-label=${this.#t("v4_navigation_help", "Map navigation help")}
-              aria-expanded=${String(this.#navigationHelp)}
-              @click=${() => {
-                this.#navigationHelp = !this.#navigationHelp;
-                this.requestUpdate();
-              }}
-            >${icon(iconHelp)}</button>
-          ` : nothing}
-          <button
-            class="full-map ms-btn"
-            type="button"
-            aria-label=${this.#t("v4_full_map", "Full map")}
-            aria-pressed=${String(state.fullMap)}
-            @click=${this.#toggleFullMap}
-          >${icon(state.fullMap ? iconExitFullMap : iconFullMap)}<span class="ms-btn__label">${state.fullMap ? this.#t("v4_close", "Close") : this.#t("v4_full_map", "Full map")}</span></button>
-        </nav>` : nothing}
-
-        ${this.#navigationHelp && showScene ? html`
-          <aside class="navigation-help" aria-label=${this.#t("v4_navigation_help", "Map navigation help")}>
-            <dl>
-              <dt>${this.#t("v4_trackpad", "Trackpad")}</dt>
-              <dd>${this.#t("v4_trackpad_help", "Scroll to pan · pinch to zoom · twist to rotate")}</dd>
-              <dt>${this.#t("v4_mouse", "Mouse")}</dt>
-              <dd>${this.#t("v4_mouse_help", "Drag to orbit · Shift, middle, or right drag to pan · wheel to zoom")}</dd>
-              <dt>${this.#t("v4_keyboard", "Keyboard")}</dt>
-              <dd>${this.#t("v4_keyboard_help", "WASD to move · Q/E or arrows to orbit · +/− to zoom · 0 to fit")}</dd>
-            </dl>
-          </aside>
-        ` : nothing}
-
-        ${state.workflow !== "draw" && showScene ? html`
-          <div class="view-switch ms-surface ms-surface--floating ms-segment" aria-label="Map view">
+      <div class="map-rail" data-map-control>
+        ${showView ? html`
+          <div class="view-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_view_label", "Map view")}>
             <button
               class="ms-btn"
               type="button"
@@ -429,8 +486,8 @@ max-inline-size: calc(100% - 1rem);
           </div>
         ` : nothing}
 
-        ${state.view === "top" && showScene ? html`
-          <div class="appearance-switch ms-surface ms-surface--floating ms-segment" aria-label=${this.#t("map_style_label", "2D map style")}>
+        ${showAppearance ? html`
+          <div class="appearance-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_style_label", "2D map style")}>
             <button
               class="ms-btn"
               type="button"
@@ -442,12 +499,12 @@ max-inline-size: calc(100% - 1rem);
               type="button"
               aria-pressed=${String(state.appearance === "rooms")}
               @click=${() => this.#intent({ type: "set-appearance", appearance: "rooms" })}
-            >${this.#t("map_view_rooms", "Rooms")}</button>
+            >${this.#t("map_style_room_colours", "Room colours")}</button>
           </div>
         ` : nothing}
 
-        ${state.view === "three" && showScene ? html`
-          <div class="camera-steps ms-surface ms-surface--floating ms-segment" role="toolbar" aria-label=${this.#t("map_camera_controls", "Map camera controls")}>
+        ${showCamera ? html`
+          <div class="camera-steps ms-surface ms-surface--floating ms-segment" role="toolbar" aria-orientation="horizontal" aria-label=${this.#t("map_camera_controls", "Map camera controls")}>
             <button class="ms-btn ms-btn--icon" type="button" aria-label=${this.#t("map_rotate_left", "Rotate left")} aria-keyshortcuts="[" @click=${() => this.#orbit(-52, 0)}>${icon(iconOrbitLeft)}</button>
             <button class="ms-btn ms-btn--icon" type="button" aria-label=${this.#t("map_tilt_down", "Lower viewing angle")} aria-keyshortcuts="PageDown" @click=${() => this.#orbit(0, 30)}>${icon(iconTiltDown)}</button>
             <button class="ms-btn ms-btn--icon" type="button" aria-label=${this.#t("map_tilt_up", "Raise viewing angle")} aria-keyshortcuts="PageUp" @click=${() => this.#orbit(0, -30)}>${icon(iconTiltUp)}</button>
@@ -455,11 +512,131 @@ max-inline-size: calc(100% - 1rem);
           </div>
         ` : nothing}
 
+        ${showTools ? html`
+          <div class="map-tools ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_tools", "Map tools")}>
+            ${!locating ? html`
+              <button
+                class="fit ms-btn"
+                type="button"
+                aria-label=${this.#t("v4_fit_map_hint", "Fit the whole map on screen")}
+                @click=${() => {
+                  this.#renderer?.fit();
+                  this.#intent({ type: "fit-map" });
+                }}
+                title=${this.#t("v4_fit_map", "Fit map")}
+              >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
+            ` : nothing}
+            ${!locating && showExtras ? html`
+              <button
+                class="labels ms-btn"
+                type="button"
+                aria-pressed=${String(state.labelsVisible)}
+                @click=${() => this.#intent({ type: "toggle-labels" })}
+                title=${this.#t("v4_room_names", "Room names")}
+              >${icon(iconRoomNames)}<span class="ms-btn__label">${this.#t("v4_room_names", "Room names")}</span></button>
+              <button
+                class="help ms-btn ms-btn--icon"
+                type="button"
+                aria-label=${helpTitle}
+                aria-expanded=${String(this.#navigationHelp)}
+                aria-controls=${NAVIGATION_HELP_ID}
+                @click=${this.#toggleHelp}
+                title=${helpTitle}
+              >${icon(iconHelp)}</button>
+            ` : nothing}
+            <button
+              class="full-map ms-btn"
+              type="button"
+              aria-label=${this.#t("v4_full_map", "Full map")}
+              aria-pressed=${String(state.fullMap)}
+              @click=${this.#toggleFullMap}
+              title=${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}
+            >${icon(state.fullMap ? iconExitFullMap : iconFullMap)}<span class="ms-btn__label">${state.fullMap ? this.#t("v4_exit_full_map", "Exit full map") : this.#t("v4_full_map", "Full map")}</span></button>
+          </div>
+        ` : nothing}
+
+        ${this.#navigationHelp && showScene && showExtras ? html`
+          <div
+            id=${NAVIGATION_HELP_ID}
+            class="navigation-help ms-surface ms-surface--floating"
+            role="dialog"
+            aria-modal="false"
+            aria-label=${helpTitle}
+          >
+            <header>
+              <h3>${helpTitle}</h3>
+              <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#closeHelp()}>${this.#t("v4_close", "Close")}</button>
+            </header>
+            <dl>
+              <dt>${this.#t("v4_trackpad", "Trackpad")}</dt>
+              <dd>${this.#t("v4_trackpad_help", "Scroll to pan · pinch to zoom · twist to rotate")}</dd>
+              <dt>${this.#t("v4_mouse", "Mouse")}</dt>
+              <dd>${this.#t("v4_mouse_help", "Drag to orbit · Shift, middle, or right drag to pan · wheel to zoom")}</dd>
+              <dt>${this.#t("v4_keyboard", "Keyboard")}</dt>
+              <dd>${this.#t("v4_keyboard_help", "WASD to move · Q/E or arrows to orbit · +/− to zoom · 0 to fit")}</dd>
+            </dl>
+          </div>
+        ` : nothing}
+      </div>
+    `;
+  }
+
+  #renderDock(showScene: boolean) {
+    const state = this.state;
+    if (!showScene) return nothing;
+    if (state.workflow === "draw" && !this.narrow) {
+      return html`
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
+          ${renderDrawTools(state, {
+            intent: (intent) => this.#intent(intent),
+            openBrush: () => this.#intent({ type: "set-precision-open", value: !state.precisionOpen }),
+            t: (key, fallback) => this.#t(key, fallback),
+          }, "row")}
+        </div>
+      `;
+    }
+    // On a phone the sheet's grip line already reads "N rooms", so the map
+    // chip would only duplicate it.
+    const count = state.selection.roomIds.length;
+    if (state.workflow === "rooms" && count > 0 && !this.narrow) {
+      return html`
+        <div class="map-dock ms-surface ms-surface--floating" data-map-control>
+          <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
+            <span>${this.#t("v4_rooms_selected", "{count} rooms selected").replace("{count}", String(count))}</span>
+            <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#clearSelection()}>${this.#t("v4_clear", "Clear")}</button>
+          </div>
+        </div>
+      `;
+    }
+    return nothing;
+  }
+
+  protected override render() {
+    const state = this.state;
+    const scale = mapScale(state);
+    const message = this.#message();
+    const showScene = state.map.available && (canShowLiveMap(state) || state.dataMode === "history");
+    const showDraw = state.workflow === "draw" && showScene;
+    const locating = state.coherence === "verifying" || state.coherence === "booting";
+    return html`
+      <section
+        class="map-root"
+        tabindex="0"
+        aria-label=${this.#t("map_viewport_aria", "Interactive Matic 3D map")}
+        data-full-map=${String(state.fullMap)}
+        data-workflow=${state.workflow}
+        data-draw-tool=${state.draw.tool}
+        data-narrow=${this.narrow ? "true" : nothing}
+        @keydown=${this.#keyboard}
+      >
+        ${this.#renderRail(showScene, locating)}
+
         <div
           class="scene-window"
           data-renderer-key="persistent-canvas-v4"
           ?hidden=${!showScene}
-          aria-hidden="true"
+          role="img"
+          aria-label=${describeMap(state, this.localize)}
         >
           <canvas class="scene-canvas"></canvas>
           <canvas class="overlay-canvas"></canvas>
@@ -470,32 +647,9 @@ max-inline-size: calc(100% - 1rem);
             <span class="scale-line" style=${`--scale-width:${scale.pixels}px`}></span>
             <span>${scale.label}</span>
           </div>
-          <div class="draw-tools ms-surface ms-surface--floating ms-segment" role="toolbar" aria-label="Draw area tools">
-            ${(["paint", "erase", "pan"] as const).map((tool) => html`
-              <button
-                class="ms-btn"
-                type="button"
-                role="radio"
-                aria-checked=${String(state.draw.tool === tool)}
-                data-tool=${tool}
-                @click=${() => this.#intent({ type: "set-draw-tool", tool })}
-              >${icon(tool === "paint" ? iconPaint : tool === "erase" ? iconErase : iconMoveMap)}<span class="ms-btn__label">${tool === "paint" ? this.#t("area_paint", "Paint") : tool === "erase" ? this.#t("area_erase", "Erase") : this.#t("move_map", "Move map")}</span></button>
-            `)}
-            <button
-              class="ms-btn"
-              type="button"
-              ?disabled=${state.draw.strokeCount === 0}
-              @click=${() => this.#intent({ type: "undo-draft" })}
-            >${icon(iconUndo)}<span class="ms-btn__label">${this.#t("undo", "Undo")}</span></button>
-            <button
-              class="ms-btn"
-              type="button"
-              ?disabled=${state.draw.redo.length === 0}
-              @click=${() => this.#intent({ type: "redo-draft" })}
-            >${icon(iconRedo)}<span class="ms-btn__label">${this.#t("redo", "Redo")}</span></button>
-            <button class="ms-btn" type="button" @click=${() => this.#action("review-area")}>${icon(iconDone)}<span class="ms-btn__label">${this.#t("done_editing", "Done editing")}</span></button>
-          </div>
         ` : nothing}
+
+        ${this.#renderDock(showScene)}
 
         ${message && !(state.fullMap && (locating || !state.host.administrator)) ? html`
           <div class="map-message ms-surface ms-surface--floating" role="status">

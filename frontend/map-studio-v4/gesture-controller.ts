@@ -61,9 +61,15 @@ interface SafariGestureEvent extends Event {
 const cloneCircles = (circles: readonly AreaCircle[]): AreaCircle[] =>
   circles.map((circle) => ({ ...circle }));
 
-const isInteractiveControl = (target: EventTarget | null): boolean =>
-  target instanceof Element
-  && Boolean(target.closest("button, input, select, textarea, a, [role='button'], [role='menuitem']"));
+const INTERACTIVE_SELECTOR =
+  "button, input, select, textarea, a, [role='button'], [role='menuitem'], [data-map-control]";
+
+// Walk the composed path rather than `target.closest(...)`: a press inside a
+// custom element's shadow root is retargeted to the host, which matches
+// nothing, so the map would swallow presses on shadow-root controls.
+const isInteractiveControl = (event: Event): boolean =>
+  event.composedPath().some((node) =>
+    node instanceof Element && node.matches(INTERACTIVE_SELECTOR));
 
 export class GestureController {
   readonly #host: HTMLElement;
@@ -108,7 +114,7 @@ export class GestureController {
 
   readonly #pointerDown = (event: PointerEvent): void => {
     if (this.#disposed || !event.isPrimary && event.pointerType === "mouse") return;
-    if (isInteractiveControl(event.target)) return;
+    if (isInteractiveControl(event)) return;
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
     const now = performance.now();
@@ -324,7 +330,7 @@ export class GestureController {
   }
 
   readonly #wheel = (event: WheelEvent): void => {
-    if (isInteractiveControl(event.target)) return;
+    if (isInteractiveControl(event)) return;
     event.preventDefault();
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
@@ -361,7 +367,7 @@ export class GestureController {
   };
 
   readonly #gestureStart = (event: SafariGestureEvent): void => {
-    if (this.#disposed || isInteractiveControl(event.target)) return;
+    if (this.#disposed || isInteractiveControl(event)) return;
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
     this.#host.classList.add("navigating");
@@ -371,7 +377,7 @@ export class GestureController {
   };
 
   readonly #gestureChange = (event: SafariGestureEvent): void => {
-    if (this.#disposed || isInteractiveControl(event.target)) return;
+    if (this.#disposed || isInteractiveControl(event)) return;
     const start = this.#gestureCamera;
     if (!start || this.#pointers.size >= 2) return;
     const scale = Number.isFinite(event.scale) && event.scale > 0 ? Math.max(0.1, event.scale) : 1;
@@ -446,14 +452,14 @@ export class GestureController {
   };
 
   readonly #doubleClick = (event: MouseEvent): void => {
-    if (isInteractiveControl(event.target)) return;
+    if (isInteractiveControl(event)) return;
     this.#cancelMotion();
     this.#renderer.zoomAt(event.shiftKey ? 1 / 1.6 : 1.6, event.clientX, event.clientY);
     event.preventDefault();
   };
 
   readonly #contextMenu = (event: MouseEvent): void => {
-    if (!isInteractiveControl(event.target)) event.preventDefault();
+    if (!isInteractiveControl(event)) event.preventDefault();
   };
 
   #dispatch(intent: WorkspaceIntent): void {

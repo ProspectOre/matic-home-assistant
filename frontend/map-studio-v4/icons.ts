@@ -11,6 +11,7 @@ import {
   mdiChevronDown,
   mdiChevronRight,
   mdiChevronUp,
+  mdiCircleOutline,
   mdiContentCopy,
   mdiCursorMove,
   mdiDotsVertical,
@@ -20,10 +21,12 @@ import {
   mdiFullscreenExit,
   mdiHelpCircleOutline,
   mdiHistory,
+  mdiInformationOutline,
   mdiMapMarkerOff,
   mdiMenu,
   mdiMinus,
   mdiPause,
+  mdiPlaylistCheck,
   mdiPlay,
   mdiPlus,
   mdiRedo,
@@ -59,6 +62,7 @@ export const iconOrbitRight = mdiRotateRight;
 export const iconUndo = mdiUndo;
 export const iconRedo = mdiRedo;
 export const iconPaint = mdiBrush;
+export const iconBrush = mdiCircleOutline;
 export const iconErase = mdiEraser;
 export const iconMoveMap = mdiCursorMove;
 export const iconDone = mdiCheck;
@@ -69,6 +73,8 @@ export const iconMoveDown = mdiArrowDown;
 export const iconCopy = mdiContentCopy;
 export const iconNewArea = mdiShapePolygonPlus;
 export const iconHistory = mdiHistory;
+export const iconPlan = mdiPlaylistCheck;
+export const iconDiagnostics = mdiInformationOutline;
 export const iconRobot = mdiRobotVacuum;
 export const iconCleaning = mdiPlay;
 export const iconPaused = mdiPause;

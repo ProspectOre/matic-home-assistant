@@ -260,6 +260,10 @@ export interface PrimaryAction {
   readonly kind: PrimaryActionKind;
   readonly enabled: boolean;
   readonly reason?: string;
+  /** Translation key for `label`; the view resolves `t(labelKey, label)`. */
+  readonly labelKey?: string;
+  /** Translation key for `reason`; the view resolves `t(reasonKey, reason)`. */
+  readonly reasonKey?: string;
 }
 
 export interface HassEntityLike {
