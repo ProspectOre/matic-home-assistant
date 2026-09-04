@@ -883,8 +883,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         return command === "copy";
       };
     }, GALLERY_TAG);
-    await gallery.getByRole("button", { name: "Copy summary" }).click();
+    const copyButton = gallery.getByRole("button", { name: "Copy summary" });
+    await copyButton.click();
     await expect(gallery.getByRole("status")).toHaveText("Copied");
+    await expect(copyButton).toBeFocused();
     expect(await page.evaluate(() => window.__legacyCopies)).toEqual([{
       command: "copy",
       value: expect.stringContaining("Connection: Connected"),

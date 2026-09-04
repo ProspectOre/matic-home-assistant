@@ -542,9 +542,9 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  #legacyCopy(summary: string): boolean {
+  #legacyCopy(summary: string, restoreTarget?: HTMLElement | null): boolean {
     if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
-    const active = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    const active = restoreTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
     const textarea = document.createElement("textarea");
     textarea.value = summary;
     textarea.readOnly = true;
@@ -563,7 +563,7 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  async #copySummary(): Promise<void> {
+  async #copySummary(source?: EventTarget | null): Promise<void> {
     const summary = this.#supportRows().map(([label, value]) => `${label}: ${value}`).join("\n");
     const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
     if (clipboard && typeof clipboard.writeText === "function") {
@@ -576,7 +576,7 @@ line-height: var(--ms-lh-snug);
         // to the selection-based copy path supported by those browsers.
       }
     }
-    this.#setCopyStatus(this.#legacyCopy(summary) ? "copied" : "failed");
+    this.#setCopyStatus(this.#legacyCopy(summary, source instanceof HTMLElement ? source : null) ? "copied" : "failed");
   }
 
   #support() {
@@ -593,7 +593,7 @@ line-height: var(--ms-lh-snug);
           ${rows.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}
         </dl>
         <div class="toolbar">
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => void this.#copySummary()}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
+          <button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => void this.#copySummary(event.currentTarget)}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
         </div>
         <p class="copy-status" role="status" aria-live="polite">${copyStatus}</p>
       </div>
