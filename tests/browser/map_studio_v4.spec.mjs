@@ -1261,6 +1261,10 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("retries a plan catalog after a transient floor-recheck conflict", async ({ page }) => {
     const scene = syntheticScene("Current room", 18);
     let plansRequests = 0;
+    let releaseScene = () => {};
+    const sceneReady = new Promise((resolve) => {
+      releaseScene = resolve;
+    });
     let releasePlanRecovery = () => {};
     const planRecovery = new Promise((resolve) => {
       releasePlanRecovery = resolve;
@@ -1296,15 +1300,18 @@ test.describe("Map Studio v0.4 foundation", () => {
       contentType: "application/json",
       body: JSON.stringify({ entries: [entry] }),
     }));
-    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", (route) => route.fulfill({
-      status: 200,
-      body: scene,
-      headers: {
-        "Content-Type": "application/vnd.matic.slam-scene",
-        "X-Matic-Revision": "1",
-        "X-Matic-Floor-Coherent": "1",
-      },
-    }));
+    await page.route("**/api/matic_robot/slam_scene/synthetic-entry", async (route) => {
+      await sceneReady;
+      return route.fulfill({
+        status: 200,
+        body: scene,
+        headers: {
+          "Content-Type": "application/vnd.matic.slam-scene",
+          "X-Matic-Revision": "1",
+          "X-Matic-Floor-Coherent": "1",
+        },
+      });
+    });
     await page.route("**/api/matic_robot/slam_pose/synthetic-entry", (route) => route.fulfill({
       status: 200,
       contentType: "application/json",
@@ -1370,6 +1377,10 @@ test.describe("Map Studio v0.4 foundation", () => {
       document.body.append(panel);
       window.__transientPlansPanel = panel;
     });
+    // Let the scene settle only after the panel is mounted. The first plans
+    // request starts from the scene's authoritative success path, so the
+    // transient conflict cannot be hidden by a simultaneous retry.
+    releaseScene();
     await expect.poll(() => plansRequests).toBe(1);
     await expect.poll(async () => page.evaluate(() =>
       window.__transientPlansPanel.getWorkspaceSnapshot().resources.plans.problem)).toBe("map-rechecking");
