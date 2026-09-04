@@ -3,7 +3,7 @@
 Date: 2026-09-04. Scope: workflow-recovery candidate based on RC8 (`0dbf1ca`).
 Status: software review and local validation; not installed or release-approved.
 Frontend bundle SHA-256:
-`c2ba3f46297729087bb804a9c291d0018740e01ecdd082e7bef50169c3eeaae9`.
+`9369ff2f44f9ff8ac52f80308dc3e5b8a840c232be185d378d6444f70882a488`.
 
 ## Changes
 
@@ -22,7 +22,8 @@ Frontend bundle SHA-256:
 - Setup, robot problems and unavailable maps have distinct recovery copy.
 - Unavailable room/plan catalogs cannot expose a stale cleaning action.
 - Unconfirmed actions offer a read-only status recheck. A failed recheck stays
-  blocked; a successful recheck never replays the original command.
+  blocked; a successful recheck never replays the original command. Rechecks
+  await overlapping and queued forced catalog reads before clearing failure.
 - Shell styling is separate from interaction logic; shared draft rules keep
   nested navigation and browser history consistent.
 
@@ -45,9 +46,11 @@ status problems; both have dedicated browser regressions.
 ## Validation and limits
 
 - Python suite: 1,240 passing tests with 100% coverage (11,369 statements).
-- Browser suite: 227 passing checks across desktop Chromium/WebKit and mobile
+- Browser suite: 235 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, and action/status visibility regressions.
+- Lifecycle reattachment waits for fresh reads; 20 repeated checks passed.
+  Hosted browser CI rejects tests that pass only after a retry.
 - TypeScript build, Ruff, format, strict Python types, privacy, release artifacts
   and fresh-install import pass. The generated bundle is included in the tree.
 - Physical cleaning, native VoiceOver, real-device review, installed-file parity,

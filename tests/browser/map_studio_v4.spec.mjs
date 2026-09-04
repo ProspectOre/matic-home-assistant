@@ -170,6 +170,58 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
     expect(result).toEqual({ failed: "failed", recovered: "idle", writes: 0 });
   });
+  for (const forced of [false, true]) {
+    for (const succeeds of [false, true]) {
+      test(`awaits ${forced ? "in-flight forced" : "queued forced"} status recovery when the read ${succeeds ? "succeeds" : "fails"}`, async ({ page }) => {
+        await loadEffectHarness(page);
+        await page.evaluate(async ({ forced }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore({ ...initial, command: "failed" });
+          const harness = { pending: [], settled: false, writes: 0, store, initial };
+          let hold = false;
+          const effects = new EffectController(store, {
+            catalog: async (signal) => {
+              if (!hold) return [initial.resources.entry];
+              return new Promise((resolve, reject) => {
+                harness.pending.push({ resolve, reject });
+                signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+              });
+            },
+            history: async () => initial.resources.history.value,
+            scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+            pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+            plans: async () => initial.resources.plans.value,
+            service: async () => { harness.writes += 1; },
+            dispose() {},
+          });
+          effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+          await effects.refreshCatalog(true);
+          hold = true;
+          void effects.refreshCatalog(forced);
+          harness.effects = effects;
+          harness.recovery = effects.executeAction("recheck-status").then(() => { harness.settled = true; });
+          window.__statusRecovery = harness;
+        }, { forced });
+        await expect.poll(() => page.evaluate(() => window.__statusRecovery.pending.length)).toBe(forced ? 1 : 2);
+        expect(await page.evaluate(() => {
+          const h = window.__statusRecovery;
+          return { settled: h.settled, command: h.store.value.command, writes: h.writes };
+        })).toEqual({ settled: false, command: "failed", writes: 0 });
+        const result = await page.evaluate(async ({ succeeds }) => {
+          const h = window.__statusRecovery;
+          const request = h.pending.at(-1);
+          if (succeeds) request.resolve([h.initial.resources.entry]);
+          else request.reject(new Error("Offline"));
+          try {
+            await h.recovery;
+            return { command: h.store.value.command, writes: h.writes };
+          } finally { h.effects.dispose(); }
+        }, { succeeds });
+        expect(result).toEqual({ command: succeeds ? "idle" : "failed", writes: 0 });
+      });
+    }
+  }
   test("browser Back cancels draft confirmation without leaving the editor", async ({ page }) => {
     await loadEffectHarness(page);
     await page.evaluate(async () => {
@@ -566,10 +618,12 @@ test.describe("Map Studio v0.4 foundation", () => {
         scene: state.resources.scene.status,
       };
     })).toMatchObject({ coherence: "current", scene: "ready" });
-    const reattached = { catalogRequests, sceneRequests, poseRequests };
-    expect(reattached.catalogRequests).toBeGreaterThan(mounted.catalogRequests);
-    expect(reattached.sceneRequests).toBeGreaterThan(mounted.sceneRequests);
-    expect(reattached.poseRequests).toBeGreaterThan(mounted.poseRequests);
+    // A retained scene can already be ready while the fresh controllers are
+    // starting their reads. Wait for each request instead of treating that
+    // retained render as proof that every asynchronous read has started.
+    await expect.poll(() => catalogRequests).toBeGreaterThan(mounted.catalogRequests);
+    await expect.poll(() => sceneRequests).toBeGreaterThan(mounted.sceneRequests);
+    await expect.poll(() => poseRequests).toBeGreaterThan(mounted.poseRequests);
 
     await page.evaluate(() => {
       const shell = window.__lifecyclePanel.shadowRoot.querySelector("matic-map-shell-v4");

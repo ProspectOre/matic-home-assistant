@@ -104,6 +104,7 @@ export class EffectController {
   #catalogLoading = false;
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
+  #catalogSettled: Promise<void> = Promise.resolve();
   #poseLoading = false;
   #poseQueued = false;
   #entryIdentity = "";
@@ -291,10 +292,12 @@ export class EffectController {
         this.#catalogRefreshQueued = true;
         this.#controllers.get("catalog")?.abort();
       }
-      return;
+      return this.#catalogSettled;
     }
     this.#catalogLoading = true;
     this.#catalogForceInFlight = force;
+    let settleCatalog!: () => void;
+    this.#catalogSettled = new Promise<void>((resolve) => { settleCatalog = resolve; });
     const controller = this.#controller("catalog");
     const previous = this.#store.value.resources.catalog.value;
     this.#store.patch({
@@ -383,9 +386,13 @@ export class EffectController {
       this.#catalogLoading = false;
       const forceQueued = this.#catalogRefreshQueued;
       this.#catalogForceInFlight = false;
-      if (forceQueued && !this.#disposed) {
-        this.#catalogRefreshQueued = false;
-        void this.refreshCatalog(true);
+      try {
+        if (forceQueued && !this.#disposed) {
+          this.#catalogRefreshQueued = false;
+          await this.refreshCatalog(true);
+        }
+      } finally {
+        settleCatalog();
       }
     }
   }
