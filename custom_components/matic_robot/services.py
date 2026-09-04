@@ -191,7 +191,9 @@ CLEAN_ROOM_SEQUENCE_SCHEMA = cv.make_entity_service_schema(
     }
 )
 
-PLAN_TARGET_SCHEMA = cv.make_entity_service_schema({})
+PLAN_TARGET_SCHEMA = cv.make_entity_service_schema(
+    {vol.Optional("include_unmanaged", default=False): cv.boolean}
+)
 
 RESET_PLAN_HISTORY_SCHEMA = cv.make_entity_service_schema(
     {
@@ -661,9 +663,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
     async def async_stop_intelligent_cleaning(call: ServiceCall) -> None:
         """Apply the active plan's stop policy and send the robot home."""
-        entity_id, entry, serial_number, _room_map = _saved_plan_context(hass, call)
+        entity_id, entry, serial_number, _room_map = _saved_plan_context(
+            hass, call, require_rooms=False
+        )
         decision = manager.request_stop(serial_number)
-        if decision.behavior == "not_running":
+        if decision.behavior == "not_running" and not call.data.get(
+            "include_unmanaged"
+        ):
             return
         if decision.behavior == "after_room":
             return

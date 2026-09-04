@@ -19,6 +19,7 @@ import {
   canEditCoordinates,
   canReadFloorResources,
   canStartMotion,
+  canStopMotion,
   CoherenceMachine,
   WorkspaceStore,
 } from "./state";
@@ -104,6 +105,7 @@ export class EffectController {
   #catalogLoading = false;
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
+  #catalogSettled: Promise<void> = Promise.resolve();
   #poseLoading = false;
   #poseQueued = false;
   #entryIdentity = "";
@@ -291,10 +293,12 @@ export class EffectController {
         this.#catalogRefreshQueued = true;
         this.#controllers.get("catalog")?.abort();
       }
-      return;
+      return this.#catalogSettled;
     }
     this.#catalogLoading = true;
     this.#catalogForceInFlight = force;
+    let settleCatalog!: () => void;
+    this.#catalogSettled = new Promise<void>((resolve) => { settleCatalog = resolve; });
     const controller = this.#controller("catalog");
     const previous = this.#store.value.resources.catalog.value;
     this.#store.patch({
@@ -383,9 +387,13 @@ export class EffectController {
       this.#catalogLoading = false;
       const forceQueued = this.#catalogRefreshQueued;
       this.#catalogForceInFlight = false;
-      if (forceQueued && !this.#disposed) {
-        this.#catalogRefreshQueued = false;
-        void this.refreshCatalog(true);
+      try {
+        if (forceQueued && !this.#disposed) {
+          this.#catalogRefreshQueued = false;
+          await this.refreshCatalog(true);
+        }
+      } finally {
+        settleCatalog();
       }
     }
   }
@@ -636,8 +644,13 @@ export class EffectController {
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
       if (!this.#coherence.accepts(stamp) || history.entryId !== entry.entryId) return;
-      const activeFloor = history.floors.find((floor) => floor.active) || history.floors[0];
-      if (!activeFloor) return;
+      const state = this.#store.value;
+      const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
+      const selectedSnapshotExists = !state.selection.historyId
+        || selectedFloor?.snapshots.some((snapshot) => snapshot.id === state.selection.historyId);
+      const activeFloor = state.dataMode === "live"
+        ? history.floors.find((floor) => floor.active)
+        : selectedFloor;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
@@ -646,9 +659,17 @@ export class EffectController {
         floor: {
           ...this.#store.value.floor,
           classifiedCount: history.floors.length,
-          displayName: safeFloorName(activeFloor, 1),
+          ...(activeFloor ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
       });
+      if (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists)) {
+        const fallback = selectedFloor || history.floors.find((floor) => floor.active) || history.floors[0];
+        const selection = this.selectFloor(fallback?.id || "current");
+        if (!this.#disposed && state.workflow === "history") {
+          this.#store.dispatch({ type: "open-workflow", workflow: "history" });
+        }
+        await selection;
+      }
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
       this.#store.patch({
@@ -771,12 +792,12 @@ export class EffectController {
     const entry = this.#store.value.resources.entry;
     if (!history || !entry) return;
     const floor = history.floors.find((candidate) => candidate.id === floorId);
-    if (!floor) return;
+    if (!floor && floorId !== "current") return;
     const currentState = this.#store.value;
     if ((currentState.workflow === "draw" && (currentState.draw.dirty || currentState.areaDraft.dirty))
       || (currentState.workflow === "areaReview"
         && (currentState.draw.dirty || currentState.areaDraft.dirty))) return;
-    if (floor.active) {
+    if (!floor || floor.active) {
       this.#entryIdentity = "";
       const state = this.#store.value;
       this.#store.patch({
@@ -784,7 +805,12 @@ export class EffectController {
           ...state.resources,
           plans: resource("idle", null),
           areas: resource("idle", null),
+          scene: resource("idle", null),
+          pose: resource("idle", null),
         },
+        map: { ...state.map, available: false, exactPose: false },
+        coherence: "verifying",
+        floor: { ...state.floor, readOnly: false, displayName: "Current floor" },
         workflow: "none",
         precisionOpen: false,
       });
@@ -911,6 +937,14 @@ export class EffectController {
       this.selectArea(null);
     }
     this.#store.dispatch({ type: "open-workflow", workflow });
+    if (workflow === "history") {
+      const entry = this.#store.value.resources.entry;
+      const stamp = this.#coherence.current();
+      if (entry && stamp) {
+        this.#store.patch({ resources: { ...this.#store.value.resources, history: resource("loading", this.#store.value.resources.history.value) } });
+        await this.#loadHistory(entry, stamp);
+      }
+    }
     if (workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "draw" || workflow === "areaReview") await this.loadAreas();
   }
@@ -928,6 +962,10 @@ export class EffectController {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (!currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (this.#store.value.planDraft.dirty) {
+        this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
+        return;
+      }
       const planId = plans.selectedPlan || plans.plans[0]?.id || null;
       const plan = plans.plans.find((candidate) => candidate.id === planId);
       this.#store.patch({
@@ -1122,7 +1160,7 @@ export class EffectController {
     const plans = state.resources.plans.value;
     if (!plans || !draft.name.trim() || !draft.rooms.length || !canEditCoordinates(state)) return;
     const rooms: readonly PlanRoom[] = draft.rooms;
-    await this.#serviceMutation("save_plan", {
+    const saved = await this.#serviceMutation("save_plan", {
       ...(draft.id ? { plan_id: draft.id } : {}),
       name: draft.name.trim(),
       enabled: draft.enabled,
@@ -1137,25 +1175,40 @@ export class EffectController {
       finish_current_room_threshold: draft.finishCurrentRoomThreshold,
       select: !draft.id || plans.selectedPlan === draft.id,
     }, "Plan saved", "Plan could not be saved");
-    await this.loadPlans();
+    if (saved) {
+      this.#store.patch({ planDraft: { ...this.#store.value.planDraft, dirty: false } });
+      await this.loadPlans();
+    }
   }
 
   async deletePlan(): Promise<void> {
     const planId = this.#store.value.selection.planId;
+    const entryId = this.#store.value.selection.entryId;
     if (!planId) return;
-    await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
-    await this.loadPlans();
+    const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
+    if (deleted) {
+      if (this.#store.value.selection.entryId === entryId
+        && this.#store.value.planDraft.id === planId) this.selectPlan(null);
+      await this.loadPlans();
+    }
   }
 
   async executeAction(id: string): Promise<void> {
     switch (id) {
-      case "stop":
-        if (this.#store.value.resources.entry?.activePlan
-          || this.#store.value.resources.entry?.runnerLocked) {
-          await this.#motion("matic_robot", "stop_intelligent_cleaning", {});
-        } else {
-          await this.#motion("vacuum", "return_to_base", {});
+      case "recheck-status": {
+        const entryId = this.#store.value.selection.entryId;
+        await this.refreshCatalog(true);
+        const state = this.#store.value;
+        if (!this.#disposed && state.selection.entryId === entryId
+          && state.resources.catalog.status === "ready"
+          && state.host.connected && state.host.robotConnected
+          && state.coherence === "current" && state.command === "failed") {
+          this.#store.patch({ command: "idle", notice: { tone: "info", text: "Status refreshed. Review the robot state before trying again." } });
         }
+        return;
+      }
+      case "stop":
+        await this.#motion("matic_robot", "stop_intelligent_cleaning", { include_unmanaged: true });
         return;
       case "resume":
         await this.#motion("vacuum", "start", {});
@@ -1208,15 +1261,17 @@ export class EffectController {
     data: Readonly<Record<string, unknown>>,
     success: string,
     failure: string,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const entityId = this.#projection?.vacuumEntityId;
-    if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return;
+    if (!entityId || !canEditCoordinates(this.#store.value) || this.#store.value.command === "pending") return false;
     this.#store.patch({ command: "pending", notice: { tone: "info", text: "Saving…" } });
     try {
       await this.#backend.service("matic_robot", service, data, entityId);
       this.#store.patch({ command: "idle", notice: { tone: "success", text: success } });
+      return true;
     } catch {
       this.#store.patch({ command: "failed", notice: { tone: "error", text: failure } });
+      return false;
     }
   }
 
@@ -1225,24 +1280,19 @@ export class EffectController {
     const entityId = this.#projection?.vacuumEntityId;
     const stopping = service === "stop_intelligent_cleaning"
       || (domain === "vacuum" && service === "return_to_base");
-    const stopAllowed = stopping
-      && state.command === "idle"
-      && (state.activity === "cleaning"
-        || state.activity === "paused"
-        || state.activity === "returning"
-        || state.activity === "recharging");
-    if (!entityId || (!stopAllowed && !canStartMotion(state))) return;
+    if (!entityId || (stopping ? !canStopMotion(state) : !canStartMotion(state))) return;
     this.#store.patch({ command: "pending", notice: null });
     try {
       await this.#backend.service(domain, service, data, entityId);
-      this.#store.patch({ command: "settling" });
+      const settlingCommand = stopping ? "settling" : "starting";
+      this.#store.patch({ command: settlingCommand });
       if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
       this.#settleTimer = window.setTimeout(() => {
         this.#settleTimer = null;
-        if (this.#store.value.command === "settling") this.#store.patch({ command: "idle" });
+        if (this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
       }, 15_000);
     } catch {
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: "The robot did not accept that action" } });
+      this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });
     }
   }
 

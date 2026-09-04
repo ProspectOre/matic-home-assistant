@@ -211,6 +211,7 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     }
     if (intent.type === "select-area") {
       this.#effects?.selectArea(intent.areaId);
+      if (intent.workflow === "areaReview") void this.#effects?.openWorkflow("areaReview");
       return;
     }
     this.#store.dispatch(intent);

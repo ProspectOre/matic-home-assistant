@@ -1299,7 +1299,12 @@
     "stop_intelligent_cleaning": {
       "name": "Stop cleaning plan",
       "description": "Stops the plan using its saved finish-current-room policy, never starts another room, and sends the robot to its dock.",
-      "fields": {}
+      "fields": {
+        "include_unmanaged": {
+          "name": "Also stop other cleaning",
+          "description": "If no managed plan is running, stop one-time or externally started cleaning and return to the dock. Active plans always use their saved stop policy."
+        }
+      }
     },
     "reset_plan_history": {
       "name": "Reset cleaning history",

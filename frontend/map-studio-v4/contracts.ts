@@ -52,7 +52,7 @@ export type Workflow =
   | "history"
   | "support";
 
-export type CommandState = "idle" | "pending" | "settling" | "failed";
+export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
 export type DrawTool = "paint" | "erase" | "pan";
 export type DialogKind =
   | "discardDraft"
@@ -244,7 +244,7 @@ export type WorkspaceIntent =
   | { readonly type: "select-entry"; readonly entryId: string }
   | { readonly type: "set-history"; readonly historyId: string | null }
   | { readonly type: "select-plan"; readonly planId: string | null }
-  | { readonly type: "select-area"; readonly areaId: string | null }
+  | { readonly type: "select-area"; readonly areaId: string | null; readonly workflow?: "areaReview" }
   | { readonly type: "patch-plan-draft"; readonly patch: Partial<PlanDraft> }
   | { readonly type: "patch-area-draft"; readonly patch: Partial<AreaDraft> }
   | { readonly type: "set-notice"; readonly notice: WorkspaceNotice | null }

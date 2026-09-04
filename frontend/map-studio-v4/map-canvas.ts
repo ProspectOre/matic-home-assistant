@@ -194,7 +194,7 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
     .map-message {
-      inset: 50% auto auto 50%;
+      inset: calc((100% - var(--map-sheet-offset, 0px)) / 2) auto auto 50%;
       translate: -50% -50%;
       inline-size: min(22rem, calc(100% - 2rem));
       padding: 1rem 1.1rem;

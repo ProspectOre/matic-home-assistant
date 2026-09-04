@@ -1,3 +1,4 @@
+import { needsDraftConfirmation } from "./draft-navigation";
 import {
   DRAW_BRUSH_MAX_METERS,
   DRAW_BRUSH_MIN_METERS,
@@ -283,6 +284,14 @@ export const reduceWorkspace = (
       });
     }
     case "discard-draft":
+      if (state.workflow === "plan") return {
+        ...state,
+        planDraft: initialWorkspaceState().planDraft,
+        selection: { ...state.selection, planId: null },
+        dialog: null,
+        workflow: "none",
+        precisionOpen: false,
+      };
       return {
         ...updateDraw(state, {
           dirty: false,
@@ -355,7 +364,11 @@ export const reduceWorkspace = (
     case "select-plan":
       return { ...state, selection: { ...state.selection, planId: intent.planId } };
     case "select-area":
-      return { ...state, selection: { ...state.selection, areaId: intent.areaId } };
+      return {
+        ...state,
+        selection: { ...state.selection, areaId: intent.areaId },
+        workflow: intent.workflow === "areaReview" ? "areaReview" : state.workflow,
+      };
     case "patch-plan-draft":
       return {
         ...state,
@@ -379,6 +392,7 @@ export const reduceWorkspace = (
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
     case "dismiss-top-layer":
+      if (needsDraftConfirmation(state, intent)) return { ...state, dialog: "discardDraft" };
       if (state.dialog) return { ...state, dialog: null };
       if (state.precisionOpen) return { ...state, precisionOpen: false };
       if (state.fullMap) return { ...state, fullMap: false };
@@ -561,8 +575,14 @@ const disabledAction = (
   reasonKey,
 });
 
+export const canStopMotion = (state: WorkspaceState): boolean =>
+  state.host.connected && state.host.administrator && state.host.robotConnected
+  && (state.command === "idle" || state.command === "failed" || state.command === "starting")
+  && (state.activity === "cleaning" || state.activity === "paused"
+    || state.activity === "returning" || state.activity === "recharging");
+
 const stopAction = (state: WorkspaceState): PrimaryAction => {
-  const enabled = state.command === "idle";
+  const enabled = canStopMotion(state);
   return {
     id: "stop",
     label: "Stop",
@@ -595,6 +615,20 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   if (state.activity === "cleaning" || state.activity === "returning" || state.activity === "recharging") {
     return stopAction(state);
   }
+  const editingDraft = (state.workflow === "plan" && state.planDraft.dirty)
+    || ((state.workflow === "draw" || state.workflow === "areaReview")
+      && (state.draw.dirty || state.areaDraft.dirty));
+  if (state.command === "failed" && !editingDraft) {
+    return {
+      id: "recheck-status",
+      label: "Check robot status",
+      labelKey: "v4_recheck_robot",
+      kind: "primary",
+      enabled: state.host.connected && state.host.administrator && state.host.robotConnected,
+      reason: "Refresh the robot state before trying the action again.",
+      reasonKey: "v4_recheck_robot_reason",
+    };
+  }
   if (state.activity === "stopping" || state.command === "settling") {
     return disabledAction(
       "stopping",
@@ -603,6 +637,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_action_stopping",
       "v4_reason_stopping",
     );
+  }
+  if (state.command === "starting") {
+    return disabledAction("starting", "Starting", "Waiting for the robot to begin.", "v4_action_starting", "v4_reason_starting");
   }
   if (state.activity === "paused") {
     return {
@@ -631,6 +668,12 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_reason_administrator",
     );
   }
+  if (state.host.robotCount === 0) {
+    return disabledAction("setup", "Set up a Matic robot", "Add the Matic integration to get started.", "v4_set_up_robot", "v4_setup_reason");
+  }
+  if (state.activity === "problem") {
+    return disabledAction("problem", "Check the robot", "Resolve the robot's problem before starting another task.", "v4_check_robot", "v4_problem_reason");
+  }
   if (!state.host.robotConnected) {
     return disabledAction(
       "robot-offline",
@@ -640,6 +683,9 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "v4_reason_robot_offline",
     );
   }
+  if (state.coherence === "unavailable" || state.coherence === "blocked") {
+    return disabledAction("map-unavailable", "Map unavailable", "Open Map diagnostics to check why the map is unavailable.", "v4_map_unavailable", "v4_map_unavailable_reason");
+  }
   if (state.coherence !== "current") {
     return disabledAction(
       "locating",
@@ -647,6 +693,17 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       "Waiting for the robot to confirm which floor it is on.",
       "v4_action_locating",
       "v4_reason_locating",
+    );
+  }
+  if ((state.workflow === "plan" || state.workflow === "rooms")
+    && state.resources.plans.status !== "ready") {
+    const unavailable = state.resources.plans.status === "error" || state.resources.plans.status === "empty";
+    return disabledAction(
+      "plans-unavailable",
+      unavailable ? "Rooms and plans unavailable" : "Loading rooms and plans…",
+      "Load the room and plan list before choosing a cleaning action.",
+      unavailable ? "v4_plans_unavailable_action" : "v4_loading_rooms_plans",
+      "v4_plans_required_reason",
     );
   }
   if (state.workflow === "draw") {
