@@ -1571,6 +1571,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("alert")).toContainText("Map history is unavailable right now. Try again shortly.");
   });
 
+  test("keeps a saved-area destination intact through cancel and discard", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state, resources: { ...state.resources, areas: { ...state.resources.areas, value: { ...state.resources.areas.value, areas: [...state.resources.areas.value.areas, { ...state.resources.areas.value.areas[0], id: "other-area", name: "Other area" }] } } } });
+    }, GALLERY_TAG);
+    const target = gallery.getByRole("button", { name: "Other area Ready", exact: true });
+    await target.click();
+    const dialog = gallery.getByRole("dialog", { name: "Discard area changes?" });
+    await expect(dialog).toBeVisible();
+    expect(await snapshot(page)).toMatchObject({ workflow: "draw", selection: { areaId: "entryway" }, draw: { dirty: true } });
+    await dialog.getByRole("button", { name: "Keep editing" }).click();
+    expect(await snapshot(page)).toMatchObject({ workflow: "draw", selection: { areaId: "entryway" }, draw: { dirty: true } });
+    await target.click();
+    await dialog.getByRole("button", { name: "Discard", exact: true }).click();
+    await expect.poll(async () => {
+      const state = await snapshot(page);
+      return { workflow: state.workflow, areaId: state.selection.areaId, dialog: state.dialog };
+    }).toEqual({ workflow: "areaReview", areaId: "other-area", dialog: null });
+  });
+
   test("asks before switching floors with an unsaved custom-area draft", async ({ page }) => {
     await page.setViewportSize({ width: 1180, height: 760 });
     const gallery = await loadGallery(page, { scenario: "draw" });

@@ -3,13 +3,14 @@
 Date: 2026-09-04. Scope: workflow-recovery candidate based on RC8 (`0dbf1ca`).
 Status: software review and local validation; not installed or release-approved.
 Frontend bundle SHA-256:
-`35bb7d4b42f18cdc3d86ba820b5471b988ad949b73f5cb42007a23540915a60d`.
+`614b120eda001f2da990e891ade80689d0fd80ebca6a35d11d0a84732de50fb5`.
 
 ## Changes
 
 - Failed/blocked plan saves preserve edits; successful saves refresh the catalog.
 - Plan and area navigation share draft protection across nested controls,
   floor/robot selectors, Back, and Escape. Cancelling restores selectors.
+  A saved area and its review screen are selected atomically after confirmation.
 - Browser Back restores the editor's history entry before showing the discard
   dialog; a second Back dismisses the dialog without losing the draft.
 - Forms disable their controls during a pending save.
@@ -54,7 +55,7 @@ status problems; both have dedicated browser regressions.
 ## Validation and limits
 
 - Python suite: 1,242 passing tests with 100% coverage (11,369 statements).
-- Browser suite: 255 passing checks across desktop Chromium/WebKit and mobile
+- Browser suite: 257 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, and action/status visibility regressions.
 - Lifecycle reattachment waits for fresh reads; 20 repeated checks passed.

@@ -427,8 +427,7 @@ line-height: var(--ms-lh-snug);
             <button class="list-button ms-row ms-row" type="button" @click=${() => this.#intent({ type: "select-area", areaId: null })}>＋ ${this.#t("area_new", "New outline")}</button>
             ${(areas.value?.areas || []).map((area) => html`
               <button class="list-button ms-row ms-row" type="button" @click=${() => {
-                this.#intent({ type: "select-area", areaId: area.id });
-                this.#intent({ type: "open-workflow", workflow: "areaReview" });
+                this.#intent({ type: "select-area", areaId: area.id, workflow: "areaReview" });
               }}>
                 <span>${area.name}</span>
                 <small>${area.status === "current" ? this.#t("area_workspace_ready", "Ready") : this.#t("v4_review", "Review")}</small>

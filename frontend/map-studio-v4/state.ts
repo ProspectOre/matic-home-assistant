@@ -364,7 +364,11 @@ export const reduceWorkspace = (
     case "select-plan":
       return { ...state, selection: { ...state.selection, planId: intent.planId } };
     case "select-area":
-      return { ...state, selection: { ...state.selection, areaId: intent.areaId } };
+      return {
+        ...state,
+        selection: { ...state.selection, areaId: intent.areaId },
+        workflow: intent.workflow === "areaReview" ? "areaReview" : state.workflow,
+      };
     case "patch-plan-draft":
       return {
         ...state,
