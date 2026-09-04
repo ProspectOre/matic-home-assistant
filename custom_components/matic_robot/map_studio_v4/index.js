@@ -1134,6 +1134,10 @@ line-height: var(--ms-lh-snug);
 
     .quick-actions, .shelf { display: grid; gap: var(--ms-space-2); }
     .quick-actions .ms-row__body small { color: var(--ms-text-quiet); }
+    /* The featured card is tinted with the accent, which drops the quiet
+       text below AA (4.3:1 on the default light theme). Pull it towards
+       the body text colour so it clears 4.5:1 on both schemes. */
+    .quick-actions .ms-row--featured .ms-row__body small { color: color-mix(in srgb, var(--ms-text-quiet) 70%, var(--ms-text)); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__lead { color: var(--ms-text-disabled); background: color-mix(in srgb, var(--ms-text) 6%, var(--ms-local)); }
     .quick-actions .ms-row[aria-disabled="true"] .ms-row__body strong { color: var(--ms-text-disabled); }
     .shelf-heading { margin: var(--ms-space-5) 0 var(--ms-space-2); color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-bold); letter-spacing: 0.04em; text-transform: uppercase; }
@@ -1167,6 +1171,10 @@ line-height: var(--ms-lh-snug);
       background: var(--ms-local);
     }
     .full-map-hud.has-secondary { grid-template-columns: minmax(0, 1fr) auto auto; }
+    /* The map dock (the Draw tools, or the rooms selection chip -- one 44px
+       row) sits bottom-centre; on a wide layout the HUD is bottom-right and
+       the two collide below about 1400px. Lift the HUD clear of the dock. */
+    .wide .full-map-hud.above-dock { inset-block-end: calc(var(--ms-space-3) + 3.5rem + var(--ms-space-2)); }
     .hud-copy { min-inline-size: 0; }
     .hud-copy strong, .hud-copy small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .hud-copy strong { font-size: var(--ms-t-sm); }
@@ -1241,6 +1249,9 @@ line-height: var(--ms-lh-snug);
       -webkit-user-select: none;
     }
     .narrow .sheet-grip:active { cursor: grabbing; }
+    /* The step buttons are compact on the grip line but still touch targets:
+       full control height (44px) on a phone, not the 36px --sm size. */
+    .narrow .sheet-grip .ms-btn--sm { min-block-size: var(--ms-control); min-inline-size: var(--ms-control); }
     .narrow .sheet-handle {
       position: absolute;
       inset-block-start: var(--ms-space-1);
@@ -1637,7 +1648,7 @@ line-height: var(--ms-lh-snug);
 
             ${H.fullMap?v`
               <section
-                class=${`full-map-hud ms-surface ms-surface--floating ${t?"has-secondary":""}`}
+                class=${`full-map-hud ms-surface ms-surface--floating ${t?"has-secondary":""} ${!V&&(H.workflow==="draw"||H.workflow==="rooms"&&H.selection.roomIds.length>0)?"above-dock":""}`}
                 aria-label="Robot status and action"
               >
                 <span class="hud-copy"><strong>${L.title}</strong><small>${L.detail}</small></span>
