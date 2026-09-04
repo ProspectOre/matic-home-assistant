@@ -93,7 +93,7 @@
     "plan_save": "Save plan",
     "plan_select": "Set as default",
     "plan_threshold": "Minimum room progress",
-    "plan_threshold_hint": "Stop waits for this much progress; below it, the robot stops immediately.",
+    "plan_threshold_hint": "When Stop is requested, the robot checks this progress: below it stops now; at or above it finishes this room before docking.",
     "plan_workspace_count": "{count} saved plans",
     "plan_workspace_delete_failed": "Plan could not be deleted",
     "plan_workspace_incomplete": "Add a name and at least one room",

@@ -941,7 +941,7 @@ line-height: var(--ms-lh-snug);
             <label class="plan-threshold ms-field">
               <span class="plan-threshold-copy">
                 <strong>${this.#H("plan_threshold","Minimum room progress")}</strong>
-                <small>${this.#H("plan_threshold_hint","Stop waits for this much progress; below it, the robot stops immediately.")}</small>
+                <small>${this.#H("plan_threshold_hint","When Stop is requested, the robot checks this progress: below it stops now; at or above it finishes this room before docking.")}</small>
               </span>
               <span class="threshold-value">${L.finishCurrentRoomThreshold}%</span>
               <input type="range" min="0" max="100" step="5" .value=${String(L.finishCurrentRoomThreshold)} aria-label=${this.#H("plan_threshold","Minimum room progress")} @input=${o=>this.#r({type:"patch-plan-draft",patch:{finishCurrentRoomThreshold:Number($(o))}})}>

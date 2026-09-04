@@ -385,7 +385,7 @@ line-height: var(--ms-lh-snug);
             <label class="plan-threshold ms-field">
               <span class="plan-threshold-copy">
                 <strong>${this.#t("plan_threshold", "Minimum room progress")}</strong>
-                <small>${this.#t("plan_threshold_hint", "Stop waits for this much progress; below it, the robot stops immediately.")}</small>
+                <small>${this.#t("plan_threshold_hint", "When Stop is requested, the robot checks this progress: below it stops now; at or above it finishes this room before docking.")}</small>
               </span>
               <span class="threshold-value">${draft.finishCurrentRoomThreshold}%</span>
               <input type="range" min="0" max="100" step="5" .value=${String(draft.finishCurrentRoomThreshold)} aria-label=${this.#t("plan_threshold", "Minimum room progress")} @input=${(event: Event) => this.#intent({ type: "patch-plan-draft", patch: { finishCurrentRoomThreshold: Number(eventValue(event)) } })}>
