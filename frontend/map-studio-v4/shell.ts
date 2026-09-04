@@ -651,6 +651,7 @@ export class MaticMapShellV4 extends LitElement {
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
   #dialogLauncher: HTMLElement | null = null;
+  #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingWorkflow: Workflow | null = null;
   #drag: SheetDrag | null = null;
@@ -731,8 +732,15 @@ export class MaticMapShellV4 extends LitElement {
         this.#brushLauncher()?.focus();
       }
       if (previous?.fullMap && !this.state.fullMap) {
+        const launcher = this.#workspaceLauncher;
+        this.#workspaceLauncher = null;
         void this.updateComplete.then(() => {
-          requestAnimationFrame(() => this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")?.focus({ preventScroll: true }));
+          requestAnimationFrame(() => {
+            const target = this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")
+              ?? this.renderRoot.querySelector<HTMLElement>(".nav--menu")
+              ?? (launcher?.isConnected ? launcher : null);
+            target?.focus({ preventScroll: true });
+          });
         });
       }
       if (!previous?.dialog && this.state.dialog) {
@@ -1006,6 +1014,11 @@ export class MaticMapShellV4 extends LitElement {
       bubbles: true,
       composed: true,
     }));
+  }
+
+  #toggleWorkspace(event: Event): void {
+    this.#workspaceLauncher = event.currentTarget as HTMLElement;
+    this.#intent({ type: this.state.fullMap ? "exit-full-map" : "enter-full-map" });
   }
 
   #closeOverflow(restoreFocus: boolean): void {
@@ -1473,7 +1486,7 @@ export class MaticMapShellV4 extends LitElement {
                 title=${state.fullMap
                   ? this.#t("v4_show_workspace", "Show workspace")
                   : this.#t("v4_hide_workspace", "Hide workspace")}
-                @click=${() => this.#intent({ type: state.fullMap ? "exit-full-map" : "enter-full-map" })}
+                @click=${this.#toggleWorkspace}
               >${icon(iconWorkspace)}</button>
             ` : nothing}
             ${!state.precisionOpen ? html`
