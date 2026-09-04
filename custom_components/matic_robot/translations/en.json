@@ -440,7 +440,14 @@
     "v4_copy_failed": "The summary could not be copied. Select the text to copy it by hand.",
     "map_style_room_colours": "Room colours",
     "v4_map_tools": "Map tools",
-    "v4_clear": "Clear"
+    "v4_clear": "Clear",
+    "v4_create_plan": "Create a plan",
+    "v4_custom_areas": "Custom areas",
+    "v4_room_colours": "Room colours",
+    "v4_returns_to_dock": "returns to the dock",
+    "v4_skip_to_map": "Skip to the map",
+    "v4_skip_to_workspace": "Skip to the map workspace",
+    "v4_brush_width_slider": "Brush width slider"
   },
   "config": {
     "abort": {
