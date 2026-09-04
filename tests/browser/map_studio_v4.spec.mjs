@@ -1328,8 +1328,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       }),
     }));
     await page.route("**/api/matic_robot/plans/synthetic-entry", async (route) => {
-      plansRequests += 1;
-      if (plansRequests === 1) {
+      if (plansRequests === 0) {
+        plansRequests = 1;
         return route.fulfill({
           status: 409,
           contentType: "application/json",
@@ -1338,6 +1338,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         });
       }
       await planRecovery;
+      plansRequests = 2;
       return route.fulfill({
         status: 200,
         contentType: "application/json",
