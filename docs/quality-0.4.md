@@ -41,7 +41,9 @@ The operator confirmed the robot stopped and docked. Full-run acceptance is open
   full-map revalidation. Late start responses cannot overwrite a newer Stop or
   update a different robot. Catalog-reported active work also exposes Stop.
   The server claims managed ownership before its first waiting step, so Stop
-  can cancel a start before dispatch. Resume has a separate paused-state guard
+  can cancel a start before dispatch. Direct starts, custom-area runs and Resume
+  also reject requests superseded while waiting for readiness or persistence.
+  Resume has a separate paused-state guard
   and uses the existing resume-only command instead of full-floor Start.
 - Active cleaning, returning and recharge states keep Stop available after an
   uncertain start. Accepted starts have a separate state that blocks duplicate
@@ -69,7 +71,7 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,244 passing tests with 100% coverage (11,369 statements).
+- Python suite: 1,251 passing tests with 100% coverage (11,394 statements).
 - Follow-up browser suite: 275 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, delayed start/Stop responses, robot switches,

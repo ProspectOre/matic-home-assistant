@@ -120,11 +120,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             ),
         }
 
+    def _require_motion_generation(
+        self, serial_number: str, generation: int | None
+    ) -> None:
+        """Reject an old request without clearing a newer Stop's fence."""
+        if self._plans.motion_generation(serial_number) != generation:
+            raise ServiceValidationError(
+                "The command was superseded before it could run"
+            )
+
     async def _async_command(
         self, command: UserCommand, *, replace_plan: bool = False
     ) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
+        generation = self._plans.motion_generation(serial_number)
         if command is not UserCommand.STOP:
             await self._async_ensure_stop_settled(serial_number)
         context = (
@@ -134,7 +144,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         )
         async with context:
             if command is not UserCommand.STOP:
+                self._require_motion_generation(serial_number, generation)
                 await self._async_ensure_stop_settled(serial_number)
+                self._require_motion_generation(serial_number, generation)
             await self.coordinator.client.async_send_user_command(command)
             if command is UserCommand.STOP:
                 await self._plans.async_mark_stop_pending(serial_number)
@@ -191,14 +203,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         floor_plan = self._current_floor_plan(expected_floor_token)
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
+        request_generation = self._plans.motion_generation(serial_number)
         await self._async_ensure_stop_settled(serial_number)
+        self._require_motion_generation(serial_number, request_generation)
         context = (
             self._plans.managed_command(serial_number, motion_token)
             if motion_token is not None
             else self._plans.external_motion(serial_number)
         )
-        async with context:
+        async with context as dispatch_generation:
+            expected_generation = (
+                request_generation if motion_token is not None else dispatch_generation
+            )
+            self._require_motion_generation(serial_number, expected_generation)
             await self._async_ensure_stop_settled(serial_number)
+            self._require_motion_generation(serial_number, expected_generation)
             floor_plan = self._current_floor_plan(command_floor_token)
             await self.coordinator.client.async_start_coverage(
                 floor_plan,
