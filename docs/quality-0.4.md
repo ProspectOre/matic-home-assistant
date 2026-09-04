@@ -3,7 +3,7 @@
 Date: 2026-09-04. Scope: stop-availability follow-up to RC9 (`dc00269`).
 Status: local follow-up; RC9 is installed but has not passed physical acceptance.
 Frontend bundle SHA-256:
-`e0358f84c40380b31fa1e5ea939b5a04430b9b76c8765d4d932c05654f728dfe`.
+`ce99868ce031265868862a738476a0af841969475304a37b0c93ac255bd4725f`.
 
 ## RC9 physical finding
 
@@ -40,6 +40,9 @@ The operator confirmed the robot stopped and docked. Full-run acceptance is open
 - Start requests expose Stop immediately, including stale docked readback and
   full-map revalidation. Late start responses cannot overwrite a newer Stop or
   update a different robot. Catalog-reported active work also exposes Stop.
+  The server claims managed ownership before its first waiting step, so Stop
+  can cancel a start before dispatch. Resume has a separate paused-state guard
+  and uses the existing resume-only command instead of full-floor Start.
 - Active cleaning, returning and recharge states keep Stop available after an
   uncertain start. Accepted starts have a separate state that blocks duplicate
   starts without delaying Stop. UI and service guards share the same rule.
@@ -66,8 +69,8 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,242 passing tests with 100% coverage (11,369 statements).
-- Follow-up browser suite: 273 passing checks across desktop Chromium/WebKit and mobile
+- Python suite: 1,244 passing tests with 100% coverage (11,369 statements).
+- Follow-up browser suite: 275 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, delayed start/Stop responses, robot switches,
   and action/status visibility regressions. No retries were needed.

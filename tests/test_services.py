@@ -2672,6 +2672,77 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set() -> None
     run.assert_not_awaited()
 
 
+@pytest.mark.parametrize("replace", [False, True])
+async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
+    hass, replace: bool
+) -> None:
+    """An immediate Stop cannot be forgotten by a not-yet-dispatched run."""
+    manager = CleaningPlanManager(hass)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_check(*_args) -> None:
+        entered.set()
+        await release.wait()
+
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        {
+            "plan_id": "quick_clean",
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+            "return_to_base": True,
+        },
+    )
+    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
+    command = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._ensure_stop_settled",
+            side_effect=delayed_check,
+        ),
+        patch("custom_components.matic_robot.services._async_run_leg") as run,
+    ):
+        task = asyncio.create_task(
+            _async_execute_rooms(
+                hass,
+                call,
+                manager,
+                "vacuum.test",
+                "serial",
+                [room],
+                intelligent=False,
+                managed_user_command=command,
+            )
+        )
+        await entered.wait()
+        try:
+            assert manager.lock("serial").locked()
+            assert manager.request_stop("serial").behavior == "immediate"
+            if replace:
+                async with manager.external_motion("serial"):
+                    pass
+            with pytest.raises(ServiceValidationError, match="already running"):
+                await _async_execute_rooms(
+                    hass,
+                    call,
+                    manager,
+                    "vacuum.test",
+                    "serial",
+                    [room],
+                    intelligent=False,
+                )
+        finally:
+            release.set()
+            await task
+    run.assert_not_awaited()
+    command.assert_not_awaited()
+    assert not manager.lock("serial").locked()
+    assert not manager.has_managed_task("serial")
+
+
 def test_entry_lookup_returns_loaded_entry_and_rejects_stale_references() -> None:
     registry = SimpleNamespace(
         async_get=MagicMock(return_value=SimpleNamespace(config_entry_id="entry"))

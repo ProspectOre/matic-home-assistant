@@ -18,6 +18,7 @@ import { BackendError, MaticBackend } from "./backend";
 import {
   canEditCoordinates,
   canReadFloorResources,
+  canResumeMotion,
   canStartMotion,
   canStopMotion,
   CoherenceMachine,
@@ -1220,7 +1221,7 @@ export class EffectController {
         await this.#motion("matic_robot", "stop_intelligent_cleaning", { include_unmanaged: true });
         return;
       case "resume":
-        await this.#motion("vacuum", "start", {});
+        await this.#motion("vacuum", "send_command", { command: "resume" });
         return;
       case "run-plan": {
         const plan = this.#store.value.selection.planId
@@ -1289,8 +1290,9 @@ export class EffectController {
     const entityId = this.#projection?.vacuumEntityId;
     const stopping = service === "stop_intelligent_cleaning"
       || (domain === "vacuum" && service === "return_to_base");
+    const resuming = domain === "vacuum" && service === "send_command" && data.command === "resume";
     if (!entityId || state.selection.entryId !== this.#projection?.entryKey
-      || (stopping ? !canStopMotion(state) : !canStartMotion(state))) return;
+      || (stopping ? !canStopMotion(state) : resuming ? !canResumeMotion(state) : !canStartMotion(state))) return;
     // HA may keep a room-sequence service call open for the whole run. Stop
     // must be reachable before that call acknowledges, even while the last
     // vacuum state still says docked. A newer Stop owns all subsequent UI

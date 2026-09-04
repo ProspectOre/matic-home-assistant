@@ -559,6 +559,12 @@ export const canStartMotion = (state: WorkspaceState): boolean =>
   && state.command === "idle"
   && (state.activity === "idle" || state.activity === "docked");
 
+export const canResumeMotion = (state: WorkspaceState): boolean =>
+  canEditCoordinates(state)
+  && state.command === "idle"
+  && state.activity === "paused"
+  && state.resources.entry?.stopSettlePending !== true;
+
 const disabledAction = (
   id: string,
   label: string,
@@ -654,7 +660,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       label: "Resume cleaning",
       labelKey: "v4_action_resume",
       kind: "primary",
-      enabled: state.command === "idle",
+      enabled: canResumeMotion(state),
     };
   }
   if (!state.host.connected) {

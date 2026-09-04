@@ -2674,7 +2674,6 @@ async def _async_execute_rooms(
     floor_token: str | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
-    await _ensure_stop_settled(hass, manager, serial_number, entity_id)
     lock = manager.lock(serial_number)
     if lock.locked():
         raise _validation_error(
@@ -2686,6 +2685,10 @@ async def _async_execute_rooms(
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
         try:
+            # Publish ownership before the first suspending check. Otherwise
+            # Stop can observe no run while this start waits for an old stop
+            # fence to clear, and prepare_run would erase its cancellation.
+            await _ensure_stop_settled(hass, manager, serial_number, entity_id)
             finish_room_event = manager.finish_room_event(serial_number)
             chosen = (
                 manager.choose(serial_number, call.data["plan_id"], rooms)

@@ -290,9 +290,9 @@ test.describe("Map Studio v0.4 foundation", () => {
           effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
           try {
             await effects.refreshCatalog(true);
-            const start = effects.executeAction("resume");
+            const start = effects.executeAction("run-plan");
             const whileStarting = store.value.command;
-            await effects.executeAction("resume");
+            await effects.executeAction("run-plan");
             await effects.executeAction("stop");
             const afterStop = { command: store.value.command, notice: store.value.notice };
             completeStart();
@@ -300,7 +300,7 @@ test.describe("Map Studio v0.4 foundation", () => {
             return { calls, whileStarting, preserved: JSON.stringify(afterStop) === JSON.stringify({ command: store.value.command, notice: store.value.notice }), command: store.value.command };
           } finally { effects.dispose(); }
         }, { startRejects, stopRejects });
-        expect(result).toEqual({ calls: ["vacuum.start", "matic_robot.stop_intelligent_cleaning"], whileStarting: "starting", preserved: true, command: stopRejects ? "failed" : "settling" });
+        expect(result).toEqual({ calls: ["matic_robot.run_selected_plan", "matic_robot.stop_intelligent_cleaning"], whileStarting: "starting", preserved: true, command: stopRejects ? "failed" : "settling" });
       });
     }
   }
@@ -311,7 +311,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         const result = await page.evaluate(async ({ managed, rejected }) => {
           const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
           const initial = createGalleryState("ready");
-          const store = new WorkspaceStore(initial);
+          const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection, areaId: "entryway" } });
           const calls = [];
           const effects = new EffectController(store, {
             catalog: async () => [initial.resources.entry],
@@ -329,11 +329,11 @@ test.describe("Map Studio v0.4 foundation", () => {
           effects.sync(projection);
           try {
             await effects.refreshCatalog(true);
-            await effects.executeAction("resume");
+            await effects.executeAction("run-area");
             const failed = store.value.command;
             effects.sync({ ...projection, activity: "cleaning" });
             store.patch({ resources: { ...store.value.resources, entry: { ...store.value.resources.entry, activePlan: managed, runnerLocked: managed } } });
-            await effects.executeAction("resume");
+            await effects.executeAction("run-area");
             const host = store.value.host;
             for (const key of ["connected", "administrator", "robotConnected"]) {
               store.patch({ host: { ...host, [key]: false } });
@@ -345,7 +345,7 @@ test.describe("Map Studio v0.4 foundation", () => {
             return { failed, calls, command: store.value.command };
           } finally { effects.dispose(); }
         }, { managed, rejected });
-        expect(result).toEqual({ failed: rejected ? "failed" : "starting", calls: ["vacuum.start", "matic_robot.stop_intelligent_cleaning"], command: "settling" });
+        expect(result).toEqual({ failed: rejected ? "failed" : "starting", calls: ["matic_robot.clean_area", "matic_robot.stop_intelligent_cleaning"], command: "settling" });
       });
     }
   }
@@ -377,7 +377,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
           effects.sync(projection);
           await effects.refreshCatalog(true);
-          const start = effects.executeAction("resume");
+          const start = effects.executeAction("run-plan");
           if (close) effects.dispose();
           else {
             effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
@@ -395,7 +395,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       }
       return results;
     });
-    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["start", "vacuum.synthetic"]], preserved: true })));
+    expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["run_selected_plan", "vacuum.synthetic"]], preserved: true })));
   });
   test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
     await loadEffectHarness(page);
@@ -434,6 +434,44 @@ test.describe("Map Studio v0.4 foundation", () => {
       } finally { effects.dispose(); }
     });
     expect(result).toEqual({ calls: ["run_selected_plan", "clean_room_sequence"], phases: ["starting", "idle", "starting", "idle"] });
+  });
+  test("resumes a paused managed task with the resume-only command", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("paused");
+      const store = new WorkspaceStore({ ...initial, managedLock: true });
+      const calls = [];
+      const effects = new EffectController(store, {
+        catalog: async () => [{ ...initial.resources.entry, runnerLocked: true, activePlan: true }],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        service: async (...args) => { calls.push(args); },
+        dispose() {},
+      });
+      const projection = { host: initial.host, activity: "paused", batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
+      effects.sync(projection);
+      try {
+        await effects.refreshCatalog(true);
+        const ready = store.value;
+        for (const blocked of [
+          { ...ready, activity: "docked" },
+          { ...ready, coherence: "verifying" },
+          { ...ready, dataMode: "history" },
+          { ...ready, resources: { ...ready.resources, entry: { ...ready.resources.entry, stopSettlePending: true } } },
+        ]) {
+          store.replace(blocked);
+          await effects.executeAction("resume");
+        }
+        store.replace(ready);
+        await effects.executeAction("resume");
+        await effects.executeAction("resume");
+        return { calls, command: store.value.command };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ calls: [["vacuum", "send_command", { command: "resume" }, "vacuum.synthetic"]], command: "starting" });
   });
   test("clears a deleted dirty plan identity only after successful deletion", async ({ page }) => {
     await loadEffectHarness(page);
