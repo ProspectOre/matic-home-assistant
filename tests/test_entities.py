@@ -153,7 +153,7 @@ def _floor_plan() -> FloorPlan:
 
 @asynccontextmanager
 async def _motion_context(_serial: str):
-    yield
+    yield 0
 
 
 @asynccontextmanager
@@ -231,6 +231,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
         has_managed_task=MagicMock(return_value=False),
+        motion_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
         async_mark_stop_pending=AsyncMock(),
         async_clear_stop_pending=AsyncMock(),

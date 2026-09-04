@@ -2729,6 +2729,7 @@ test.describe("map studio", () => {
 
     await studio.locator(".cleaning-areas").click();
     await expect(studio.locator(".area-detail")).toBeVisible();
+    await expect(studio.locator("ha-selector-matic-area .tool-picker")).toBeVisible();
     const collapsed = await studio.evaluate((element) => {
       const root = element.shadowRoot;
       const workspace = root.querySelector(".areas-workspace").getBoundingClientRect();

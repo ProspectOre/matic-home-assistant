@@ -646,7 +646,7 @@ line-height: var(--ms-lh-snug);
   }
 
   protected override render() {
-    return html`<fieldset class="workflow-fields" ?disabled=${this.state.command === "pending"}>${this.#body()}</fieldset>`;
+    return html`<fieldset class="workflow-fields" ?disabled=${this.state.command !== "idle" && this.state.command !== "failed"}>${this.#body()}</fieldset>`;
   }
 
   #body() {

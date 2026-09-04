@@ -1,9 +1,18 @@
 # 0.4 UI quality review
 
-Date: 2026-09-04. Scope: workflow-recovery candidate based on RC8 (`0dbf1ca`).
-Status: software review and local validation; not installed or release-approved.
+Date: 2026-09-04. Scope: stop-availability follow-up to RC9 (`dc00269`).
+Status: local follow-up; RC9 is installed but has not passed physical acceptance.
 Frontend bundle SHA-256:
-`614b120eda001f2da990e891ade80689d0fd80ebca6a35d11d0a84732de50fb5`.
+`ce99868ce031265868862a738476a0af841969475304a37b0c93ac255bd4725f`.
+
+## RC9 physical finding
+
+RC9 passed exact-head review and hosted gates, then HACS installation, restart,
+served-bundle parity and clean native readback. A bounded one-time run exposed
+a long-lived service request that hid Stop before acknowledgement. Reloading
+restored Stop; cancellation recorded no completed-room credit. A presence
+automation then started separate work, so it must be isolated for repeat tests.
+The operator confirmed the robot stopped and docked. Full-run acceptance is open.
 
 ## Changes
 
@@ -28,6 +37,14 @@ Frontend bundle SHA-256:
 - Unconfirmed actions offer a read-only status recheck. A failed recheck stays
   blocked; a successful recheck never replays the original command. Rechecks
   await overlapping and queued forced catalog reads before clearing failure.
+- Start requests expose Stop immediately, including stale docked readback and
+  full-map revalidation. Late start responses cannot overwrite a newer Stop or
+  update a different robot. Catalog-reported active work also exposes Stop.
+  The server claims managed ownership before its first waiting step, so Stop
+  can cancel a start before dispatch. Direct starts, custom-area runs and Resume
+  also reject requests superseded while waiting for readiness or persistence.
+  Resume has a separate paused-state guard
+  and uses the existing resume-only command instead of full-floor Start.
 - Active cleaning, returning and recharge states keep Stop available after an
   uncertain start. Accepted starts have a separate state that blocks duplicate
   starts without delaying Stop. UI and service guards share the same rule.
@@ -54,10 +71,11 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,242 passing tests with 100% coverage (11,369 statements).
-- Browser suite: 257 passing checks across desktop Chromium/WebKit and mobile
+- Python suite: 1,251 passing tests with 100% coverage (11,394 statements).
+- Follow-up browser suite: 275 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
-  recovery, unavailable catalogs, and action/status visibility regressions.
+  recovery, unavailable catalogs, delayed start/Stop responses, robot switches,
+  and action/status visibility regressions. No retries were needed.
 - Lifecycle reattachment waits for fresh reads; 20 repeated checks passed.
   Hosted browser CI rejects tests that pass only after a retry.
 - TypeScript build, Ruff, format, strict Python types, privacy, release artifacts

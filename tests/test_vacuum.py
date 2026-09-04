@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.exceptions import ServiceValidationError
@@ -263,3 +263,36 @@ async def test_queued_stop_fence_is_rechecked_inside_command_lock(hass) -> None:
         item.args[0] for item in client.async_send_user_command.await_args_list
     ] == [UserCommand.STOP]
     client.async_start_coverage.assert_not_awaited()
+
+
+@pytest.mark.parametrize("command", ["resume", "clean_all"])
+@pytest.mark.parametrize("waiting_check", [1, 2])
+async def test_stop_cancels_undispatched_direct_motion(
+    hass, command: str, waiting_check: int
+) -> None:
+    entry = _entry(idle=True)
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    checks = 0
+
+    async def delayed_check(_serial: str) -> None:
+        nonlocal checks
+        checks += 1
+        if checks == waiting_check:
+            entered.set()
+            await release.wait()
+
+    with patch.object(entity, "_async_ensure_stop_settled", side_effect=delayed_check):
+        task = asyncio.create_task(entity.async_send_command(command))
+        await entered.wait()
+        manager.request_stop("synthetic-serial")
+        release.set()
+        with pytest.raises(ServiceValidationError, match="superseded"):
+            await task
+    client = entry.runtime_data.coordinator.client
+    client.async_start_coverage.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()

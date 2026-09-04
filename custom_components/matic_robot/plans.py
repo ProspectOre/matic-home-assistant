@@ -341,6 +341,11 @@ class CleaningPlanManager:
             self._stop_fences[serial_number] = deadline
 
     @callback
+    def motion_generation(self, serial_number: str) -> int:
+        """Read the ordering fence for a command that has not dispatched yet."""
+        return self._motion_generations.get(serial_number, 0)
+
+    @callback
     def begin_managed_motion(self, serial_number: str) -> int:
         """Claim a generation token for one managed plan run."""
         generation = self._motion_generations.get(serial_number, 0) + 1
@@ -381,12 +386,14 @@ class CleaningPlanManager:
         self._managed_motion.pop(serial_number, None)
         return reconciliation_removed
 
-    async def async_replace_managed_motion(self, serial_number: str) -> None:
+    async def async_replace_managed_motion(self, serial_number: str) -> int:
         """Persist replacement ownership before its independent command runs."""
         reconciliation_removed = self.replace_managed_motion(serial_number)
+        generation = self.motion_generation(serial_number)
         await self._async_persist_reconciliation_removal(
             serial_number, reconciliation_removed
         )
+        return generation
 
     @callback
     def register_run_task(self, serial_number: str) -> None:
@@ -450,14 +457,15 @@ class CleaningPlanManager:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
     @asynccontextmanager
-    async def external_motion(self, serial_number: str) -> AsyncIterator[None]:
+    async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
         """Replace a managed run and serialize one independent command."""
         reconciliation_removed = self.replace_managed_motion(serial_number)
+        generation = self.motion_generation(serial_number)
         async with self.command_lock(serial_number):
             await self._async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
             )
-            yield
+            yield generation
 
     @asynccontextmanager
     async def managed_command(
@@ -513,6 +521,11 @@ class CleaningPlanManager:
     @callback
     def request_stop(self, serial_number: str) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
+        # Fence undispatched direct starts/resumes even if no managed lock is
+        # held yet. A graceful stop keeps the current managed owner intact.
+        self._motion_generations[serial_number] = (
+            self.motion_generation(serial_number) + 1
+        )
         if not self.lock(serial_number).locked():
             return PlanStopDecision("not_running")
 

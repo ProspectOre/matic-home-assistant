@@ -48,7 +48,7 @@ import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
   initialWorkspaceState,
-  selectPausedSecondaryAction,
+  selectStopSecondaryAction,
   selectPrimaryAction,
 } from "./state";
 
@@ -94,6 +94,9 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   }
   if (state.coherence === "verifying" || state.coherence === "booting") {
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
+  }
+  if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
+    return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
   }
   if (state.activity === "cleaning") return { title: t("v4_cleaning", "Cleaning"), detail: t("v4_cleaning_progress", "Cleaning in progress"), icon: iconCleaning, notable: true };
   if (state.activity === "recharging") {
@@ -1137,7 +1140,7 @@ export class MaticMapShellV4 extends LitElement {
     const narrow = state.narrowHint || this._measuredNarrow;
     const status = statusCopy(state, this.localize);
     const primary = selectPrimaryAction({ ...state, narrowHint: narrow });
-    const secondary = selectPausedSecondaryAction(state);
+    const secondary = selectStopSecondaryAction(state);
     const statusAction = !narrow && primary.id === "stop"
       ? primary
       : !narrow && secondary?.id === "stop" ? secondary : null;
@@ -1360,8 +1363,8 @@ export class MaticMapShellV4 extends LitElement {
                 aria-label="Robot status and action"
               >
                 <span class="hud-copy"><strong>${status.title}</strong><small>${status.detail}</small></span>
-                ${locatingInFullMap ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
-                ${!locatingInFullMap && secondary
+                ${locatingInFullMap && primary.id !== "stop" ? nothing : this.#actionButton(primary, "ms-btn ms-btn--lg ms-btn--primary", "hud-reason")}
+                ${secondary && (!locatingInFullMap || secondary.id === "stop")
                   ? this.#actionButton(secondary, "ms-btn ms-btn--lg ms-btn--secondary", "hud-secondary-reason")
                   : nothing}
               </section>

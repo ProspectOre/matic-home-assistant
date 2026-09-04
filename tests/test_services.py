@@ -2672,6 +2672,154 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set() -> None
     run.assert_not_awaited()
 
 
+@pytest.mark.parametrize("replace", [False, True])
+async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
+    hass, replace: bool
+) -> None:
+    """An immediate Stop cannot be forgotten by a not-yet-dispatched run."""
+    manager = CleaningPlanManager(hass)
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def delayed_check(*_args) -> None:
+        entered.set()
+        await release.wait()
+
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        {
+            "plan_id": "quick_clean",
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+            "return_to_base": True,
+        },
+    )
+    room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
+    command = AsyncMock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._ensure_stop_settled",
+            side_effect=delayed_check,
+        ),
+        patch("custom_components.matic_robot.services._async_run_leg") as run,
+    ):
+        task = asyncio.create_task(
+            _async_execute_rooms(
+                hass,
+                call,
+                manager,
+                "vacuum.test",
+                "serial",
+                [room],
+                intelligent=False,
+                managed_user_command=command,
+            )
+        )
+        await entered.wait()
+        try:
+            assert manager.lock("serial").locked()
+            assert manager.request_stop("serial").behavior == "immediate"
+            if replace:
+                async with manager.external_motion("serial"):
+                    pass
+            with pytest.raises(ServiceValidationError, match="already running"):
+                await _async_execute_rooms(
+                    hass,
+                    call,
+                    manager,
+                    "vacuum.test",
+                    "serial",
+                    [room],
+                    intelligent=False,
+                )
+        finally:
+            release.set()
+            await task
+    run.assert_not_awaited()
+    command.assert_not_awaited()
+    assert not manager.lock("serial").locked()
+    assert not manager.has_managed_task("serial")
+
+
+@pytest.mark.parametrize("waiting_stage", ["preflight", "lock", "persist"])
+async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor = _area_floor_plan()
+    await manager.async_save_area(
+        "serial",
+        "test_area",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Test area",
+            "circles": [{"x": 1.0, "y": 1.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "quick",
+            "map_binding": binding_for_floor_plan(floor),
+        },
+    )
+    services = await _registered_services(hass, manager)
+    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor),
+                async_request_refresh=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    entered = asyncio.Event()
+    release = asyncio.Event()
+    first_check = True
+
+    async def preflight(*_args) -> None:
+        nonlocal first_check
+        if first_check:
+            first_check = False
+            if waiting_stage != "persist":
+                entered.set()
+            if waiting_stage == "preflight":
+                await release.wait()
+
+    async def persist(*_args) -> None:
+        if waiting_stage == "persist":
+            entered.set()
+            await release.wait()
+
+    lock = manager.command_lock("serial")
+    if waiting_stage == "lock":
+        await lock.acquire()
+    call = ServiceCall(hass, DOMAIN, "clean_area", {"area": "test_area"})
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {"room-office": "Office"}),
+        ),
+        patch(
+            "custom_components.matic_robot.services._ensure_stop_settled",
+            side_effect=preflight,
+        ),
+        patch.object(
+            manager, "_async_persist_reconciliation_removal", side_effect=persist
+        ),
+    ):
+        task = asyncio.create_task(_registered_handler(services, "clean_area")(call))
+        await entered.wait()
+        manager.request_stop("serial")
+        release.set()
+        if waiting_stage == "lock":
+            lock.release()
+        with pytest.raises(ServiceValidationError, match="superseded"):
+            await task
+    client.async_start_custom_coverage.assert_not_awaited()
+
+
 def test_entry_lookup_returns_loaded_entry_and_rejects_stale_references() -> None:
     registry = SimpleNamespace(
         async_get=MagicMock(return_value=SimpleNamespace(config_entry_id="entry"))
