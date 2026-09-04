@@ -64,13 +64,30 @@ export const readCanvasPalette = (host: HTMLElement): CanvasPalette => {
     // `hsl()` or a named colour) when read directly. Resolve each token through
     // the browser's colour parser before converting it to canvas channels.
     const probe = document.createElement("span");
+    const canvas = document.createElement("canvas");
+    canvas.width = 1;
+    canvas.height = 1;
+    const context = canvas.getContext("2d", { colorSpace: "srgb" });
     probe.setAttribute("aria-hidden", "true");
     probe.style.cssText = "position:absolute;inline-size:0;block-size:0;overflow:hidden;visibility:hidden;pointer-events:none";
     host.append(probe);
     const read = (key: PaletteKey): Channel => {
       const [token, , fallback] = SOURCES[key];
       probe.style.color = `var(${token}, transparent)`;
-      return parseColor(getComputedStyle(probe).color) ?? fallback;
+      const serialized = getComputedStyle(probe).color;
+      if (context) {
+        // Reading one pixel forces CSS Color 4 values (including oklch and
+        // display-p3) through the canvas' sRGB backing store before parsing.
+        context.clearRect(0, 0, 1, 1);
+        context.fillStyle = "transparent";
+        context.fillStyle = serialized;
+        context.fillRect(0, 0, 1, 1);
+        const [red, green, blue, alpha] = context.getImageData(0, 0, 1, 1).data;
+        if (red !== undefined && green !== undefined && blue !== undefined && alpha !== undefined && alpha !== 0) {
+          return [red, green, blue];
+        }
+      }
+      return parseColor(serialized) ?? fallback;
     };
     try {
       return {
