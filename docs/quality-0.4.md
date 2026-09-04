@@ -19,6 +19,15 @@ native session, managed work and reconciliation cleared.
 
 ## Changes
 
+- Native room commands are bound to mission, partition and room identities.
+  Boundary refinement and polygon ordering do not change the command target;
+  hashing them previously rejected valid queued commands and later plan legs.
+  Dispatch still uses the fresh coherent floor under the command lock. Changed
+  native identities, removed rooms and Stop supersession remain guarded.
+  Coordinate-based custom areas retain their separate local-geometry validation.
+  Regressions cover target/distant refinement, vertex/room ordering, fresh-map
+  dispatch and rejection of changed mission/partition/room identities.
+
 - Same-map outlines that can be confirmed remain in the area workspace without
   a global HA Repair. Invalid/unreviewable areas and changed floor identity keep
   repairs; all existing cleaning validation remains in force. Reviewable areas
@@ -82,7 +91,7 @@ status problems; both have dedicated browser regressions.
 
 ## Validation and limits
 
-- Python suite: 1,253 passing tests with 100% coverage (11,402 statements).
+- Python suite: 1,263 passing tests with 100% coverage (11,399 statements).
 - Follow-up browser suite: 281 passing checks across desktop Chromium/WebKit and mobile
   Chromium/WebKit, including draft retention, real browser Back, read-only
   recovery, unavailable catalogs, delayed start/Stop responses, robot switches,
