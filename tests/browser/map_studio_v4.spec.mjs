@@ -417,6 +417,26 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(deleteArea).toBeFocused();
   });
 
+  test("restores focus after a cancelled dialog on a phone", async ({ page }) => {
+    // The desktop inspector and the mobile sheet were both rendered, one hidden
+    // with display:none, so #dialogLauncherFor's querySelector picked the hidden
+    // copy on narrow and focus() silently did nothing. The wide equivalent of
+    // this test passed throughout, because it never ran at this size.
+    await page.setViewportSize({ width: 390, height: 844 });
+    const gallery = await loadGallery(page, { scenario: "ready", narrow: true });
+    await expect(gallery.locator(".mobile-sheet")).toBeVisible();
+
+    await gallery.getByRole("button", { name: /Plans/ }).click();
+    // Exactly one panel: two meant the launcher lookup could pick the hidden one.
+    await expect(gallery.locator("matic-map-workflow-v4")).toHaveCount(1);
+    const deletePlan = gallery.getByRole("button", { name: "Delete plan" });
+    await expect(deletePlan).toBeVisible();
+    await deletePlan.click();
+    await expect(gallery.getByRole("dialog", { name: "Delete this plan?" })).toBeVisible();
+    await gallery.getByRole("button", { name: "Cancel" }).click();
+    await expect(deletePlan).toBeFocused();
+  });
+
   test("preserves Draw state through Full map and restores focus in Escape order", async ({ page }) => {
     await page.setViewportSize({ width: 1180, height: 760 });
     const gallery = await loadGallery(page, { scenario: "draw" });
