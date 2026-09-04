@@ -143,7 +143,13 @@ export class MaticBackend {
         ...(init.headers || {}),
       },
     }, timeoutMs, signal);
-    if (!response.ok) throw new BackendError("request-failed", response.status);
+    if (!response.ok) {
+      const conflict = response.headers.get("X-Matic-Plans-Conflict");
+      throw new BackendError(
+        conflict === "map-rechecking" ? "map-rechecking" : "request-failed",
+        response.status,
+      );
+    }
     try {
       return await response.json();
     } catch {

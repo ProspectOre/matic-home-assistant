@@ -890,11 +890,10 @@ export class EffectController {
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;
       if (isAbort(error) || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
-      // A 409 means the coordinator has not finished proving that the
-      // floor-scoped catalog belongs to the current map session.  Keep the
-      // user-facing state recoverable and let the next catalog/scene refresh
-      // retry it; other failures remain actionable errors.
-      const problem = error instanceof BackendError && error.status === 409
+      // The backend labels only floor revalidation conflicts as recoverable.
+      // Other conflicts (for example, a valid floor with no rooms) remain
+      // actionable errors and must not trigger an unbounded retry loop.
+      const problem = error instanceof BackendError && error.code === "map-rechecking"
         ? "map-rechecking"
         : problemCode(error, "plans-unavailable");
       this.#store.patch({
