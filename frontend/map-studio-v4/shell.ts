@@ -765,6 +765,16 @@ export class MaticMapShellV4 extends LitElement {
             ?? this.renderRoot.querySelector<HTMLElement>(".dialog button"))?.focus();
         });
       } else if (previous?.dialog && !this.state.dialog) {
+        if (previous.dialog === "discardDraft") {
+          // Browser Back dismisses the dialog through the layer controller,
+          // bypassing the button/keyboard handler. Clear the pending intent
+          // and restore the native selector so it cannot show a floor that
+          // the store did not select.
+          const restoreFloor = this.#pendingFloorId !== null;
+          this.#pendingWorkflow = null;
+          this.#pendingFloorId = null;
+          if (restoreFloor) this.#restoreFloorSelector();
+        }
         // Safari does not focus a button on a pointing-device click. Use the
         // explicit workflow launcher if there was no nested active element.
         const launcher = this.#dialogLauncher?.isConnected
@@ -860,6 +870,10 @@ export class MaticMapShellV4 extends LitElement {
     this.#pendingWorkflow = null;
     this.#pendingFloorId = null;
     this.#dismissDialog();
+    this.#restoreFloorSelector();
+  }
+
+  #restoreFloorSelector(): void {
     void this.updateComplete.then(() => {
       const selector = this.renderRoot.querySelector<HTMLSelectElement>(".floor-switcher");
       if (selector) selector.value = this.state.selection.floorId;
