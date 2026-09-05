@@ -50,7 +50,11 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
-from .session_tracking import CleaningSessionTracker, _sessions_overlap
+from .session_tracking import (
+    CleaningSessionTracker,
+    _parse_timestamp,
+    _sessions_overlap,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -631,6 +635,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return
         key = (session.started_at, session.ended_at)
         previous = self._last_finished_session
+        # Partial collection snapshots can regress to an older run. Never
+        # move the publication cursor backwards or replay historical events.
+        if (
+            previous is not None
+            and previous.ended_at is not None
+            and _parse_timestamp(session.started_at)
+            <= _parse_timestamp(previous.started_at)
+        ):
+            return
         self._last_finished_session = session
         # Native history can refine timestamps after publication.
         # That enrichment must not trigger automations twice.

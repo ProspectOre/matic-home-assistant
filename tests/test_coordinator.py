@@ -1082,3 +1082,12 @@ async def test_finished_event_waits_for_native_history_after_local_end(
     assert events[0].data["completed_rooms"] == ["Study", "Den"]
     assert events[0].data["room_durations"] == {"Study": 800, "Den": 700}
     assert events[0].data["duration_seconds"] == 1800
+
+    # A partial history snapshot must neither replay an older session nor
+    # roll the deduplication cursor back and replay the completed run.
+    for session in (previous, native):
+        client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
+        coordinator._force_full_refresh = True
+        await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
