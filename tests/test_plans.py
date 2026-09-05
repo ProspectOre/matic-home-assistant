@@ -5131,9 +5131,19 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
 
 
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
-@pytest.mark.parametrize("still_cleaning", [False, True])
+@pytest.mark.parametrize(
+    ("activity", "session", "expect_stop"),
+    [
+        ("docked", False, False),
+        ("cleaning", False, True),
+        ("returning", True, True),
+        ("charging", True, True),
+        ("docked", None, True),
+        ("charging", RuntimeError, True),
+    ],
+)
 async def test_execute_history_failure_does_not_orphan_verifying_room(
-    hass, failure, still_cleaning
+    hass, failure, activity, session, expect_stop, monkeypatch
 ):
     """The real runner must retire ownership even when verification aborts."""
     manager = CleaningPlanManager(hass)
@@ -5156,15 +5166,25 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         if reads == 1:
             return ()
         assert manager.snapshot("serial")["active_plan"]["status"] == "verifying"
-        if still_cleaning:
-            hass.states.async_set(
-                "vacuum.matic", "cleaning", {"current_area": "Kitchen"}
-            )
+        hass.states.async_set("vacuum.matic", activity, {"current_area": "Kitchen"})
         raise failure("synthetic verification abort")
 
     hass.services.async_register("vacuum", "send_command", send_command)
     sender = AsyncMock()
-    with pytest.raises(failure):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0
+    )
+
+    async def native_session():
+        # The runner's ordinary completion checks see a finished session;
+        # the failure cleanup sees the current recharge/unknown state.
+        if reads < 2:
+            return False
+        if session is RuntimeError:
+            raise RuntimeError("synthetic read failure")
+        return session
+
+    with pytest.raises(failure, match="synthetic verification abort"):
         await _async_execute_rooms(
             hass,
             _leg_call(hass),
@@ -5174,6 +5194,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
             rooms,
             intelligent=False,
             session_history=history,
+            active_session=native_session,
             managed_user_command=sender,
         )
     assert not manager.lock("serial").locked()
@@ -5184,7 +5205,7 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
     restored = CleaningPlanManager(hass)
     await restored.async_load()
     assert restored.snapshot("serial")["active_plan"] is None
-    if still_cleaning:
+    if expect_stop:
         assert sender.await_count == 1
         assert sender.await_args.args[1] is UserCommand.STOP
     else:

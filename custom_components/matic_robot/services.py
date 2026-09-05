@@ -2853,13 +2853,24 @@ async def _async_execute_rooms(
                         },
                         context=call.context,
                     )
+                    session_ended = False
                     current = hass.states.get(entity_id)
-                    if current is None or current.state not in {
+                    if current is not None and current.state in {
                         "docked",
                         "charging",
                         "idle",
                         "returning",
                     }:
+                        try:
+                            session_ended = (
+                                await _async_active_session_state(active_session)
+                            ) is False
+                        except (Exception, asyncio.CancelledError) as cleanup_error:
+                            _LOGGER.warning(
+                                "Unable to confirm aborted native session ended (%s)",
+                                type(cleanup_error).__name__,
+                            )
+                    if not session_ended:
                         await _async_cleanup_managed_motion(
                             managed_user_command, motion_token, dispatch_attempted=True
                         )
