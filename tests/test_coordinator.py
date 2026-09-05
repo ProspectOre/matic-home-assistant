@@ -827,6 +827,20 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     assert events[0].data["firmware_version"] == "v168.11"
     assert events[0].data["entry_id"] == "entry"
 
+    # Delayed native evidence describes the same physical run with more
+    # accurate timestamps, not a second completed cleaning session.
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=replace(
+            _session("2"),
+            started_at="2026-07-20T02:00:31+00:00",
+            ended_at="2026-07-20T02:29:45+00:00",
+        )
+    )
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+
     client.async_get_telemetry.return_value = RobotTelemetry(
         software_version="v168.11",
         latest_session=CleaningSession(
@@ -842,6 +856,15 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     await coordinator._async_update_data()
     await hass.async_block_till_done()
     assert len(events) == 1
+
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=_session("3")
+    )
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 2
+    assert events[-1].data["started_at"] == "2026-07-20T03:00:00+00:00"
 
 
 async def test_coordinator_recovers_newer_session_from_recorder(hass) -> None:

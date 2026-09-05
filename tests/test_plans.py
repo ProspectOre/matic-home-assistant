@@ -3636,10 +3636,16 @@ async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> 
     )
 
 
-async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(hass) -> None:
+@pytest.mark.parametrize("real_store", [False, True])
+async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
+    hass, real_store
+) -> None:
     """One leg mission glides room to room; credit comes from one record."""
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
-    manager = _leg_manager()
+    manager = CleaningPlanManager(hass) if real_store else _leg_manager()
+    if real_store:
+        await manager.async_load()
+        manager.async_mark_completed = AsyncMock(wraps=manager.async_mark_completed)
     commands = []
 
     async def send_command(call) -> None:
@@ -5122,3 +5128,85 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
         assert not manager.cancellation_event("serial").is_set()
     finally:
         lock.release()
+
+
+@pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
+@pytest.mark.parametrize(
+    ("activity", "session", "expect_stop"),
+    [
+        ("docked", False, False),
+        ("cleaning", False, True),
+        ("returning", True, True),
+        ("charging", True, True),
+        ("docked", None, True),
+        ("charging", RuntimeError, True),
+    ],
+)
+async def test_execute_history_failure_does_not_orphan_verifying_room(
+    hass, failure, activity, session, expect_stop, monkeypatch
+):
+    """The real runner must retire ownership even when verification aborts."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    rooms = _leg_rooms()
+    reads = 0
+
+    async def send_command(_call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def finish():
+            await asyncio.sleep(0)
+            hass.states.async_set("vacuum.matic", "docked", {"current_area": "Kitchen"})
+
+        hass.async_create_task(finish(), eager_start=True)
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        assert manager.snapshot("serial")["active_plan"]["status"] == "verifying"
+        hass.states.async_set("vacuum.matic", activity, {"current_area": "Kitchen"})
+        raise failure("synthetic verification abort")
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    sender = AsyncMock()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0
+    )
+
+    async def native_session():
+        # The runner's ordinary completion checks see a finished session;
+        # the failure cleanup sees the current recharge/unknown state.
+        if reads < 2:
+            return False
+        if session is RuntimeError:
+            raise RuntimeError("synthetic read failure")
+        return session
+
+    with pytest.raises(failure, match="synthetic verification abort"):
+        await _async_execute_rooms(
+            hass,
+            _leg_call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_history=history,
+            active_session=native_session,
+            managed_user_command=sender,
+        )
+    assert not manager.lock("serial").locked()
+    snapshot = manager.snapshot("serial")
+    assert snapshot["active_plan"] is None
+    assert snapshot["completed_runs"] == 0
+    assert snapshot["interrupted_runs"] == 1
+    restored = CleaningPlanManager(hass)
+    await restored.async_load()
+    assert restored.snapshot("serial")["active_plan"] is None
+    if expect_stop:
+        assert sender.await_count == 1
+        assert sender.await_args.args[1] is UserCommand.STOP
+    else:
+        sender.assert_not_awaited()

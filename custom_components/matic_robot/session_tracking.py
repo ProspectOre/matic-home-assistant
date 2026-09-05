@@ -354,4 +354,4 @@ def _sessions_overlap(left: CleaningSession, right: CleaningSession) -> bool:
     unknown = datetime.min.replace(tzinfo=UTC)
     if unknown in {left_start, left_end, right_start, right_end}:
         return False
-    return max(left_start, right_start) <= min(left_end, right_end)
+    return max(left_start, right_start) < min(left_end, right_end)

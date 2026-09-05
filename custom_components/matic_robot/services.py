@@ -2821,6 +2821,60 @@ async def _async_execute_rooms(
                     ) from err
         except PlanCancelledError:
             return
+        except (Exception, asyncio.CancelledError) as err:
+            # Leaf handlers retire expected failures. Unexpected failures must
+            # also leave a terminal record before ownership is released.
+            active = manager.snapshot(serial_number)["active_plan"]
+            if (
+                manager.managed_motion_is_current(serial_number, motion_token)
+                and isinstance(active, dict)
+                and active.get("plan_id") == call.data["plan_id"]
+            ):
+                room = next(
+                    (room for room in rooms if room.room_id == active.get("room_id")),
+                    None,
+                )
+                if room is not None:
+                    reason = f"Managed cleaning aborted ({type(err).__name__})"
+                    _LOGGER.error(reason)
+                    await manager.async_mark_interrupted(
+                        serial_number, call.data["plan_id"], room, reason
+                    )
+                    hass.bus.async_fire(
+                        f"{DOMAIN}_room_interrupted",
+                        {
+                            "entity_id": entity_id,
+                            "plan_id": call.data["plan_id"],
+                            "room": room.name,
+                            "room_id": room.room_id,
+                            "cleaning_mode": room.cleaning_mode,
+                            "coverage_setting": room.coverage_setting,
+                            "error": reason,
+                        },
+                        context=call.context,
+                    )
+                    session_ended = False
+                    current = hass.states.get(entity_id)
+                    if current is not None and current.state in {
+                        "docked",
+                        "charging",
+                        "idle",
+                        "returning",
+                    }:
+                        try:
+                            session_ended = (
+                                await _async_active_session_state(active_session)
+                            ) is False
+                        except (Exception, asyncio.CancelledError) as cleanup_error:
+                            _LOGGER.warning(
+                                "Unable to confirm aborted native session ended (%s)",
+                                type(cleanup_error).__name__,
+                            )
+                    if not session_ended:
+                        await _async_cleanup_managed_motion(
+                            managed_user_command, motion_token, dispatch_attempted=True
+                        )
+            raise
         finally:
             manager.end_managed_motion(serial_number, motion_token)
             manager.unregister_run_task(serial_number)

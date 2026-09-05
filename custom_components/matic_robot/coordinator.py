@@ -31,6 +31,7 @@ from .client.exceptions import (
 )
 from .client.mission import decode_mission_client_state
 from .client.models import (
+    CleaningSession,
     CuesVoiceStatus,
     FloorPlan,
     RobotInfo,
@@ -49,7 +50,7 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
-from .session_tracking import CleaningSessionTracker
+from .session_tracking import CleaningSessionTracker, _sessions_overlap
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -107,7 +108,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_attempts: dict[str, int] = {}
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
-        self._last_session_key: tuple[str | None, str] | None = None
+        self._last_finished_session: CleaningSession | None = None
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
         self._pending_error_codes: tuple[int, ...] = ()
@@ -619,9 +620,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         if session is None or session.ended_at is None:
             return
         key = (session.started_at, session.ended_at)
-        previous = self._last_session_key
-        self._last_session_key = key
-        if previous is None or previous == key:
+        previous = self._last_finished_session
+        self._last_finished_session = session
+        # Native history can refine the locally observed interval after the
+        # run has ended. That enrichment must not trigger automations twice.
+        if (
+            previous is None
+            or (previous.started_at, previous.ended_at) == key
+            or _sessions_overlap(previous, session)
+        ):
             return
         self.hass.bus.async_fire(
             EVENT_CLEANING_FINISHED,
