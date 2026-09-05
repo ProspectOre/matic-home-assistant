@@ -2817,10 +2817,10 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
 
 
 @pytest.mark.parametrize("use_session_reader", [False, True])
-async def test_room_handoff_retries_prefetch_once_completion_is_verified(
+async def test_room_handoff_dispatches_after_completion_is_persisted(
     hass, use_session_reader: bool
 ) -> None:
-    """An unavailable eager dispatch is retried after verified completion."""
+    """The next dispatch waits for verified completion to be persisted."""
     room = _room("Kitchen", "room-kitchen")
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
@@ -2873,11 +2873,9 @@ async def test_room_handoff_retries_prefetch_once_completion_is_verified(
     prefetch_calls = 0
 
     async def prefetch() -> _PreparedRoomDispatch | None:
-        # The eager dispatch at the observed return is unavailable once.
         nonlocal prefetch_calls
         prefetch_calls += 1
-        if prefetch_calls == 1:
-            return None
+        manager.async_mark_completed.assert_awaited_once()
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
         return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
 
@@ -2898,7 +2896,7 @@ async def test_room_handoff_retries_prefetch_once_completion_is_verified(
     )
 
     assert completed is True
-    assert prefetch_calls == 2
+    assert prefetch_calls == 1
     manager.async_mark_verifying.assert_awaited_once()
     manager.async_mark_completed.assert_awaited_once()
     sender.assert_not_awaited()
@@ -3371,7 +3369,12 @@ async def test_leg_that_ends_in_place_is_interrupted_without_credit(hass) -> Non
     )
 
 
-async def test_leg_partial_verification_stops_started_next_leg(hass) -> None:
+async def test_leg_partial_verification_does_not_start_next_leg(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
     rooms = _leg_rooms()
     manager = _leg_manager()
 
@@ -3398,10 +3401,7 @@ async def test_leg_partial_verification_stops_started_next_leg(hass) -> None:
             return ()
         return (_leg_record(("Kitchen",), ("Kitchen",), completed=False),)
 
-    async def prefetch() -> _PreparedRoomDispatch:
-        return _PreparedRoomDispatch(
-            (_heavy_room("Den", "room-den"),), frozenset(), dt_util.utcnow()
-        )
+    prefetch = AsyncMock()
 
     sender = AsyncMock()
     completed = await _async_run_leg(
@@ -3418,7 +3418,8 @@ async def test_leg_partial_verification_stops_started_next_leg(hass) -> None:
     )
 
     assert completed is False
-    sender.assert_awaited_once_with(7, UserCommand.STOP)
+    sender.assert_not_awaited()
+    prefetch.assert_not_awaited()
 
 
 async def test_leg_verifier_filters_bad_records_and_ambiguity(hass) -> None:
@@ -3826,8 +3827,8 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
     assert manager.async_mark_cancelled.await_args.args[2].name == "Office"
 
 
-async def test_room_handoff_dispatches_next_room_before_history_settles(hass) -> None:
-    """The next room is commanded at the observed return, before verification."""
+async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:
+    """History polling finishes before the next room can start."""
     room = _room("Kitchen", "room-kitchen")
     next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
@@ -3856,10 +3857,13 @@ async def test_room_handoff_dispatches_next_room_before_history_settles(hass) ->
 
     hass.services.async_register("vacuum", "send_command", send_command)
     prefetched = False
+    reads = 0
 
     async def history() -> tuple[CleaningSessionRecord, ...]:
-        # The native record settles only after the next room is underway.
-        if not prefetched:
+        nonlocal reads
+        reads += 1
+        assert not prefetched
+        if reads == 1:
             return ()
         ended = dt_util.utcnow()
         return (
@@ -3878,6 +3882,7 @@ async def test_room_handoff_dispatches_next_room_before_history_settles(hass) ->
 
     async def prefetch() -> _PreparedRoomDispatch:
         nonlocal prefetched
+        manager.async_mark_completed.assert_awaited_once()
         prefetched = True
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
         return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
@@ -3901,12 +3906,11 @@ async def test_room_handoff_dispatches_next_room_before_history_settles(hass) ->
     sender.assert_not_awaited()
 
 
-async def test_room_unverified_eager_handoff_stops_the_started_next_room(
+async def test_room_unverified_handoff_does_not_start_the_next_room(
     hass,
 ) -> None:
-    """An unverified current room stops its eagerly dispatched next room."""
+    """An unverified current room cannot dispatch the following room."""
     room = _room("Kitchen", "room-kitchen")
-    next_room = _room("Study", "room-study")
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
         async_mark_completed=AsyncMock(),
@@ -3933,12 +3937,12 @@ async def test_room_unverified_eager_handoff_stops_the_started_next_room(
 
     hass.services.async_register("vacuum", "send_command", send_command)
 
-    async def prefetch() -> _PreparedRoomDispatch:
-        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
-        return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
+    prefetch = AsyncMock()
 
     sender = AsyncMock()
-    with patch("custom_components.matic_robot.services.HANDOFF_HISTORY_ATTEMPTS", 1):
+    with patch(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    ):
         completed = await _async_run_room(
             hass,
             _call(hass),
@@ -3953,7 +3957,8 @@ async def test_room_unverified_eager_handoff_stops_the_started_next_room(
         )
 
     assert completed is False
-    sender.assert_awaited_once_with(7, UserCommand.STOP)
+    sender.assert_not_awaited()
+    prefetch.assert_not_awaited()
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
 
@@ -5210,3 +5215,231 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         assert sender.await_args.args[1] is UserCommand.STOP
     else:
         sender.assert_not_awaited()
+
+
+async def test_leg_waits_for_native_session_end_before_history(hass, monkeypatch):
+    """Returning to dock must not consume the evidence retry window."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS", 0
+    )
+    session_reads = 0
+    history_reads = 0
+
+    async def send_command(_call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def returning():
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "returning", {"current_area": "Kitchen"}
+            )
+
+        hass.async_create_task(returning(), eager_start=True)
+
+    async def active_session():
+        nonlocal session_reads
+        session_reads += 1
+        return session_reads < 3
+
+    async def history():
+        nonlocal history_reads
+        history_reads += 1
+        if history_reads == 1:
+            return ()
+        assert session_reads >= 3, (
+            "history verification began before native session ended"
+        )
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    result = await _async_run_leg(
+        hass,
+        _leg_call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        _leg_rooms(),
+        active_session=active_session,
+        session_history=history,
+    )
+    assert result is True
+    assert manager.snapshot("serial")["completed_runs"] == 2
+    assert manager.snapshot("serial")["active_plan"] is None
+
+
+async def test_leg_retries_matching_history_until_room_evidence_arrives(monkeypatch):
+    """A matching but incomplete record is not the end of verification."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
+    final = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
+    early = replace(
+        final,
+        session=replace(
+            final.session, completed=False, completed_rooms=(), room_durations=()
+        ),
+    )
+    reader = AsyncMock(side_effect=[(early,), (final,)])
+    evidence = await _async_verify_leg_completion(
+        reader,
+        frozenset(),
+        _leg_rooms(),
+        dt_util.utcnow() - timedelta(seconds=180),
+        attempts=2,
+    )
+    assert evidence == {
+        "room-kitchen": (final.session.ended_at, 57),
+        "room-office": (final.session.ended_at, 57),
+    }
+    assert reader.await_count == 2
+
+
+async def test_leg_rejects_different_matching_sessions_across_retries(monkeypatch):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
+    first = _leg_record(("Kitchen",), ("Kitchen",))
+    second = replace(first, key=b"different-session")
+    assert (
+        await _async_verify_leg_completion(
+            AsyncMock(side_effect=[(first,), (second,)]),
+            frozenset(),
+            _leg_rooms(),
+            dt_util.utcnow() - timedelta(seconds=180),
+            attempts=2,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("resumes", [False, True])
+async def test_leg_handles_unknown_and_resumed_native_session(
+    hass, monkeypatch, resumes
+):
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    reads = 0
+    resolutions = 0
+
+    async def return_later():
+        await asyncio.sleep(0)
+        hass.states.async_set("vacuum.matic", "returning", {"current_area": "Kitchen"})
+
+    async def send_command(_call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+        hass.async_create_task(return_later(), eager_start=True)
+
+    async def resolution(*args):
+        nonlocal resolutions
+        resolutions += 1
+        if not resumes:
+            return None
+        if resolutions == 1:
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Kitchen"}
+            )
+            hass.async_create_task(return_later(), eager_start=True)
+            return True
+        return False
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services._async_wait_for_active_session_resolution",
+        resolution,
+    )
+    hass.services.async_register("vacuum", "send_command", send_command)
+    sender = AsyncMock()
+    run = _async_run_leg(
+        hass,
+        _leg_call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        _leg_rooms(),
+        active_session=AsyncMock(),
+        session_history=history,
+        managed_user_command=sender,
+        motion_token=7,
+    )
+    if resumes:
+        assert await run is True
+        assert resolutions == 2
+        assert manager.snapshot("serial")["completed_runs"] == 2
+        sender.assert_not_awaited()
+    else:
+        with pytest.raises(ServiceValidationError, match="Native session completion"):
+            await run
+        assert manager.snapshot("serial")["completed_runs"] == 0
+        assert manager.snapshot("serial")["interrupted_runs"] == 1
+        sender.assert_awaited_once_with(7, UserCommand.STOP)
+    assert manager.snapshot("serial")["active_plan"] is None
+
+
+async def test_multi_room_leg_persists_completion_before_next_dispatch(
+    hass, monkeypatch
+):
+    """A short next leg cannot run unobserved during prior evidence polling."""
+    manager = CleaningPlanManager(hass)
+    await manager.async_load()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
+    reads = 0
+    prefetched = False
+
+    async def send_command(_call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def finish():
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "returning", {"current_area": "Kitchen"}
+            )
+
+        hass.async_create_task(finish(), eager_start=True)
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        assert not prefetched, "next mission started during prior evidence polling"
+        if reads == 1:
+            return ()
+        record = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
+        if reads == 2:
+            record = replace(
+                record,
+                session=replace(record.session, completed_rooms=(), room_durations=()),
+            )
+        return (record,)
+
+    async def prefetch():
+        nonlocal prefetched
+        assert reads == 3
+        assert manager.snapshot("serial")["completed_runs"] == 2
+        assert manager.snapshot("serial")["active_plan"] is None
+        prefetched = True
+        return _PreparedRoomDispatch(
+            (_heavy_room("Den", "room-den"),), frozenset(), dt_util.utcnow()
+        )
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    assert await _async_run_leg(
+        hass,
+        _leg_call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        _leg_rooms(),
+        active_session=AsyncMock(return_value=False),
+        session_history=history,
+        prefetch_next=prefetch,
+    )
+    assert prefetched
