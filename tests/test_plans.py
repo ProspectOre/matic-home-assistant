@@ -5535,3 +5535,62 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
     await hass.async_block_till_done()
     assert starts == ["Kitchen", "Office"]
     assert manager.async_mark_completed.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "multi_room,resolves", [(True, False), (False, False), (False, True)]
+)
+async def test_terminal_history_has_its_own_budget(
+    hass, monkeypatch, multi_room, resolves
+):
+    """Verification outlives the returned mission's cleaning deadline."""
+    rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
+    manager = _leg_manager()
+
+    async def send_command(call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    async def terminal(*args, **kwargs):
+        hass.states.async_set("vacuum.matic", "returning")
+        if multi_room:
+            return RoomRunOutcome.HANDOFF_CANDIDATE, None
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services._async_wait_for_leg_outcome"
+        if multi_room
+        else "custom_components.matic_robot.services._async_wait_for_room_outcome",
+        terminal,
+    )
+    reads = 0
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        await asyncio.sleep(0.05)
+        names = tuple(room.name for room in rooms)
+        return (_leg_record(names, names),)
+
+    sender = AsyncMock()
+    completed = await _async_run_leg(
+        hass,
+        _leg_call(hass, completion_timeout=0.02),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        active_session=AsyncMock(side_effect=[True, False])
+        if resolves
+        else AsyncMock(return_value=False),
+        managed_user_command=sender,
+        motion_token=7,
+    )
+    assert completed
+    manager.async_mark_failed.assert_not_awaited()
+    assert manager.async_mark_completed.await_count == len(rooms)
+    sender.assert_not_awaited()

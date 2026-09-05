@@ -1144,7 +1144,9 @@ async def _async_run_room(
             else None
         )
         try:
-            async with asyncio.timeout(call.data["completion_timeout"]):
+            async with asyncio.timeout(
+                call.data["completion_timeout"]
+            ) as mission_timeout:
                 while True:
                     outcome = await _async_wait_for_room_outcome(
                         hass, entity_id, room, cancel_event
@@ -1157,6 +1159,7 @@ async def _async_run_room(
                             await manager.async_mark_verifying(
                                 serial_number, call.data["plan_id"], room
                             )
+                            mission_timeout.reschedule(None)
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
                                 history_baseline,
@@ -1183,6 +1186,7 @@ async def _async_run_room(
                             )
                         )
                         if session_resolution is False:
+                            mission_timeout.reschedule(None)
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
                                 history_baseline,
@@ -1566,7 +1570,9 @@ async def _async_run_leg(
             else None
         )
         try:
-            async with asyncio.timeout(call.data["completion_timeout"]):
+            async with asyncio.timeout(
+                call.data["completion_timeout"]
+            ) as mission_timeout:
                 while True:
                     outcome, changed_room = await _async_wait_for_leg_outcome(
                         hass,
@@ -1625,6 +1631,7 @@ async def _async_run_leg(
                                 raise RoomInterruptedError(
                                     "Native session completion could not be confirmed"
                                 )
+                        mission_timeout.reschedule(None)
                         evidence = await _async_verify_leg_completion(
                             session_history,
                             history_baseline,
