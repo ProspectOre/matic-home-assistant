@@ -56,6 +56,7 @@ def _client() -> AsyncMock:
     client.async_get_floor_plan.return_value = None
     client.async_get_pose.return_value = None
     client.async_get_telemetry.return_value = RobotTelemetry(protocol_version=25)
+    client.async_has_active_cleaning_session.return_value = None
     return client
 
 
@@ -603,6 +604,48 @@ async def test_coordinator_caches_slow_reads_and_can_force_them(hass) -> None:
     assert client.async_get_telemetry.await_count == 2
 
 
+@pytest.mark.parametrize("initial,current", [(True, False), (False, True)])
+async def test_session_state_refreshes_while_settings_remain_cached(
+    hass, initial, current
+) -> None:
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        software_version="test", active_cleaning_session=initial
+    )
+    client.async_has_active_cleaning_session.return_value = current
+    coordinator = _coordinator(hass, client)
+
+    first = await coordinator._async_update_data()
+    second = await coordinator._async_update_data()
+
+    assert first.telemetry.active_cleaning_session is initial
+    assert second.telemetry.active_cleaning_session is current
+    assert second.telemetry.software_version == "test"
+    assert client.async_get_telemetry.await_count == 1
+    client.async_has_active_cleaning_session.assert_awaited_once()
+
+
+@pytest.mark.parametrize("slow_failure", [False, True])
+async def test_failed_live_session_read_does_not_reuse_cached_state(
+    hass, slow_failure
+) -> None:
+    client = _client()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        active_cleaning_session=True
+    )
+    coordinator = _coordinator(hass, client)
+    await coordinator._async_update_data()
+    client.async_has_active_cleaning_session.side_effect = MaticError("offline")
+    if slow_failure:
+        coordinator._force_full_refresh = True
+        client.async_get_telemetry.side_effect = MaticError("settings unavailable")
+
+    state = await coordinator._async_update_data()
+
+    assert state.telemetry.active_cleaning_session is None
+    assert state.info.name == "Test"
+
+
 async def test_coordinator_refreshes_floor_plan_without_invalidating_telemetry(
     hass,
 ) -> None:
@@ -636,7 +679,7 @@ async def test_slow_refresh_failure_retains_last_good_values(hass) -> None:
     second = await coordinator._async_update_data()
 
     assert second.floor_plan is first.floor_plan
-    assert second.telemetry is first.telemetry
+    assert second.telemetry == first.telemetry
 
 
 async def test_coordinator_records_observed_firmware(hass) -> None:

@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
-Status: candidate, not stable-release sign-off. Baseline: `v0.4.0-rc10`
-(`ebf2a79`). Run this checklist against the exact candidate being promoted.
+Status: candidate, not stable-release sign-off. Installed baseline: `v0.4.0-rc11`
+(`570a3bf`). Run this checklist against the exact candidate being promoted.
 Automated coverage, browser emulation, and read-only live checks do not prove
 physical cleaning, native assistive technology, or affected reporter hardware.
 
@@ -24,7 +24,7 @@ physical cleaning, native assistive technology, or affected reporter hardware.
 | First map | Live scene, coherent floor identity, verified pose, honest loading/error states | Live read-only check recorded; affected #65 hardware open |
 | Everyday navigation | 2D/3D, room/photo views, back navigation, floor selector, drafts and reopen preserve intent | Automated and live non-motion checks recorded |
 | Saved floor | History is read-only; no live pose or cleaning actions; return restores current-floor controls | Automated and live non-motion checks recorded |
-| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | RC10 completed one bounded room with Stop immediately available, verified map and reopen without replay |
+| One-time clean | Explicit room/settings selection dispatches once; scene stays visible; completion agrees with native history | RC11 completed one bounded room: 430s session, 340s positive native room evidence; one dispatch and panel reopen without replay |
 | Saved plan | Save/edit/reorder/reload preserves settings; preview matches actual mission legs; no unintended duplicate start | Preview recorded; real multi-leg execution open |
 | Custom area | Create/edit/save/reopen/run matches selected area; stale geometry blocks safely and offers recovery | Automated editing/fail-closed checks; real run open |
 | Immediate stop | Accepted stop settles, replacement work is protected, dock follows idle with native session clear | Regression tests; physical #71 retest open |
@@ -60,6 +60,14 @@ physical cleaning, native assistive technology, or affected reporter hardware.
    incorrect credit, or a runner that fails to settle; record the failed case.
 
 ## Stable promotion gate
+
+RC11 physical check (2026-09-04 Pacific): one room-started and one room-completed
+event; returned to dock, error-free, managed lock/plan and reconciliation clear.
+The presence automation was restored and verified enabled. Native-session
+telemetry remained stale until its five-minute settings cache expired, then
+cleared. A separate cleaning-finished event reported unconfirmed local evidence
+before positive native history arrived; lifecycle-event reconciliation needs
+review. Aggregate credit counters were not independently read in this run.
 
 - Python suite at 100% coverage; Chromium/WebKit desktop and touch suites;
   Ruff, formatting, Python/TypeScript types, privacy, artifact and fresh-install
