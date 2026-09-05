@@ -274,6 +274,7 @@ export class EffectController {
       workflow: "none",
       dialog: null,
       notice: null,
+      draftFloorOrdinal: null,
       draw: empty.draw,
       planDraft: empty.planDraft,
       areaDraft: empty.areaDraft,
@@ -449,7 +450,16 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
-    const resetDrafts = previousEntry !== null && !sameResourceBoundary;
+    // A missing live ordinal means revalidation, not proof of another floor.
+    // Keep the last verified draft owner through that gap and compare it only
+    // with a positively verified replacement floor.
+    const previousDraftFloor = previousState.draftFloorOrdinal
+      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
+        ? previousEntry.mapFloorOrdinal : null);
+    const verifiedFloor = coherent ? entry.mapFloorOrdinal : null;
+    const resetDrafts = (previousEntry !== null && previousEntry.entryId !== entry.entryId)
+      || (previousDraftFloor !== null && verifiedFloor !== null
+        && previousDraftFloor !== verifiedFloor);
     if (resetDrafts) this.#invalidateMotion();
     const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
@@ -464,8 +474,9 @@ export class EffectController {
         draw: empty.draw,
         planDraft: empty.planDraft,
         areaDraft: empty.areaDraft,
-        notice: { tone: "info" as const, text: "The active floor changed. Choose a task on this map." },
+        notice: { tone: "info" as const, text: "The active map changed. Choose a task on this map." },
       } : {}),
+      draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
       managedLock: entryManagedLock(entry),
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
@@ -496,10 +507,10 @@ export class EffectController {
         entryId: entry.entryId,
         floorId: "current",
         historyId: null,
-        roomIds: sameResourceBoundary ? state.selection.roomIds : [],
-        roomSettings: sameResourceBoundary ? state.selection.roomSettings : [],
-        planId: sameResourceBoundary ? state.selection.planId : null,
-        areaId: sameResourceBoundary ? state.selection.areaId : null,
+        roomIds: resetDrafts ? [] : state.selection.roomIds,
+        roomSettings: resetDrafts ? [] : state.selection.roomSettings,
+        planId: resetDrafts ? null : state.selection.planId,
+        areaId: resetDrafts ? null : state.selection.areaId,
       },
     });
     void this.#loadHistory(entry, stamp);
@@ -1098,8 +1109,10 @@ export class EffectController {
       // not replace that draft when the response arrives, or an early stroke
       // would be silently discarded. Existing selections still reconcile to
       // the returned catalog, including a deleted saved area.
-      if (selectedId !== null || (!current.draw.dirty && !current.areaDraft.dirty)) {
-        this.selectArea(areas.areas.some((area) => area.id === selectedId) ? selectedId : null);
+      const selectedExists = areas.areas.some((area) => area.id === selectedId);
+      if ((!current.draw.dirty && !current.areaDraft.dirty)
+        || (selectedId !== null && !selectedExists)) {
+        this.selectArea(selectedExists ? selectedId : null);
       }
     } catch (error) {
       const currentEntry = this.#store.value.resources.entry;

@@ -73,7 +73,12 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
 13. Controller recreation forgot retained workspace ownership. Store the owner
     with the workspace, preserving same-owner drafts and clearing other owners.
 
-Validation: 1,263 Python tests at 100% coverage; 349 browser checks; strict
+14. A temporarily unknown floor ordinal is not evidence of a floor change.
+    Retain the draft's last verified floor through revalidation, keep coordinate
+    writes unavailable, and clear only when a different floor is verified. Same-floor
+    area catalog refreshes also preserve unsaved edits to an existing outline.
+
+Validation: 1,263 Python tests at 100% coverage; 353 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.

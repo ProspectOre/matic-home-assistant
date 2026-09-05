@@ -225,7 +225,7 @@ test("a changed live floor clears the previous floor's drafts and scene", async 
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
     const initial = createGalleryState("draw");
-    const store = new WorkspaceStore({ ...initial, precisionOpen: true, dialog: "delete-area", fullMap: true });
+    const store = new WorkspaceStore({ ...initial, precisionOpen: true, dialog: "confirmDeleteArea", fullMap: true });
     const next = { ...initial.resources.entry, selectedFloorOrdinal: 9, mapFloorOrdinal: 9, mapSessionKey: "next-floor" };
     const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
     const effects = new EffectController(store, { catalog: async () => [next], scene: aborted, pose: aborted, history: aborted, plans: aborted, dispose() {} });
@@ -330,5 +330,33 @@ for (const rejected of [false, true]) {
       return { saved, live, final };
     }, rejected);
     expect(result).toEqual({ saved: "idle", live: "idle", final: "idle" });
+  });
+}
+
+for (const sameFloor of [true, false]) {
+  test(`revalidation preserves drafts until ${sameFloor ? "the same" : "a different"} floor is verified`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (sameFloor) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("draw");
+      const store = new WorkspaceStore({ ...initial, areaDraft: { ...initial.areaDraft, name: "Edited outline", dirty: true }, planDraft: { ...initial.planDraft, name: "Edited plan", dirty: true } });
+      let entry = { ...initial.resources.entry, mapFloorOrdinal: null, mapFloorCoherent: false };
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, { catalog: async () => [entry], scene: aborted, pose: aborted, history: aborted, plans: aborted, areas: async () => initial.resources.areas.value, dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.refreshCatalog(true);
+      const unknown = { name: store.value.areaDraft.name, count: store.value.draw.circles.length, available: store.value.map.available };
+      entry = sameFloor ? initial.resources.entry : { ...initial.resources.entry, selectedFloorOrdinal: 9, mapFloorOrdinal: 9, mapSessionKey: "new-floor" };
+      await effects.refreshCatalog(true);
+      if (sameFloor) {
+        store.patch({ map: initial.map, coherence: "current" });
+        await effects.loadAreas();
+      }
+      const restored = { name: store.value.areaDraft.name, plan: store.value.planDraft.name, count: store.value.draw.circles.length };
+      effects.dispose();
+      return { unknown, restored, count: initial.draw.circles.length };
+    }, sameFloor);
+    expect(result.unknown).toEqual({ name: "Edited outline", count: result.count, available: false });
+    expect(result.restored).toEqual(sameFloor ? { name: "Edited outline", plan: "Edited plan", count: result.count } : { name: "", plan: "", count: 0 });
   });
 }
