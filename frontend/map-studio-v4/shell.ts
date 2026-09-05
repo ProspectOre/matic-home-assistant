@@ -99,10 +99,10 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
     && (state.activity === "idle" || state.activity === "docked")) {
     return {
-      title: t("v4_plan_in_progress", "Plan in progress"),
+      title: t("v4_task_in_progress", "Task in progress"),
       detail: state.activity === "docked"
-        ? t("v4_plan_docked", "Robot docked; the plan has not finished.")
-        : t("v4_plan_waiting", "Waiting for the active plan to continue or finish."),
+        ? t("v4_task_docked", "Robot docked; the cleaning task has not finished.")
+        : t("v4_task_waiting", "Waiting for the cleaning task to continue or finish."),
       icon: iconPlan,
       notable: true,
     };

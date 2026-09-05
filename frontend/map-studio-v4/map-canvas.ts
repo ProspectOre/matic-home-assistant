@@ -96,18 +96,20 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
     /* Navigation has stable corners; only orbit controls follow the sheet. */
-    .map-rail { position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
+    .map-rail { --help-top: calc(44px + 2 * var(--ms-space-2)); --help-bottom: 116px; position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
     .map-rail > * { pointer-events: auto; }
     .map-context { position: absolute; inset-block-start: 0; inset-inline-start: 0; display: flex; gap: var(--ms-space-2); align-items: center; max-inline-size: calc(100% - 60px); }
     ::slotted(.floor-switcher) { min-inline-size: 0; inline-size: 9rem; min-block-size: 44px; background-color: var(--ms-surface-card); color: var(--ms-text); }
     .view-switch { flex: none; }
     .map-tools { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
     .map-extras { position: absolute; inset-block-end: calc(var(--map-sheet-offset, 0px) + 52px); inset-inline-end: 0; display: flex; }
-    .appearance-switch { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-start: 0; }
+    .appearance-switch { position: absolute; inset-block-start: calc(44px + 2 * var(--ms-space-2)); inset-inline-start: 0; }
     .camera-steps { position: absolute; inset-block-end: var(--map-sheet-offset, 0px); inset-inline-end: 0; }
     .map-root:has(.selection-chip) .camera-steps { inset-block-end: calc(var(--map-sheet-offset, 0px) + 4rem); }
     .map-root:has(.selection-chip) .map-extras { inset-block-end: calc(var(--map-sheet-offset, 0px) + 4rem + 52px); }
-    .navigation-help { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-end: 0; }
+    .map-rail:has(.appearance-switch) { --help-top: calc(88px + 4 * var(--ms-space-2)); }
+    .map-root:has(.selection-chip) .map-rail { --help-bottom: calc(116px + 4rem); }
+    .navigation-help { position: absolute; inset-block-start: var(--help-top); inset-inline-end: 0; max-block-size: calc(100% - var(--help-top) - var(--help-bottom)); overflow: auto; box-sizing: border-box; }
     :host([narrow]) .map-context { max-inline-size: calc(100% - 52px); gap: var(--ms-space-1); }
     :host([narrow]) ::slotted(.floor-switcher) { inline-size: 7rem; }
     :host([narrow]) .fit { min-inline-size: 44px; padding-inline: var(--ms-space-2); }
