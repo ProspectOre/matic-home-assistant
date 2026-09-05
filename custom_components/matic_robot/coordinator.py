@@ -109,6 +109,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
+        self._finished_history_initialized = False
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
         self._pending_error_codes: tuple[int, ...] = ()
@@ -251,12 +252,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 pose=pose,
                 telemetry=telemetry,
             )
-            state = await self._async_track_cleaning_session(state)
             version = telemetry.software_version or operational.software_version
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
+            # Events require native evidence; local estimates are display-only.
             self._async_fire_session_finished(state, version)
+            state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
                 await self.firmware_tracker.async_observe_version(
                     self.config_entry.entry_id,
@@ -617,16 +619,23 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     ) -> None:
         """Announce a newly completed robot cleaning session exactly once."""
         session = state.telemetry.latest_session
+        if not self._finished_history_initialized:
+            if (
+                session is not None
+                or state.telemetry.local_cleaning_sessions is not None
+            ):
+                self._finished_history_initialized = True
+                self._last_finished_session = session
+            return
         if session is None or session.ended_at is None:
             return
         key = (session.started_at, session.ended_at)
         previous = self._last_finished_session
         self._last_finished_session = session
-        # Native history can refine the locally observed interval after the
-        # run has ended. That enrichment must not trigger automations twice.
-        if (
-            previous is None
-            or (previous.started_at, previous.ended_at) == key
+        # Native history can refine timestamps after publication.
+        # That enrichment must not trigger automations twice.
+        if previous is not None and (
+            (previous.started_at, previous.ended_at) == key
             or _sessions_overlap(previous, session)
         ):
             return

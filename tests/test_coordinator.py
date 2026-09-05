@@ -1023,3 +1023,62 @@ async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
         (DOMAIN, "synthetic"), "entry"
     )
     registry.async_update_device.assert_called_once_with("device", sw_version="v168.11")
+
+
+@pytest.mark.parametrize("empty_history", [False, True])
+async def test_finished_event_waits_for_native_history_after_local_end(
+    hass, empty_history
+) -> None:
+    """A local end must not consume the eventual native completion event."""
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    previous = CleaningSession(
+        "2026-07-19T01:00:00+00:00",
+        "2026-07-19T01:10:00+00:00",
+        600,
+        (),
+        (),
+        False,
+    )
+    native = CleaningSession(
+        "2026-07-20T01:00:00+00:00",
+        "2026-07-20T01:30:00+00:00",
+        1800,
+        ("Study", "Den"),
+        (("Study", 800), ("Den", 700)),
+        True,
+        ("Study", "Den"),
+    )
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=None if empty_history else previous,
+        local_cleaning_sessions=0 if empty_history else 1,
+    )
+    await coordinator._async_update_data()
+    coordinator._session_tracker.latest_session = replace(
+        native,
+        started_at="2026-07-20T01:00:30+00:00",
+        ended_at="2026-07-20T01:30:02+00:00",
+        completed=False,
+        rooms=(),
+        completed_rooms=(),
+        room_durations=(),
+    )
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert not events
+
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=native)
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["completed"] is True
+    assert events[0].data["completed_rooms"] == ["Study", "Den"]
+    assert events[0].data["room_durations"] == {"Study": 800, "Den": 700}
+    assert events[0].data["duration_seconds"] == 1800
