@@ -271,6 +271,9 @@ export class EffectController {
     const empty = initialWorkspaceState();
     this.#store.patch({
       command: "idle",
+      dataMode: empty.dataMode,
+      floor: empty.floor,
+      managedLock: false,
       workflow: "none",
       dialog: null,
       notice: null,

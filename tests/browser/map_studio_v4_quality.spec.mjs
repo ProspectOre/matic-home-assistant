@@ -188,25 +188,27 @@ for (const action of ["saveArea", "deleteArea"]) {
   }
 }
 
-for (const change of ["user", "robot", "access"]) {
-  test(`clears private drafts when ${change} changes`, async ({ page }) => {
+for (const scenario of ["draw", "history"]) {
+for (const change of ["user", "robot", "access", "removed"]) {
+  test(`clears private ${scenario} state when ${change} changes`, async ({ page }) => {
     await loadQualityModules(page);
-    const result = await page.evaluate(async (change) => {
+    const result = await page.evaluate(async ({ change, scenario }) => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
-      const initial = createGalleryState("draw");
+      const initial = createGalleryState(scenario);
       const store = new WorkspaceStore(initial);
       const effects = new EffectController(store, { catalog: async () => { throw new DOMException("Aborted", "AbortError"); }, dispose() {} });
       const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
       effects.sync(projection);
-      effects.sync({ ...projection, ...(change === "user" ? { userKey: "two" } : change === "robot" ? { entryKey: "other" } : { host: { ...initial.host, administrator: false } }) });
-      const result = { circles: store.value.draw.circles, undo: store.value.draw.undo, areaName: store.value.areaDraft.name, planName: store.value.planDraft.name, rooms: store.value.selection.roomSettings, workflow: store.value.workflow };
+      effects.sync({ ...projection, ...(change === "user" ? { userKey: "two" } : change === "robot" ? { entryKey: "other" } : { host: { ...initial.host, ...(change === "removed" ? { robotCount: 0 } : { administrator: false }) } }) });
+      const result = { circles: store.value.draw.circles, undo: store.value.draw.undo, areaName: store.value.areaDraft.name, planName: store.value.planDraft.name, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, dataMode: store.value.dataMode, label: store.value.floor.displayName, readOnly: store.value.floor.readOnly };
       effects.dispose();
       return result;
-    }, change);
-    expect(result).toEqual({ circles: [], undo: [], areaName: "", planName: "", rooms: [], workflow: "none" });
+    }, { change, scenario });
+    expect(result).toEqual({ circles: [], undo: [], areaName: "", planName: "", rooms: [], workflow: "none", dataMode: "live", label: "Current floor", readOnly: false });
   });
 }
 
+}
 
 test("All tasks returns from area review to the task chooser", async ({ page }) => {
   await page.goto("/map-studio-v4-audit");

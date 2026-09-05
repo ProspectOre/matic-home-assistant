@@ -78,7 +78,11 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
     writes unavailable, and clear only when a different floor is verified. Same-floor
     area catalog refreshes also preserve unsaved edits to an existing outline.
 
-Validation: 1,263 Python tests at 100% coverage; 353 browser checks; strict
+15. Clearing private state now also resets saved-floor mode, its label and the
+    managed-lock flag. Account changes, lost access and removed robots cannot
+    leave a stale floor name or an unusable Return to live action.
+
+Validation: 1,263 Python tests at 100% coverage; 363 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.
