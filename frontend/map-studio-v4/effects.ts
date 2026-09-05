@@ -252,7 +252,7 @@ export class EffectController {
       this.#controllers.delete(name);
     }
     if (mutationCancelled && this.#store.value.command === "pending") {
-      this.#store.patch({ command: "idle" });
+      this.#store.patch({ command: "idle", notice: null });
     }
   }
 

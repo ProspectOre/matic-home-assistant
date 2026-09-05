@@ -323,15 +323,15 @@ for (const rejected of [false, true]) {
       effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
       const pending = effects.savePlan();
       await effects.selectFloor("saved-1");
-      const saved = store.value.command;
+      const saved = { command: store.value.command, notice: store.value.notice };
       await effects.selectFloor("current");
-      const live = store.value.command;
+      const live = { command: store.value.command, notice: store.value.notice };
       finish(); await pending;
-      const final = store.value.command;
+      const final = { command: store.value.command, notice: store.value.notice };
       effects.dispose();
       return { saved, live, final };
     }, rejected);
-    expect(result).toEqual({ saved: "idle", live: "idle", final: "idle" });
+    expect(result).toEqual({ saved: { command: "idle", notice: null }, live: { command: "idle", notice: null }, final: { command: "idle", notice: null } });
   });
 }
 
