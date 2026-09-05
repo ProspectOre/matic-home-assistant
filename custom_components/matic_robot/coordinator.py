@@ -634,7 +634,18 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return
         # A partial first snapshot may omit pre-existing runs. Never replay
         # sessions that had already ended before this coordinator started.
-        if _parse_timestamp(session.ended_at) <= self._finished_observation_started_at:
+        previous = self._last_finished_session
+        observed_active = (
+            previous is not None
+            and previous.ended_at is None
+            and _parse_timestamp(previous.started_at)
+            == _parse_timestamp(session.started_at)
+        )
+        if (
+            not observed_active
+            and _parse_timestamp(session.ended_at)
+            <= self._finished_observation_started_at
+        ):
             return
         key = (session.started_at, session.ended_at)
         previous = self._last_finished_session

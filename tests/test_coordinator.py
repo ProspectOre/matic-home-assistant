@@ -1148,3 +1148,26 @@ async def test_finished_event_rejects_partial_startup_history(hass, active_at_st
     await hass.async_block_till_done()
     assert len(events) == 1
     assert events[0].data["completed"] is False
+
+
+async def test_finished_event_observed_native_run_ignores_host_clock_skew(hass):
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    active = CleaningSession("2001-01-01T01:00:00+00:00", None, None, (), (), False)
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=active)
+    await coordinator._async_update_data()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=replace(
+            active, ended_at="2001-01-01T01:00:01+00:00", completed=True
+        )
+    )
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["completed"] is True
