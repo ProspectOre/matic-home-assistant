@@ -114,6 +114,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
         self._finished_history_initialized = False
+        self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
         self._pending_error_codes: tuple[int, ...] = ()
@@ -633,15 +634,21 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return
         if session is None or session.ended_at is None:
             return
+        # A partial first snapshot may omit pre-existing runs. Never replay
+        # sessions that had already ended before this coordinator started.
+        if _parse_timestamp(session.ended_at) <= self._finished_observation_started_at:
+            return
         key = (session.started_at, session.ended_at)
         previous = self._last_finished_session
         # Partial collection snapshots can regress to an older run. Never
         # move the publication cursor backwards or replay historical events.
-        if (
-            previous is not None
-            and previous.ended_at is not None
-            and _parse_timestamp(session.started_at)
-            <= _parse_timestamp(previous.started_at)
+        if previous is not None and (
+            _parse_timestamp(session.started_at) < _parse_timestamp(previous.started_at)
+            or (
+                previous.ended_at is not None
+                and _parse_timestamp(session.started_at)
+                == _parse_timestamp(previous.started_at)
+            )
         ):
             return
         self._last_finished_session = session
