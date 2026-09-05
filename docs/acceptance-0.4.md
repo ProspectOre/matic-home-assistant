@@ -1,8 +1,8 @@
 # 0.4 end-to-end acceptance
 
 Status: in progress, not release sign-off. Installed baseline: unpublished
-`56b4d4b`. The 2026-09-05 non-motion audit has additional candidate changes;
-those changes are not yet installed or verified live. Run affected journeys
+`9900db6`. The 2026-09-05 non-motion audit is installed and verified live.
+Subsequent handoff-feedback changes remain uninstalled. Run affected journeys
 and final gates against the exact candidate being promoted.
 
 ## Evidence rules
@@ -22,10 +22,10 @@ and final gates against the exact candidate being promoted.
 
 | Journey | Required outcome | Evidence / remaining work |
 | --- | --- | --- |
-| Install and upgrade | Artifact parity, restart, available entities and recovery | Installed baseline verified; fresh-install packaging automated; current audit candidate installation open |
+| Install and upgrade | Artifact parity, restart, available entities and recovery | Installed audit baseline verified by full-file readback and idle restart; fresh-install packaging automated |
 | Setup and reauthentication | Clear stages, cancellation, useful errors and preserved identity | Synthetic coverage and historical HAOS proof; fresh candidate hardware and Container reauth open |
 | First map | Coherent floor, verified pose, honest loading/error states | Live read-only proof; affected #65 hardware open |
-| Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; narrow drawing exit correction awaits installation |
+| Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; installed narrow drawing exit and arrow/End navigation passed |
 | Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
 | One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
 | Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings multi-leg execution open |
@@ -35,7 +35,7 @@ and final gates against the exact candidate being promoted.
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | Browser checks ongoing; native VoiceOver and physical phone/tablet open |
+| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 407 browser checks passed on installed audit baseline; native VoiceOver and physical phone/tablet open |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
 ## Latest bounded physical evidence
