@@ -765,6 +765,7 @@ export class EffectController {
       if (pose.mapSessionKey === null
         || pose.mapSessionKey !== currentEntry.mapSessionKey) {
         this.#store.patch({
+          resources: { ...this.#store.value.resources, pose: resource("idle", null) },
           map: { ...this.#store.value.map, exactPose: false },
         });
         this.#entryIdentity = "";

@@ -413,3 +413,31 @@ for (const change of ["user", "robot"]) {
     expect(result.status).toBe("ready");
   });
 }
+
+test("a rejected pose session cannot be resurrected by a same-floor catalog refresh", async ({ page }) => {
+  await loadQualityModules(page);
+  await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore(initial);
+    let poses = 0;
+    window.poseRecoveryCatalogs = 0;
+    const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+    const effects = new EffectController(store, {
+      catalog: async () => { window.poseRecoveryCatalogs += 1; return [initial.resources.entry]; },
+      pose: async () => {
+        poses += 1;
+        if (poses > 1) return new Promise(() => {});
+        return { ...initial.resources.pose.value, floorCoherent: true, mapSessionKey: "different-session" };
+      }, scene: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
+    });
+    window.poseRecoveryStore = store;
+    window.poseRecoveryEffects = effects;
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    void effects.refreshCatalog(true);
+  });
+  await expect.poll(() => page.evaluate(() => window.poseRecoveryCatalogs)).toBeGreaterThanOrEqual(2);
+  const result = await page.evaluate(() => ({ exactPose: window.poseRecoveryStore.value.map.exactPose, pose: window.poseRecoveryStore.value.resources.pose.value }));
+  expect(result).toEqual({ exactPose: false, pose: null });
+  await page.evaluate(() => window.poseRecoveryEffects.dispose());
+});
