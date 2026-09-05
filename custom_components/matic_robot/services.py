@@ -1156,10 +1156,10 @@ async def _async_run_room(
                             active_session
                         )
                         if session_active is False or active_session is None:
+                            mission_timeout.reschedule(None)
                             await manager.async_mark_verifying(
                                 serial_number, call.data["plan_id"], room
                             )
-                            mission_timeout.reschedule(None)
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
                                 history_baseline,
@@ -1174,9 +1174,6 @@ async def _async_run_room(
                             raise RoomInterruptedError(
                                 f"{room.name} completion could not be verified"
                             )
-                        await manager.async_mark_verifying(
-                            serial_number, call.data["plan_id"], room
-                        )
                         session_resolution = (
                             await _async_wait_for_active_session_resolution(
                                 hass,
@@ -1187,6 +1184,9 @@ async def _async_run_room(
                         )
                         if session_resolution is False:
                             mission_timeout.reschedule(None)
+                            await manager.async_mark_verifying(
+                                serial_number, call.data["plan_id"], room
+                            )
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
                                 history_baseline,
@@ -1613,9 +1613,6 @@ async def _async_run_leg(
                         )
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        await manager.async_mark_verifying(
-                            serial_number, call.data["plan_id"], active_room
-                        )
                         if active_session is not None:
                             session_resolution = (
                                 await _async_wait_for_active_session_resolution(
@@ -1632,6 +1629,9 @@ async def _async_run_leg(
                                     "Native session completion could not be confirmed"
                                 )
                         mission_timeout.reschedule(None)
+                        await manager.async_mark_verifying(
+                            serial_number, call.data["plan_id"], active_room
+                        )
                         evidence = await _async_verify_leg_completion(
                             session_history,
                             history_baseline,

@@ -2823,7 +2823,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
         )
 
     manager.async_mark_suspended.assert_not_awaited()
-    assert manager.async_mark_verifying.await_count == 2
+    assert manager.async_mark_verifying.await_count == 1
     assert manager.async_mark_resumed.await_count == 2
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
@@ -5546,6 +5546,11 @@ async def test_terminal_history_has_its_own_budget(
     """Verification outlives the returned mission's cleaning deadline."""
     rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
     manager = _leg_manager()
+
+    async def slow_persist(*args):
+        await asyncio.sleep(0.05)
+
+    manager.async_mark_verifying = AsyncMock(side_effect=slow_persist)
 
     async def send_command(call):
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
