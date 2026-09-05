@@ -105,6 +105,8 @@ export class MaticMapCanvasV4 extends LitElement {
     .map-extras { position: absolute; inset-block-end: calc(var(--map-sheet-offset, 0px) + 52px); inset-inline-end: 0; display: flex; }
     .appearance-switch { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-start: 0; }
     .camera-steps { position: absolute; inset-block-end: var(--map-sheet-offset, 0px); inset-inline-end: 0; }
+    .map-root:has(.selection-chip) .camera-steps { inset-block-end: calc(var(--map-sheet-offset, 0px) + 4rem); }
+    .map-root:has(.selection-chip) .map-extras { inset-block-end: calc(var(--map-sheet-offset, 0px) + 4rem + 52px); }
     .navigation-help { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-end: 0; }
     :host([narrow]) .map-context { max-inline-size: calc(100% - 52px); gap: var(--ms-space-1); }
     :host([narrow]) ::slotted(.floor-switcher) { inline-size: 7rem; }

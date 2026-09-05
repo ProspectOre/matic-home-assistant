@@ -4178,3 +4178,33 @@ test("short phone keeps plan footer reachable below the reserved map controls", 
   const view = await gallery.getByRole("group", { name: "Map view", exact: true }).boundingBox();
   expect(body.y).toBeGreaterThan(view.y + view.height);
 });
+
+for (const width of [768, 820]) {
+  test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const gallery = await loadGallery(page, { scenario: "rooms" });
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const state = module.createGalleryState("rooms");
+      document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
+        selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });
+    }, GALLERY_TAG);
+    const chip = gallery.locator(".selection-chip");
+    const camera = gallery.getByRole("toolbar", { name: "Map camera controls" });
+    await expect(chip).toBeVisible();
+    const [chipBox, cameraBox] = await Promise.all([chip.boundingBox(), camera.boundingBox()]);
+    expect(cameraBox.y + cameraBox.height).toBeLessThanOrEqual(chipBox.y);
+    const before = (await snapshot(page)).cameras.three?.yaw ?? null;
+    await camera.getByRole("button", { name: "Rotate right" }).click();
+    await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(before);
+    const pitch = (await snapshot(page)).cameras.three?.pitch ?? null;
+    await camera.getByRole("button", { name: "Lower viewing angle" }).click();
+    await expect.poll(async () => (await snapshot(page)).cameras.three?.pitch ?? null).not.toBe(pitch);
+    await chip.getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(chip).toHaveCount(0);
+    await expect(camera).toBeVisible();
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    await expect(camera).toHaveCount(0);
+    await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+  });
+}
