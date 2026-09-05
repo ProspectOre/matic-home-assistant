@@ -109,7 +109,6 @@ ACTIVE_SESSION_UNKNOWN_ATTEMPTS = 3
 ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
 SESSION_HISTORY_ATTEMPTS = 6
 SESSION_HISTORY_RETRY_SECONDS = 2
-HANDOFF_HISTORY_ATTEMPTS = 20
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 _LOGGER = logging.getLogger(__name__)
@@ -1149,38 +1148,6 @@ async def _async_run_room(
                         hass, entity_id, room, cancel_event
                     )
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        next_dispatch = (
-                            await prefetch_next() if prefetch_next is not None else None
-                        )
-                        if next_dispatch is not None:
-                            # Eager handoff: the next room is commanded during
-                            # the observed return so the robot can pivot
-                            # without docking.  Prefetch refuses ownership
-                            # while an OEM stop settles or the run is being
-                            # cancelled, and the current room still needs
-                            # native verification; an unverified room stops
-                            # the started next room without history credit.
-                            await manager.async_mark_verifying(
-                                serial_number, call.data["plan_id"], room
-                            )
-                            completion_verified = await _async_verify_room_completion(
-                                session_history,
-                                history_baseline,
-                                room,
-                                dispatched_at,
-                                hass=hass,
-                                entity_id=entity_id,
-                                cancel_event=cancel_event,
-                                attempts=HANDOFF_HISTORY_ATTEMPTS,
-                                allow_active_cleaning=True,
-                            )
-                            if not completion_verified:
-                                await _async_cleanup_managed_motion(
-                                    managed_user_command,
-                                    motion_token,
-                                    dispatch_attempted=True,
-                                )
-                            break
                         session_active = await _async_active_session_state(
                             active_session
                         )
@@ -1197,12 +1164,6 @@ async def _async_run_room(
                                 entity_id=entity_id,
                                 cancel_event=cancel_event,
                             )
-                            if completion_verified and prefetch_next is not None:
-                                # The eager dispatch above was unavailable;
-                                # retry once the session is verified so a
-                                # cleared stop fence or transient dispatch
-                                # error does not end the run early.
-                                await prefetch_next()
                             break
                         if session_active is None:
                             raise RoomInterruptedError(
@@ -1229,8 +1190,6 @@ async def _async_run_room(
                                 entity_id=entity_id,
                                 cancel_event=cancel_event,
                             )
-                            if completion_verified and prefetch_next is not None:
-                                await prefetch_next()
                             break
                         if session_resolution is None:
                             raise RoomInterruptedError(
@@ -1466,6 +1425,8 @@ async def _async_run_room(
         hass.bus.async_fire(
             f"{DOMAIN}_room_ended_unverified", event_data, context=call.context
         )
+    if completion_verified and prefetch_next is not None:
+        await prefetch_next()
     return completion_verified
 
 
@@ -1545,7 +1506,6 @@ async def _async_run_leg(
     )
     dispatch_attempted = False
     stop_sent = False
-    next_dispatch: _PreparedRoomDispatch | None = None
     evidence: dict[str, tuple[str, int]] | None = None
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
 
@@ -1643,12 +1603,10 @@ async def _async_run_leg(
                         )
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        if prefetch_next is not None and not stop_sent:
-                            next_dispatch = await prefetch_next()
                         await manager.async_mark_verifying(
                             serial_number, call.data["plan_id"], active_room
                         )
-                        if next_dispatch is None and active_session is not None:
+                        if active_session is not None:
                             session_resolution = (
                                 await _async_wait_for_active_session_resolution(
                                     hass, entity_id, active_session, cancel_event
@@ -1671,12 +1629,6 @@ async def _async_run_leg(
                             hass=hass,
                             entity_id=entity_id,
                             cancel_event=cancel_event,
-                            attempts=(
-                                HANDOFF_HISTORY_ATTEMPTS
-                                if next_dispatch is not None
-                                else SESSION_HISTORY_ATTEMPTS
-                            ),
-                            allow_active_cleaning=next_dispatch is not None,
                         )
                         break
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
@@ -1855,12 +1807,10 @@ async def _async_run_leg(
                 context=call.context,
             )
     all_verified = all(room.room_id in credited for room in leg)
-    if not all_verified and next_dispatch is not None:
-        await _async_cleanup_managed_motion(
-            managed_user_command,
-            motion_token,
-            dispatch_attempted=True,
-        )
+    if all_verified and prefetch_next is not None and not stop_sent:
+        # Start the next settings leg only after evidence and persistence finish.
+        # Otherwise a short next mission can end before its observer attaches.
+        await prefetch_next()
     return all_verified
 
 
@@ -2769,7 +2719,7 @@ async def _async_execute_rooms(
                         )
                     except (HomeAssistantError, MaticError) as err:
                         _LOGGER.debug(
-                            "Early Matic room handoff was unavailable (%s)",
+                            "Next Matic leg dispatch was unavailable (%s)",
                             type(err).__name__,
                         )
                         return None

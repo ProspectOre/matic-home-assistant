@@ -68,7 +68,10 @@ unverified. Total completion credit stayed 112; failure/cancellation/interruptio
 counts were unchanged. Positive native evidence was available after verification had
 already ended. The multi-room path lacked the single-room native-session-end wait and
 could stop polling on a matching but incomplete history record. Regressions
-cover both cases; the corrected candidate still needs a fresh physical retest.
+cover both cases. Following settings legs now wait for verified completion
+and persistence before dispatch, so a short next run cannot finish unobserved.
+Same-settings rooms remain one mission. The corrected candidate still needs a
+fresh physical retest.
 The original plan, presence automation, and template draft were restored.
 
 RC12 two-room check (2026-09-04 Pacific): one native mission completed both
