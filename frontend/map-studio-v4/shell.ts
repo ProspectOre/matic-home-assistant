@@ -595,7 +595,7 @@ export class MaticMapShellV4 extends LitElement {
     const chrome = [".sheet-grip", ".sheet-tools", ".action-bar"]
       .map((selector) => sheet.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0)
       .reduce((sum, height) => sum + height, 0) + rem * 0.75;
-    const full = Math.min(available * 0.92, available - rem * 4);
+    const full = Math.min(available * 0.92, available - rem * 9);
     const half = Math.min(available * 0.48, rem * 26, full);
     return { peek: Math.min(chrome, half), half, full };
   }
@@ -918,6 +918,8 @@ export class MaticMapShellV4 extends LitElement {
     return html`
       <select
         class="ms-select context-switcher floor-switcher"
+        slot="floor"
+        data-map-control
         name="map-floor"
         aria-label=${this.#t("v4_choose_floor", "Choose floor")}
         ?disabled=${floorChoices.length <= 1}
@@ -974,7 +976,7 @@ export class MaticMapShellV4 extends LitElement {
         <div class="shelf">
           ${historyRow}
           ${diagnosticsRow}
-          ${narrow ? this.#floorSwitcher(state) : nothing}
+
         </div>
       `;
     }
@@ -1050,7 +1052,7 @@ export class MaticMapShellV4 extends LitElement {
           locating,
         )}
         ${historyRow}
-        ${narrow ? this.#floorSwitcher(state) : nothing}
+
       </div>
       ${narrow ? html`
         <h3 class="shelf-heading" id="map-display-heading">${t("v4_map_display", "Map display")}</h3>
@@ -1219,7 +1221,7 @@ export class MaticMapShellV4 extends LitElement {
                 <option value=${robot.entryId} ?selected=${robot.entryId === state.selection.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}
-            ${narrow ? nothing : this.#floorSwitcher(state)}
+
             <span class="spacer"></span>
             ${canToggleWorkspace ? html`
               <button
@@ -1287,7 +1289,7 @@ export class MaticMapShellV4 extends LitElement {
                 .state=${state}
                 .localize=${this.localize}
                 .narrow=${narrow}
-              ></${mapCanvasTag}>
+              >${this.#floorSwitcher(state)}</${mapCanvasTag}>
               ${!narrow && precisionOpen ? html`
                 <div class="precision-popover">
                   <${precisionControlsTag} compact .state=${state} .localize=${this.localize}></${precisionControlsTag}>

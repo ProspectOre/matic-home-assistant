@@ -11,6 +11,9 @@ not published releases.
 - A map-first workspace brings one-time room cleaning, saved plans and custom
   areas together, with clearer loading, unavailable and recovery states.
 - Original robot artwork is shared by the sidebar and cleaning controls.
+- Floor selection and 2D/3D sit at the top of the map, with Fit opposite and
+  camera controls above the cleaning sheet. Active plans remain visibly in
+  progress during dock visits; mixed-settings guidance explains transitions.
 - Room-based cleaning follows verified native room identities, so ordinary
   boundary refinement does not invalidate an unchanged room target.
 - Coordinate-based areas retain their own geometry checks. Confirmable

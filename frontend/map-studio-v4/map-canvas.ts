@@ -95,27 +95,21 @@ export class MaticMapCanvasV4 extends LitElement {
       outline-offset: -3px;
     }
 
-    /* One self-packing rail replaces the old ladder of absolutely positioned
-       siblings whose offsets (0.75 / 4.25 / 7.2rem) encoded which of the
-       others happened to be visible. Groups simply stack; a hidden group
-       leaves no hole. */
-    .map-rail {
-      position: absolute;
-      z-index: 4;
-      inset-block-start: 0.75rem;
-      inset-inline-end: 0.75rem;
-      display: flex;
-      flex-direction: column;
-      gap: var(--ms-space-2);
-      align-items: flex-end;
-      max-inline-size: calc(100% - 1.5rem);
-    }
-    :host([narrow]) .map-rail,
-    .map-root[data-narrow] .map-rail {
-      inset-block-start: auto;
-      inset-block-end: calc(0.75rem + var(--map-sheet-offset, 0px));
-      inset-inline-end: 0.75rem;
-    }
+    /* Navigation has stable corners; only orbit controls follow the sheet. */
+    .map-rail { position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
+    .map-rail > * { pointer-events: auto; }
+    .map-context { position: absolute; inset-block-start: 0; inset-inline-start: 0; display: flex; gap: var(--ms-space-2); align-items: center; max-inline-size: calc(100% - 60px); }
+    ::slotted(.floor-switcher) { min-inline-size: 0; inline-size: 9rem; min-block-size: 44px; background-color: var(--ms-surface-card); color: var(--ms-text); }
+    .view-switch { flex: none; }
+    .map-tools { position: absolute; inset-block-start: 0; inset-inline-end: 0; }
+    .map-extras { position: absolute; inset-block-end: calc(var(--map-sheet-offset, 0px) + 52px); inset-inline-end: 0; display: flex; }
+    .appearance-switch { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-start: 0; }
+    .camera-steps { position: absolute; inset-block-end: var(--map-sheet-offset, 0px); inset-inline-end: 0; }
+    .navigation-help { position: absolute; inset-block-start: calc(44px + var(--ms-space-2)); inset-inline-end: 0; }
+    :host([narrow]) .map-context { max-inline-size: calc(100% - 52px); gap: var(--ms-space-1); }
+    :host([narrow]) ::slotted(.floor-switcher) { inline-size: 7rem; }
+    :host([narrow]) .fit { min-inline-size: 44px; padding-inline: var(--ms-space-2); }
+    :host([narrow]) .fit .ms-btn__label { display: none; }
 
     .map-tools, .view-switch, .appearance-switch, .camera-steps { display: flex; }
 
@@ -496,9 +490,10 @@ export class MaticMapCanvasV4 extends LitElement {
     const showCamera = showView && state.view === "three";
     const showTools = !locating;
     const showExtras = !narrow && !draw;
-    if (!showView && !showTools) return nothing;
+
     return html`
       <div class="map-rail" data-map-control>
+        <div class="map-context"><slot name="floor"></slot>
         ${showView ? html`
           <div class="view-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_view_label", "Map view")}>
             <button
@@ -516,6 +511,7 @@ export class MaticMapCanvasV4 extends LitElement {
           </div>
         ` : nothing}
 
+        </div>
         ${showAppearance ? html`
           <div class="appearance-switch ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("map_style_label", "Map style")}>
             <button
@@ -556,7 +552,10 @@ export class MaticMapCanvasV4 extends LitElement {
                 title=${this.#t("v4_fit_map", "Fit map")}
               >${icon(iconFit)}<span class="ms-btn__label">${this.#t("v4_fit_map", "Fit map")}</span></button>
             ` : nothing}
-            ${!locating && showExtras ? html`
+          </div>
+        ` : nothing}
+        ${!locating && showExtras ? html`
+          <div class="map-extras ms-surface ms-surface--floating ms-segment" role="group" aria-label=${this.#t("v4_map_display", "Map display")}>
               <button
                 class="labels ms-btn"
                 type="button"
@@ -573,7 +572,6 @@ export class MaticMapCanvasV4 extends LitElement {
                 @click=${this.#toggleHelp}
                 title=${helpTitle}
               >${icon(iconHelp)}</button>
-            ` : nothing}
           </div>
         ` : nothing}
 

@@ -4107,3 +4107,68 @@ for (const ordered of [false, true]) {
     expect((await snapshot(page)).planDraft.rooms.map((room) => room.roomId)).toEqual(["room-one", "room-two"]);
   });
 }
+
+for (const width of [320, 390, 820, 1280]) {
+  test(`map corner controls stay separate at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const gallery = await loadGallery(page);
+    const floor = gallery.getByRole("combobox", { name: "Choose floor" });
+    await expect(floor).toHaveCount(1);
+    await floor.locator('option[value="current"]').evaluate((option) => { option.textContent = "An exceptionally long saved floor display name"; });
+    const fit = gallery.getByRole("button", { name: "Fit the whole map on screen" });
+    const view = gallery.getByRole("group", { name: "Map view", exact: true });
+    const camera = gallery.getByRole("toolbar", { name: "Map camera controls" });
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const check = async () => expect(async () => {
+      const [f, v, fitBox, c, map] = await Promise.all([floor.boundingBox(), view.boundingBox(), fit.boundingBox(), camera.boundingBox(), gallery.locator(".map-root").boundingBox()]);
+      for (const box of [f, v, fitBox, c]) expect(box).not.toBeNull();
+      expect(f.x + f.width).toBeLessThanOrEqual(v.x);
+      expect(v.x + v.width).toBeLessThanOrEqual(fitBox.x);
+      expect(Math.abs((f.y + f.height / 2) - (v.y + v.height / 2))).toBeLessThanOrEqual(2);
+      expect(Math.abs((f.y + f.height / 2) - (fitBox.y + fitBox.height / 2))).toBeLessThanOrEqual(2);
+      expect(c.x + c.width).toBeLessThanOrEqual(map.x + map.width);
+      expect(c.y).toBeGreaterThan(fitBox.y + fitBox.height);
+      const sheet = gallery.locator(".mobile-sheet");
+      if (await sheet.count()) {
+        const bounds = await sheet.boundingBox();
+        expect(c.y + c.height).toBeLessThanOrEqual(bounds.y);
+      }
+      expect(f.height).toBeGreaterThanOrEqual(44);
+    }).toPass({ timeout: 2000 });
+    await check();
+    const more = gallery.getByRole("button", { name: "Show more of the map workspace" });
+    if (await more.count()) {
+      await more.click();
+      await check();
+      await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+      await check();
+    }
+    await page.screenshot({ path: testInfo.outputPath(`synthetic-corners-${width}.png`) });
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    await expect(floor).toBeVisible();
+    await expect(fit).toBeVisible();
+    await expect(camera).toHaveCount(0);
+    await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+    await gallery.evaluate((element) => element.setScenario("transition"));
+    await expect(floor).toBeVisible();
+    await expect(floor).toHaveCount(1);
+  });
+}
+
+test("short phone keeps plan footer reachable below the reserved map controls", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const gallery = await loadGallery(page);
+  await gallery.locator(".stage").evaluate((stage) => { stage.style.minBlockSize = "0"; stage.style.blockSize = "568px"; });
+  await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await settleSheet(gallery);
+  const sheet = gallery.locator(".mobile-sheet");
+  await expect(sheet).toHaveAttribute("data-detent", "full");
+  const deletePlan = gallery.getByRole("button", { name: "Delete plan", exact: true });
+  await deletePlan.scrollIntoViewIfNeeded();
+  await expect(deletePlan).toBeInViewport();
+  const footer = await gallery.locator(".action-bar").boundingBox();
+  expect(footer.y + footer.height).toBeLessThanOrEqual(568);
+  const body = await sheet.boundingBox();
+  const view = await gallery.getByRole("group", { name: "Map view", exact: true }).boundingBox();
+  expect(body.y).toBeGreaterThan(view.y + view.height);
+});
