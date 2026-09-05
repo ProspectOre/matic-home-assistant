@@ -1743,11 +1743,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(selector.locator("option:checked")).toHaveText("Daily clean");
     await expect(selector.locator('option[value="daily"]')).toHaveAttribute("selected", "");
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
       const element = document.querySelector(tag);
       const current = element.getWorkspaceSnapshot();
-      const ready = module.createGalleryState("ready");
       element.replaceWorkspaceState({
         ...current,
         resources: {
@@ -1755,7 +1753,13 @@ test.describe("Map Studio v0.4 foundation", () => {
           plans: { status: "loading", value: null, problem: null },
         },
       });
-      await element.updateComplete;
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const element = document.querySelector(tag);
+      const current = element.getWorkspaceSnapshot();
+      const ready = module.createGalleryState("ready");
       element.replaceWorkspaceState({
         ...current,
         resources: { ...current.resources, plans: ready.resources.plans },
@@ -4073,19 +4077,21 @@ for (const dirty of [false, true]) {
 }
 
 for (const activity of ["docked", "idle"]) {
-  test(`an active plan remains in progress while the robot is ${activity}`, async ({ page }) => {
-    const gallery = await loadGallery(page);
-    await page.evaluate(async ({ tag, activity }) => {
-      const module = await import("/map_studio_v4/index.js");
-      const state = module.createGalleryState("ready");
-      document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
-        managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: true } } });
-    }, { tag: GALLERY_TAG, activity });
-    await expect(gallery.locator(".status-copy strong")).toHaveText("Plan in progress");
-    await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
-      ? "Robot docked; the plan has not finished." : "Waiting for the active plan to continue or finish.");
-    await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
-  });
+  for (const betweenLegs of [false, true]) {
+    test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
+      const gallery = await loadGallery(page);
+      await page.evaluate(async ({ tag, activity, betweenLegs }) => {
+        const module = await import("/map_studio_v4/index.js");
+        const state = module.createGalleryState("ready");
+        document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
+          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
+      }, { tag: GALLERY_TAG, activity, betweenLegs });
+      await expect(gallery.locator(".status-copy strong")).toHaveText("Plan in progress");
+      await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
+        ? "Robot docked; the plan has not finished." : "Waiting for the active plan to continue or finish.");
+      await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
+    });
+  }
 }
 
 for (const ordered of [false, true]) {

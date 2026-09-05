@@ -96,7 +96,8 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   if (state.coherence === "verifying" || state.coherence === "booting") {
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
   }
-  if (state.resources.entry?.activePlan && (state.activity === "idle" || state.activity === "docked")) {
+  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
+    && (state.activity === "idle" || state.activity === "docked")) {
     return {
       title: t("v4_plan_in_progress", "Plan in progress"),
       detail: state.activity === "docked"
