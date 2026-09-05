@@ -83,21 +83,27 @@ export class MaticBackend {
     this.#getHass = getHass;
   }
 
-  async #request(
+  async #request<T>(
     path: string,
     init: RequestInit,
     timeoutMs: number,
-    signal?: AbortSignal,
-  ): Promise<Response> {
+    signal: AbortSignal | undefined,
+    consume: (response: Response, signal: AbortSignal) => Promise<T>,
+  ): Promise<T> {
     if (!isPrivatePath(path)) throw new BackendError("invalid-private-path");
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
     const controller = new AbortController();
-    const abort = (): void => controller.abort();
+    let rejectAbort: (reason: DOMException) => void = () => {};
+    const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const abort = (): void => {
+      controller.abort();
+      rejectAbort(new DOMException("Aborted", "AbortError"));
+    };
     signal?.addEventListener("abort", abort, { once: true });
     let timedOut = false;
     const timeout = window.setTimeout(() => {
       timedOut = true;
-      controller.abort();
+      abort();
     }, timeoutMs);
     try {
       const hass = this.#getHass();
@@ -113,13 +119,23 @@ export class MaticBackend {
         headers: Object.fromEntries(headers.entries()),
         signal: controller.signal,
       };
-      if (typeof hass?.fetchWithAuth === "function") {
-        return await hass.fetchWithAuth(path, requestInit);
-      }
-      const token = hass?.auth?.accessToken || hass?.auth?.data?.access_token;
-      if (token) headers.set("Authorization", `Bearer ${token}`);
-      const url = typeof hass?.hassUrl === "function" ? hass.hassUrl(path) : path;
-      return await fetch(url, { ...requestInit, headers });
+      const execute = async (): Promise<T> => {
+        let response: Response;
+        if (typeof hass?.fetchWithAuth === "function") {
+          response = await hass.fetchWithAuth(path, requestInit);
+        } else {
+          const token = hass?.auth?.accessToken || hass?.auth?.data?.access_token;
+          if (token) headers.set("Authorization", `Bearer ${token}`);
+          const url = typeof hass?.hassUrl === "function" ? hass.hassUrl(path) : path;
+          response = await fetch(url, { ...requestInit, headers });
+        }
+        if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+        return await consume(response, controller.signal);
+      };
+      // Keep the deadline alive through body consumption and decoding, not
+      // merely until response headers arrive. Cancellation also settles when
+      // a host wrapper fails to propagate the supplied fetch signal.
+      return await Promise.race([execute(), interrupted]);
     } catch (error) {
       if (timedOut && !signal?.aborted) throw new BackendError("request-timeout");
       if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
@@ -136,25 +152,26 @@ export class MaticBackend {
     signal?: AbortSignal,
     init: RequestInit = {},
   ): Promise<unknown> {
-    const response = await this.#request(path, {
+    return this.#request(path, {
       ...init,
       headers: {
         Accept: "application/json",
         ...(init.headers || {}),
       },
-    }, timeoutMs, signal);
-    if (!response.ok) {
-      const conflict = response.headers.get("X-Matic-Plans-Conflict");
-      throw new BackendError(
-        conflict === "map-rechecking" ? "map-rechecking" : "request-failed",
-        response.status,
-      );
-    }
-    try {
-      return await response.json();
-    } catch {
-      throw new ContractError("invalid-json-response");
-    }
+    }, timeoutMs, signal, async (response) => {
+      if (!response.ok) {
+        const conflict = response.headers.get("X-Matic-Plans-Conflict");
+        throw new BackendError(
+          conflict === "map-rechecking" ? "map-rechecking" : "request-failed",
+          response.status,
+        );
+      }
+      try {
+        return await response.json();
+      } catch {
+        throw new ContractError("invalid-json-response");
+      }
+    });
   }
 
   async catalog(signal?: AbortSignal): Promise<readonly MapEntry[]> {
@@ -172,29 +189,30 @@ export class MaticBackend {
     const headers = new Headers({ Accept: "application/vnd.matic.slam-scene" });
     if (source === "live") headers.set("X-Matic-Prefer-Cached", "1");
     if (etag) headers.set("If-None-Match", etag);
-    const response = await this.#request(path, { headers }, REQUEST_TIMEOUTS.scene, signal);
-    const revision = responseRevision(response, expectedRevision);
-    const floorCoherent = floorHeader(response, expectedFloorCoherent);
-    if (response.status === 304) {
-      return { scene: null, floorCoherent, revision, notModified: true };
-    }
-    if (!response.ok) throw new BackendError("scene-request-failed", response.status);
-    const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
-    if (contentType !== "application/vnd.matic.slam-scene") {
-      throw new ContractError("invalid-scene-content-type");
-    }
-    const parsed = await this.#parser.parse(await response.arrayBuffer(), signal);
-    return {
-      scene: {
-        ...parsed,
+    return this.#request(path, { headers }, REQUEST_TIMEOUTS.scene, signal, async (response, operationSignal) => {
+      const revision = responseRevision(response, expectedRevision);
+      const floorCoherent = floorHeader(response, expectedFloorCoherent);
+      if (response.status === 304) {
+        return { scene: null, floorCoherent, revision, notModified: true };
+      }
+      if (!response.ok) throw new BackendError("scene-request-failed", response.status);
+      const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
+      if (contentType !== "application/vnd.matic.slam-scene") {
+        throw new ContractError("invalid-scene-content-type");
+      }
+      const parsed = await this.#parser.parse(await response.arrayBuffer(), operationSignal);
+      return {
+        scene: {
+          ...parsed,
+          revision,
+          etag: response.headers.get("ETag"),
+          source,
+        },
+        floorCoherent,
         revision,
-        etag: response.headers.get("ETag"),
-        source,
-      },
-      floorCoherent,
-      revision,
-      notModified: false,
-    };
+        notModified: false,
+      };
+    });
   }
 
   async #inflateDelta(
@@ -296,55 +314,57 @@ export class MaticBackend {
     signal?: AbortSignal,
   ): Promise<SceneResponse> {
     const separator = path.includes("?") ? "&" : "?";
-    const response = await this.#request(
+    return this.#request(
       `${path}${separator}since=${encodeURIComponent(base.revision)}`,
       { headers: { Accept: "application/vnd.matic.slam-delta, application/vnd.matic.slam-scene" } },
       REQUEST_TIMEOUTS.delta,
       signal,
-    );
-    const revision = responseRevision(response, base.revision);
-    const floorCoherent = floorHeader(response, expectedFloorCoherent);
-    if (response.status === 204) {
-      if (revision !== base.revision) throw new ContractError("invalid-scene-delta-revision");
-      return { scene: null, floorCoherent, revision, notModified: true };
-    }
-    if (!response.ok) throw new BackendError("delta-request-failed", response.status);
-    if (revision <= base.revision) throw new ContractError("invalid-scene-delta-revision");
-    const declaredLength = Number(response.headers.get("Content-Length"));
-    if (Number.isFinite(declaredLength) && declaredLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES) {
-      throw new ContractError("invalid-scene-delta-size");
-    }
-    const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
-    const payload = await response.arrayBuffer();
-    if (contentType === "application/vnd.matic.slam-delta") {
-      const baseHeader = Number(response.headers.get("X-Matic-Base-Revision"));
-      if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
-        throw new ContractError("invalid-scene-delta-base");
-      }
-      const decoded = await this.#applySceneDelta(payload, base, signal);
-      if (decoded.revision !== revision) throw new ContractError("invalid-scene-delta-revision");
-      return {
-        scene: { ...decoded.parsed, etag: response.headers.get("ETag") },
-        floorCoherent,
-        revision,
-        notModified: false,
-      };
-    }
-    if (contentType !== "application/vnd.matic.slam-scene") {
-      throw new ContractError("invalid-scene-delta-content-type");
-    }
-    const parsed = await this.#parser.parse(payload, signal);
-    return {
-      scene: {
-        ...parsed,
-        revision,
-        etag: response.headers.get("ETag"),
-        source: "live",
+      async (response, operationSignal) => {
+        const revision = responseRevision(response, base.revision);
+        const floorCoherent = floorHeader(response, expectedFloorCoherent);
+        if (response.status === 204) {
+          if (revision !== base.revision) throw new ContractError("invalid-scene-delta-revision");
+          return { scene: null, floorCoherent, revision, notModified: true };
+        }
+        if (!response.ok) throw new BackendError("delta-request-failed", response.status);
+        if (revision <= base.revision) throw new ContractError("invalid-scene-delta-revision");
+        const declaredLength = Number(response.headers.get("Content-Length"));
+        if (Number.isFinite(declaredLength) && declaredLength > DELTA_HEADER_BYTES + DELTA_MAX_BYTES) {
+          throw new ContractError("invalid-scene-delta-size");
+        }
+        const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
+        const payload = await response.arrayBuffer();
+        if (contentType === "application/vnd.matic.slam-delta") {
+          const baseHeader = Number(response.headers.get("X-Matic-Base-Revision"));
+          if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
+            throw new ContractError("invalid-scene-delta-base");
+          }
+          const decoded = await this.#applySceneDelta(payload, base, operationSignal);
+          if (decoded.revision !== revision) throw new ContractError("invalid-scene-delta-revision");
+          return {
+            scene: { ...decoded.parsed, etag: response.headers.get("ETag") },
+            floorCoherent,
+            revision,
+            notModified: false,
+          };
+        }
+        if (contentType !== "application/vnd.matic.slam-scene") {
+          throw new ContractError("invalid-scene-delta-content-type");
+        }
+        const parsed = await this.#parser.parse(payload, operationSignal);
+        return {
+          scene: {
+            ...parsed,
+            revision,
+            etag: response.headers.get("ETag"),
+            source: "live",
+          },
+          floorCoherent,
+          revision,
+          notModified: false,
+        };
       },
-      floorCoherent,
-      revision,
-      notModified: false,
-    };
+    );
   }
 
   async pose(path: string, signal?: AbortSignal): Promise<PoseModel> {
@@ -392,13 +412,15 @@ export class MaticBackend {
   }
 
   async deleteArea(path: string, areaId: string, signal?: AbortSignal): Promise<void> {
-    const response = await this.#request(
+    await this.#request(
       `${path}?area_id=${encodeURIComponent(areaId)}`,
       { method: "DELETE", headers: { Accept: "application/json" } },
       REQUEST_TIMEOUTS.mutation,
       signal,
+      async (response) => {
+        if (!response.ok) throw new BackendError("area-delete-failed", response.status);
+      },
     );
-    if (!response.ok) throw new BackendError("area-delete-failed", response.status);
   }
 
   async service(
