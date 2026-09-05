@@ -1029,7 +1029,7 @@ async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
     registry.async_update_device.assert_called_once_with("device", sw_version="v168.11")
 
 
-@pytest.mark.parametrize("empty_history", [False, True])
+@pytest.mark.parametrize("empty_history", [False, True, None])
 async def test_finished_event_waits_for_native_history_after_local_end(
     hass, empty_history
 ) -> None:
@@ -1063,8 +1063,10 @@ async def test_finished_event_waits_for_native_history_after_local_end(
         ("Study", "Den"),
     )
     client.async_get_telemetry.return_value = RobotTelemetry(
-        latest_session=None if empty_history else previous,
-        local_cleaning_sessions=0 if empty_history else 1,
+        latest_session=previous if empty_history is False else None,
+        local_cleaning_sessions=(
+            None if empty_history is None else 0 if empty_history else 1
+        ),
     )
     await coordinator._async_update_data()
     coordinator._session_tracker.latest_session = replace(

@@ -113,7 +113,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
-        self._finished_history_initialized = False
         self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
@@ -624,15 +623,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     ) -> None:
         """Announce a newly completed robot cleaning session exactly once."""
         session = state.telemetry.latest_session
-        if not self._finished_history_initialized:
-            if (
-                session is not None
-                or state.telemetry.local_cleaning_sessions is not None
-            ):
-                self._finished_history_initialized = True
-                self._last_finished_session = session
+        if session is None:
             return
-        if session is None or session.ended_at is None:
+        if session.ended_at is None:
+            previous = self._last_finished_session
+            if previous is None or _parse_timestamp(
+                session.started_at
+            ) > _parse_timestamp(previous.started_at):
+                self._last_finished_session = session
             return
         # A partial first snapshot may omit pre-existing runs. Never replay
         # sessions that had already ended before this coordinator started.
