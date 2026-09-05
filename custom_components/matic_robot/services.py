@@ -1648,6 +1648,21 @@ async def _async_run_leg(
                         await manager.async_mark_verifying(
                             serial_number, call.data["plan_id"], active_room
                         )
+                        if next_dispatch is None and active_session is not None:
+                            session_resolution = (
+                                await _async_wait_for_active_session_resolution(
+                                    hass, entity_id, active_session, cancel_event
+                                )
+                            )
+                            if session_resolution is True:
+                                await manager.async_mark_resumed(
+                                    serial_number, call.data["plan_id"], active_room
+                                )
+                                continue
+                            if session_resolution is None:
+                                raise RoomInterruptedError(
+                                    "Native session completion could not be confirmed"
+                                )
                         evidence = await _async_verify_leg_completion(
                             session_history,
                             history_baseline,
@@ -1870,6 +1885,8 @@ async def _async_verify_leg_completion(
     if reader is None or baseline is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
+    evidence: dict[str, tuple[str, int]] | None = None
+    matched_key: bytes | None = None
     for attempt in range(attempts):
         _raise_if_completion_verification_was_replaced(
             hass,
@@ -1907,6 +1924,9 @@ async def _async_verify_leg_completion(
                 continue
             matches.append(record)
         if len(matches) == 1:
+            if matched_key is not None and matched_key != matches[0].key:
+                return None
+            matched_key = matches[0].key
             session = matches[0].session
             ended_at = session.ended_at
             assert isinstance(ended_at, str)
@@ -1917,7 +1937,7 @@ async def _async_verify_leg_completion(
             completed_names = {
                 name.strip().casefold() for name in session.completed_rooms
             }
-            evidence: dict[str, tuple[str, int]] = {}
+            evidence = {}
             for name, room_id in targets.items():
                 duration = durations.get(name)
                 if (
@@ -1927,7 +1947,11 @@ async def _async_verify_leg_completion(
                     and duration > 0
                 ):
                     evidence[room_id] = (ended_at, duration)
-            return evidence
+            # Native history can publish timestamps before per-room results.
+            # Keep polling the same record until complete or the bounded window
+            # expires; never combine evidence from different physical sessions.
+            if len(evidence) == len(targets):
+                return evidence
         if len(matches) > 1:
             return None
         if attempt + 1 < attempts:
@@ -1940,7 +1964,7 @@ async def _async_verify_leg_completion(
                 except TimeoutError:
                     continue
                 raise PlanCancelledError
-    return None
+    return evidence
 
 
 async def _async_wait_for_room_outcome(

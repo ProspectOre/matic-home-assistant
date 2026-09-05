@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
-Status: candidate, not stable-release sign-off. Installed baseline: `v0.4.0-rc13`
-(`e279f64`). Run this checklist against the exact candidate being promoted.
+Status: candidate, not stable-release sign-off. Installed baseline: `v0.4.0-rc14`
+(`8e3a931`). Run this checklist against the exact candidate being promoted.
 Automated coverage, browser emulation, and read-only live checks do not prove
 physical cleaning, native assistive technology, or affected reporter hardware.
 
@@ -60,6 +60,16 @@ physical cleaning, native assistive technology, or affected reporter hardware.
    incorrect credit, or a runner that fails to settle; record the failed case.
 
 ## Stable promotion gate
+
+RC14 two-room retest (2026-09-04 Pacific): one Quick vacuum mission completed
+both requested rooms natively (378s and 984s; 1,657s overall). Ownership cleared
+and the finished-session event did not duplicate, but both managed rooms ended
+unverified. Total completion credit stayed 112; failure/cancellation/interruption
+counts were unchanged. Positive native evidence was available after verification had
+already ended. The multi-room path lacked the single-room native-session-end wait and
+could stop polling on a matching but incomplete history record. Regressions
+cover both cases; the corrected candidate still needs a fresh physical retest.
+The original plan, presence automation, and template draft were restored.
 
 RC12 two-room check (2026-09-04 Pacific): one native mission completed both
 rooms with positive native per-room durations and returned to dock. The managed
