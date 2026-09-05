@@ -802,7 +802,11 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
 
     client = _client()
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
-    coordinator = _coordinator(hass, client)
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 1, 45, tzinfo=UTC),
+    ):
+        coordinator = _coordinator(hass, client)
 
     client.async_get_telemetry.return_value = RobotTelemetry(
         software_version="v168.11", latest_session=_session("1")
@@ -1023,3 +1027,147 @@ async def test_coordinator_updates_device_registry_firmware_once(hass) -> None:
         (DOMAIN, "synthetic"), "entry"
     )
     registry.async_update_device.assert_called_once_with("device", sw_version="v168.11")
+
+
+@pytest.mark.parametrize("empty_history", [False, True, None])
+async def test_finished_event_waits_for_native_history_after_local_end(
+    hass, empty_history
+) -> None:
+    """A local end must not consume the eventual native completion event."""
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2026, 7, 19, 12, tzinfo=UTC),
+    ):
+        coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    previous = CleaningSession(
+        "2026-07-19T01:00:00+00:00",
+        "2026-07-19T01:10:00+00:00",
+        600,
+        (),
+        (),
+        False,
+    )
+    native = CleaningSession(
+        "2026-07-20T01:00:00+00:00",
+        "2026-07-20T01:30:00+00:00",
+        1800,
+        ("Study", "Den"),
+        (("Study", 800), ("Den", 700)),
+        True,
+        ("Study", "Den"),
+    )
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=previous if empty_history is False else None,
+        local_cleaning_sessions=(
+            None if empty_history is None else 0 if empty_history else 1
+        ),
+    )
+    await coordinator._async_update_data()
+    coordinator._session_tracker.latest_session = replace(
+        native,
+        started_at="2026-07-20T01:00:30+00:00",
+        ended_at="2026-07-20T01:30:02+00:00",
+        completed=False,
+        rooms=(),
+        completed_rooms=(),
+        room_durations=(),
+    )
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert not events
+
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=native)
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["completed"] is True
+    assert events[0].data["completed_rooms"] == ["Study", "Den"]
+    assert events[0].data["room_durations"] == {"Study": 800, "Den": 700}
+    assert events[0].data["duration_seconds"] == 1800
+
+    # A partial history snapshot must neither replay an older session nor
+    # roll the deduplication cursor back and replay the completed run.
+    for session in (previous, native):
+        client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
+        coordinator._force_full_refresh = True
+        await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+
+
+@pytest.mark.parametrize("active_at_startup", [False, True])
+async def test_finished_event_rejects_partial_startup_history(hass, active_at_startup):
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 1, 45, tzinfo=UTC),
+    ):
+        coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    active = CleaningSession("2026-07-20T01:40:00+00:00", None, None, (), (), False)
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=active if active_at_startup else None,
+        local_cleaning_sessions=1 if active_at_startup else 0,
+    )
+    await coordinator._async_update_data()
+    # An empty startup snapshot can omit a completed historical run. An
+    # active startup cursor must also reject older starts even if their
+    # reported end timestamp is newer than coordinator initialization.
+    old = CleaningSession(
+        "2026-07-20T01:00:00+00:00",
+        "2026-07-20T01:50:00+00:00"
+        if active_at_startup
+        else "2026-07-20T01:30:00+00:00",
+        1800,
+        (),
+        (),
+        False,
+    )
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=old)
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert not events
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=replace(active, ended_at="2026-07-20T02:00:00+00:00")
+    )
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["completed"] is False
+
+
+async def test_finished_event_observed_native_run_ignores_host_clock_skew(hass):
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    active = CleaningSession("2001-01-01T01:00:00+00:00", None, None, (), (), False)
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=active)
+    await coordinator._async_update_data()
+    client.async_get_telemetry.return_value = RobotTelemetry(
+        latest_session=replace(
+            active, ended_at="2001-01-01T01:00:01+00:00", completed=True
+        )
+    )
+    coordinator._force_full_refresh = True
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["completed"] is True

@@ -506,12 +506,19 @@ run totals, or intelligent rotation. Exact plan and room details remain
 available through the response-only plan preview and management actions instead
 of being written into recorder-backed attributes.
 
-When the robot finishes a cleaning session the integration fires
+When native history reports a newly ended cleaning session the integration fires
 `matic_robot_cleaning_finished` with the session's start/end timestamps,
 duration, completion flag, visited rooms, verified completed rooms, per-room
 durations, the firmware version that produced the run, and the
 `device_id`/`entry_id` of the robot — one payload for post-clean notifications
-or custom logging.
+or custom logging. Local activity estimates never emit this event. Delivery waits
+for native history refresh; unavailable or stale history can delay or prevent it.
+Existing history at startup is not replayed, and timestamp refinement does not
+emit a duplicate. The completion flag is the native outcome, not an inference
+from docking or elapsed time. A natively observed active session can finish
+regardless of host/robot clock skew. For history-only discoveries, timestamps
+must place the end after integration startup; ambiguous older records are
+omitted rather than replayed as new automation triggers.
 `matic_robot_firmware_changed` likewise carries `device_id`/`entry_id` so
 multi-robot homes can tell which robot updated.
 `matic_robot_firmware_analyzed` is the silent post-snapshot result with safe

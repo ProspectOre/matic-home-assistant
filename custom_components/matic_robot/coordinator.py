@@ -50,7 +50,11 @@ from .const import (
     UPDATE_INTERVAL_SECONDS,
 )
 from .firmware import FirmwareTracker, async_build_firmware_snapshot
-from .session_tracking import CleaningSessionTracker, _sessions_overlap
+from .session_tracking import (
+    CleaningSessionTracker,
+    _parse_timestamp,
+    _sessions_overlap,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -109,6 +113,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._snapshot_retry_after = 0.0
         self._device_software_version: str | None = None
         self._last_finished_session: CleaningSession | None = None
+        self._finished_observation_started_at = dt_util.utcnow()
         self._session_tracker = CleaningSessionTracker()
         self._session_history_recovered = False
         self._pending_error_codes: tuple[int, ...] = ()
@@ -251,12 +256,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 pose=pose,
                 telemetry=telemetry,
             )
-            state = await self._async_track_cleaning_session(state)
             version = telemetry.software_version or operational.software_version
             if version is not None:
                 self._async_update_device_software(version, info.serial_number)
             self._async_clear_identity_issue()
+            # Events require native evidence; local estimates are display-only.
             self._async_fire_session_finished(state, version)
+            state = await self._async_track_cleaning_session(state)
             if self.firmware_tracker is not None:
                 await self.firmware_tracker.async_observe_version(
                     self.config_entry.entry_id,
@@ -617,16 +623,48 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
     ) -> None:
         """Announce a newly completed robot cleaning session exactly once."""
         session = state.telemetry.latest_session
-        if session is None or session.ended_at is None:
+        if session is None:
+            return
+        if session.ended_at is None:
+            previous = self._last_finished_session
+            if previous is None or _parse_timestamp(
+                session.started_at
+            ) > _parse_timestamp(previous.started_at):
+                self._last_finished_session = session
+            return
+        # A partial first snapshot may omit pre-existing runs. Never replay
+        # sessions that had already ended before this coordinator started.
+        previous = self._last_finished_session
+        observed_active = (
+            previous is not None
+            and previous.ended_at is None
+            and _parse_timestamp(previous.started_at)
+            == _parse_timestamp(session.started_at)
+        )
+        if (
+            not observed_active
+            and _parse_timestamp(session.ended_at)
+            <= self._finished_observation_started_at
+        ):
             return
         key = (session.started_at, session.ended_at)
         previous = self._last_finished_session
+        # Partial collection snapshots can regress to an older run. Never
+        # move the publication cursor backwards or replay historical events.
+        if previous is not None and (
+            _parse_timestamp(session.started_at) < _parse_timestamp(previous.started_at)
+            or (
+                previous.ended_at is not None
+                and _parse_timestamp(session.started_at)
+                == _parse_timestamp(previous.started_at)
+            )
+        ):
+            return
         self._last_finished_session = session
-        # Native history can refine the locally observed interval after the
-        # run has ended. That enrichment must not trigger automations twice.
-        if (
-            previous is None
-            or (previous.started_at, previous.ended_at) == key
+        # Native history can refine timestamps after publication.
+        # That enrichment must not trigger automations twice.
+        if previous is not None and (
+            (previous.started_at, previous.ended_at) == key
             or _sessions_overlap(previous, session)
         ):
             return
