@@ -107,7 +107,9 @@ TARGET_KEYS = (
 ROOM_STATUS_REFRESH_SECONDS = 5
 ACTIVE_SESSION_UNKNOWN_ATTEMPTS = 3
 ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
-SESSION_HISTORY_ATTEMPTS = 6
+# Native completion records can arrive several minutes after docking. Keep the
+# verification window bounded and cancellable instead of finalizing after 10 s.
+SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
@@ -1589,15 +1591,17 @@ async def _async_run_leg(
                             stop_sent = True
                             continue
                         active_room = changed_room
+                        first_observation = active_room.room_id not in observed_ids
                         observed_ids.add(active_room.room_id)
                         await manager.async_mark_started(
                             serial_number, call.data["plan_id"], active_room
                         )
-                        hass.bus.async_fire(
-                            f"{DOMAIN}_room_started",
-                            event_data(active_room),
-                            context=call.context,
-                        )
+                        if first_observation:
+                            hass.bus.async_fire(
+                                f"{DOMAIN}_room_started",
+                                event_data(active_room),
+                                context=call.context,
+                            )
                         await manager.async_mark_resumed(
                             serial_number, call.data["plan_id"], active_room
                         )

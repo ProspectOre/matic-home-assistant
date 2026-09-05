@@ -496,11 +496,15 @@ Template-visible attributes and recorded history follow one deliberate model:
 
 ## Events and observability
 
-Room execution emits `matic_robot_room_started`,
+Room execution emits `matic_robot_room_started` once per room in a native mission,
+even when live room observations revisit that room, followed by
 `matic_robot_room_completed`, `matic_robot_room_failed`, and
 `matic_robot_room_cancelled`, plus `matic_robot_room_interrupted` when the task
 is replaced/stopped and `matic_robot_room_ended_unverified` when operational
-handoff is safe but the native completion ledger does not prove success. Only
+handoff is safe but the native completion ledger does not prove success. Native
+history verification allows up to five minutes of retry delays; cancellation and
+replacement checks remain active throughout. No completion is inferred if the
+bounded window expires without native evidence. Only
 `room_completed` advances last-cleaned, successful duration samples, completed
 run totals, or intelligent rotation. Exact plan and room details remain
 available through the response-only plan preview and management actions instead
