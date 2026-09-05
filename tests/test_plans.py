@@ -5599,3 +5599,31 @@ async def test_terminal_history_has_its_own_budget(
     manager.async_mark_failed.assert_not_awaited()
     assert manager.async_mark_completed.await_count == len(rooms)
     sender.assert_not_awaited()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_TIMEOUT_SECONDS", 0.01
+    )
+    cancelled = False
+
+    async def slow_reader():
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(1)
+        finally:
+            cancelled = True
+        return ()
+
+    verify = (
+        _async_verify_leg_completion if multi_room else _async_verify_room_completion
+    )
+    result = await verify(
+        slow_reader,
+        frozenset(),
+        _leg_rooms() if multi_room else _leg_rooms()[0],
+        dt_util.utcnow() - timedelta(seconds=300),
+    )
+    assert not result
+    assert cancelled

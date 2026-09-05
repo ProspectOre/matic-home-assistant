@@ -111,6 +111,7 @@ ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
 # verification window bounded and cancellable instead of finalizing after 10 s.
 SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
+SESSION_HISTORY_TIMEOUT_SECONDS = 300
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 _LOGGER = logging.getLogger(__name__)
@@ -1848,83 +1849,87 @@ async def _async_verify_leg_completion(
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     evidence: dict[str, tuple[str, int]] | None = None
     matched_key: bytes | None = None
-    for attempt in range(attempts):
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        try:
-            records = await reader()
-        except MaticError as err:
-            _LOGGER.debug(
-                "Native Matic leg evidence unavailable (%s)", type(err).__name__
-            )
-            records = ()
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        now = dt_util.utcnow()
-        matches: list[CleaningSessionRecord] = []
-        for record in records:
-            session = record.session
-            if record.key in baseline:
-                continue
-            started = dt_util.parse_datetime(session.started_at or "")
-            ended = dt_util.parse_datetime(session.ended_at or "")
-            if started is None or ended is None or started > ended:
-                continue
-            if ended < dispatched_at or started > now or ended > now:
-                continue
-            names = [name.strip().casefold() for name in session.rooms]
-            if not names or any(name not in targets for name in names):
-                continue
-            matches.append(record)
-        if len(matches) == 1:
-            if matched_key is not None and matched_key != matches[0].key:
-                return None
-            matched_key = matches[0].key
-            session = matches[0].session
-            ended_at = session.ended_at
-            assert isinstance(ended_at, str)
-            durations = {
-                name.strip().casefold(): duration
-                for name, duration in session.room_durations
-            }
-            completed_names = {
-                name.strip().casefold() for name in session.completed_rooms
-            }
-            evidence = {}
-            for name, room_id in targets.items():
-                duration = durations.get(name)
-                if (
-                    name in completed_names
-                    and isinstance(duration, int)
-                    and not isinstance(duration, bool)
-                    and duration > 0
-                ):
-                    evidence[room_id] = (ended_at, duration)
-            # Native history can publish timestamps before per-room results.
-            # Keep polling the same record until complete or the bounded window
-            # expires; never combine evidence from different physical sessions.
-            if len(evidence) == len(targets):
-                return evidence
-        if len(matches) > 1:
-            return None
-        if attempt + 1 < attempts:
-            if cancel_event is None:
-                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-            else:
+    try:
+        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+            for attempt in range(attempts):
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
                 try:
-                    async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                        await cancel_event.wait()
-                except TimeoutError:
-                    continue
-                raise PlanCancelledError
+                    records = await reader()
+                except MaticError as err:
+                    _LOGGER.debug(
+                        "Native Matic leg evidence unavailable (%s)", type(err).__name__
+                    )
+                    records = ()
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
+                now = dt_util.utcnow()
+                matches: list[CleaningSessionRecord] = []
+                for record in records:
+                    session = record.session
+                    if record.key in baseline:
+                        continue
+                    started = dt_util.parse_datetime(session.started_at or "")
+                    ended = dt_util.parse_datetime(session.ended_at or "")
+                    if started is None or ended is None or started > ended:
+                        continue
+                    if ended < dispatched_at or started > now or ended > now:
+                        continue
+                    names = [name.strip().casefold() for name in session.rooms]
+                    if not names or any(name not in targets for name in names):
+                        continue
+                    matches.append(record)
+                if len(matches) == 1:
+                    if matched_key is not None and matched_key != matches[0].key:
+                        return None
+                    matched_key = matches[0].key
+                    session = matches[0].session
+                    ended_at = session.ended_at
+                    assert isinstance(ended_at, str)
+                    durations = {
+                        name.strip().casefold(): duration
+                        for name, duration in session.room_durations
+                    }
+                    completed_names = {
+                        name.strip().casefold() for name in session.completed_rooms
+                    }
+                    evidence = {}
+                    for name, room_id in targets.items():
+                        duration = durations.get(name)
+                        if (
+                            name in completed_names
+                            and isinstance(duration, int)
+                            and not isinstance(duration, bool)
+                            and duration > 0
+                        ):
+                            evidence[room_id] = (ended_at, duration)
+                    # Native history can publish timestamps before per-room results.
+                    # Keep polling the same record until complete or the bounded window
+                    # expires; never combine evidence from different physical sessions.
+                    if len(evidence) == len(targets):
+                        return evidence
+                if len(matches) > 1:
+                    return None
+                if attempt + 1 < attempts:
+                    if cancel_event is None:
+                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+                    else:
+                        try:
+                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
+                                await cancel_event.wait()
+                        except TimeoutError:
+                            continue
+                        raise PlanCancelledError
+    except TimeoutError:
+        return evidence
     return evidence
 
 
@@ -2099,60 +2104,65 @@ async def _async_verify_room_completion(
     if reader is None or baseline is None:
         return False
     target = room.name.strip().casefold()
-    for attempt in range(attempts):
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        try:
-            records = await reader()
-        except MaticError as err:
-            _LOGGER.debug(
-                "Native Matic completion evidence unavailable (%s)", type(err).__name__
-            )
-            records = ()
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        now = dt_util.utcnow()
-        matches: list[CleaningSessionRecord] = []
-        for record in records:
-            session = record.session
-            if record.key in baseline or session.completed is not True:
-                continue
-            started = dt_util.parse_datetime(session.started_at or "")
-            ended = dt_util.parse_datetime(session.ended_at or "")
-            if started is None or ended is None or started > ended:
-                continue
-            if ended < dispatched_at or started > now or ended > now:
-                continue
-            rooms = [name.strip().casefold() for name in session.rooms]
-            durations = [
-                duration
-                for name, duration in session.room_durations
-                if name.strip().casefold() == target and duration > 0
-            ]
-            if rooms == [target] and len(durations) == 1:
-                matches.append(record)
-        if len(matches) == 1:
-            return True
-        if len(matches) > 1:
-            return False
-        if attempt + 1 < attempts:
-            if cancel_event is None:
-                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-            else:
+    try:
+        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+            for attempt in range(attempts):
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
                 try:
-                    async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                        await cancel_event.wait()
-                except TimeoutError:
-                    continue
-                raise PlanCancelledError
+                    records = await reader()
+                except MaticError as err:
+                    _LOGGER.debug(
+                        "Native Matic completion evidence unavailable (%s)",
+                        type(err).__name__,
+                    )
+                    records = ()
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
+                now = dt_util.utcnow()
+                matches: list[CleaningSessionRecord] = []
+                for record in records:
+                    session = record.session
+                    if record.key in baseline or session.completed is not True:
+                        continue
+                    started = dt_util.parse_datetime(session.started_at or "")
+                    ended = dt_util.parse_datetime(session.ended_at or "")
+                    if started is None or ended is None or started > ended:
+                        continue
+                    if ended < dispatched_at or started > now or ended > now:
+                        continue
+                    rooms = [name.strip().casefold() for name in session.rooms]
+                    durations = [
+                        duration
+                        for name, duration in session.room_durations
+                        if name.strip().casefold() == target and duration > 0
+                    ]
+                    if rooms == [target] and len(durations) == 1:
+                        matches.append(record)
+                if len(matches) == 1:
+                    return True
+                if len(matches) > 1:
+                    return False
+                if attempt + 1 < attempts:
+                    if cancel_event is None:
+                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+                    else:
+                        try:
+                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
+                                await cancel_event.wait()
+                        except TimeoutError:
+                            continue
+                        raise PlanCancelledError
+    except TimeoutError:
+        return False
     return False
 
 

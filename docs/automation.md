@@ -502,7 +502,8 @@ even when live room observations revisit that room, followed by
 `matic_robot_room_cancelled`, plus `matic_robot_room_interrupted` when the task
 is replaced/stopped and `matic_robot_room_ended_unverified` when operational
 handoff is safe but the native completion ledger does not prove success. Native
-history verification allows up to five minutes of retry delays; cancellation and
+history verification has a five-minute elapsed-time deadline including reads and
+retry delays; cancellation and
 replacement checks remain active throughout. No completion is inferred if the
 bounded window expires without native evidence. Only
 `room_completed` advances last-cleaned, successful duration samples, completed
