@@ -12,10 +12,15 @@ for (const kind of ["catalog", "scene", "delta"]) {
         await page.evaluate(async ({ kind, stall }) => {
           const { MaticBackend } = await import("/deadline-module.js");
           window.deadlineResult = "pending";
+          window.deadlineCancellations = 0;
           window.deadlineController = new AbortController();
           window.deadlineBackend = new MaticBackend(() => ({ fetchWithAuth: async () => {
-            if (stall === "headers") return new Promise(() => {});
-            return new Response(new ReadableStream({ start() {} }), {
+            if (stall === "headers") return new Promise(resolve => {
+              window.deadlineLateHeaders = () => resolve(new Response(new ReadableStream({
+                cancel() { window.deadlineCancellations += 1; },
+              })));
+            });
+            return new Response(new ReadableStream({ start() {}, cancel() { window.deadlineCancellations += 1; } }), {
               headers: { "Content-Type": kind === "catalog" ? "application/json" : "application/vnd.matic.slam-scene", "X-Matic-Revision": "2" },
             });
           } }));
@@ -28,6 +33,8 @@ for (const kind of ["catalog", "scene", "delta"]) {
         if (cancel) await page.evaluate(() => window.deadlineController.abort());
         else await page.clock.fastForward(({ catalog: 10000, scene: 60000, delta: 35000 })[kind] + 1);
         await expect.poll(() => page.evaluate(() => window.deadlineResult)).toBe(cancel ? "AbortError" : "request-timeout");
+        if (stall === "headers") await page.evaluate(() => window.deadlineLateHeaders());
+        await expect.poll(() => page.evaluate(() => window.deadlineCancellations)).toBe(1);
         await page.evaluate(() => window.deadlineBackend.dispose());
       });
     }

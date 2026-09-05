@@ -83,6 +83,38 @@ export class MaticBackend {
     this.#getHass = getHass;
   }
 
+  async #readBody(response: Response, signal: AbortSignal): Promise<ArrayBuffer> {
+    const reader = response.body?.getReader();
+    if (!reader) return new ArrayBuffer(0);
+    const cancel = (): void => { void reader.cancel().catch(() => {}); };
+    signal.addEventListener("abort", cancel, { once: true });
+    try {
+      if (signal.aborted) {
+        cancel();
+        throw new DOMException("Aborted", "AbortError");
+      }
+      const chunks: Uint8Array[] = [];
+      let length = 0;
+      while (true) {
+        const chunk = await reader.read();
+        if (signal.aborted) throw new DOMException("Aborted", "AbortError");
+        if (chunk.done) break;
+        chunks.push(chunk.value);
+        length += chunk.value.byteLength;
+      }
+      const bytes = new Uint8Array(length);
+      let offset = 0;
+      for (const chunk of chunks) {
+        bytes.set(chunk, offset);
+        offset += chunk.byteLength;
+      }
+      return bytes.buffer;
+    } finally {
+      signal.removeEventListener("abort", cancel);
+      reader.releaseLock();
+    }
+  }
+
   async #request<T>(
     path: string,
     init: RequestInit,
@@ -129,8 +161,13 @@ export class MaticBackend {
           const url = typeof hass?.hassUrl === "function" ? hass.hassUrl(path) : path;
           response = await fetch(url, { ...requestInit, headers });
         }
-        if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
-        return await consume(response, controller.signal);
+        try {
+          if (controller.signal.aborted) throw new DOMException("Aborted", "AbortError");
+          return await consume(response, controller.signal);
+        } finally {
+          // Release unread error responses and headers delivered after abort.
+          if (response.body && !response.body.locked) void response.body.cancel().catch(() => {});
+        }
       };
       // Keep the deadline alive through body consumption and decoding, not
       // merely until response headers arrive. Cancellation also settles when
@@ -158,7 +195,7 @@ export class MaticBackend {
         Accept: "application/json",
         ...(init.headers || {}),
       },
-    }, timeoutMs, signal, async (response) => {
+    }, timeoutMs, signal, async (response, operationSignal) => {
       if (!response.ok) {
         const conflict = response.headers.get("X-Matic-Plans-Conflict");
         throw new BackendError(
@@ -167,7 +204,7 @@ export class MaticBackend {
         );
       }
       try {
-        return await response.json();
+        return JSON.parse(new TextDecoder().decode(await this.#readBody(response, operationSignal)));
       } catch {
         throw new ContractError("invalid-json-response");
       }
@@ -200,7 +237,7 @@ export class MaticBackend {
       if (contentType !== "application/vnd.matic.slam-scene") {
         throw new ContractError("invalid-scene-content-type");
       }
-      const parsed = await this.#parser.parse(await response.arrayBuffer(), operationSignal);
+      const parsed = await this.#parser.parse(await this.#readBody(response, operationSignal), operationSignal);
       return {
         scene: {
           ...parsed,
@@ -333,7 +370,7 @@ export class MaticBackend {
           throw new ContractError("invalid-scene-delta-size");
         }
         const contentType = response.headers.get("Content-Type")?.split(";", 1)[0];
-        const payload = await response.arrayBuffer();
+        const payload = await this.#readBody(response, operationSignal);
         if (contentType === "application/vnd.matic.slam-delta") {
           const baseHeader = Number(response.headers.get("X-Matic-Base-Revision"));
           if (!Number.isSafeInteger(baseHeader) || baseHeader !== base.revision) {
