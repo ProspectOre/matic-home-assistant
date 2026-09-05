@@ -18,6 +18,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
+import { RovingFocusController } from "./roving-focus";
 import {
   icon,
   iconBack,
@@ -285,6 +286,14 @@ export class MaticMapShellV4 extends LitElement {
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
+
+  constructor() {
+    super();
+    new RovingFocusController(this, {
+      container: () => this.renderRoot?.querySelector<HTMLElement>(".draw-tools") ?? null,
+      items: "button",
+    });
+  }
 
   #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
     return translate(this.localize, key, fallback, placeholders);
@@ -1303,6 +1312,15 @@ export class MaticMapShellV4 extends LitElement {
                   @pointercancel=${this.#gripUp}
                 >
                   <span class="sheet-handle" role="presentation"></span>
+                  ${state.workflow !== "none" && this._sheetDetent === "peek" ? html`
+                    <button
+                      class="sheet-back ms-btn ms-btn--icon ms-btn--sm"
+                      type="button"
+                      aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      title=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      @click=${() => this.#workflow("none")}
+                    >${icon(iconBack)}</button>
+                  ` : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}</span>
                   <button
                     class="ms-btn ms-btn--icon ms-btn--sm"

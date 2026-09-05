@@ -5533,7 +5533,8 @@ async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
         session_history=history,
     )
     await hass.async_block_till_done()
-    assert starts == ["Kitchen", "Office"]
+    # HA schedules listener callbacks independently; assert delivery multiplicity.
+    assert sorted(starts) == ["Kitchen", "Office"]
     assert manager.async_mark_completed.await_count == 2
 
 
@@ -5627,3 +5628,21 @@ async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room
     )
     assert not result
     assert cancelled
+
+
+async def test_leg_rejects_ambiguous_normalized_native_room_names():
+    """Distinct native names cannot collapse into one commanded room's credit."""
+    record = _leg_record(
+        ("Kitchen", " kitchen ", "Office"),
+        ("Kitchen", "Office"),
+    )
+    assert (
+        await _async_verify_leg_completion(
+            AsyncMock(return_value=(record,)),
+            frozenset(),
+            _leg_rooms(),
+            dt_util.utcnow() - timedelta(seconds=180),
+            attempts=1,
+        )
+        is None
+    )

@@ -425,11 +425,9 @@ def test_readme_states_the_actual_runtime_and_validation_scope() -> None:
     """Do not imply unsupported runtimes or universal live-device validation."""
     readme = (ROOT / "README.md").read_text()
 
-    assert "2026.7 is the tested baseline" in readme
-    assert (
-        "Compatibility with other Home Assistant releases has not been "
-        "validated" in readme
-    )
+    assert "2026.7 is the minimum version accepted by HACS" in readme
+    assert "has covered 2026.7 and 2026.8 releases" in readme
+    assert "this does not establish compatibility" in readme
     assert "Each exposed command is tested against a real robot" not in readme
 
 

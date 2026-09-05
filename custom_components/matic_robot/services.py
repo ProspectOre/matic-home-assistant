@@ -1884,7 +1884,13 @@ async def _async_verify_leg_completion(
                     if ended < dispatched_at or started > now or ended > now:
                         continue
                     names = [name.strip().casefold() for name in session.rooms]
-                    if not names or any(name not in targets for name in names):
+                    if (
+                        not names
+                        or len(names) != len(set(names))
+                        or any(name not in targets for name in names)
+                    ):
+                        # Native names are exact strings; normalized aliases must
+                        # not collapse distinct rooms into one completion credit.
                         continue
                     matches.append(record)
                 if len(matches) == 1:
