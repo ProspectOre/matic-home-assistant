@@ -1003,7 +1003,7 @@ font-size: var(--ms-t-sm);
       `;let e=V.selection.roomIds.length;return V.workflow==="rooms"&&e>0&&!this.narrow?d`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
-            <span>${this.#e("v4_rooms_selected","{count} rooms selected").replace("{count}",String(e))}</span>
+            <span>${this.#e("v4_rooms_selected","Rooms selected: {count}").replace("{count}",String(e))}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${()=>this.#r()}>${this.#e("v4_clear","Clear")}</button>
           </div>
         </div>
@@ -1585,7 +1585,7 @@ line-height: var(--ms-lh-snug);
       </div>
       <p class="panel-description">${e.description}</p>
       ${this.#e1(H,V)}
-    `}#K(H,V){let r=o0(H,this.localize).title;return H.workflow==="rooms"&&H.selection.roomIds.length&&(r=`${this.#C("v4_rooms_selected","{count} rooms selected",{count:H.selection.roomIds.length})} \xB7 ${this.#U(H).join(", ")}`),this._sheetDetent!=="peek"?V.detail?`${V.title} \xB7 ${V.detail}`:V.title:V.notable?`${V.title} \xB7 ${r}`:r}#W(){let H=(V,e)=>this.#C(V,e);return u`
+    `}#K(H,V){let r=o0(H,this.localize).title;return H.workflow==="rooms"&&H.selection.roomIds.length&&(r=`${this.#C("v4_rooms_selected","Rooms selected: {count}",{count:H.selection.roomIds.length})} \xB7 ${this.#U(H).join(", ")}`),this._sheetDetent!=="peek"?V.detail?`${V.title} \xB7 ${V.detail}`:V.title:V.notable?`${V.title} \xB7 ${r}`:r}#W(){let H=(V,e)=>this.#C(V,e);return u`
       <div class="dialog-backdrop" @click=${V=>{V.target===V.currentTarget&&(this._helpOpen=!1)}}>
         <section
           class="dialog help-dialog ms-surface ms-surface--overlay"

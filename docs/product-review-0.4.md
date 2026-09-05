@@ -1,10 +1,10 @@
 # 0.4 product review
 
 Status: in progress; not a claim of complete end-to-end or physical acceptance.
-Baseline: PR #97 merged as `82fb4b9`; work: `feature/complete-product-review`.
+Baseline: PRs #97–#99 merged; RC11 installed from `570a3bf`.
 Authority: redesign structure and workflows where evidence supports it.
 Live walkthrough uses the actual signed-in HA; synthetic states are regression
-fixtures, never evidence of deployed behavior. RC10 remains installed.
+fixtures, never evidence of deployed behavior. RC11 live checks are recorded below.
 
 ## Principles
 
@@ -28,13 +28,13 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
 | One-time room clean | Stable target, per-room settings, one dispatch | Stable IDs preserved; mobile choices open visibly |
 | Saved plans | Save/edit/delete/order/enable, recovery | Live editor inspected; stale mutation results fenced |
 | Drawing/custom areas | Tools, coordinates, review, persistence | Live review inspected; duplicate and stale mutations fenced |
-| History/floor switching | Read-only identity, return to live, drafts | Source review underway |
+| History/floor switching | Read-only identity, return to live, drafts | RC11 live saved-floor/return pass; draft isolation regressions pass |
 | Diagnostics/support | Useful redacted output, recovery routes | Source review underway |
 | Stop/completion | Ownership, uncertainty, cancellation, credit | Baseline tests; physical matrix still open |
 | Themes/accessibility | Contrast, keyboard, focus, zoom, forced colors | Header regressions added; broader pass underway |
 | Preferences/lifecycle | Detach, identity changes, persistence | Owner-scoped writes and draft clearing regressions pass |
 | Architecture | Contracts/state/effects/rendering boundaries | 32 TS modules, no local import cycles; client has no HA imports; lifecycle fixes tested |
-| Packaging/upgrades | Artifact parity, HACS, cache changes | Baseline checks; new candidate checks pending |
+| Packaging/upgrades | Artifact parity, HACS, cache changes | RC11 archive/bundle parity, HACS install and restart verified |
 | Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
 
 ## Findings and fixes
@@ -96,10 +96,13 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
 
 Validation: 1,263 Python tests at 100% coverage; 397 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
-pass. Archive parity and fresh installation imports pass. Hosted review and live
-candidate installation remain pending.
+pass. Archive parity and fresh installation imports pass. PRs #98/#99 have
+clean exact-head review and green hosted gates; RC11 installation is verified.
 
 Live baseline: actual HA reopened with verified map/pose, six saved plans and
 docked/clean native readback. Saved-plan editor inspected without changing its
 settings or issuing motion. Saved-floor viewing and return to the live map were inspected without motion.
-New fixes remain local until candidate installation.
+RC11 matches its served frontend bundle after restart. Desktop and 390px live
+walkthroughs verify the side-profile task/sidebar icons, visible room choices,
+All tasks, saved-floor selection, read-only guards and custom-area review copy.
+Real-device, assistive-technology and remaining physical journeys stay open.

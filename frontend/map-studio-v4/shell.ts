@@ -1092,7 +1092,7 @@ export class MaticMapShellV4 extends LitElement {
     const workflow = workflowCopy(state, this.localize);
     let line = workflow.title;
     if (state.workflow === "rooms" && state.selection.roomIds.length) {
-      line = `${this.#t("v4_rooms_selected", "{count} rooms selected", { count: state.selection.roomIds.length })} · ${this.#roomNames(state).join(", ")}`;
+      line = `${this.#t("v4_rooms_selected", "Rooms selected: {count}", { count: state.selection.roomIds.length })} · ${this.#roomNames(state).join(", ")}`;
     }
     // With the body open the h2 already names the workflow, so the grip line
     // carries the robot instead of repeating the title directly above it.
