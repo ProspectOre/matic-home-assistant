@@ -1,5 +1,8 @@
 # 0.4 UI quality review
 
+Current broader audit: [product review](product-review-0.4.md). The evidence
+below records the earlier scoped pass; it is not full-product acceptance.
+
 Date: 2026-09-04. Scope: map-review and original-icon follow-up to RC10 (`ebf2a79`).
 Status: local follow-up; RC10 completed one bounded physical room run. Other physical gates remain open.
 Frontend bundle SHA-256:

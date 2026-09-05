@@ -22,7 +22,7 @@ const scripts = new Map([
 
 const server = createServer((request, response) => {
   const path = new URL(request.url || "/", "http://127.0.0.1").pathname;
-  if (path === "/map-studio-v4-audit") {
+  if (path === "/map-studio-v4-audit" || path === "/map-studio-v4-review") {
     response.writeHead(200, {
       "Content-Type": "text/html; charset=utf-8",
       "Cache-Control": "no-store",
@@ -33,15 +33,16 @@ const server = createServer((request, response) => {
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="description" content="Synthetic private Map Studio accessibility and performance harness.">
-    <title>Matic Map Studio audit</title>
+    <title>Synthetic Matic test harness — not live Home Assistant</title>
     <style>html, body { height: 100%; margin: 0; }</style>
   </head>
   <body>
+    <aside style="padding:6px 12px;background:#fff3cd;color:#513d00;font:13px system-ui" role="note">Synthetic test harness — not live Home Assistant. No robot is connected.</aside>
     <script type="module">
       import "/map_studio_v4/index.js";
       await customElements.whenDefined("matic-map-studio-gallery-v0-4-0");
       const gallery = document.createElement("matic-map-studio-gallery-v0-4-0");
-      gallery.controls = false;
+      gallery.controls = ${path === "/map-studio-v4-review"};
       gallery.scenario = "ready";
       document.body.append(gallery);
     </script>

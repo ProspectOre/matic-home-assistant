@@ -45,6 +45,7 @@ export const shellStyles = [tokens, base, controls, css`
     .app[inert] { filter: none; }
 
     .app-bar {
+      color: var(--ms-bar-text);
       --ms-local: var(--ms-surface-bar);
       position: relative;
       z-index: 12;
@@ -57,6 +58,9 @@ export const shellStyles = [tokens, base, controls, css`
       background: var(--ms-local);
       box-shadow: var(--ms-shadow-1);
     }
+
+    .app-bar > .ms-btn, .app-bar > .overflow-wrap > .ms-btn { color: var(--ms-bar-text); }
+    .app-bar > .ms-btn:focus-visible, .app-bar > .overflow-wrap > .ms-btn:focus-visible { outline-color: var(--ms-bar-text); }
 
     .context-switcher { max-inline-size: 9rem; inline-size: auto; text-overflow: ellipsis; }
 

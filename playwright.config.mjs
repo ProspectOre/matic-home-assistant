@@ -26,7 +26,7 @@ export default defineConfig({
       // Desktop Safari; the @mobile-tagged tests below cover real device
       // viewports and touch input on both engines.
       name: "webkit",
-      testMatch: "tests/browser/map_studio_v4.spec.mjs",
+      testMatch: "tests/browser/map_studio_v4*.spec.mjs",
       grepInvert: /@mobile/,
       use: { ...devices["Desktop Safari"] },
     },

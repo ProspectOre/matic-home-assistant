@@ -84,8 +84,10 @@ export const parsePreferences = (value: unknown): MapPreferences => {
 export class PreferenceStore {
   #userKey = "local-user";
   #saveTimer: number | null = null;
+  #pending: { key: string; value: MapPreferences } | null = null;
 
   load(userKey: string): MapPreferences {
+    this.#flush();
     this.#userKey = identityFor(userKey);
     try {
       const current = window.localStorage.getItem(preferencesKey(this.#userKey));
@@ -102,20 +104,27 @@ export class PreferenceStore {
 
   schedule(value: MapPreferences): void {
     if (this.#saveTimer !== null) window.clearTimeout(this.#saveTimer);
-    this.#saveTimer = window.setTimeout(() => {
-      this.#saveTimer = null;
-      try {
-        window.localStorage.setItem(preferencesKey(this.#userKey), JSON.stringify(value));
-      } catch {
-        // A full or denied store never changes map safety or availability.
-      }
-    }, 250);
+    this.#pending = { key: preferencesKey(this.#userKey), value };
+    this.#saveTimer = window.setTimeout(() => this.#flush(), 250);
+  }
+
+  #flush(): void {
+    if (this.#saveTimer !== null) window.clearTimeout(this.#saveTimer);
+    this.#saveTimer = null;
+    const pending = this.#pending;
+    this.#pending = null;
+    if (!pending) return;
+    try {
+      window.localStorage.setItem(pending.key, JSON.stringify(pending.value));
+    } catch {
+      // A full or denied store never changes map safety or availability.
+    }
   }
 
   dispose(): void {
-    if (this.#saveTimer !== null) window.clearTimeout(this.#saveTimer);
-    this.#saveTimer = null;
+    this.#flush();
   }
+
 }
 
 export const FRONTEND_PREFERENCE_KEY = "matic-map-studio:preferred-frontend";
