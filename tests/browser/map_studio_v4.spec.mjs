@@ -4254,3 +4254,42 @@ for (const width of [768, 820]) {
     }
   }
 }
+
+for (const width of [320, 390]) {
+  test(`sheet scrim leaves corner controls clickable at ${width}px @mobile`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 740 });
+    const gallery = await loadGallery(page, { scenario: "rooms", narrow: true });
+    const sheet = gallery.locator(".mobile-sheet");
+    const more = gallery.getByRole("button", { name: "Show more of the map workspace" });
+    const less = gallery.getByRole("button", { name: "Show less of the map workspace" });
+    for (const detent of ["full", "half", "peek"]) {
+      if (detent === "full") await more.click();
+      else await less.click();
+      await expect(sheet).toHaveAttribute("data-detent", detent);
+      await settleSheet(gallery);
+      const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+      await floor.evaluate((element) => { element.dataset.clicked = "false"; element.addEventListener("click", () => { element.dataset.clicked = "true"; }, { once: true }); });
+      await floor.click();
+      await page.keyboard.press("Enter");
+      await expect(floor).toHaveAttribute("data-clicked", "true");
+      await gallery.getByRole("button", { name: "2D", exact: true }).click();
+      await expect.poll(async () => (await snapshot(page)).view).toBe("top");
+      await gallery.getByRole("button", { name: "3D", exact: true }).click();
+      await expect.poll(async () => (await snapshot(page)).view).toBe("three");
+      await gallery.getByRole("button", { name: "Fit the whole map on screen" }).click();
+      const yaw = (await snapshot(page)).cameras.three?.yaw ?? null;
+      await gallery.getByRole("button", { name: "Rotate right" }).click();
+      await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(yaw);
+      await expect(sheet).toHaveAttribute("data-detent", detent);
+    }
+    await more.click();
+    await more.click();
+    await settleSheet(gallery);
+    const selection = (await snapshot(page)).selection.roomIds;
+    const scrim = gallery.getByRole("button", { name: "Collapse the map workspace" });
+    // The left middle of the exposed map has no control; it still dismisses.
+    await scrim.click({ position: { x: 4, y: 90 } });
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    expect((await snapshot(page)).selection.roomIds).toEqual(selection);
+  });
+}

@@ -358,7 +358,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .workspace.full-map .mobile-sheet { display: none; }
     .narrow .sheet-scrim {
       position: absolute;
-      z-index: 6;
+      z-index: 3;
       inset: 0;
       inset-block-end: var(--map-sheet-offset, 0px);
       display: block;

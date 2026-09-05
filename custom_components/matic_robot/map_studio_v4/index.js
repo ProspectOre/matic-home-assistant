@@ -633,7 +633,7 @@ font-size: var(--ms-t-sm);
     .narrow .workspace.full-map .mobile-sheet { display: none; }
     .narrow .sheet-scrim {
       position: absolute;
-      z-index: 6;
+      z-index: 3;
       inset: 0;
       inset-block-end: var(--map-sheet-offset, 0px);
       display: block;
@@ -767,6 +767,8 @@ font-size: var(--ms-t-sm);
     /* Navigation has stable corners; only orbit controls follow the sheet. */
     .map-rail { --help-top: calc(44px + 2 * var(--ms-space-2)); --help-bottom: 116px; position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
     .map-rail > * { pointer-events: auto; }
+    slot[name="scrim"] { display: contents; pointer-events: none; }
+    ::slotted(.sheet-scrim) { pointer-events: auto; }
     .map-context { position: absolute; inset-block-start: 0; inset-inline-start: 0; display: flex; gap: var(--ms-space-2); align-items: center; max-inline-size: calc(100% - 60px); }
     ::slotted(.floor-switcher) { min-inline-size: 0; inline-size: 9rem; min-block-size: 44px; background-color: var(--ms-surface-card); color: var(--ms-text); }
     .view-switch { flex: none; }
@@ -1025,6 +1027,7 @@ font-size: var(--ms-t-sm);
         @keydown=${this.#h}
       >
         ${this.#v(r,M)}
+        <slot name="scrim"></slot>
 
         <div
           class="scene-window"
@@ -1716,22 +1719,24 @@ line-height: var(--ms-lh-snug);
                 .state=${H}
                 .localize=${this.localize}
                 .narrow=${V}
-              >${this.#V1(H)}</${x0}>
+              >${this.#V1(H)}
+                ${V&&!H.fullMap&&this._sheetDetent==="full"?x`
+                  <button
+                    class="sheet-scrim"
+                    slot="scrim"
+                    data-map-control
+                    type="button"
+                    aria-label=${this.#C("v4_collapse_sheet","Collapse the map workspace")}
+                    @click=${()=>this.#v("peek")}
+                  ></button>
+                `:s}
+              </${x0}>
               ${!V&&Z?x`
                 <div class="precision-popover">
                   <${l2} compact .state=${H} .localize=${this.localize}></${l2}>
                 </div>
               `:s}
             </div>
-
-            ${V&&!H.fullMap&&this._sheetDetent==="full"?x`
-              <button
-                class="sheet-scrim"
-                type="button"
-                aria-label=${this.#C("v4_collapse_sheet","Collapse the map workspace")}
-                @click=${()=>this.#v("peek")}
-              ></button>
-            `:s}
 
             <!--
               One panel element, not two. It is a grid column when wide and a

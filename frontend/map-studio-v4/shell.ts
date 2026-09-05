@@ -1290,22 +1290,24 @@ export class MaticMapShellV4 extends LitElement {
                 .state=${state}
                 .localize=${this.localize}
                 .narrow=${narrow}
-              >${this.#floorSwitcher(state)}</${mapCanvasTag}>
+              >${this.#floorSwitcher(state)}
+                ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
+                  <button
+                    class="sheet-scrim"
+                    slot="scrim"
+                    data-map-control
+                    type="button"
+                    aria-label=${this.#t("v4_collapse_sheet", "Collapse the map workspace")}
+                    @click=${() => this.#setDetent("peek")}
+                  ></button>
+                ` : nothing}
+              </${mapCanvasTag}>
               ${!narrow && precisionOpen ? html`
                 <div class="precision-popover">
                   <${precisionControlsTag} compact .state=${state} .localize=${this.localize}></${precisionControlsTag}>
                 </div>
               ` : nothing}
             </div>
-
-            ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
-              <button
-                class="sheet-scrim"
-                type="button"
-                aria-label=${this.#t("v4_collapse_sheet", "Collapse the map workspace")}
-                @click=${() => this.#setDetent("peek")}
-              ></button>
-            ` : nothing}
 
             <!--
               One panel element, not two. It is a grid column when wide and a

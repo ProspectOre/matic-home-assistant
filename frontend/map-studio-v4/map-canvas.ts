@@ -98,6 +98,8 @@ export class MaticMapCanvasV4 extends LitElement {
     /* Navigation has stable corners; only orbit controls follow the sheet. */
     .map-rail { --help-top: calc(44px + 2 * var(--ms-space-2)); --help-bottom: 116px; position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
     .map-rail > * { pointer-events: auto; }
+    slot[name="scrim"] { display: contents; pointer-events: none; }
+    ::slotted(.sheet-scrim) { pointer-events: auto; }
     .map-context { position: absolute; inset-block-start: 0; inset-inline-start: 0; display: flex; gap: var(--ms-space-2); align-items: center; max-inline-size: calc(100% - 60px); }
     ::slotted(.floor-switcher) { min-inline-size: 0; inline-size: 9rem; min-block-size: 44px; background-color: var(--ms-surface-card); color: var(--ms-text); }
     .view-switch { flex: none; }
@@ -654,6 +656,7 @@ export class MaticMapCanvasV4 extends LitElement {
         @keydown=${this.#keyboard}
       >
         ${this.#renderRail(showScene, locating)}
+        <slot name="scrim"></slot>
 
         <div
           class="scene-window"
