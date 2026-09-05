@@ -4071,3 +4071,39 @@ for (const dirty of [false, true]) {
     await expect(gallery.getByRole("button", { name: /^One-time clean/ })).toBeVisible();
   });
 }
+
+for (const activity of ["docked", "idle"]) {
+  test(`an active plan remains in progress while the robot is ${activity}`, async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate(async ({ tag, activity }) => {
+      const module = await import("/map_studio_v4/index.js");
+      const state = module.createGalleryState("ready");
+      document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
+        managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: true } } });
+    }, { tag: GALLERY_TAG, activity });
+    await expect(gallery.locator(".status-copy strong")).toHaveText("Plan in progress");
+    await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
+      ? "Robot docked; the plan has not finished." : "Waiting for the active plan to continue or finish.");
+    await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
+  });
+}
+
+for (const ordered of [false, true]) {
+  test(`mixed-settings guidance respects ${ordered ? "saved order" : "rotation"}`, async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate(async ({ tag, ordered }) => {
+      const module = await import("/map_studio_v4/index.js");
+      const state = module.createGalleryState("ready");
+      document.querySelector(tag).replaceWorkspaceState({ ...state, workflow: "plan", planDraft: {
+        ...state.planDraft, runBehavior: ordered ? "ordered" : "intelligent", rooms: [
+          { roomId: "room-one", cleaningMode: "vacuum", coverageSetting: "quick" },
+          { roomId: "room-two", cleaningMode: "vacuum", coverageSetting: "standard" },
+        ],
+      } });
+    }, { tag: GALLERY_TAG, ordered });
+    await expect(gallery.locator(".plan-transition-hint")).toContainText("separate missions and dock visits");
+    await expect(gallery.locator(".plan-transition-hint")).toContainText(ordered
+      ? "Placing rooms with matching settings together" : "Intelligent rotation determines the room order");
+    expect((await snapshot(page)).planDraft.rooms.map((room) => room.roomId)).toEqual(["room-one", "room-two"]);
+  });
+}

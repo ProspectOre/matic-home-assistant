@@ -285,6 +285,7 @@ line-height: var(--ms-lh-snug);
         selected: false,
       }));
     const roomRows = [...selectedRows, ...availableRows];
+    const mixedSettings = new Set(draft.rooms.map((room) => `${room.cleaningMode}:${room.coverageSetting}`)).size > 1;
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         <div class="split">
@@ -340,6 +341,13 @@ line-height: var(--ms-lh-snug);
           </div>
         </div>
         <h3 class="group-heading" id="plan-rooms-heading">${this.#t("plan_rooms", "Plan rooms")}</h3>
+        ${mixedSettings ? html`
+          <p class="subtle plan-transition-hint">${this.#t("v4_plan_mixed_settings", "Rooms with different cleaning settings may need separate missions and dock visits.")}
+            ${draft.runBehavior === "ordered"
+              ? this.#t("v4_plan_group_settings", "Placing rooms with matching settings together can reduce transitions.")
+              : this.#t("v4_plan_rotation_settings", "Intelligent rotation determines the room order.")}
+          </p>
+        ` : nothing}
         <div class="list" role="group" aria-labelledby="plan-rooms-heading">
           ${repeat(roomRows, ({ room }) => room.roomId, ({ room, label, selected }) => {
             const index = selected

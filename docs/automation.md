@@ -320,12 +320,13 @@ mode and coverage run as a single native mission (a leg), so the robot glides
 room to room without docking. Room history still advances per room from the
 leg's one native record: a room is credited only with its own completed status
 and a positive duration, partial legs credit exactly their verified subset, and
-everything else stays due. Between legs — current firmware queues a command
-sent during a return — the runner dispatches the next leg at the observed
-return and the robot briefly touches the dock. An unverified leg stops any
-started next leg and receives no further credit, no next leg is prepared while
-a native stop countdown settles, and only the final leg returns all the way to
-the dock.
+everything else stays due. Between settings legs, the runner waits for the
+native session to end and verifies completion before dispatching the next leg.
+The robot may reach the dock during this handoff; docked state does not mean
+the whole plan has finished. An unverified leg receives no further credit and
+prevents the next leg from starting. A native stop countdown also blocks new
+managed dispatch. Group matching settings in saved-order plans when practical;
+intelligent rotation keeps cleaning-opportunity priority.
 
 Motion commands are serialized per robot. An independent Home Assistant clean,
 custom-area clean, stop, or dock revokes the managed plan before that command is

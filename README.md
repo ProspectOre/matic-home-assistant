@@ -64,9 +64,9 @@ The integration adds Home Assistant-native planning and automation:
   drag-orderable room lists,
   managed alongside custom areas in the Matic Map **Cleaning** workspace. Each plan can stop
   immediately or finish a sufficiently progressed current room without
-  starting the next one. During an uninterrupted plan, the next room starts
-  as soon as the current room finishes; the robot docks only after the final
-  room.
+  starting the next one. Consecutive rooms with matching mode and coverage
+  share one native mission. Settings changes require separate missions; the
+  robot may visit the dock before the next mission starts.
 - **Fair intelligent rotation.** A plan run starts with the room least recently
   given a cleaning opportunity, using shared room opportunity history and saved
   order to break ties. Priority changes only after the robot reports the
@@ -189,6 +189,11 @@ vendor app—plus saved order to break ties. Use
 **Run all — top to bottom** when every selected room should clean in the saved
 order every time. Room actions resolve stable map IDs before display names and
 reject ambiguous names instead of targeting an arbitrary room.
+
+To reduce settings transitions in a saved-order plan, place rooms with matching
+mode and coverage together when your preferred order allows it. Intelligent
+rotation preserves cleaning-opportunity priority, so its settings groups can
+change between runs. Completion verification remains required between missions.
 
 Entities and actions work with standard Home Assistant automations, scripts,
 scenes, schedules, and dashboards. Ready-to-import blueprints live in
