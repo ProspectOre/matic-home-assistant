@@ -128,6 +128,7 @@ export class EffectController {
     if (owner && (owner.entryKey !== projection.entryKey
       || owner.userKey !== projection.userKey)) {
       this.#clearPrivate("context-changed");
+      if (this.#catalogLoading) this.#catalogRefreshQueued = true;
     }
     const wasConnected = this.#hostConnected;
     this.#hostConnected = projection.host.connected;

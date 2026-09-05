@@ -362,3 +362,54 @@ for (const sameFloor of [true, false]) {
     expect(result.restored).toEqual(sameFloor ? { name: "Edited outline", plan: "Edited plan", count: result.count } : { name: "", plan: "", count: 0 });
   });
 }
+
+for (const dispose of [false, true]) {
+  test(`preserves both owners' rapid preference changes before ${dispose ? "disposal" : "debounce"}`, async ({ page }) => {
+    await loadQualityModules(page);
+    await page.clock.install();
+    await page.evaluate(async (dispose) => {
+      const { PreferenceStore } = await import("/quality-modules.js");
+      const preferences = new PreferenceStore();
+      preferences.schedule({ ...preferences.load("first-user"), view: "three" });
+      preferences.schedule({ ...preferences.load("second-user"), quality: "maximum" });
+      if (dispose) preferences.dispose();
+    }, dispose);
+    if (!dispose) await page.clock.runFor(300);
+    const stored = await page.evaluate(() => ({
+      first: JSON.parse(localStorage.getItem("matic-map-studio:v4:first-user") || "null"),
+      second: JSON.parse(localStorage.getItem("matic-map-studio:v4:second-user") || "null"),
+    }));
+    expect(stored.first?.view).toBe("three");
+    expect(stored.second?.quality).toBe("maximum");
+  });
+}
+
+for (const change of ["user", "robot"]) {
+  test(`immediately replaces an aborted forced catalog after ${change} changes`, async ({ page }) => {
+    await loadQualityModules(page);
+    const result = await page.evaluate(async (change) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore(initial);
+      let calls = 0;
+      const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+      const effects = new EffectController(store, {
+        catalog: (signal) => {
+          calls += 1;
+          if (calls === 1) return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true }));
+          return Promise.resolve([initial.resources.entry]);
+        }, scene: aborted, pose: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {},
+      });
+      const projection = { host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" };
+      effects.sync(projection);
+      const first = effects.refreshCatalog(true);
+      effects.sync({ ...projection, userKey: change === "user" ? "two" : "one", entryKey: change === "robot" ? "other" : projection.entryKey });
+      await first;
+      const result = { calls, status: store.value.resources.catalog.status };
+      effects.dispose();
+      return result;
+    }, change);
+    expect(result.calls).toBeGreaterThanOrEqual(2);
+    expect(result.status).toBe("ready");
+  });
+}

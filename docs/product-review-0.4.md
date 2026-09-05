@@ -82,7 +82,12 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
     managed-lock flag. Account changes, lost access and removed robots cannot
     leave a stale floor name or an unusable Return to live action.
 
-Validation: 1,263 Python tests at 100% coverage; 363 browser checks; strict
+16. Context changes now queue a replacement for an aborted forced catalog
+    request. Preference writes flush for their original owner before account
+    switches or panel disposal, preserving rapid changes without crossing users.
+    Cancelling a mutation also clears its pending progress notice.
+
+Validation: 1,263 Python tests at 100% coverage; 371 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.
