@@ -87,7 +87,14 @@ fixtures, never evidence of deployed behavior. RC10 remains installed.
     switches or panel disposal, preserving rapid changes without crossing users.
     Cancelling a mutation also clears its pending progress notice.
 
-Validation: 1,263 Python tests at 100% coverage; 371 browser checks; strict
+17. Request deadlines now cover response bodies and decoding, so stalled
+    catalog, scene and delta responses settle on timeout or cancellation.
+
+18. A pose rejected for a different map session is removed from the cache,
+    preventing a subsequent same-floor catalog refresh from restoring that
+    rejected coordinate. The regression fails before and passes after the fix.
+
+Validation: 1,263 Python tests at 100% coverage; 397 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. Hosted review and live
 candidate installation remain pending.
