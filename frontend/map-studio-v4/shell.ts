@@ -18,6 +18,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
+import { RovingFocusController } from "./roving-focus";
 import {
   icon,
   iconBack,
@@ -286,6 +287,14 @@ export class MaticMapShellV4 extends LitElement {
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
 
+  constructor() {
+    super();
+    new RovingFocusController(this, {
+      container: () => this.renderRoot?.querySelector<HTMLElement>(".draw-tools") ?? null,
+      items: "button",
+    });
+  }
+
   #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {
     return translate(this.localize, key, fallback, placeholders);
   }
@@ -473,8 +482,14 @@ export class MaticMapShellV4 extends LitElement {
     this.#dispatchAction(action.id);
   }
 
-  #workflow(workflow: Workflow): void {
-    this.#intent({ type: "open-workflow", workflow });
+  #workflow(workflow: Workflow, launcher?: EventTarget | null): void {
+    const intent: WorkspaceIntent = { type: "open-workflow", workflow };
+    // Retain a pointer launcher explicitly: Safari does not focus clicked
+    // buttons, and the collapsed sheet's heading is not a visible fallback.
+    if (launcher instanceof HTMLElement && needsDraftConfirmation(this.state, intent)) {
+      this.#dialogLauncher = launcher;
+    }
+    this.#intent(intent);
   }
 
   #discardAndContinue(): void {
@@ -1078,7 +1093,8 @@ export class MaticMapShellV4 extends LitElement {
             class="panel-back ms-btn ms-btn--secondary"
             type="button"
             aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-            @click=${() => this.#workflow("none")}
+            data-dialog-launcher="discardDraft"
+            @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
           >${icon(iconBack)}<span class="ms-btn__label">${this.#t("v4_all_tasks", "All tasks")}</span></button>
         ` : nothing}
         <h2 tabindex="-1">${workflow.title}</h2>
@@ -1303,6 +1319,16 @@ export class MaticMapShellV4 extends LitElement {
                   @pointercancel=${this.#gripUp}
                 >
                   <span class="sheet-handle" role="presentation"></span>
+                  ${state.workflow !== "none" && this._sheetDetent === "peek" ? html`
+                    <button
+                      class="sheet-back ms-btn ms-btn--icon ms-btn--sm"
+                      type="button"
+                      aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      title=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      data-dialog-launcher="discardDraft"
+                      @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
+                    >${icon(iconBack)}</button>
+                  ` : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}</span>
                   <button
                     class="ms-btn ms-btn--icon ms-btn--sm"

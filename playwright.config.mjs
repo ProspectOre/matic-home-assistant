@@ -23,8 +23,8 @@ export default defineConfig({
     {
       // Map Studio relies on Safari-specific native gesture events as well as
       // standard pointer input. Keep its complete (non-@mobile) suite on
-      // Desktop Safari; the @mobile-tagged tests below cover real device
-      // viewports and touch input on both engines.
+      // Desktop Safari; the @mobile-tagged tests below cover emulated device
+      // viewports and touch input on both engines, not physical-device acceptance.
       name: "webkit",
       testMatch: "tests/browser/map_studio_v4*.spec.mjs",
       grepInvert: /@mobile/,

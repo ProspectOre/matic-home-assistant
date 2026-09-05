@@ -287,6 +287,7 @@ export const shellStyles = [tokens, base, controls, css`
       user-select: none;
       -webkit-user-select: none;
     }
+    .narrow .sheet-grip:has(.sheet-back) { grid-template-columns: auto minmax(0, 1fr) auto auto; }
     .narrow .sheet-grip:active { cursor: grabbing; }
     /* The step buttons are compact on the grip line but still touch targets:
        full control height (44px) on a phone, not the 36px --sm size. */

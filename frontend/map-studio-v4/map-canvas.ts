@@ -252,6 +252,10 @@ export class MaticMapCanvasV4 extends LitElement {
       container: () => this.renderRoot?.querySelector<HTMLElement>(".camera-steps") ?? null,
       items: "button",
     });
+    new RovingFocusController(this, {
+      container: () => this.renderRoot?.querySelector<HTMLElement>(".draw-tools") ?? null,
+      items: "button",
+    });
   }
 
   #t(key: string, fallback: string, placeholders?: Record<string, string | number>): string {

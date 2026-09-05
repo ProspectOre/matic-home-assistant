@@ -4007,3 +4007,67 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
   });
 });
+
+for (const narrow of [false, true]) {
+  test(`Draw toolbar uses one tab stop and skips disabled tools ${narrow ? "on a phone @mobile" : "on desktop"}`, async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw", narrow });
+    const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
+    await expect(toolbar).toBeVisible();
+    const paint = toolbar.getByRole("button", { name: "Paint", exact: true });
+    const erase = toolbar.getByRole("button", { name: "Erase", exact: true });
+    const brush = toolbar.getByRole("button", { name: /^Brush width/ });
+    await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
+    await paint.focus();
+    const before = await snapshot(page);
+    await paint.press("ArrowRight");
+    await expect(erase).toBeFocused();
+    await expect(paint).toHaveAttribute("tabindex", "-1");
+    await erase.press("End");
+    await expect(brush).toBeFocused();
+    await brush.press("ArrowRight");
+    await expect(paint).toBeFocused();
+    await paint.press("ArrowLeft");
+    await expect(brush).toBeFocused();
+    await brush.press("Home");
+    await expect(paint).toBeFocused();
+    // Moving focus never paints or changes the map camera / chosen tool.
+    expect((await snapshot(page)).draw).toEqual(before.draw);
+    await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
+    const expected = await toolbar.locator('button:not(:disabled)').evaluateAll((buttons) => buttons.map((button) => button.getAttribute("aria-label") || button.textContent.trim()));
+    const reached = [];
+    for (let index = 0; index < expected.length; index++) {
+      reached.push(await toolbar.locator('button[tabindex="0"]').evaluate((button) => button.getAttribute("aria-label") || button.textContent.trim()));
+      await page.keyboard.press("ArrowRight");
+    }
+    expect(reached).toEqual(expected);
+    await expect(paint).toBeFocused();
+  });
+}
+
+for (const dirty of [false, true]) {
+  test(`collapsed Draw sheet keeps an exit for ${dirty ? "unsaved" : "blank"} areas @mobile`, async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: dirty ? "draw" : "ready", narrow: true });
+    if (!dirty) await gallery.getByRole("button", { name: /^Clean a custom area/ }).click();
+    const sheet = gallery.locator(".mobile-sheet");
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    const back = sheet.locator(".sheet-grip").getByRole("button", { name: "Back to all tasks" });
+    await expect(back).toBeVisible();
+    await back.click();
+    if (dirty) {
+      await expect(gallery.getByRole("dialog")).toBeVisible();
+      await gallery.getByRole("button", { name: "Keep editing", exact: true }).click();
+      await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
+      await expect(back).toBeFocused();
+      await back.click();
+      await expect(gallery.getByRole("dialog")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(gallery.getByRole("dialog")).toHaveCount(0);
+      await expect(back).toBeFocused();
+      await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
+      await back.click();
+      await gallery.getByRole("button", { name: "Discard", exact: true }).click();
+    }
+    await expect.poll(async () => (await snapshot(page)).workflow).toBe("none");
+    await expect(gallery.getByRole("button", { name: /^One-time clean/ })).toBeVisible();
+  });
+}

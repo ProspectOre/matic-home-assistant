@@ -1,10 +1,12 @@
 # 0.4 product review
 
 Status: in progress; not a claim of complete end-to-end or physical acceptance.
-Baseline: PRs #97–#99 merged; RC11 installed from `570a3bf`.
+Installed baseline: unpublished `56b4d4b`; current audit changes are not yet
+installed or verified live. Final candidate gates remain pending.
 Authority: redesign structure and workflows where evidence supports it.
 Live walkthrough uses the actual signed-in HA; synthetic states are regression
-fixtures, never evidence of deployed behavior. RC11 live checks are recorded below.
+fixtures, never evidence of deployed behavior. Historical RC11 checks are
+scoped below; the current audit is dated 2026-09-05.
 
 ## Principles
 
@@ -22,22 +24,35 @@ fixtures, never evidence of deployed behavior. RC11 live checks are recorded bel
 
 | Surface | Review focus | Current evidence |
 | --- | --- | --- |
-| Setup/configuration | Pairing, cancellation, errors, options | Inventory; detailed pass pending |
-| Home Assistant entities/actions | Availability, targeting, metadata | Inventory; detailed pass pending |
+| Setup/configuration | Pairing, cancellation, errors, options | Source/regression audit; fresh hardware pairing/reauth remains open |
+| Home Assistant entities/actions | Availability, targeting, metadata | Source/regression audit; no motion actions exercised today |
 | Task chooser and map header | Discoverability, theme, touch, navigation | Native visual pass; dark fallback defect reproduced |
 | One-time room clean | Stable target, per-room settings, one dispatch | Stable IDs preserved; mobile choices open visibly |
 | Saved plans | Save/edit/delete/order/enable, recovery | Live editor inspected; stale mutation results fenced |
 | Drawing/custom areas | Tools, coordinates, review, persistence | Live review inspected; duplicate and stale mutations fenced |
 | History/floor switching | Read-only identity, return to live, drafts | RC11 live saved-floor/return pass; draft isolation regressions pass |
-| Diagnostics/support | Useful redacted output, recovery routes | Source review underway |
-| Stop/completion | Ownership, uncertainty, cancellation, credit | Baseline tests; physical matrix still open |
+| Diagnostics/support | Useful redacted output, recovery routes | Fresh live diagnostics connected, floor/session verified; privacy regressions |
+| Stop/completion | Ownership, uncertainty, cancellation, credit | Installed same-settings two-room credit/event pass; interruption/threshold cases open |
 | Themes/accessibility | Contrast, keyboard, focus, zoom, forced colors | Header regressions added; broader pass underway |
 | Preferences/lifecycle | Detach, identity changes, persistence | Owner-scoped writes and draft clearing regressions pass |
 | Architecture | Contracts/state/effects/rendering boundaries | 32 TS modules, no local import cycles; client has no HA imports; lifecycle fixes tested |
-| Packaging/upgrades | Artifact parity, HACS, cache changes | RC11 archive/bundle parity, HACS install and restart verified |
+| Packaging/upgrades | Artifact parity, HACS, cache changes | Installed baseline parity/restart verified; current audit candidate gates and installation pending |
 | Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
 
-## Findings and fixes
+## Current non-motion audit
+
+Fresh live read-only inspection covers one-time settings, the blank drawing
+workspace, saved-floor action/pose withholding and return to current, plus
+connected diagnostics with verified floor/session identity. Narrow drawing
+inspection found a hidden exit; the candidate adds visible Back navigation
+and roving keyboard focus for Draw tools. A backend guard rejects ambiguous
+duplicate room names. These fixes are not installed. Focused backend checks
+passed 267 cases and targeted frontend checks passed 16; lint, types and privacy
+checks passed. Full local suites: 1,301 Python tests at 100% coverage and 407
+browser checks. Native VoiceOver, physical phones/tablets
+and fresh pairing/reauthentication have not been completed.
+
+## Earlier findings and fixes
 
 1. Header fallback stayed white in dark mode while text became light. Reproduced
    in Chromium and WebKit. Shared surface/text tokens now follow the theme;
@@ -94,12 +109,12 @@ fixtures, never evidence of deployed behavior. RC11 live checks are recorded bel
     preventing a subsequent same-floor catalog refresh from restoring that
     rejected coordinate. The regression fails before and passes after the fix.
 
-Validation: 1,263 Python tests at 100% coverage; 397 browser checks; strict
+Historical RC11 validation: 1,263 Python tests at 100% coverage; 397 browser checks; strict
 TypeScript, Ruff, format, MyPy and public-tree privacy checks passed during this
 pass. Archive parity and fresh installation imports pass. PRs #98/#99 have
 clean exact-head review and green hosted gates; RC11 installation is verified.
 
-Live baseline: actual HA reopened with verified map/pose, six saved plans and
+Historical RC11 live baseline: actual HA reopened with verified map/pose, six saved plans and
 docked/clean native readback. Saved-plan editor inspected without changing its
 settings or issuing motion. Saved-floor viewing and return to the live map were inspected without motion.
 RC11 matches its served frontend bundle after restart. Desktop and 390px live
