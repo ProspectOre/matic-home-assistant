@@ -482,8 +482,14 @@ export class MaticMapShellV4 extends LitElement {
     this.#dispatchAction(action.id);
   }
 
-  #workflow(workflow: Workflow): void {
-    this.#intent({ type: "open-workflow", workflow });
+  #workflow(workflow: Workflow, launcher?: EventTarget | null): void {
+    const intent: WorkspaceIntent = { type: "open-workflow", workflow };
+    // Retain a pointer launcher explicitly: Safari does not focus clicked
+    // buttons, and the collapsed sheet's heading is not a visible fallback.
+    if (launcher instanceof HTMLElement && needsDraftConfirmation(this.state, intent)) {
+      this.#dialogLauncher = launcher;
+    }
+    this.#intent(intent);
   }
 
   #discardAndContinue(): void {
@@ -1087,7 +1093,8 @@ export class MaticMapShellV4 extends LitElement {
             class="panel-back ms-btn ms-btn--secondary"
             type="button"
             aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-            @click=${() => this.#workflow("none")}
+            data-dialog-launcher="discardDraft"
+            @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
           >${icon(iconBack)}<span class="ms-btn__label">${this.#t("v4_all_tasks", "All tasks")}</span></button>
         ` : nothing}
         <h2 tabindex="-1">${workflow.title}</h2>
@@ -1318,7 +1325,8 @@ export class MaticMapShellV4 extends LitElement {
                       type="button"
                       aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
                       title=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-                      @click=${() => this.#workflow("none")}
+                      data-dialog-launcher="discardDraft"
+                      @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
                     >${icon(iconBack)}</button>
                   ` : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}</span>

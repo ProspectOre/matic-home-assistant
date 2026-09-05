@@ -4057,6 +4057,13 @@ for (const dirty of [false, true]) {
       await expect(gallery.getByRole("dialog")).toBeVisible();
       await gallery.getByRole("button", { name: "Keep editing", exact: true }).click();
       await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
+      await expect(back).toBeFocused();
+      await back.click();
+      await expect(gallery.getByRole("dialog")).toBeVisible();
+      await page.keyboard.press("Escape");
+      await expect(gallery.getByRole("dialog")).toHaveCount(0);
+      await expect(back).toBeFocused();
+      await expect.poll(async () => (await snapshot(page)).workflow).toBe("draw");
       await back.click();
       await gallery.getByRole("button", { name: "Discard", exact: true }).click();
     }
