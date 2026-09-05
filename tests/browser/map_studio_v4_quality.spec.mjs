@@ -1,5 +1,26 @@
 import { expect, test } from "@playwright/test";
 
+test("keeps checkbox state attached to its room when selected rows move", async ({ page }) => {
+  await page.goto("/map-studio-v4-audit");
+  const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
+  await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await gallery.getByRole("button", { name: "New plan", exact: true }).click();
+  const rows = gallery.locator(".plan-room");
+  await rows.last().getByRole("checkbox").click();
+  await expect(rows.first()).toHaveAttribute("data-selected", "true");
+  const assertConsistent = async () => {
+    expect(await rows.evaluateAll((items) => items.map((item) => ({
+      selected: item.dataset.selected === "true",
+      checked: item.querySelector("input").checked,
+    })).filter((item) => item.selected !== item.checked))).toEqual([]);
+  };
+  await assertConsistent();
+  await rows.last().getByRole("checkbox").click();
+  await assertConsistent();
+  await rows.first().getByRole("checkbox").click();
+  await assertConsistent();
+});
+
 for (const [colorScheme, header] of [["light", false], ["dark", false], ["light", true], ["dark", true]]) {
   test(`keeps the ${colorScheme} header readable with ${header ? "host header colors" : "default colors"}`, async ({ page }) => {
     await page.emulateMedia({ colorScheme });

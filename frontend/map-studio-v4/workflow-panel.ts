@@ -1,4 +1,5 @@
 import { LitElement, css, html, nothing } from "lit";
+import { repeat } from "lit/directives/repeat.js";
 import { controls } from "./controls";
 import { icon, iconCopy, iconMoveDown, iconMoveUp, iconPlus } from "./icons";
 import { base, tokens } from "./tokens";
@@ -340,7 +341,7 @@ line-height: var(--ms-lh-snug);
         </div>
         <h3 class="group-heading" id="plan-rooms-heading">${this.#t("plan_rooms", "Plan rooms")}</h3>
         <div class="list" role="group" aria-labelledby="plan-rooms-heading">
-          ${roomRows.map(({ room, label, selected }) => {
+          ${repeat(roomRows, ({ room }) => room.roomId, ({ room, label, selected }) => {
             const index = selected
               ? draft.rooms.findIndex((candidate) => candidate.roomId === room.roomId)
               : -1;
