@@ -459,3 +459,13 @@ def test_room_timeline_normalizes_names_once_per_room_and_event(
     assert rooms == list(room_names)
     assert current_room == "Room 99"
     assert calls <= len(room_names) + len(area_states)
+
+
+def test_adjacent_sessions_are_distinct():
+    first = CleaningSession(
+        "2026-07-20T01:00:00+00:00", "2026-07-20T02:00:00+00:00", 3600, (), (), True
+    )
+    second = CleaningSession(
+        first.ended_at, "2026-07-20T03:00:00+00:00", 3600, (), (), True
+    )
+    assert not _sessions_overlap(first, second)

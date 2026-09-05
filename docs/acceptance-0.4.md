@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
-Status: candidate, not stable-release sign-off. Installed baseline: `v0.4.0-rc11`
-(`570a3bf`). Run this checklist against the exact candidate being promoted.
+Status: candidate, not stable-release sign-off. Installed baseline: `v0.4.0-rc13`
+(`e279f64`). Run this checklist against the exact candidate being promoted.
 Automated coverage, browser emulation, and read-only live checks do not prove
 physical cleaning, native assistive technology, or affected reporter hardware.
 
@@ -60,6 +60,20 @@ physical cleaning, native assistive technology, or affected reporter hardware.
    incorrect credit, or a runner that fails to settle; record the failed case.
 
 ## Stable promotion gate
+
+RC12 two-room check (2026-09-04 Pacific): one native mission completed both
+rooms with positive native per-room durations and returned to dock. The managed
+runner released its lock but left its active room in `verifying`, with no room
+terminal events. Local and delayed native history emitted duplicate session
+finished events. Automation state and the original selected plan were restored;
+RC13 restart cleared the orphan, but does not establish a root-cause fix.
+
+Local follow-up reproduces duplicate events from revised timestamps and an
+orphaned active room when native-history verification raises an unexpected
+exception or task cancellation. Regression fixes suppress overlapping session
+notifications and terminalize owned interrupted work without completion credit.
+The exact trigger of the physical runner exit remains unknown; fresh installed
+candidate verification and a bounded physical retest remain required.
 
 RC11 physical check (2026-09-04 Pacific): one room-started and one room-completed
 event; returned to dock, error-free, managed lock/plan and reconciliation clear.
