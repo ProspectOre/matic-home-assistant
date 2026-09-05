@@ -321,7 +321,7 @@
     "v4_room_ready": "Ready",
     "v4_room_selection_hint": "Select rooms here or directly on the map. The map and list stay in sync.",
     "v4_rooms_quick_detail": "Pick rooms and clean them now.",
-    "v4_rooms_selected": "{count} rooms selected",
+    "v4_rooms_selected": "Rooms selected: {count}",
     "v4_rooms_to_clean": "Rooms to clean",
     "v4_run_a_plan": "Run a plan",
     "v4_saved_floor": "Saved floor {number}",

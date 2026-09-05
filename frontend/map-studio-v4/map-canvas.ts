@@ -620,7 +620,7 @@ export class MaticMapCanvasV4 extends LitElement {
       return html`
         <div class="map-dock ms-surface ms-surface--floating" data-map-control>
           <div class="selection-chip ms-surface ms-surface--floating" data-map-control>
-            <span>${this.#t("v4_rooms_selected", "{count} rooms selected").replace("{count}", String(count))}</span>
+            <span>${this.#t("v4_rooms_selected", "Rooms selected: {count}").replace("{count}", String(count))}</span>
             <button class="ms-btn ms-btn--sm" type="button" @click=${() => this.#clearSelection()}>${this.#t("v4_clear", "Clear")}</button>
           </div>
         </div>
