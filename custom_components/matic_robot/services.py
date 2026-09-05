@@ -107,8 +107,11 @@ TARGET_KEYS = (
 ROOM_STATUS_REFRESH_SECONDS = 5
 ACTIVE_SESSION_UNKNOWN_ATTEMPTS = 3
 ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
-SESSION_HISTORY_ATTEMPTS = 6
+# Native completion records can arrive several minutes after docking. Keep the
+# verification window bounded and cancellable instead of finalizing after 10 s.
+SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
+SESSION_HISTORY_TIMEOUT_SECONDS = 300
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 _LOGGER = logging.getLogger(__name__)
@@ -1142,7 +1145,9 @@ async def _async_run_room(
             else None
         )
         try:
-            async with asyncio.timeout(call.data["completion_timeout"]):
+            async with asyncio.timeout(
+                call.data["completion_timeout"]
+            ) as mission_timeout:
                 while True:
                     outcome = await _async_wait_for_room_outcome(
                         hass, entity_id, room, cancel_event
@@ -1152,6 +1157,7 @@ async def _async_run_room(
                             active_session
                         )
                         if session_active is False or active_session is None:
+                            mission_timeout.reschedule(None)
                             await manager.async_mark_verifying(
                                 serial_number, call.data["plan_id"], room
                             )
@@ -1169,9 +1175,6 @@ async def _async_run_room(
                             raise RoomInterruptedError(
                                 f"{room.name} completion could not be verified"
                             )
-                        await manager.async_mark_verifying(
-                            serial_number, call.data["plan_id"], room
-                        )
                         session_resolution = (
                             await _async_wait_for_active_session_resolution(
                                 hass,
@@ -1181,6 +1184,10 @@ async def _async_run_room(
                             )
                         )
                         if session_resolution is False:
+                            mission_timeout.reschedule(None)
+                            await manager.async_mark_verifying(
+                                serial_number, call.data["plan_id"], room
+                            )
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
                                 history_baseline,
@@ -1564,7 +1571,9 @@ async def _async_run_leg(
             else None
         )
         try:
-            async with asyncio.timeout(call.data["completion_timeout"]):
+            async with asyncio.timeout(
+                call.data["completion_timeout"]
+            ) as mission_timeout:
                 while True:
                     outcome, changed_room = await _async_wait_for_leg_outcome(
                         hass,
@@ -1589,23 +1598,22 @@ async def _async_run_leg(
                             stop_sent = True
                             continue
                         active_room = changed_room
+                        first_observation = active_room.room_id not in observed_ids
                         observed_ids.add(active_room.room_id)
                         await manager.async_mark_started(
                             serial_number, call.data["plan_id"], active_room
                         )
-                        hass.bus.async_fire(
-                            f"{DOMAIN}_room_started",
-                            event_data(active_room),
-                            context=call.context,
-                        )
+                        if first_observation:
+                            hass.bus.async_fire(
+                                f"{DOMAIN}_room_started",
+                                event_data(active_room),
+                                context=call.context,
+                            )
                         await manager.async_mark_resumed(
                             serial_number, call.data["plan_id"], active_room
                         )
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        await manager.async_mark_verifying(
-                            serial_number, call.data["plan_id"], active_room
-                        )
                         if active_session is not None:
                             session_resolution = (
                                 await _async_wait_for_active_session_resolution(
@@ -1621,6 +1629,10 @@ async def _async_run_leg(
                                 raise RoomInterruptedError(
                                     "Native session completion could not be confirmed"
                                 )
+                        mission_timeout.reschedule(None)
+                        await manager.async_mark_verifying(
+                            serial_number, call.data["plan_id"], active_room
+                        )
                         evidence = await _async_verify_leg_completion(
                             session_history,
                             history_baseline,
@@ -1837,83 +1849,87 @@ async def _async_verify_leg_completion(
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
     evidence: dict[str, tuple[str, int]] | None = None
     matched_key: bytes | None = None
-    for attempt in range(attempts):
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        try:
-            records = await reader()
-        except MaticError as err:
-            _LOGGER.debug(
-                "Native Matic leg evidence unavailable (%s)", type(err).__name__
-            )
-            records = ()
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        now = dt_util.utcnow()
-        matches: list[CleaningSessionRecord] = []
-        for record in records:
-            session = record.session
-            if record.key in baseline:
-                continue
-            started = dt_util.parse_datetime(session.started_at or "")
-            ended = dt_util.parse_datetime(session.ended_at or "")
-            if started is None or ended is None or started > ended:
-                continue
-            if ended < dispatched_at or started > now or ended > now:
-                continue
-            names = [name.strip().casefold() for name in session.rooms]
-            if not names or any(name not in targets for name in names):
-                continue
-            matches.append(record)
-        if len(matches) == 1:
-            if matched_key is not None and matched_key != matches[0].key:
-                return None
-            matched_key = matches[0].key
-            session = matches[0].session
-            ended_at = session.ended_at
-            assert isinstance(ended_at, str)
-            durations = {
-                name.strip().casefold(): duration
-                for name, duration in session.room_durations
-            }
-            completed_names = {
-                name.strip().casefold() for name in session.completed_rooms
-            }
-            evidence = {}
-            for name, room_id in targets.items():
-                duration = durations.get(name)
-                if (
-                    name in completed_names
-                    and isinstance(duration, int)
-                    and not isinstance(duration, bool)
-                    and duration > 0
-                ):
-                    evidence[room_id] = (ended_at, duration)
-            # Native history can publish timestamps before per-room results.
-            # Keep polling the same record until complete or the bounded window
-            # expires; never combine evidence from different physical sessions.
-            if len(evidence) == len(targets):
-                return evidence
-        if len(matches) > 1:
-            return None
-        if attempt + 1 < attempts:
-            if cancel_event is None:
-                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-            else:
+    try:
+        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+            for attempt in range(attempts):
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
                 try:
-                    async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                        await cancel_event.wait()
-                except TimeoutError:
-                    continue
-                raise PlanCancelledError
+                    records = await reader()
+                except MaticError as err:
+                    _LOGGER.debug(
+                        "Native Matic leg evidence unavailable (%s)", type(err).__name__
+                    )
+                    records = ()
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
+                now = dt_util.utcnow()
+                matches: list[CleaningSessionRecord] = []
+                for record in records:
+                    session = record.session
+                    if record.key in baseline:
+                        continue
+                    started = dt_util.parse_datetime(session.started_at or "")
+                    ended = dt_util.parse_datetime(session.ended_at or "")
+                    if started is None or ended is None or started > ended:
+                        continue
+                    if ended < dispatched_at or started > now or ended > now:
+                        continue
+                    names = [name.strip().casefold() for name in session.rooms]
+                    if not names or any(name not in targets for name in names):
+                        continue
+                    matches.append(record)
+                if len(matches) == 1:
+                    if matched_key is not None and matched_key != matches[0].key:
+                        return None
+                    matched_key = matches[0].key
+                    session = matches[0].session
+                    ended_at = session.ended_at
+                    assert isinstance(ended_at, str)
+                    durations = {
+                        name.strip().casefold(): duration
+                        for name, duration in session.room_durations
+                    }
+                    completed_names = {
+                        name.strip().casefold() for name in session.completed_rooms
+                    }
+                    evidence = {}
+                    for name, room_id in targets.items():
+                        duration = durations.get(name)
+                        if (
+                            name in completed_names
+                            and isinstance(duration, int)
+                            and not isinstance(duration, bool)
+                            and duration > 0
+                        ):
+                            evidence[room_id] = (ended_at, duration)
+                    # Native history can publish timestamps before per-room results.
+                    # Keep polling the same record until complete or the bounded window
+                    # expires; never combine evidence from different physical sessions.
+                    if len(evidence) == len(targets):
+                        return evidence
+                if len(matches) > 1:
+                    return None
+                if attempt + 1 < attempts:
+                    if cancel_event is None:
+                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+                    else:
+                        try:
+                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
+                                await cancel_event.wait()
+                        except TimeoutError:
+                            continue
+                        raise PlanCancelledError
+    except TimeoutError:
+        return evidence
     return evidence
 
 
@@ -2088,60 +2104,65 @@ async def _async_verify_room_completion(
     if reader is None or baseline is None:
         return False
     target = room.name.strip().casefold()
-    for attempt in range(attempts):
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        try:
-            records = await reader()
-        except MaticError as err:
-            _LOGGER.debug(
-                "Native Matic completion evidence unavailable (%s)", type(err).__name__
-            )
-            records = ()
-        _raise_if_completion_verification_was_replaced(
-            hass,
-            entity_id,
-            cancel_event,
-            allow_active_cleaning=allow_active_cleaning,
-        )
-        now = dt_util.utcnow()
-        matches: list[CleaningSessionRecord] = []
-        for record in records:
-            session = record.session
-            if record.key in baseline or session.completed is not True:
-                continue
-            started = dt_util.parse_datetime(session.started_at or "")
-            ended = dt_util.parse_datetime(session.ended_at or "")
-            if started is None or ended is None or started > ended:
-                continue
-            if ended < dispatched_at or started > now or ended > now:
-                continue
-            rooms = [name.strip().casefold() for name in session.rooms]
-            durations = [
-                duration
-                for name, duration in session.room_durations
-                if name.strip().casefold() == target and duration > 0
-            ]
-            if rooms == [target] and len(durations) == 1:
-                matches.append(record)
-        if len(matches) == 1:
-            return True
-        if len(matches) > 1:
-            return False
-        if attempt + 1 < attempts:
-            if cancel_event is None:
-                await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
-            else:
+    try:
+        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+            for attempt in range(attempts):
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
                 try:
-                    async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
-                        await cancel_event.wait()
-                except TimeoutError:
-                    continue
-                raise PlanCancelledError
+                    records = await reader()
+                except MaticError as err:
+                    _LOGGER.debug(
+                        "Native Matic completion evidence unavailable (%s)",
+                        type(err).__name__,
+                    )
+                    records = ()
+                _raise_if_completion_verification_was_replaced(
+                    hass,
+                    entity_id,
+                    cancel_event,
+                    allow_active_cleaning=allow_active_cleaning,
+                )
+                now = dt_util.utcnow()
+                matches: list[CleaningSessionRecord] = []
+                for record in records:
+                    session = record.session
+                    if record.key in baseline or session.completed is not True:
+                        continue
+                    started = dt_util.parse_datetime(session.started_at or "")
+                    ended = dt_util.parse_datetime(session.ended_at or "")
+                    if started is None or ended is None or started > ended:
+                        continue
+                    if ended < dispatched_at or started > now or ended > now:
+                        continue
+                    rooms = [name.strip().casefold() for name in session.rooms]
+                    durations = [
+                        duration
+                        for name, duration in session.room_durations
+                        if name.strip().casefold() == target and duration > 0
+                    ]
+                    if rooms == [target] and len(durations) == 1:
+                        matches.append(record)
+                if len(matches) == 1:
+                    return True
+                if len(matches) > 1:
+                    return False
+                if attempt + 1 < attempts:
+                    if cancel_event is None:
+                        await asyncio.sleep(SESSION_HISTORY_RETRY_SECONDS)
+                    else:
+                        try:
+                            async with asyncio.timeout(SESSION_HISTORY_RETRY_SECONDS):
+                                await cancel_event.wait()
+                        except TimeoutError:
+                            continue
+                        raise PlanCancelledError
+    except TimeoutError:
+        return False
     return False
 
 

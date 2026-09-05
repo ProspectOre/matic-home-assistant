@@ -75,6 +75,14 @@ from custom_components.matic_robot.services import (
 )
 
 
+@pytest.fixture(autouse=True)
+def fast_native_history_retries(monkeypatch):
+    """Exercise bounded retry counts without spending minutes on wall time."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
+
+
 def _heavy_room(name: str, room_id: str) -> CleaningRoom:
     return CleaningRoom(
         room_id=room_id,
@@ -2717,7 +2725,12 @@ async def test_native_completion_evidence_fails_closed_on_errors_and_ambiguity()
         asyncio.get_running_loop().call_soon(cancel_event.set)
         return ()
 
-    with pytest.raises(PlanCancelledError):
+    with (
+        patch(
+            "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 1
+        ),
+        pytest.raises(PlanCancelledError),
+    ):
         await _async_verify_room_completion(
             cancel_during_retry,
             frozenset(),
@@ -2810,7 +2823,7 @@ async def test_active_session_can_resume_then_end_unverified() -> None:
         )
 
     manager.async_mark_suspended.assert_not_awaited()
-    assert manager.async_mark_verifying.await_count == 2
+    assert manager.async_mark_verifying.await_count == 1
     assert manager.async_mark_resumed.await_count == 2
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
@@ -3717,7 +3730,12 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     sender.assert_not_awaited()
 
 
-async def test_leg_partial_record_credits_only_verified_subset(hass) -> None:
+async def test_leg_partial_record_credits_only_verified_subset(
+    hass, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
     manager = _leg_manager()
 
@@ -5443,3 +5461,169 @@ async def test_multi_room_leg_persists_completion_before_next_dispatch(
         prefetch_next=prefetch,
     )
     assert prefetched
+
+
+async def test_leg_accepts_native_history_after_three_minutes(monkeypatch):
+    """The default budget covers delayed native publication, without motion."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+    )
+    final = _leg_record(("Kitchen", "Office"), ("Kitchen", "Office"))
+    reader = AsyncMock(side_effect=[()] * 90 + [(final,)])
+    evidence = await _async_verify_leg_completion(
+        reader,
+        frozenset(),
+        _leg_rooms(),
+        dt_util.utcnow() - timedelta(seconds=300),
+    )
+    assert evidence == {
+        "room-kitchen": (final.session.ended_at, 57),
+        "room-office": (final.session.ended_at, 57),
+    }
+    assert reader.await_count == 91
+
+
+async def test_leg_room_revisits_emit_one_start_each(hass, monkeypatch):
+    rooms = _leg_rooms()
+    manager = _leg_manager()
+    starts = []
+    hass.bus.async_listen(
+        f"{DOMAIN}_room_started", lambda event: starts.append(event.data["room"])
+    )
+
+    async def send_command(call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    outcomes = iter(
+        [
+            (RoomRunOutcome.ROOM_CHANGED, rooms[1]),
+            (RoomRunOutcome.ROOM_CHANGED, rooms[0]),
+            (RoomRunOutcome.ROOM_CHANGED, rooms[1]),
+            (RoomRunOutcome.HANDOFF_CANDIDATE, None),
+        ]
+    )
+
+    async def next_outcome(*args, **kwargs):
+        outcome = next(outcomes)
+        if outcome[0] is RoomRunOutcome.HANDOFF_CANDIDATE:
+            hass.states.async_set("vacuum.matic", "returning")
+        return outcome
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services._async_wait_for_leg_outcome",
+        next_outcome,
+    )
+    reads = 0
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
+
+    assert await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+    )
+    await hass.async_block_till_done()
+    assert starts == ["Kitchen", "Office"]
+    assert manager.async_mark_completed.await_count == 2
+
+
+@pytest.mark.parametrize(
+    "multi_room,resolves", [(True, False), (False, False), (False, True)]
+)
+async def test_terminal_history_has_its_own_budget(
+    hass, monkeypatch, multi_room, resolves
+):
+    """Verification outlives the returned mission's cleaning deadline."""
+    rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
+    manager = _leg_manager()
+
+    async def slow_persist(*args):
+        await asyncio.sleep(0.05)
+
+    manager.async_mark_verifying = AsyncMock(side_effect=slow_persist)
+
+    async def send_command(call):
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+
+    async def terminal(*args, **kwargs):
+        hass.states.async_set("vacuum.matic", "returning")
+        if multi_room:
+            return RoomRunOutcome.HANDOFF_CANDIDATE, None
+        return RoomRunOutcome.HANDOFF_CANDIDATE
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services._async_wait_for_leg_outcome"
+        if multi_room
+        else "custom_components.matic_robot.services._async_wait_for_room_outcome",
+        terminal,
+    )
+    reads = 0
+
+    async def history():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            return ()
+        await asyncio.sleep(0.05)
+        names = tuple(room.name for room in rooms)
+        return (_leg_record(names, names),)
+
+    sender = AsyncMock()
+    completed = await _async_run_leg(
+        hass,
+        _leg_call(hass, completion_timeout=0.02),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        session_history=history,
+        active_session=AsyncMock(side_effect=[True, False])
+        if resolves
+        else AsyncMock(return_value=False),
+        managed_user_command=sender,
+        motion_token=7,
+    )
+    assert completed
+    manager.async_mark_failed.assert_not_awaited()
+    assert manager.async_mark_completed.await_count == len(rooms)
+    sender.assert_not_awaited()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_native_history_budget_includes_slow_reads(monkeypatch, multi_room):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.SESSION_HISTORY_TIMEOUT_SECONDS", 0.01
+    )
+    cancelled = False
+
+    async def slow_reader():
+        nonlocal cancelled
+        try:
+            await asyncio.sleep(1)
+        finally:
+            cancelled = True
+        return ()
+
+    verify = (
+        _async_verify_leg_completion if multi_room else _async_verify_room_completion
+    )
+    result = await verify(
+        slow_reader,
+        frozenset(),
+        _leg_rooms() if multi_room else _leg_rooms()[0],
+        dt_util.utcnow() - timedelta(seconds=300),
+    )
+    assert not result
+    assert cancelled
