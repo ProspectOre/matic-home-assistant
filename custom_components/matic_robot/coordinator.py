@@ -525,7 +525,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             and self._cached_telemetry is not None
             and now < self._slow_refresh_due
         ):
-            return self._cached_telemetry
+            return await self._async_live_session_telemetry(self._cached_telemetry)
         try:
             telemetry = await self.client.async_get_telemetry()
             self._cached_telemetry = telemetry
@@ -534,7 +534,20 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         except MaticError as err:
             _LOGGER.debug("Optional Hermes telemetry unavailable: %s", err)
             self._slow_refresh_due = now + UPDATE_INTERVAL_SECONDS
-            return self._cached_telemetry or RobotTelemetry()
+            return await self._async_live_session_telemetry(
+                self._cached_telemetry or RobotTelemetry()
+            )
+
+    async def _async_live_session_telemetry(
+        self, telemetry: RobotTelemetry
+    ) -> RobotTelemetry:
+        """Refresh lifecycle state independently of slow settings telemetry."""
+        try:
+            active = await self.client.async_has_active_cleaning_session()
+        except MaticError as err:
+            _LOGGER.debug("Active Hermes session unavailable: %s", err)
+            active = None
+        return replace(telemetry, active_cleaning_session=active)
 
     async def async_request_full_refresh(self) -> None:
         """Refresh slow settings immediately after a local write."""
