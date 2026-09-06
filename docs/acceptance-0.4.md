@@ -30,7 +30,7 @@ Release preparation targets `0.4.0rc1`; rerun affected gates before promotion.
 | Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; installed narrow drawing exit and arrow/End navigation passed |
 | Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
 | One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
-| Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings multi-leg execution open |
+| Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings attempt stopped after scene loss; handoff open |
 | Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Live create/save/reopen and one bounded saved-zone completion passed; separately interrupted run remains open |
 | Immediate stop | Settlement, replacement-work protection and prompt safe dock | Regression coverage; fresh physical #71 retest open |
 | Finish-current-room | Below threshold stops; exact/above finishes only current room; next room never starts | Synthetic boundaries; physical threshold/pause/recharge cases open |
@@ -63,6 +63,16 @@ but native history still marked that run completed, so interruption is not
 proved. A subsequent attempt was rejected before dispatch by the changed-map
 binding guard. The automation and original saved-area state were restored.
 The UI-only `e29d7fd` follow-up passed guarded restart and idle readback.
+
+On unpublished `2753701`, a different-settings two-leg plan was stopped after
+its first leg lost the visible live scene. The second leg never started. Return
+to dock succeeded, managed completion totals stayed unchanged, and the temporary
+plan was removed with original plan definitions, selection and automation state
+restored. Native history nevertheless marked the interrupted first leg completed
+and emitted a finished event. The stop-settlement fence remained set. Mixed-leg
+handoff, scene recovery and interrupted native completion remain unresolved;
+this attempt is not a release acceptance pass. Retain the fence and investigate
+before another physical run.
 
 ## Remaining physical sequence
 

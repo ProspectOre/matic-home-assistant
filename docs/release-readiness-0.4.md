@@ -20,6 +20,10 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
 - An isolated HA 2026.7 Store rehearsal preserved synthetic plan/area selection
   across stable-to-candidate loading and restored the matching backup byte for
   byte. This does not prove live credential migration or HACS rollback.
+- A different-settings attempt on `2753701` stopped after first-leg scene loss.
+  Docking succeeded and managed completion totals stayed unchanged; native
+  history still reported completion and the stop-settlement fence remained.
+  Original plans, selection and automation were restored; test plan removed.
 - Different-settings handoff, interruption/native completion semantics, physical
   thresholds, fresh floor carries and affected reporter hardware remain open.
 
