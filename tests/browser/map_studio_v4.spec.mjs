@@ -4509,6 +4509,58 @@ test("zone keyboard creation and point editing stay local and undoable", async (
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
 });
 
+test("saved areas recover when Draw opens before the live scene is ready", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
+  await page.route("**/area-loading-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async () => {
+    const m = await import("/area-loading-test.js");
+    const initial = m.createGalleryState("ready");
+    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const store = new m.WorkspaceStore();
+    store.replace({ ...initial, resources: { ...initial.resources, scene: {status:"idle",value:null,problem:null}, areas: {status:"idle",value:null,problem:null} }, map: {...initial.map,available:false} });
+    let releaseScene;
+    const sceneReady = new Promise(resolve => { releaseScene = resolve; });
+    window.__areaLoading = { store, calls: 0, releaseScene, mismatch: false };
+    const backend = {
+      dispose: () => {},
+      catalog: async () => [entry],
+      scene: async () => { await sceneReady; return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value }; },
+      history: async () => initial.resources.history.value,
+      pose: async () => initial.resources.pose.value,
+      plans: async () => initial.resources.plans.value,
+      areas: async () => { window.__areaLoading.calls++; return {sceneUrl:window.__areaLoading.mismatch ? "/api/matic_robot/slam_scene/other" : entry.sceneUrl,rooms:[],areas:[{id:"saved",name:"Saved zone",circles:[],status:"current",canRebind:false}]}; },
+    };
+    const effects = new m.EffectController(store, backend);
+    window.__areaLoading.effects = effects;
+    effects.sync({userKey:"synthetic-user",entryKey:entry.entryId,host:initial.host,activity:initial.activity,batteryPercent:initial.batteryPercent,robotLabel:initial.robotLabel,robots:initial.robots,language:"en"}, undefined);
+    await effects.refreshCatalog(true);
+    await effects.openWorkflow("draw");
+  });
+  expect(await page.evaluate(() => window.__areaLoading.calls)).toBe(0);
+  await page.evaluate(() => window.__areaLoading.releaseScene());
+  await expect.poll(() => page.evaluate(() => window.__areaLoading.store.value.map.available)).toBe(true);
+  await expect.poll(() => page.evaluate(() => window.__areaLoading.store.value.resources.areas.status)).toBe("ready");
+  expect(await page.evaluate(() => window.__areaLoading.calls)).toBe(1);
+  // A reconnect can leave metadata idle while retaining the rendered scene.
+  // Recover it on a verified catalog poll, without accepting another scene.
+  await page.evaluate(async () => {
+    const s = window.__areaLoading;
+    s.mismatch = true;
+    s.store.patch({resources:{...s.store.value.resources,areas:{status:"idle",value:null,problem:null}}});
+    await s.effects.refreshCatalog();
+  });
+  await expect.poll(() => page.evaluate(() => window.__areaLoading.store.value.resources.areas.status)).toBe("error");
+  expect(await page.evaluate(() => window.__areaLoading.store.value.resources.areas.value)).toBeNull();
+  await page.evaluate(async () => {
+    window.__areaLoading.mismatch = false;
+    await window.__areaLoading.effects.openWorkflow("draw");
+  });
+  await expect.poll(() => page.evaluate(() => window.__areaLoading.store.value.resources.areas.status)).toBe("ready");
+  expect(await page.evaluate(() => window.__areaLoading.calls)).toBe(3);
+  await page.evaluate(() => window.__areaLoading.effects.dispose());
+});
+
 test("zone geometry and saved perimeter survive the authenticated backend round trip", async ({ page }) => {
   const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-contract.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
