@@ -166,9 +166,16 @@ export class MaticMapCanvasV4 extends LitElement {
     .zone-midpoint { font-size: 18px; }
     .zone-midpoint::before { inset: 13px; background: var(--ms-surface-card); }
     .zone-midpoint { color: var(--ms-accent); }
-    .zone-help { position: absolute; inset: auto auto 88px 100px; max-width: min(380px, calc(100% - 112px)); padding: 8px 12px; border-radius: 12px; font-size: 12px; pointer-events: auto; }
-    .zone-help span[role="status"] { display: block; color: var(--error-color, #b3261e); }
-    .map-root[data-narrow="true"] .zone-help { bottom: 12px; left: 12px; max-width: calc(100% - 24px); }
+    .zone-help { position: absolute; inset: auto auto 88px 50%; translate: -50% 0; width: max-content; max-width: calc(100% - 24px); display: grid; justify-items: center; gap: 6px; font-size: 12px; pointer-events: none; }
+    .zone-point-actions, .zone-guidance { display: flex; align-items: center; gap: 4px; max-width: 100%; padding: 4px; border-radius: 14px; pointer-events: auto; }
+    .zone-selection { padding-inline: 8px; color: var(--ms-text-quiet); white-space: nowrap; font-weight: 650; }
+    .zone-point-actions .ms-btn { white-space: nowrap; padding-inline: 10px; border-radius: 10px; font-size: 12px; }
+    .zone-point-actions .ms-btn + .ms-btn { border-inline-start: 1px solid var(--ms-line); }
+    .zone-guidance { padding: 6px 12px; gap: 8px; color: var(--ms-text-quiet); line-height: 1.4; }
+    .zone-guidance .ms-btn { flex-shrink: 0; }
+    .zone-feedback { max-width: 100%; padding: 8px 12px; border-radius: 12px; color: var(--error-color, #b3261e); pointer-events: auto; }
+    .zone-feedback[hidden] { display: none; }
+    .map-root[data-narrow="true"] .zone-help { bottom: 12px; }
     .keyboard-aim { display: none; position: absolute; z-index: 3; inset: 50% auto auto 50%; inline-size: 20px; block-size: 20px; translate: -50% -50%; border: 2px solid white; outline: 2px solid #111; border-radius: 50%; pointer-events: none; }
     .keyboard-aim::after { content: "+"; position: absolute; inset: 50% auto auto 50%; translate: -50% -50%; color: #111; font: bold 20px/1 sans-serif; text-shadow: 0 0 2px white; }
     .map-root:focus-visible .keyboard-aim { display: block; }

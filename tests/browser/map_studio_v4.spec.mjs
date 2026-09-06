@@ -4398,6 +4398,15 @@ test("zone perimeter supports closing dragging inserting deleting and undo", asy
   const canvas = gallery.locator(".scene-canvas");
   await expect(gallery.locator(".zone-help")).toBeVisible();
   const box = await canvas.boundingBox();
+  await page.mouse.click(box.x + box.width * .3 - 45, box.y + box.height * .25 - 40);
+  const clear = gallery.getByRole("button", { name: "Clear drawing", exact: true });
+  await expect(clear).toBeEnabled();
+  expect((await snapshot(page)).draw.circles).toHaveLength(0);
+  await clear.click();
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(0);
+  await gallery.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(1);
+  await clear.click();
   for (const [x, y] of [[-45, -40], [45, -40], [45, 40], [-45, 40]]) {
     await page.mouse.click(box.x + box.width * .3 + x, box.y + box.height * .25 + y);
   }
@@ -4581,6 +4590,13 @@ for (const device of [
     }
     const scale = await gallery.locator(".map-scale").boundingBox(), hint = await gallery.locator(".zone-help").boundingBox();
     expect(scale.x < hint.x + hint.width && scale.x + scale.width > hint.x && scale.y < hint.y + hint.height && scale.y + scale.height > hint.y).toBe(false);
+    const pointActions = gallery.locator(".zone-point-actions");
+    const row = await pointActions.boundingBox();
+    expect(row.height).toBeLessThanOrEqual(56);
+    expect(row.width).toBeLessThanOrEqual(300);
+    await expect(pointActions.locator(".zone-selection")).toHaveText("Point 1");
+    await expect(gallery.locator(".zone-guidance")).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`${device.name.replaceAll(" ", "-")}-${scheme}-selected.png`) });
     const insert = gallery.getByRole("button", { name: "Insert point", exact: true });
     if (device.touch) await insert.tap(); else await insert.click();
     await expect.poll(async () => (await snapshot(page)).draw.outline.points.length).toBe(5);

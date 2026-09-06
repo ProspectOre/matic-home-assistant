@@ -469,7 +469,6 @@ line-height: var(--ms-lh-snug);
             <select .value=${draft.coverageSetting} @change=${(event: Event) => this.#intent({ type: "patch-area-draft", patch: { coverageSetting: eventValue(event) as CoverageSetting } })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === draft.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
           </label>
         </div>
-        <p class="subtle">${this.#t("v4_private_marks", "{count} map-space marks. The outline stays private and floor-bound.", { count: this.state.draw.circles.length })}</p>
         <div class="toolbar">
           <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "open-workflow", workflow: "draw" })}>${this.#t("v4_edit_outline", "Edit outline")}</button>
           ${draft.id ? html`

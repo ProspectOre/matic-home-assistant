@@ -1182,7 +1182,7 @@ export class MaticMapShellV4 extends LitElement {
         label: "Clear drawing",
         labelKey: "v4_clear_drawing",
         kind: "neutral",
-        enabled: state.draw.circles.length > 0,
+        enabled: state.draw.circles.length > 0 || Boolean(state.draw.outline?.points.length),
       }
       : null;
     const footerSecondary = statusAction && statusAction === secondary ? null : (secondary ?? clearDrawing);
