@@ -12,7 +12,6 @@ import {
   type MapEntry,
   type PlanRoom,
   type SavedArea,
-  type SavedPlan,
 } from "./backend-contracts";
 import { BackendError, MaticBackend } from "./backend";
 import {
@@ -23,6 +22,7 @@ import {
   canStopMotion,
   CoherenceMachine,
   initialWorkspaceState,
+  draftForPlan,
   WorkspaceStore,
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
@@ -85,7 +85,7 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 const POSE_POLL_INTERVAL_MS = 1_000;
-const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plan", "draw", "areaReview"];
+const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "draw", "areaReview"];
 
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
@@ -1004,7 +1004,7 @@ export class EffectController {
         await this.#loadHistory(entry, stamp);
       }
     }
-    if (workflow === "plan" || workflow === "rooms") await this.loadPlans();
+    if (workflow === "plans" || workflow === "plan" || workflow === "rooms") await this.loadPlans();
     if (workflow === "draw" || workflow === "areaReview") await this.loadAreas();
   }
 
@@ -1021,7 +1021,7 @@ export class EffectController {
       const plans = await this.#backend.plans(entry.plansUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (controller.signal.aborted || this.#disposed || !currentEntry || entryBoundaryKey(currentEntry) !== boundary) return;
-      if (this.#store.value.planDraft.dirty) {
+      if (this.#store.value.planDraft.dirty || this.#store.value.workflow === "plan") {
         this.#store.patch({ resources: { ...this.#store.value.resources, plans: resource("ready", plans) } });
         return;
       }
@@ -1033,7 +1033,7 @@ export class EffectController {
           ...this.#store.value.selection,
           planId,
         },
-        planDraft: plan ? this.#draftForPlan(plan) : {
+        planDraft: plan ? draftForPlan(plan) : {
           ...this.#store.value.planDraft,
           id: null,
           name: "",
@@ -1064,34 +1064,12 @@ export class EffectController {
   selectPlan(planId: string | null): void {
     const plan = this.#store.value.resources.plans.value?.plans.find((candidate) => candidate.id === planId);
     this.#store.patch({
+      workflow: "plan",
       selection: { ...this.#store.value.selection, planId },
-      planDraft: plan ? this.#draftForPlan(plan) : {
-        ...this.#store.value.planDraft,
-        id: null,
-        name: "",
-        rooms: [],
-        dirty: false,
+      planDraft: plan ? draftForPlan(plan) : {
+        ...initialWorkspaceState().planDraft,
       },
     });
-  }
-
-  #draftForPlan(plan: SavedPlan): WorkspaceState["planDraft"] {
-    return {
-      id: plan.id,
-      name: plan.name,
-      enabled: plan.enabled,
-      runBehavior: plan.runBehavior,
-      rooms: (plan.roomOrder.length
-        ? plan.roomOrder.flatMap((roomId) => {
-          const room = plan.rooms.find((candidate) => candidate.roomId === roomId);
-          return room ? [room] : [];
-        })
-        : plan.rooms).map((room) => ({ ...room })),
-      returnToBase: plan.returnToBase,
-      finishCurrentRoom: plan.finishCurrentRoom,
-      finishCurrentRoomThreshold: plan.finishCurrentRoomThreshold,
-      dirty: false,
-    };
   }
 
   #resumeAreaCatalog(): void {
@@ -1256,6 +1234,10 @@ export class EffectController {
     if (saved) {
       this.#store.patch({ planDraft: { ...this.#store.value.planDraft, dirty: false } });
       await this.loadPlans();
+      if (this.#store.value.selection.entryId === state.selection.entryId) {
+        const savedId = draft.id || this.#store.value.resources.plans.value?.selectedPlan;
+        if (savedId) this.selectPlan(savedId);
+      }
     }
   }
 
@@ -1266,7 +1248,10 @@ export class EffectController {
     const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
     if (deleted) {
       if (this.#store.value.selection.entryId === entryId
-        && this.#store.value.planDraft.id === planId) this.selectPlan(null);
+        && this.#store.value.planDraft.id === planId) {
+        this.selectPlan(null);
+        this.#store.dispatch({ type: "open-workflow", workflow: "plans" });
+      }
       await this.loadPlans();
     }
   }

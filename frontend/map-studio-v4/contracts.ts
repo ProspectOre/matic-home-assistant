@@ -49,6 +49,7 @@ export type Workflow =
   | "rooms"
   | "draw"
   | "plan"
+  | "plans"
   | "areaReview"
   | "history"
   | "support";

@@ -133,6 +133,7 @@ line-height: var(--ms-lh-snug);
   #resourceCopy(): { readonly loading: string; readonly unavailable: string; readonly empty: string } {
     switch (this.state.workflow) {
       case "rooms":
+      case "plans":
       case "plan":
         return {
           loading: this.#t("v4_loading_rooms_plans", "Loading rooms and plans…"),
@@ -268,6 +269,25 @@ line-height: var(--ms-lh-snug);
     this.#intent({ type: "patch-plan-draft", patch: { rooms } });
   }
 
+  #planPicker() {
+    const resource = this.state.resources.plans;
+    return this.#resource(resource.status, resource.problem, html`
+      <div class="stack">
+        <button class="ms-btn ms-btn--primary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>
+          ${icon(iconPlus)}<span>${this.#t("v4_create_plan", "Create a plan")}</span>
+        </button>
+        ${(resource.value?.plans || []).map((plan) => html`
+          <button class="ms-row ms-row--card" type="button" @click=${() => this.#intent({ type: "select-plan", planId: plan.id })}>
+            <span class="ms-row__body"><strong>${plan.name}</strong>
+              <small>${this.#t("v4_plan_room_count", "{count} rooms", { count: plan.rooms.length })}${plan.enabled ? "" : ` · ${this.#t("v4_paused", "paused")}`}</small>
+            </span>
+            <span class="ms-row__trail">${this.#t("v4_edit_plan", "Edit plan")}</span>
+          </button>
+        `)}
+      </div>
+    `);
+  }
+
   #plans() {
     const resource = this.state.resources.plans;
     const catalog = resource.value;
@@ -288,19 +308,6 @@ line-height: var(--ms-lh-snug);
     const mixedSettings = new Set(draft.rooms.map((room) => `${room.cleaningMode}:${room.coverageSetting}`)).size > 1;
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
-        <div class="split">
-          <label class="field ms-field">${this.#t("v4_saved_plan", "Saved plan")}
-            <select
-              name="saved-plan"
-              .value=${this.state.selection.planId || ""}
-              @change=${(event: Event) => this.#intent({ type: "select-plan", planId: eventValue(event) || null })}
-            >
-              <option value="" ?selected=${!this.state.selection.planId}>${this.#t("plan_new", "New plan")}</option>
-              ${(catalog?.plans || []).map((plan) => html`<option value=${plan.id} ?selected=${plan.id === this.state.selection.planId}>${plan.enabled ? plan.name : `${plan.name} \u00b7 ${this.#t("v4_paused", "paused")}`}</option>`) }
-            </select>
-          </label>
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "select-plan", planId: null })}>${icon(iconPlus)}<span class="ms-btn__label">${this.#t("plan_new", "New plan")}</span></button>
-        </div>
         <label class="field ms-field">${this.#t("plan_name", "Plan name")}
           <input
             maxlength="128"
@@ -661,6 +668,7 @@ line-height: var(--ms-lh-snug);
   #body() {
     switch (this.state.workflow) {
       case "rooms": return this.#rooms();
+      case "plans": return this.#planPicker();
       case "plan": return this.#plans();
       case "draw": return this.#draw();
       case "areaReview": return this.#areaReview();

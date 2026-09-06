@@ -11,7 +11,7 @@ import {
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
-import type { AreaCircle } from "./backend-contracts";
+import type { AreaCircle, SavedPlan } from "./backend-contracts";
 import type { CameraPreference } from "./contracts";
 
 const emptyResource = <T>(): { status: "idle"; value: T | null; problem: null } => ({
@@ -23,6 +23,7 @@ const emptyResource = <T>(): { status: "idle"; value: T | null; problem: null } 
 const readOnlyWorkflows = new Set<WorkspaceState["workflow"]>([
   "rooms",
   "plan",
+  "plans",
   "draw",
   "areaReview",
 ]);
@@ -160,6 +161,26 @@ const updateDraw = (
   ...state,
   draw: { ...state.draw, ...draw },
 });
+
+export const draftForPlan = (plan: SavedPlan): WorkspaceState["planDraft"] => {
+  return {
+    id: plan.id,
+    name: plan.name,
+    enabled: plan.enabled,
+    runBehavior: plan.runBehavior,
+    rooms: (plan.roomOrder.length
+      ? plan.roomOrder.flatMap((roomId) => {
+        const room = plan.rooms.find((candidate) => candidate.roomId === roomId);
+        return room ? [room] : [];
+      })
+      : plan.rooms).map((room) => ({ ...room })),
+    returnToBase: plan.returnToBase,
+    finishCurrentRoom: plan.finishCurrentRoom,
+    finishCurrentRoomThreshold: plan.finishCurrentRoomThreshold,
+    dirty: false,
+  };
+};
+
 
 export const reduceWorkspace = (
   state: WorkspaceState,
@@ -376,8 +397,15 @@ export const reduceWorkspace = (
         dataMode: intent.historyId ? "history" : "live",
         selection: { ...state.selection, historyId: intent.historyId },
       };
-    case "select-plan":
-      return { ...state, selection: { ...state.selection, planId: intent.planId } };
+    case "select-plan": {
+      const plan = state.resources.plans.value?.plans.find((candidate) => candidate.id === intent.planId);
+      return {
+        ...state,
+        workflow: "plan",
+        selection: { ...state.selection, planId: intent.planId },
+        planDraft: plan ? draftForPlan(plan) : initialWorkspaceState().planDraft,
+      };
+    }
     case "select-area":
       return {
         ...state,
@@ -414,7 +442,7 @@ export const reduceWorkspace = (
       if (state.workflow !== "none") {
         return {
           ...state,
-          workflow: "none",
+          workflow: state.workflow === "plan" ? "plans" : "none",
           precisionOpen: false,
         };
       }
