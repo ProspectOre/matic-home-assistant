@@ -144,6 +144,7 @@ export class OutlineEditor {
     const projected = points.map((p) => this.renderer()?.mapToScreen(p));
     const path = projected.map((p, i) => p ? `${i ? "L" : "M"}${p.x},${p.y}` : "").join(" ");
     const valid = !outline || validOutline(outline);
+    const selected = this.#selected !== null && this.#selected < points.length ? this.#selected : null;
     return html`
       <div class="zone-overlay">
         <svg aria-hidden="true"><path d=${path + (outline?.closed ? " Z" : "")} class=${valid ? "" : "invalid"} fill=${outline?.closed ? "var(--ms-accent)" : "none"}></path></svg>
@@ -169,14 +170,20 @@ export class OutlineEditor {
             style=${`left:${p.x}px;top:${p.y}px`} aria-label=${`${this.t("v4_zone_add_point", "Add point after")} ${i + 1}`}
             @click=${() => this.#insert(i)}>+</button>` : nothing;
         })}
-        <div class="zone-help ms-surface" data-map-control>
+        <div class="zone-help" data-map-control>
           <span id="zone-handle-help" class="sr-only">${this.t("v4_zone_point_help", "Drag to move. Arrow keys adjust; Delete removes.")}</span>
-          <span>${outline?.closed ? this.t("v4_zone_edit_help", "Drag points to reshape. + adds a point.") : this.t("v4_zone_create_help", "Place points. Select the first to close.")}</span>
-          ${points.length >= 3 && !outline?.closed ? html`<button class="ms-btn" type="button" @click=${() => this.#close()}>${this.t("v4_zone_close", "Close zone")}</button>` : nothing}
-          ${this.#selected !== null && this.#selected < points.length ? html`
-            ${points.length < 64 && (outline?.closed || this.#selected < points.length - 1) ? html`<button class="ms-btn" type="button" @click=${() => this.#insert(this.#selected!)}>${this.t("v4_zone_insert_point", "Insert point")}</button>` : nothing}
-            <button class="ms-btn" type="button" @click=${() => this.#remove(this.#selected!)}>${this.t("v4_zone_delete_point", "Delete point")} ${this.#selected + 1}</button>` : nothing}
-          <span role="status">${this.#message}</span>
+          ${selected !== null ? html`
+            <div class="zone-point-actions ms-surface" role="group" aria-label=${`${this.t("v4_zone_point", "Zone point")} ${selected + 1}`}>
+              <span class="zone-selection">${this.t("v4_zone_point_short", "Point")} ${selected + 1}</span>
+              <button class="ms-btn" type="button" ?disabled=${points.length >= 64 || (!outline?.closed && selected === points.length - 1)} @click=${() => this.#insert(selected)}>${this.t("v4_zone_insert_point", "Insert point")}</button>
+              <button class="ms-btn" type="button" aria-label=${`${this.t("v4_zone_delete_point", "Delete point")} ${selected + 1}`} @click=${() => this.#remove(selected)}>${this.t("v4_zone_delete_point", "Delete point")}</button>
+            </div>` : nothing}
+          ${selected === null || !outline?.closed ? html`
+            <div class="zone-guidance ms-surface">
+              <span>${outline?.closed ? this.t("v4_zone_edit_help", "Drag points to reshape.") : this.t("v4_zone_create_help", "Place points. Select the first to close.")}</span>
+              ${points.length >= 3 && !outline?.closed ? html`<button class="ms-btn" type="button" @click=${() => this.#close()}>${this.t("v4_zone_close", "Close zone")}</button>` : nothing}
+            </div>` : nothing}
+          <span class="zone-feedback ms-surface" role="status" ?hidden=${!this.#message}>${this.#message}</span>
         </div>
       </div>
     `;
