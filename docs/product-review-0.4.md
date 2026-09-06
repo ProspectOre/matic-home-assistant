@@ -1,12 +1,15 @@
 # 0.4 product review
 
 Status: in progress; not a claim of complete end-to-end or physical acceptance.
-Installed baseline: unpublished `16e0ae7`; audit and corner-control fixes are
-installed and verified live. Physical and native-device acceptance remain open.
+Installed baseline: unpublished `2753701`; perimeter and phone follow-ups are
+verified live. Actual iPhone checks passed; the owner reported guided iPhone
+VoiceOver navigation passed and waived separate iPad acceptance. Broader physical
+acceptance remains open. Current baseline: 567 browser checks.
 Authority: redesign structure and workflows where evidence supports it.
 Live walkthrough uses the actual signed-in HA; synthetic states are regression
 fixtures, never evidence of deployed behavior. Historical RC11 checks are
-scoped below; the current audit is dated 2026-09-05.
+scoped below; the earlier audit is dated 2026-09-05. Current acceptance is in
+[release readiness](release-readiness-0.4.md).
 
 ## Principles
 
@@ -20,7 +23,7 @@ scoped below; the current audit is dated 2026-09-05.
 - Evaluate empty/error/loading states as product screens, not exceptions.
 - Each acceptance claim names its evidence and remaining limitations.
 
-## Coverage ledger
+## Historical September 5 coverage ledger
 
 | Surface | Review focus | Current evidence |
 | --- | --- | --- |
@@ -39,7 +42,7 @@ scoped below; the current audit is dated 2026-09-05.
 | Packaging/upgrades | Artifact parity, HACS, cache changes | Installed baseline parity/restart, packaging, CI and review verified |
 | Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
 
-## Current non-motion audit
+## Historical non-motion audit — installed `16e0ae7`
 
 Fresh live read-only inspection covers one-time settings, the blank drawing
 workspace, saved-floor action/pose withholding and return to current, plus
@@ -123,7 +126,7 @@ walkthroughs verify the side-profile task/sidebar icons, visible room choices,
 All tasks, saved-floor selection, read-only guards and custom-area review copy.
 Real-device, assistive-technology and remaining physical journeys stay open.
 
-## Perimeter and responsive follow-up
+## Perimeter and responsive follow-up — superseded initial evidence
 
 The new Zone tool preserves editable perimeter points, validates the generated
 coverage, and retains Paint/Erase. Point actions have keyboard equivalents and
@@ -132,7 +135,11 @@ Portrait tablets now use the sheet, while landscape tablets and desktop keep
 the sidebar. The phone mode/history rows, theme-aware map background and
 separated scale/context controls have dedicated browser checks.
 Live HA testing found and fixed hidden Safari accessibility controls and the
-missing desktop naming step. The final installed bundle passed responsive
+missing desktop naming step. The initial installed bundle passed responsive
 checks, vertex editing and save/reopen, with 519 browser tests passing.
-Exact review, native accessibility and physical acceptance remain open in
+The later `2753701` baseline passed 567 browser checks, actual iPhone automatic
+closure, further-point extension, save/exit without false discard and reopen.
+The owner reported guided iPhone VoiceOver passed and waived separate iPad
+acceptance. Review of PR #114 and its hosted gates passed before installation.
+Broader physical gates and PR #115 preparation review remain tracked in
 [release readiness](release-readiness-0.4.md).

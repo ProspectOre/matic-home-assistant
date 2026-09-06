@@ -1,9 +1,11 @@
 # 0.4 end-to-end acceptance
 
-Status: in progress, not release sign-off. Installed baseline: unpublished
-`16e0ae7`. The 2026-09-05 non-motion audit and corner-control follow-up are
-installed and verified live. This is not physical acceptance of every workflow.
-Run affected journeys and final gates against the exact candidate being promoted.
+Status: in progress, not release sign-off. Installed UI baseline: unpublished
+`2753701`, with exact three-file readback and guarded restart verified.
+September 6 actual iPhone navigation and saved-outline checks passed; the owner
+reported the guided iPhone VoiceOver flow worked and waived separate iPad
+acceptance. This is not physical acceptance of every robot workflow.
+Release preparation targets `0.4.0rc1`; rerun affected gates before promotion.
 
 ## Evidence rules
 
@@ -28,14 +30,14 @@ Run affected journeys and final gates against the exact candidate being promoted
 | Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; installed narrow drawing exit and arrow/End navigation passed |
 | Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
 | One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
-| Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings multi-leg execution open |
+| Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings attempt stopped after scene loss; handoff open |
 | Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Live create/save/reopen and one bounded saved-zone completion passed; separately interrupted run remains open |
 | Immediate stop | Settlement, replacement-work protection and prompt safe dock | Regression coverage; fresh physical #71 retest open |
 | Finish-current-room | Below threshold stops; exact/above finishes only current room; next room never starts | Synthetic boundaries; physical threshold/pause/recharge cases open |
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 521 browser checks passed on installed UI baseline; native VoiceOver and physical phone/tablet open |
+| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 567 browser checks; actual iPhone flows and guided owner VoiceOver pass; iPad waived; broader assistive-technology cases remain separate |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
 ## Latest bounded physical evidence
@@ -61,6 +63,16 @@ but native history still marked that run completed, so interruption is not
 proved. A subsequent attempt was rejected before dispatch by the changed-map
 binding guard. The automation and original saved-area state were restored.
 The UI-only `e29d7fd` follow-up passed guarded restart and idle readback.
+
+On unpublished `2753701`, a different-settings two-leg plan was stopped after
+its first leg lost the visible live scene. The second leg never started. Return
+to dock succeeded, managed completion totals stayed unchanged, and the temporary
+plan was removed with original plan definitions, selection and automation state
+restored. Native history nevertheless marked the interrupted first leg completed
+and emitted a finished event. The stop-settlement fence remained set. Mixed-leg
+handoff, scene recovery and interrupted native completion remain unresolved;
+this attempt is not a release acceptance pass. Retain the fence and investigate
+before another physical run.
 
 ## Remaining physical sequence
 
@@ -109,11 +121,12 @@ candidate is reviewed, installed and current operator readiness is confirmed.
 
 ## Perimeter live follow-up
 
-The unpublished perimeter candidate after `16e0ae7` is installed; final frontend
-SHA-256 prefix `9eb8a5eac8ec`. Guarded file readback and idle restart passed.
-Live Safari found/fixed hidden vertex controls and the missing desktop naming
-step. Final responsive desktop/tablet/phone checks, point editing and save/reopen
-passed; a saved outline survived restart. Temporary test data was removed with
-recovery retained and original areas unchanged. No robot motion occurred.
-The final browser suite passes519 checks; native devices and VoiceOver remain
-open. See [release readiness](release-readiness-0.4.md) for separate gates.
+The installed `2753701` UI baseline passed guarded file readback and restart.
+Live Safari verified point editing, automatic closure, further-point extension,
+save/exit without a false discard prompt and saved-outline reopen. Earlier
+perimeter checks also verified persistence across restart. Temporary test areas
+were removed with recovery retained and original areas unchanged.
+The current browser suite passes 567 checks. Actual iPhone navigation and saved
+outline checks passed; guided iPhone VoiceOver has an owner-reported pass, and
+separate iPad acceptance is waived. Broader assistive-technology and physical
+cleaning gates remain separate. See [release readiness](release-readiness-0.4.md).
