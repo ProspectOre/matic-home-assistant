@@ -1,8 +1,8 @@
 # 0.4 release notes — draft
 
 Unpublished draft, not a release announcement or acceptance certificate.
-The installed test baseline is `56b4d4b`; additional audit changes remain
-uninstalled. The intended first public candidate is `v0.4.0-rc1`, subject to
+The installed test baseline is `9900db6`; subsequent handoff-feedback changes
+remain uninstalled. The intended first public candidate is `v0.4.0-rc1`, subject to
 completed acceptance and explicit release approval. Intermediate builds are
 not published releases.
 
@@ -11,6 +11,9 @@ not published releases.
 - A map-first workspace brings one-time room cleaning, saved plans and custom
   areas together, with clearer loading, unavailable and recovery states.
 - Original robot artwork is shared by the sidebar and cleaning controls.
+- Floor selection and 2D/3D sit at the top of the map, with Fit opposite and
+  camera controls above the cleaning sheet. Active plans remain visibly in
+  progress during dock visits; mixed-settings guidance explains transitions.
 - Room-based cleaning follows verified native room identities, so ordinary
   boundary refinement does not invalidate an unchanged room target.
 - Coordinate-based areas retain their own geometry checks. Confirmable
@@ -29,8 +32,9 @@ not published releases.
 The installed baseline passed a bounded same-settings two-room run with one
 credit/start/completion per room and one correct native finished event, followed
 by clean return-to-charge and ownership cleanup. This is not evidence for all
-physical workflows. Current audit fixes need final automated gates, exact-head
-review, installation and affected live retests.
+physical workflows. The installed audit passed 1,301 Python tests at 100%
+coverage, 407 browser checks, hosted gates, exact-head review and affected live
+non-motion checks. Subsequent changes require their own validation.
 
 Different-settings mission legs, custom-area runs, Stop/interruption and
 threshold behavior, a fresh floor round trip, affected #65/#71 hardware, native

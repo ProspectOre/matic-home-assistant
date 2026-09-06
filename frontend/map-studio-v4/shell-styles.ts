@@ -63,6 +63,9 @@ export const shellStyles = [tokens, base, controls, css`
     .app-bar > .ms-btn:focus-visible, .app-bar > .overflow-wrap > .ms-btn:focus-visible { outline-color: var(--ms-bar-text); }
 
     .context-switcher { max-inline-size: 9rem; inline-size: auto; text-overflow: ellipsis; }
+    .floor-switcher { appearance: none; block-size: 44px; padding-inline-end: 1.8rem; background-image: linear-gradient(45deg, transparent 50%, currentColor 50%), linear-gradient(135deg, currentColor 50%, transparent 50%); background-position: calc(100% - 15px) 50%, calc(100% - 10px) 50%; background-size: 5px 5px; background-repeat: no-repeat; }
+    .floor-switcher:dir(rtl) { background-position: 10px 50%, 15px 50%; }
+
 
     .title {
       overflow: hidden;
@@ -270,7 +273,7 @@ export const shellStyles = [tokens, base, controls, css`
       will-change: transform;
     }
     .narrow .mobile-sheet[data-detent="half"] { block-size: min(48%, 26rem); }
-    .narrow .mobile-sheet[data-detent="full"] { block-size: min(92%, calc(100% - 4rem)); }
+    .narrow .mobile-sheet[data-detent="full"] { block-size: min(92%, calc(100% - 9rem)); }
     .narrow .mobile-sheet.dragging { transition: none; }
     .narrow .mobile-sheet[data-detent="peek"] .sheet-body { display: none; }
 
@@ -355,7 +358,7 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .workspace.full-map .mobile-sheet { display: none; }
     .narrow .sheet-scrim {
       position: absolute;
-      z-index: 6;
+      z-index: 3;
       inset: 0;
       inset-block-end: var(--map-sheet-offset, 0px);
       display: block;

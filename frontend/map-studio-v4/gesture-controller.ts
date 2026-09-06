@@ -62,7 +62,7 @@ const cloneCircles = (circles: readonly AreaCircle[]): AreaCircle[] =>
   circles.map((circle) => ({ ...circle }));
 
 const INTERACTIVE_SELECTOR =
-  "button, input, select, textarea, a, [role='button'], [role='menuitem'], [data-map-control]";
+  "button, input, select, textarea, a, [contenteditable='true'], [role='button'], [role='menuitem'], [data-map-control]";
 
 // Walk the composed path rather than `target.closest(...)`: a press inside a
 // custom element's shadow root is retargeted to the host, which matches
@@ -70,6 +70,10 @@ const INTERACTIVE_SELECTOR =
 const isInteractiveControl = (event: Event): boolean =>
   event.composedPath().some((node) =>
     node instanceof Element && node.matches(INTERACTIVE_SELECTOR));
+
+export const isNativeSelectControl = (event: Event): boolean =>
+  event.composedPath().some((node) => node instanceof Element
+    && node.matches("select"));
 
 export class GestureController {
   readonly #host: HTMLElement;
@@ -391,13 +395,15 @@ export class GestureController {
   };
 
   readonly #gestureEnd = (event: SafariGestureEvent): void => {
+    const owned = this.#gestureCamera !== null;
     this.#gestureCamera = null;
     this.#gestureRotation = 0;
     this.#host.classList.remove("navigating");
-    event.preventDefault();
+    if (owned && !isInteractiveControl(event)) event.preventDefault();
   };
 
   readonly #keyDown = (event: KeyboardEvent): void => {
+    if (isInteractiveControl(event)) return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.code === "Space") {
       this.#spacePressed = true;

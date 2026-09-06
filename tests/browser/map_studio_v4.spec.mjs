@@ -1743,11 +1743,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(selector.locator("option:checked")).toHaveText("Daily clean");
     await expect(selector.locator('option[value="daily"]')).toHaveAttribute("selected", "");
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+    await page.evaluate((tag) => {
       const element = document.querySelector(tag);
       const current = element.getWorkspaceSnapshot();
-      const ready = module.createGalleryState("ready");
       element.replaceWorkspaceState({
         ...current,
         resources: {
@@ -1755,7 +1753,13 @@ test.describe("Map Studio v0.4 foundation", () => {
           plans: { status: "loading", value: null, problem: null },
         },
       });
-      await element.updateComplete;
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const element = document.querySelector(tag);
+      const current = element.getWorkspaceSnapshot();
+      const ready = module.createGalleryState("ready");
       element.replaceWorkspaceState({
         ...current,
         resources: { ...current.resources, plans: ready.resources.plans },
@@ -4071,3 +4075,255 @@ for (const dirty of [false, true]) {
     await expect(gallery.getByRole("button", { name: /^One-time clean/ })).toBeVisible();
   });
 }
+
+for (const activity of ["docked", "idle"]) {
+  for (const betweenLegs of [false, true]) {
+    test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
+      const gallery = await loadGallery(page);
+      await page.evaluate(async ({ tag, activity, betweenLegs }) => {
+        const module = await import("/map_studio_v4/index.js");
+        const state = module.createGalleryState("ready");
+        document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
+          managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
+      }, { tag: GALLERY_TAG, activity, betweenLegs });
+      await expect(gallery.locator(".status-copy strong")).toHaveText("Task in progress");
+      await expect(gallery.locator(".status-copy small")).toHaveText(activity === "docked"
+        ? "Robot docked; the cleaning task has not finished." : "Waiting for the cleaning task to continue or finish.");
+      await expect(gallery.getByRole("button", { name: "Stop cleaning", exact: true }).first()).toBeEnabled();
+    });
+  }
+}
+
+for (const ordered of [false, true]) {
+  test(`mixed-settings guidance respects ${ordered ? "saved order" : "rotation"}`, async ({ page }) => {
+    const gallery = await loadGallery(page);
+    await page.evaluate(async ({ tag, ordered }) => {
+      const module = await import("/map_studio_v4/index.js");
+      const state = module.createGalleryState("ready");
+      document.querySelector(tag).replaceWorkspaceState({ ...state, workflow: "plan", planDraft: {
+        ...state.planDraft, runBehavior: ordered ? "ordered" : "intelligent", rooms: [
+          { roomId: "room-one", cleaningMode: "vacuum", coverageSetting: "quick" },
+          { roomId: "room-two", cleaningMode: "vacuum", coverageSetting: "standard" },
+        ],
+      } });
+    }, { tag: GALLERY_TAG, ordered });
+    await expect(gallery.locator(".plan-transition-hint")).toContainText("separate missions and dock visits");
+    await expect(gallery.locator(".plan-transition-hint")).toContainText(ordered
+      ? "Placing rooms with matching settings together" : "Intelligent rotation determines the room order");
+    expect((await snapshot(page)).planDraft.rooms.map((room) => room.roomId)).toEqual(["room-one", "room-two"]);
+  });
+}
+
+for (const width of [320, 390, 820, 1280]) {
+  test(`map corner controls stay separate at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const gallery = await loadGallery(page);
+    const floor = gallery.getByRole("combobox", { name: "Choose floor" });
+    await expect(floor).toHaveCount(1);
+    await floor.locator('option[value="current"]').evaluate((option) => { option.textContent = "An exceptionally long saved floor display name"; });
+    const fit = gallery.getByRole("button", { name: "Fit the whole map on screen" });
+    const view = gallery.getByRole("group", { name: "Map view", exact: true });
+    const camera = gallery.getByRole("toolbar", { name: "Map camera controls" });
+    await gallery.getByRole("button", { name: "3D", exact: true }).click();
+    const check = async () => expect(async () => {
+      const [f, v, fitBox, c, map] = await Promise.all([floor.boundingBox(), view.boundingBox(), fit.boundingBox(), camera.boundingBox(), gallery.locator(".map-root").boundingBox()]);
+      for (const box of [f, v, fitBox, c]) expect(box).not.toBeNull();
+      expect(f.x + f.width).toBeLessThanOrEqual(v.x);
+      expect(v.x + v.width).toBeLessThanOrEqual(fitBox.x);
+      expect(Math.abs((f.y + f.height / 2) - (v.y + v.height / 2))).toBeLessThanOrEqual(2);
+      expect(Math.abs((f.y + f.height / 2) - (fitBox.y + fitBox.height / 2))).toBeLessThanOrEqual(2);
+      expect(c.x + c.width).toBeLessThanOrEqual(map.x + map.width);
+      expect(c.y).toBeGreaterThan(fitBox.y + fitBox.height);
+      const sheet = gallery.locator(".mobile-sheet");
+      if (await sheet.count()) {
+        const bounds = await sheet.boundingBox();
+        expect(c.y + c.height).toBeLessThanOrEqual(bounds.y);
+      }
+      expect(f.height).toBeGreaterThanOrEqual(44);
+    }).toPass({ timeout: 2000 });
+    await check();
+    const more = gallery.getByRole("button", { name: "Show more of the map workspace" });
+    if (await more.count()) {
+      await more.click();
+      await check();
+      await gallery.getByRole("button", { name: "Show less of the map workspace" }).click();
+      await check();
+    }
+    await page.screenshot({ path: testInfo.outputPath(`synthetic-corners-${width}.png`) });
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    await expect(floor).toBeVisible();
+    await expect(fit).toBeVisible();
+    await expect(camera).toHaveCount(0);
+    await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+    await gallery.evaluate((element) => element.setScenario("transition"));
+    await expect(floor).toBeVisible();
+    await expect(floor).toHaveCount(1);
+  });
+}
+
+test("short phone keeps plan footer reachable below the reserved map controls", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 568 });
+  const gallery = await loadGallery(page);
+  await gallery.locator(".stage").evaluate((stage) => { stage.style.minBlockSize = "0"; stage.style.blockSize = "568px"; });
+  await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await settleSheet(gallery);
+  const sheet = gallery.locator(".mobile-sheet");
+  await expect(sheet).toHaveAttribute("data-detent", "full");
+  const deletePlan = gallery.getByRole("button", { name: "Delete plan", exact: true });
+  await deletePlan.scrollIntoViewIfNeeded();
+  await expect(deletePlan).toBeInViewport();
+  const footer = await gallery.locator(".action-bar").boundingBox();
+  expect(footer.y + footer.height).toBeLessThanOrEqual(568);
+  const body = await sheet.boundingBox();
+  const view = await gallery.getByRole("group", { name: "Map view", exact: true }).boundingBox();
+  expect(body.y).toBeGreaterThan(view.y + view.height);
+});
+
+for (const width of [768, 820]) {
+  test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const gallery = await loadGallery(page, { scenario: "rooms" });
+    await page.evaluate(async (tag) => {
+      const module = await import("/map_studio_v4/index.js");
+      const state = module.createGalleryState("rooms");
+      document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
+        selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });
+    }, GALLERY_TAG);
+    const chip = gallery.locator(".selection-chip");
+    const camera = gallery.getByRole("toolbar", { name: "Map camera controls" });
+    await expect(chip).toBeVisible();
+    const [chipBox, cameraBox] = await Promise.all([chip.boundingBox(), camera.boundingBox()]);
+    expect(cameraBox.y + cameraBox.height).toBeLessThanOrEqual(chipBox.y);
+    const before = (await snapshot(page)).cameras.three?.yaw ?? null;
+    await camera.getByRole("button", { name: "Rotate right" }).click();
+    await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(before);
+    const pitch = (await snapshot(page)).cameras.three?.pitch ?? null;
+    await camera.getByRole("button", { name: "Lower viewing angle" }).click();
+    await expect.poll(async () => (await snapshot(page)).cameras.three?.pitch ?? null).not.toBe(pitch);
+    await chip.getByRole("button", { name: "Clear", exact: true }).click();
+    await expect(chip).toHaveCount(0);
+    await expect(camera).toBeVisible();
+    await gallery.evaluate((element) => element.setScenario("draw"));
+    await expect(camera).toHaveCount(0);
+    await expect(gallery.getByRole("toolbar", { name: "Draw area tools" })).toBeVisible();
+  });
+}
+
+for (const width of [768, 820]) {
+  for (const height of [500, 900]) {
+    for (const three of [false, true]) {
+      for (const selected of [false, true]) {
+        test(`navigation help avoids ${three ? "3D" : "2D"} controls at ${width}x${height}${selected ? " with selected rooms" : ""}`, async ({ page }) => {
+          await page.setViewportSize({ width, height });
+          const gallery = await loadGallery(page, { scenario: "rooms" });
+          await gallery.locator(".stage").evaluate((stage, height) => { stage.style.minBlockSize = "0"; stage.style.blockSize = `${height}px`; }, height);
+          await page.evaluate(async ({ tag, three, selected }) => {
+            const module = await import("/map_studio_v4/index.js");
+            const state = module.createGalleryState("rooms");
+            document.querySelector(tag).replaceWorkspaceState({ ...state, view: three ? "three" : "top",
+              selection: { ...state.selection, roomIds: selected ? ["room-a", "room-b"] : [] } });
+          }, { tag: GALLERY_TAG, three, selected });
+          const launcher = gallery.getByRole("button", { name: "How to move the map", exact: true });
+          await launcher.click();
+          const help = gallery.getByRole("dialog", { name: "How to move the map", exact: true });
+          await expect(help).toBeVisible();
+          const helpBox = await help.boundingBox();
+          for (const selector of [".map-context", ".map-tools", ".appearance-switch", ".camera-steps", ".map-extras", ".selection-chip"]) {
+            const controls = gallery.locator(selector);
+            if (!await controls.count()) continue;
+            const box = await controls.boundingBox();
+            const overlaps = helpBox.x < box.x + box.width && helpBox.x + helpBox.width > box.x
+              && helpBox.y < box.y + box.height && helpBox.y + helpBox.height > box.y;
+            expect(overlaps, selector).toBe(false);
+          }
+          expect(helpBox.height).toBeGreaterThan(44);
+          if (!three) {
+            await gallery.getByRole("button", { name: "Floor plan", exact: true }).click();
+            await expect.poll(async () => (await snapshot(page)).appearance).toBe("rooms");
+          } else {
+            await gallery.getByRole("button", { name: "Rotate right" }).click();
+            await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBeNull();
+          }
+          const close = help.getByRole("button", { name: "Close", exact: true });
+          await close.scrollIntoViewIfNeeded();
+          await close.click();
+          await expect(help).toHaveCount(0);
+          await expect(launcher).toBeFocused();
+        });
+      }
+    }
+  }
+}
+
+for (const width of [320, 390]) {
+  test(`sheet scrim leaves corner controls clickable at ${width}px @mobile`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 740 });
+    const gallery = await loadGallery(page, { scenario: "rooms", narrow: true });
+    const sheet = gallery.locator(".mobile-sheet");
+    const more = gallery.getByRole("button", { name: "Show more of the map workspace" });
+    const less = gallery.getByRole("button", { name: "Show less of the map workspace" });
+    for (const detent of ["full", "half", "peek"]) {
+      if (detent === "full") await more.click();
+      else await less.click();
+      await expect(sheet).toHaveAttribute("data-detent", detent);
+      await settleSheet(gallery);
+      const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+      await floor.evaluate((element) => { element.dataset.clicked = "false"; element.addEventListener("click", () => { element.dataset.clicked = "true"; }, { once: true }); });
+      await floor.click();
+      await page.keyboard.press("Enter");
+      await expect(floor).toHaveAttribute("data-clicked", "true");
+      await gallery.getByRole("button", { name: "2D", exact: true }).click();
+      await expect.poll(async () => (await snapshot(page)).view).toBe("top");
+      await gallery.getByRole("button", { name: "3D", exact: true }).click();
+      await expect.poll(async () => (await snapshot(page)).view).toBe("three");
+      await gallery.getByRole("button", { name: "Fit the whole map on screen" }).click();
+      const yaw = (await snapshot(page)).cameras.three?.yaw ?? null;
+      await gallery.getByRole("button", { name: "Rotate right" }).click();
+      await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(yaw);
+      await expect(sheet).toHaveAttribute("data-detent", detent);
+    }
+    await more.click();
+    await more.click();
+    await settleSheet(gallery);
+    const selection = (await snapshot(page)).selection.roomIds;
+    const scrim = gallery.getByRole("button", { name: "Collapse the map workspace" });
+    // The left middle of the exposed map has no control; it still dismisses.
+    await scrim.click({ position: { x: 4, y: 90 } });
+    await expect(sheet).toHaveAttribute("data-detent", "peek");
+    expect((await snapshot(page)).selection.roomIds).toEqual(selection);
+  });
+}
+
+test("native floor keys and gestures do not drive the map", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "rooms" });
+  const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+  await gallery.getByRole("button", { name: "3D", exact: true }).click();
+  await floor.focus();
+  const before = await snapshot(page);
+  const prevented = await floor.evaluate((element) => {
+    const events = [
+      ...["ArrowDown", "ArrowUp", "w", "a", "s", "d", " ", "Escape"].map((key) => new KeyboardEvent("keydown", { key, code: key === " " ? "Space" : key, bubbles: true, composed: true, cancelable: true })),
+      new WheelEvent("wheel", { deltaY: 100, bubbles: true, composed: true, cancelable: true }),
+      ...["gesturestart", "gesturechange", "gestureend"].map((name) => new Event(name, { bubbles: true, composed: true, cancelable: true })),
+    ];
+    return events.map((event) => { element.dispatchEvent(event); return event.defaultPrevented; });
+  });
+  expect(prevented).toEqual(Array(prevented.length).fill(false));
+  expect((await snapshot(page)).workflow).toBe("rooms");
+  expect((await snapshot(page)).cameras).toEqual(before.cameras);
+  // Real browser typeahead changes the selected native option and floor.
+  await floor.press("s");
+  await floor.press("Enter");
+  await expect(floor).toHaveValue("saved-1");
+  await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("saved-1");
+  await floor.selectOption("current");
+  await gallery.getByRole("button", { name: "3D", exact: true }).click();
+  const rotate = gallery.getByRole("button", { name: "Rotate right", exact: true });
+  await rotate.focus();
+  const yaw = (await snapshot(page)).cameras.three?.yaw ?? null;
+  await rotate.press("Space");
+  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(yaw);
+  const afterButton = (await snapshot(page)).cameras.three?.yaw ?? null;
+  await gallery.locator(".map-root").press("ArrowRight");
+  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(afterButton);
+});

@@ -18,6 +18,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
+import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
   icon,
@@ -95,6 +96,17 @@ const statusCopy = (state: WorkspaceState, localize?: Localize): StatusPresentat
   }
   if (state.coherence === "verifying" || state.coherence === "booting") {
     return { title: t("v4_locating", "Locating"), detail: t("v4_finding_map", "Finding the current map"), icon: iconRobot, notable: true };
+  }
+  if ((state.resources.entry?.activePlan || state.resources.entry?.runnerLocked)
+    && (state.activity === "idle" || state.activity === "docked")) {
+    return {
+      title: t("v4_task_in_progress", "Task in progress"),
+      detail: state.activity === "docked"
+        ? t("v4_task_docked", "Robot docked; the cleaning task has not finished.")
+        : t("v4_task_waiting", "Waiting for the cleaning task to continue or finish."),
+      icon: iconPlan,
+      notable: true,
+    };
   }
   if (state.command === "starting" && (state.activity === "idle" || state.activity === "docked")) {
     return { title: t("v4_action_starting", "Starting"), detail: t("v4_action_starting_detail", "Waiting for the robot to begin"), icon: iconRobot, notable: true };
@@ -585,7 +597,7 @@ export class MaticMapShellV4 extends LitElement {
     const chrome = [".sheet-grip", ".sheet-tools", ".action-bar"]
       .map((selector) => sheet.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0)
       .reduce((sum, height) => sum + height, 0) + rem * 0.75;
-    const full = Math.min(available * 0.92, available - rem * 4);
+    const full = Math.min(available * 0.92, available - rem * 9);
     const half = Math.min(available * 0.48, rem * 26, full);
     return { peek: Math.min(chrome, half), half, full };
   }
@@ -773,6 +785,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #keyboard(event: KeyboardEvent): void {
+    if (isNativeSelectControl(event)) return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key !== "Escape") return;
     event.preventDefault();
@@ -908,6 +921,8 @@ export class MaticMapShellV4 extends LitElement {
     return html`
       <select
         class="ms-select context-switcher floor-switcher"
+        slot="floor"
+        data-map-control
         name="map-floor"
         aria-label=${this.#t("v4_choose_floor", "Choose floor")}
         ?disabled=${floorChoices.length <= 1}
@@ -964,7 +979,7 @@ export class MaticMapShellV4 extends LitElement {
         <div class="shelf">
           ${historyRow}
           ${diagnosticsRow}
-          ${narrow ? this.#floorSwitcher(state) : nothing}
+
         </div>
       `;
     }
@@ -1040,7 +1055,7 @@ export class MaticMapShellV4 extends LitElement {
           locating,
         )}
         ${historyRow}
-        ${narrow ? this.#floorSwitcher(state) : nothing}
+
       </div>
       ${narrow ? html`
         <h3 class="shelf-heading" id="map-display-heading">${t("v4_map_display", "Map display")}</h3>
@@ -1209,7 +1224,7 @@ export class MaticMapShellV4 extends LitElement {
                 <option value=${robot.entryId} ?selected=${robot.entryId === state.selection.entryId}>${robot.label}</option>
               `)}</select>
             ` : nothing}
-            ${narrow ? nothing : this.#floorSwitcher(state)}
+
             <span class="spacer"></span>
             ${canToggleWorkspace ? html`
               <button
@@ -1277,22 +1292,24 @@ export class MaticMapShellV4 extends LitElement {
                 .state=${state}
                 .localize=${this.localize}
                 .narrow=${narrow}
-              ></${mapCanvasTag}>
+              >${this.#floorSwitcher(state)}
+                ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
+                  <button
+                    class="sheet-scrim"
+                    slot="scrim"
+                    data-map-control
+                    type="button"
+                    aria-label=${this.#t("v4_collapse_sheet", "Collapse the map workspace")}
+                    @click=${() => this.#setDetent("peek")}
+                  ></button>
+                ` : nothing}
+              </${mapCanvasTag}>
               ${!narrow && precisionOpen ? html`
                 <div class="precision-popover">
                   <${precisionControlsTag} compact .state=${state} .localize=${this.localize}></${precisionControlsTag}>
                 </div>
               ` : nothing}
             </div>
-
-            ${narrow && !state.fullMap && this._sheetDetent === "full" ? html`
-              <button
-                class="sheet-scrim"
-                type="button"
-                aria-label=${this.#t("v4_collapse_sheet", "Collapse the map workspace")}
-                @click=${() => this.#setDetent("peek")}
-              ></button>
-            ` : nothing}
 
             <!--
               One panel element, not two. It is a grid column when wide and a
