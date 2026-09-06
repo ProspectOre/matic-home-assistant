@@ -4776,3 +4776,41 @@ test("plan catalog refresh preserves explicit selection and reconciles a saved n
   });
   expect(result).toEqual({ selected: { id: "second", name: "Evening routine" }, blank: { id: null, name: "", enabled: true }, savedId: "new", dirty: false, writes: 1 });
 });
+
+for (const boundary of ["service", "catalog"]) {
+  test(`late plan save ${boundary} completion preserves navigation and later drafts`, async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async (boundary) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const results = [];
+      for (const destination of ["plans", "none", "other-editor"]) {
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore({ ...initial, workflow: "plan", planDraft: { ...initial.planDraft, dirty: true } });
+        let finish;
+        const pending = new Promise((resolve) => { finish = resolve; });
+        let reading = false;
+        const effects = new EffectController(store, { service: async () => { if (boundary === "service") await pending; }, dispose() {} });
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test",
+          entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        effects.loadPlans = async () => { reading = true; if (boundary === "catalog") await pending; };
+        try {
+          const saving = effects.savePlan();
+          if (boundary === "catalog") {
+            for (let i = 0; i < 20 && !reading; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+            if (!reading) throw new Error("Save did not reach catalog refresh");
+          }
+          store.dispatch({ type: "discard-draft" });
+          store.dispatch({ type: "open-workflow", workflow: destination === "other-editor" ? "plan" : destination });
+          if (destination === "other-editor") store.patch({ planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+          const expected = { workflow: store.value.workflow, draft: store.value.planDraft };
+          finish();
+          await saving;
+          results.push({ expected, actual: { workflow: store.value.workflow, draft: store.value.planDraft } });
+        } finally { effects.dispose(); }
+      }
+      return results;
+    }, boundary);
+    for (const row of result) expect(row.actual).toEqual(row.expected);
+  });
+}

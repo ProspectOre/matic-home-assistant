@@ -1232,11 +1232,18 @@ export class EffectController {
       select: !draft.id || plans.selectedPlan === draft.id,
     }, "Plan saved", "Plan could not be saved");
     if (saved) {
-      this.#store.patch({ planDraft: { ...this.#store.value.planDraft, dirty: false } });
+      // A save may finish after Back/discard or after another editor opens.
+      // Refresh the catalog in every case, but reconcile only the same draft.
+      const savedDraft = this.#store.value.workflow === "plan"
+        && this.#store.value.planDraft === draft ? { ...draft, dirty: false } : null;
+      if (savedDraft) this.#store.patch({ planDraft: savedDraft });
       await this.loadPlans();
-      if (this.#store.value.selection.entryId === state.selection.entryId) {
-        const savedId = draft.id || this.#store.value.resources.plans.value?.selectedPlan;
-        if (savedId) this.selectPlan(savedId);
+      if (savedDraft && this.#store.value.workflow === "plan"
+        && this.#store.value.planDraft === savedDraft
+        && this.#store.value.selection.entryId === state.selection.entryId) {
+        const catalog = this.#store.value.resources.plans.value;
+        const savedId = draft.id || catalog?.selectedPlan;
+        if (savedId && catalog?.plans.some((plan) => plan.id === savedId)) this.selectPlan(savedId);
       }
     }
   }
