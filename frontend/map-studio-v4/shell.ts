@@ -517,7 +517,7 @@ export class MaticMapShellV4 extends LitElement {
     } else {
       this.#intent({ type: "discard-draft" });
     }
-    if (pending) queueMicrotask(() => this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
+    if (pending && pending.type !== "dismiss-top-layer") queueMicrotask(() => this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
       detail: pending, bubbles: true, composed: true,
     })));
   }

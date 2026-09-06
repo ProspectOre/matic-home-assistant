@@ -324,7 +324,7 @@ export const reduceWorkspace = (
         planDraft: initialWorkspaceState().planDraft,
         selection: { ...state.selection, planId: null },
         dialog: null,
-        workflow: "none",
+        workflow: "plans",
         precisionOpen: false,
       };
       return {
