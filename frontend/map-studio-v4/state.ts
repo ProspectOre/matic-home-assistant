@@ -246,6 +246,9 @@ export const reduceWorkspace = (
       if (!previous) return state;
       return updateDraw(state, {
         circles: previous,
+        outline: state.draw.outlineUndo?.at(-1) ?? null,
+        outlineUndo: state.draw.outlineUndo?.slice(0, -1) ?? [],
+        outlineRedo: [...(state.draw.outlineRedo ?? []), state.draw.outline ?? null],
         undo: state.draw.undo.slice(0, -1),
         redo: [...state.draw.redo, state.draw.circles],
         dirty: true,
@@ -253,9 +256,12 @@ export const reduceWorkspace = (
       });
     }
     case "clear-draft":
-      if (!state.draw.circles.length) return state;
+      if (!state.draw.circles.length && !state.draw.outline?.points.length) return state;
       return updateDraw(state, {
         circles: [],
+        outline: null,
+        outlineUndo: [...(state.draw.outlineUndo ?? []).slice(-99), state.draw.outline ?? null],
+        outlineRedo: [],
         undo: [...state.draw.undo.slice(-99), state.draw.circles],
         redo: [],
         dirty: true,
@@ -266,6 +272,9 @@ export const reduceWorkspace = (
       if (!next) return state;
       return updateDraw(state, {
         circles: next,
+        outline: state.draw.outlineRedo?.at(-1) ?? null,
+        outlineUndo: [...(state.draw.outlineUndo ?? []), state.draw.outline ?? null],
+        outlineRedo: state.draw.outlineRedo?.slice(0, -1) ?? [],
         undo: [...state.draw.undo, state.draw.circles],
         redo: state.draw.redo.slice(0, -1),
         dirty: true,
@@ -277,6 +286,9 @@ export const reduceWorkspace = (
       const record = intent.record !== false;
       return updateDraw(state, {
         circles,
+        outline: intent.outline ?? null,
+        outlineUndo: record ? [...(state.draw.outlineUndo ?? []).slice(-99), intent.previousOutline !== undefined ? intent.previousOutline : state.draw.outline ?? null] : state.draw.outlineUndo ?? [],
+        outlineRedo: record ? [] : state.draw.outlineRedo ?? [],
         undo: record
           ? [...state.draw.undo.slice(-99), intent.previous ?? state.draw.circles]
           : state.draw.undo,
@@ -299,6 +311,7 @@ export const reduceWorkspace = (
           dirty: false,
           strokeCount: 0,
           circles: [],
+          outline: null, outlineUndo: [], outlineRedo: [],
           undo: [],
           redo: [],
         }),
@@ -723,23 +736,14 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.workflow === "draw") {
     const drawFirst = { reason: "Draw the area first.", reasonKey: "v4_reason_save_area_draw" };
-    if (state.fullMap || state.narrowHint) {
-      return {
-        id: "review-area",
-        label: "Name and save",
-        labelKey: "v4_action_review_area",
-        kind: "primary",
-        enabled: state.draw.dirty,
-        ...(state.draw.dirty ? {} : drawFirst),
-      };
-    }
+    const hasCoverage = state.draw.circles.length > 0 && (!state.draw.outline || state.draw.outline.closed);
     return {
-      id: "save-area",
-      label: "Save area",
-      labelKey: "v4_action_save_area",
+      id: "review-area",
+      label: "Name and save",
+      labelKey: "v4_action_review_area",
       kind: "primary",
-      enabled: state.draw.dirty && canEditCoordinates(state),
-      ...(state.draw.dirty ? {} : drawFirst),
+      enabled: hasCoverage && canEditCoordinates(state),
+      ...(hasCoverage ? {} : drawFirst),
     };
   }
   if (state.workflow === "rooms") {

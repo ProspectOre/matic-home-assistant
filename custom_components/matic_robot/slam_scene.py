@@ -27,6 +27,7 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from .area_outline import validate_outline
 from .area_selector import MaticAreaSelector
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
@@ -995,6 +996,12 @@ class MaticAreasView(HomeAssistantView):
                     "circles": area.get("circles", [])
                     if status is AreaBindingStatus.CURRENT or can_rebind
                     else [],
+                    **(
+                        {"outline": area["outline"]}
+                        if area.get("outline") is not None
+                        and (status is AreaBindingStatus.CURRENT or can_rebind)
+                        else {}
+                    ),
                     "cleaning_mode": area.get(
                         "cleaning_mode", CleaningMode.VACUUM.value
                     ),
@@ -1046,6 +1053,7 @@ class MaticAreasView(HomeAssistantView):
                 raise ValueError
             rooms = self._rooms(runtime)
             circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
+            outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
             coverage_setting = CoverageSetting(str(body["coverage_setting"]))
             binding = binding_for_area(floor_plan, circles)
@@ -1082,6 +1090,7 @@ class MaticAreasView(HomeAssistantView):
                 "schema_version": AREA_SCHEMA_VERSION,
                 "name": name,
                 "circles": circles,
+                **({"outline": outline} if outline is not None else {}),
                 "cleaning_mode": cleaning_mode.value,
                 "coverage_setting": coverage_setting.value,
                 "map_binding": binding,

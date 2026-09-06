@@ -141,7 +141,7 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
     case "rooms":
       return { title: t("v4_choose_rooms", "Choose rooms"), description: t("v4_choose_rooms_detail", "Select on the map or from the list.") };
     case "draw":
-      return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Paint on the verified map, then review the details.") };
+      return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Outline or paint the area, then review it before saving.") };
     case "plan":
       return { title: t("v4_cleaning_plan", "Cleaning plan"), description: t("v4_plan_detail", "Review rooms and cleaning settings.") };
     case "areaReview":
@@ -341,7 +341,7 @@ export class MaticMapShellV4 extends LitElement {
     super.connectedCallback();
     this.#resizeObserver = new ResizeObserver(([entry]) => {
       if (!entry) return;
-      const next = entry.contentRect.width < 768 || entry.contentRect.height < 480;
+      const next = entry.contentRect.width < 1024 || entry.contentRect.height < 480;
       if (next !== this._measuredNarrow) this._measuredNarrow = next;
     });
     this.#resizeObserver.observe(this);

@@ -1,3 +1,4 @@
+import type { AreaOutline } from "./area-outline";
 export const MAP_ZOOM_MIN = 100;
 export const MAP_ZOOM_MAX = 1000;
 export const DRAW_BRUSH_MIN_METERS = 0.2;
@@ -53,7 +54,7 @@ export type Workflow =
   | "support";
 
 export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
-export type DrawTool = "paint" | "erase" | "pan";
+export type DrawTool = "paint" | "erase" | "pan" | "outline";
 export type DialogKind =
   | "discardDraft"
   | "confirmDeletePlan"
@@ -91,6 +92,9 @@ export interface HostState {
 }
 
 export interface DrawState {
+  readonly outline?: AreaOutline | null;
+  readonly outlineUndo?: readonly (AreaOutline | null)[];
+  readonly outlineRedo?: readonly (AreaOutline | null)[];
   readonly zoomPercent: number;
   readonly zoomOriginX: number;
   readonly zoomOriginY: number;
@@ -230,9 +234,11 @@ export type WorkspaceIntent =
   | { readonly type: "discard-draft" }
   | {
       readonly type: "set-draft-circles";
+      readonly outline?: AreaOutline | null;
       readonly circles: readonly AreaCircle[];
       readonly record?: boolean;
       readonly previous?: readonly AreaCircle[];
+      readonly previousOutline?: AreaOutline | null;
     }
   | { readonly type: "redo-draft" }
   | { readonly type: "toggle-room"; readonly roomId: string }

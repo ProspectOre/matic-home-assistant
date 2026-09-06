@@ -1150,6 +1150,9 @@ export class EffectController {
       draw: {
         ...state.draw,
         circles: area?.circles || [],
+        outline: area?.outline ?? null,
+        outlineUndo: [], outlineRedo: [],
+        tool: !area || area.outline ? "outline" : "paint",
         undo: [],
         redo: [],
         dirty: false,
@@ -1183,6 +1186,7 @@ export class EffectController {
         areaId: draft.id,
         name: draft.name.trim(),
         circles: state.draw.circles,
+        outline: state.draw.outline ?? null,
         cleaningMode: draft.cleaningMode,
         coverageSetting: draft.coverageSetting,
       }, controller.signal);

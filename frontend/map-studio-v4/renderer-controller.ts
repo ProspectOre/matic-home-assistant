@@ -48,6 +48,7 @@ interface RendererCallbacks {
     origin?: CameraOrigin,
   ) => void;
   readonly onRoom?: (roomId: string) => void;
+  readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
 }
 
@@ -581,6 +582,7 @@ export class RendererController {
   }
 
   #resize(): void {
+    let resized = false;
     const bounds = this.#measureViewport();
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
     const width = Math.max(1, Math.round(bounds.width * ratio));
@@ -589,8 +591,10 @@ export class RendererController {
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;
         canvas.height = height;
+        resized = true;
       }
     }
+    if (resized) this.#callbacks.onViewport?.();
   }
 
   #cameraMatrix(): Float32Array {
@@ -689,11 +693,10 @@ export class RendererController {
     ];
   }
 
-  #projectCell(x: number, y: number, height = 0, clipToViewport = true): MapPoint | null {
+  #projectCell(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix): MapPoint | null {
     const world = this.#worldForCell(x, y, height);
     if (!world) return null;
     const [worldX, worldY, worldZ] = world;
-    const matrix = this.#matrix;
     const clipX = (matrix[0] ?? 0) * worldX + (matrix[4] ?? 0) * worldY + (matrix[8] ?? 0) * worldZ + (matrix[12] ?? 0);
     const clipY = (matrix[1] ?? 0) * worldX + (matrix[5] ?? 0) * worldY + (matrix[9] ?? 0) * worldZ + (matrix[13] ?? 0);
     const clipW = (matrix[3] ?? 0) * worldX + (matrix[7] ?? 0) * worldY + (matrix[11] ?? 0) * worldZ + (matrix[15] ?? 0);
@@ -710,12 +713,12 @@ export class RendererController {
     };
   }
 
-  #projectMeters(x: number, y: number, height = 0): MapPoint | null {
+  #projectMeters(x: number, y: number, height = 0, clipToViewport = true, matrix = this.#matrix): MapPoint | null {
     const scene = this.#scene;
     if (!scene) return null;
     const cellX = x / scene.metadata.metersPerCell - scene.metadata.origin[0];
     const cellY = y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    return this.#projectCell(cellX, cellY, height);
+    return this.#projectCell(cellX, cellY, height, clipToViewport, matrix);
   }
 
   #renderOverlay(): void {
@@ -794,9 +797,28 @@ export class RendererController {
       context.fillStyle = rgba(palette.accent, .22);
       context.strokeStyle = rgba(palette.accent, .92);
       context.lineWidth = 1.5;
-      for (const circle of circles) this.#drawCircle(context, circle);
+      if (state.draw.outline?.closed) {
+        context.beginPath();
+        for (const circle of circles) this.#drawCircle(context, circle, false);
+        context.fill();
+      } else {
+        for (const circle of circles) this.#drawCircle(context, circle);
+      }
     }
-    if (this.#cursor && state.workflow === "draw" && state.draw.tool !== "pan") {
+    const outline = state.draw.outline;
+    if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
+      && !(state.workflow === "draw" && state.draw.tool === "outline")) {
+      context.beginPath();
+      outline.points.forEach((point, i) => {
+        const p = this.#projectMeters(point.x, point.y, 0, false);
+        if (p) { if (i === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
+      });
+      if (outline.closed) context.closePath();
+      context.strokeStyle = rgba(palette.accent, 1);
+      context.lineWidth = 2;
+      context.stroke();
+    }
+    if (this.#cursor && state.workflow === "draw" && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       const center = this.#projectMeters(this.#cursor.x, this.#cursor.y);
       const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y);
       if (center && edge) {
@@ -832,14 +854,15 @@ export class RendererController {
       .map((room) => room.name.toLocaleLowerCase()));
   }
 
-  #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle): void {
+  #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle, paint = true): void {
     const center = this.#projectMeters(circle.x, circle.y);
     const edge = this.#projectMeters(circle.x + circle.radius, circle.y);
     if (!center || !edge) return;
-    context.beginPath();
-    context.arc(center.x, center.y, Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
+    const radius = Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y));
+    if (paint) context.beginPath();
+    context.moveTo(center.x + radius, center.y);
+    context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    if (paint) { context.fill(); context.stroke(); }
   }
 
   setPalette(palette: CanvasPalette): void {
@@ -852,14 +875,39 @@ export class RendererController {
     this.requestRender();
   }
 
+  mapToScreen(point: MapPoint): MapPoint | null {
+    if (!this.#scene || !this.#camera.orthographic) return null;
+    const bounds = this.#measureViewport();
+    if (!bounds.width || !bounds.height) return null;
+    return this.#projectMeters(point.x, point.y, 0, false, this.#cameraMatrix());
+  }
+
+  offsetMapPoint(point: MapPoint, horizontalMeters: number, verticalMeters: number): MapPoint | null {
+    const projected = this.mapToScreen(point);
+    if (!projected) return null;
+    const bounds = this.#viewport;
+    const worldPerPixel = this.#camera.distance * 2 / bounds.height;
+    return this.screenToMap(
+      bounds.left + projected.x + horizontalMeters / worldPerPixel,
+      bounds.top + projected.y + verticalMeters / worldPerPixel,
+    );
+  }
+
   screenToMap(clientX: number, clientY: number): MapPoint | null {
     const scene = this.#scene;
     if (!scene || !this.#camera.orthographic) return null;
     const bounds = this.#measureViewport();
     if (!bounds.width || !bounds.height) return null;
-    const worldPerPixel = this.#camera.distance * 2 / bounds.height;
-    const worldX = this.#camera.targetX + (clientX - bounds.left - bounds.width / 2) * worldPerPixel;
-    const worldZ = this.#camera.targetZ + (clientY - bounds.top - bounds.height / 2) * worldPerPixel;
+    // Orthographic projection is affine on the floor plane (world Y = 0).
+    // Invert that same transform so rotated/zoomed input matches rendered pixels.
+    const matrix = this.#cameraMatrix();
+    const a = matrix[0]!, b = matrix[8]!, c = matrix[1]!, d = matrix[9]!;
+    const determinant = a * d - b * c;
+    if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
+    const x = (clientX - bounds.left) / bounds.width * 2 - 1 - matrix[12]!;
+    const y = 1 - (clientY - bounds.top) / bounds.height * 2 - matrix[13]!;
+    const worldX = (x * d - b * y) / determinant;
+    const worldZ = (a * y - x * c) / determinant;
     const cellX = -worldX / scene.metadata.metersPerCell + (scene.metadata.span[0] - 1) / 2;
     const cellY = worldZ / scene.metadata.metersPerCell + (scene.metadata.span[1] - 1) / 2;
     return {

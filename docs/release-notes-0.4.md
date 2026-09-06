@@ -1,8 +1,8 @@
 # 0.4 release notes — draft
 
 Unpublished draft, not a release announcement or acceptance certificate.
-The installed test baseline is `9900db6`; subsequent handoff-feedback changes
-remain uninstalled. The intended first public candidate is `v0.4.0-rc1`, subject to
+The installed unpublished candidate includes the perimeter editor and live
+Safari accessibility/naming fixes after `16e0ae7`. The intended first public candidate is `v0.4.0-rc1`, subject to
 completed acceptance and explicit release approval. Intermediate builds are
 not published releases.
 
@@ -10,6 +10,13 @@ not published releases.
 
 - A map-first workspace brings one-time room cleaning, saved plans and custom
   areas together, with clearer loading, unavailable and recovery states.
+- Custom areas gain a perimeter editor: place points, close a zone, then drag,
+  insert or remove vertices. Saved points remain editable, with undo/redo and
+  keyboard support. Paint and Erase remain available. Shading shows the bounded
+  cleaning coverage inside the perimeter.
+- Portrait tablets use the sheet layout; desktop and landscape tablets retain
+  the sidebar. Drawing controls and map contrast adapt to size and theme.
+- Older config entries migrate on the minimum supported Home Assistant version.
 - Original robot artwork is shared by the sidebar and cleaning controls.
 - Floor selection and 2D/3D sit at the top of the map, with Fit opposite and
   camera controls above the cleaning sheet. Active plans remain visibly in
@@ -29,11 +36,11 @@ not published releases.
 
 ## Validation and known limits
 
-The installed baseline passed a bounded same-settings two-room run with one
+Earlier unpublished `56b4d4b` passed a bounded same-settings two-room run with one
 credit/start/completion per room and one correct native finished event, followed
 by clean return-to-charge and ownership cleanup. This is not evidence for all
 physical workflows. The installed audit passed 1,301 Python tests at 100%
-coverage, 407 browser checks, hosted gates, exact-head review and affected live
+coverage, 471 browser checks, hosted gates, exact-head review and affected live
 non-motion checks. Subsequent changes require their own validation.
 
 Different-settings mission legs, custom-area runs, Stop/interruption and

@@ -190,7 +190,7 @@
     "v4_discard_area_detail": "Your area changes have not been saved. Keep editing or discard them.",
     "v4_docked": "Docked",
     "v4_draw_area": "Draw area",
-    "v4_draw_area_detail": "Paint on the verified map, then review the details.",
+    "v4_draw_area_detail": "Outline or paint the area, then review it before saving.",
     "v4_draw_floor_hint": "Paint only on the mapped floor. Zoom and pan never change the saved outline.",
     "v4_drawing_precision": "Drawing precision",
     "v4_edit_outline": "Edit outline",
@@ -205,6 +205,7 @@
     "v4_history_quick_detail": "Browse earlier floor maps.",
     "v4_how_to_move": "How to move the map",
     "v4_keyboard": "Keyboard",
+    "v4_keyboard_draw_help": "Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.",
     "v4_keyboard_help": "WASD to move · Q/E or arrows to orbit · +/− to zoom · 0 to fit",
     "v4_keep_cleaning": "Keep cleaning",
     "v4_keep_area_editing": "Keep editing",
@@ -483,7 +484,20 @@
     "v4_plans_loading_hint": "Reading routines for this floor",
     "v4_plans_unavailable": "Plans unavailable",
     "v4_plans_unavailable_hint": "Try again to load saved routines",
-    "v4_saved_routine": "1 saved routine"
+    "v4_saved_routine": "1 saved routine",
+    "v4_zone_invalid": "Keep the outline from crossing itself.",
+    "v4_zone_empty": "Make the zone wider and keep it on mapped floor.",
+    "v4_zone_point": "Zone point",
+    "v4_zone_point_help": "Drag to move. Arrow keys adjust; Delete removes.",
+    "v4_zone_add_point": "Add point after",
+    "v4_zone_edit_help": "Drag points to reshape. + adds a point.",
+    "v4_zone_create_help": "Place points. Select the first to close.",
+    "v4_zone_close": "Close zone",
+    "v4_zone_delete_point": "Delete point",
+    "v4_zone_tool": "Zone",
+    "v4_zone_coverage": "Place points around the zone. Shading shows cleaning coverage inside the perimeter; narrow edges may remain uncovered.",
+    "v4_zone_insert_point": "Insert point",
+    "v4_zone_keyboard_help": "Focus the map, aim with arrow keys, and press Enter to place points. Select the first point to close. Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag."
   },
   "config": {
     "abort": {

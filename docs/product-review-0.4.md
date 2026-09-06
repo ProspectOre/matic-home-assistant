@@ -1,8 +1,8 @@
 # 0.4 product review
 
 Status: in progress; not a claim of complete end-to-end or physical acceptance.
-Installed baseline: unpublished `56b4d4b`; current audit changes are not yet
-installed or verified live. Final candidate gates remain pending.
+Installed baseline: unpublished `16e0ae7`; audit and corner-control fixes are
+installed and verified live. Physical and native-device acceptance remain open.
 Authority: redesign structure and workflows where evidence supports it.
 Live walkthrough uses the actual signed-in HA; synthetic states are regression
 fixtures, never evidence of deployed behavior. Historical RC11 checks are
@@ -33,10 +33,10 @@ scoped below; the current audit is dated 2026-09-05.
 | History/floor switching | Read-only identity, return to live, drafts | RC11 live saved-floor/return pass; draft isolation regressions pass |
 | Diagnostics/support | Useful redacted output, recovery routes | Fresh live diagnostics connected, floor/session verified; privacy regressions |
 | Stop/completion | Ownership, uncertainty, cancellation, credit | Installed same-settings two-room credit/event pass; interruption/threshold cases open |
-| Themes/accessibility | Contrast, keyboard, focus, zoom, forced colors | Header regressions added; broader pass underway |
+| Themes/accessibility | Contrast, keyboard, focus, zoom, forced colors | Contrast/focus/mobile regressions passed; native devices/VoiceOver open |
 | Preferences/lifecycle | Detach, identity changes, persistence | Owner-scoped writes and draft clearing regressions pass |
 | Architecture | Contracts/state/effects/rendering boundaries | 32 TS modules, no local import cycles; client has no HA imports; lifecycle fixes tested |
-| Packaging/upgrades | Artifact parity, HACS, cache changes | Installed baseline parity/restart verified; current audit candidate gates and installation pending |
+| Packaging/upgrades | Artifact parity, HACS, cache changes | Installed baseline parity/restart, packaging, CI and review verified |
 | Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
 
 ## Current non-motion audit
@@ -46,10 +46,11 @@ workspace, saved-floor action/pose withholding and return to current, plus
 connected diagnostics with verified floor/session identity. Narrow drawing
 inspection found a hidden exit; the candidate adds visible Back navigation
 and roving keyboard focus for Draw tools. A backend guard rejects ambiguous
-duplicate room names. These fixes are not installed. Focused backend checks
-passed 267 cases and targeted frontend checks passed 16; lint, types and privacy
-checks passed. Full local suites: 1,301 Python tests at 100% coverage and 407
-browser checks. Native VoiceOver, physical phones/tablets
+duplicate room names. These fixes are installed. The follow-up places floor selection at the top,
+spreads map controls across corners, preserves full-sheet pointer access and
+native selector keyboard handling, and clarifies managed-task dock visits.
+Full suites: 1,301 Python tests at 100% coverage and 471 browser checks; hosted
+gates and clean exact-head review passed. Native VoiceOver, physical phones/tablets
 and fresh pairing/reauthentication have not been completed.
 
 ## Earlier findings and fixes
@@ -121,3 +122,17 @@ RC11 matches its served frontend bundle after restart. Desktop and 390px live
 walkthroughs verify the side-profile task/sidebar icons, visible room choices,
 All tasks, saved-floor selection, read-only guards and custom-area review copy.
 Real-device, assistive-technology and remaining physical journeys stay open.
+
+## Perimeter and responsive follow-up
+
+The new Zone tool preserves editable perimeter points, validates the generated
+coverage, and retains Paint/Erase. Point actions have keyboard equivalents and
+44px targets; incomplete or invalid outlines cannot be saved as zones.
+Portrait tablets now use the sheet, while landscape tablets and desktop keep
+the sidebar. The phone mode/history rows, theme-aware map background and
+separated scale/context controls have dedicated browser checks.
+Live HA testing found and fixed hidden Safari accessibility controls and the
+missing desktop naming step. The final installed bundle passed responsive
+checks, vertex editing and save/reopen, with 519 browser tests passing.
+Exact review, native accessibility and physical acceptance remain open in
+[release readiness](release-readiness-0.4.md).
