@@ -4413,7 +4413,15 @@ test("zone perimeter supports closing dragging inserting deleting and undo", asy
   expect((await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
   const before = (await snapshot(page)).draw.outline;
   const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+  const unrotated = await first.boundingBox();
+  await gallery.locator(".map-root").evaluate(element => {
+    for (const [name,rotation] of [["gesturestart",0],["gesturechange",90],["gestureend",90]]) {
+      const event=new Event(name,{bubbles:true,cancelable:true}); Object.assign(event,{scale:1,rotation}); element.dispatchEvent(event);
+    }
+  });
+  await expect.poll(async () => (await snapshot(page)).cameras.top.yaw).toBeCloseTo(Math.PI/2);
   const handle = await first.boundingBox();
+  expect(Math.hypot(handle.x-unrotated.x,handle.y-unrotated.y)).toBeGreaterThan(10);
   await page.mouse.move(handle.x + 22, handle.y + 22); await page.mouse.down();
   await page.mouse.move(handle.x + 12, handle.y + 17, { steps: 4 }); await page.mouse.up();
   await expect.poll(async () => (await snapshot(page)).draw.outline).not.toEqual(before);
@@ -4426,6 +4434,51 @@ test("zone perimeter supports closing dragging inserting deleting and undo", asy
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(5);
   await gallery.getByRole("button", { name: "Redo", exact: true }).click();
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
+});
+
+test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const {RendererController,createGalleryState} = await import("/zone-projection.js");
+    const scene = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const canvas of [scene,overlay]) {
+      Object.assign(canvas.style,{position:"absolute",left:"31px",top:"47px",width:"720px",height:"540px"});
+      document.body.append(canvas);
+    }
+    const arcs = [], context = overlay.getContext("2d"), originalArc = context.arc;
+    context.arc = function(x,y,...rest) { arcs.push({x,y}); return originalArc.call(this,x,y,...rest); };
+    const renderer = new RendererController(scene,overlay);
+    const state = createGalleryState("draw"), point = {x:1.3,y:1.6};
+    renderer.setState({...state, draw:{...state.draw,circles:[{...point,radius:.2}],outline:null},
+      resources:{...state.resources,pose:{status:"empty",value:null,problem:null}}, selection:{...state.selection,roomIds:[]}});
+    const frame = () => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+    await frame();
+    const bounds = scene.getBoundingClientRect(), results = [];
+    for (const yaw of [0,Math.PI/2,-Math.PI/3,Math.PI]) {
+      renderer.setCamera({...renderer.camera,yaw,targetX:.15,targetZ:-.1,distance:4});
+      arcs.length=0; await frame();
+      const rendered=arcs[0], projected=renderer.mapToScreen(point);
+      const inverse=renderer.screenToMap(bounds.left+rendered.x,bounds.top+rendered.y);
+      const moved=renderer.offsetMapPoint(point,.1,0), movedPixel=renderer.mapToScreen(moved);
+      renderer.zoomAt(1.2,bounds.left+projected.x,bounds.top+projected.y);
+      const anchored=renderer.mapToScreen(point);
+      results.push({yaw,rendered,projected,inverse,movedPixel,anchored});
+    }
+    renderer.dispose(); return results;
+  });
+  for (const result of results) {
+    expect(result.projected.x).toBeCloseTo(result.rendered.x,4);
+    expect(result.projected.y).toBeCloseTo(result.rendered.y,4);
+    expect(result.inverse.x).toBeCloseTo(1.3,5);
+    expect(result.inverse.y).toBeCloseTo(1.6,5);
+    expect(result.movedPixel.x).toBeGreaterThan(result.projected.x);
+    expect(result.movedPixel.y).toBeCloseTo(result.projected.y,4);
+    expect(result.anchored.x).toBeCloseTo(result.projected.x,3);
+    expect(result.anchored.y).toBeCloseTo(result.projected.y,3);
+  }
+  expect(Math.hypot(results[1].projected.x-results[0].projected.x,results[1].projected.y-results[0].projected.y)).toBeGreaterThan(10);
 });
 
 test("zone keyboard creation and point editing stay local and undoable", async ({ page }) => {

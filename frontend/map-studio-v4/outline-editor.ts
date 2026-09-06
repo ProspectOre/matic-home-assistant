@@ -128,13 +128,13 @@ export class OutlineEditor {
       event.preventDefault(); event.stopPropagation(); this.#remove(index); return;
     }
     const delta = event.shiftKey ? .1 : .02;
-    const dx = event.key === "ArrowLeft" ? delta : event.key === "ArrowRight" ? -delta : 0;
+    const dx = event.key === "ArrowLeft" ? -delta : event.key === "ArrowRight" ? delta : 0;
     const dy = event.key === "ArrowUp" ? -delta : event.key === "ArrowDown" ? delta : 0;
     if (!dx && !dy) return;
     event.preventDefault(); event.stopPropagation();
     const p = outline.points[index]!;
-    const point = { x: p.x + dx, y: p.y + dy };
-    if (this.renderer()?.containsMapPoint(point)) this.#commit({ ...outline, points: outline.points.map((p, i) => i === index ? point : p) });
+    const point = this.renderer()?.offsetMapPoint(p, dx, dy);
+    if (point && this.renderer()?.containsMapPoint(point)) this.#commit({ ...outline, points: outline.points.map((p, i) => i === index ? point : p) });
   }
 
   render() {

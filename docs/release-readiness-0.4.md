@@ -39,6 +39,9 @@ Exact-head review and public release approval remain open.
 - Actual HA passed create/close/drag, insert/delete, undo/redo, keyboard point
   editing, save/reopen and persistence across restart. Final responsive checks
   covered desktop, both tablet orientations and 320/390px phones.
+- Review follow-up uses the rendered camera transform for rotated zone handles,
+  pointer input and keyboard edits. It needs a fresh guarded frontend update
+  and affected live verification after the new review head passes.
 - Native devices, VoiceOver and physical cleaning remain separate open gates.
 
 ## Work queue
