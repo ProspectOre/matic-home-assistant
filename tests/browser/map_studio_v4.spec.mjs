@@ -4218,12 +4218,11 @@ for (const width of [1024, 1100]) {
           await page.setViewportSize({ width, height });
           const gallery = await loadGallery(page, { scenario: "rooms" });
           await gallery.locator(".stage").evaluate((stage, height) => { stage.style.minBlockSize = "0"; stage.style.blockSize = `${height}px`; }, height);
-          await page.evaluate(async ({ tag, three, selected }) => {
-            const module = await import("/map_studio_v4/index.js");
-            const state = module.createGalleryState("rooms");
-            document.querySelector(tag).replaceWorkspaceState({ ...state, view: three ? "three" : "top",
+          await gallery.evaluate((element, { three, selected }) => {
+            const state = element.getWorkspaceSnapshot();
+            element.replaceWorkspaceState({ ...state, view: three ? "three" : "top",
               selection: { ...state.selection, roomIds: selected ? ["room-a", "room-b"] : [] } });
-          }, { tag: GALLERY_TAG, three, selected });
+          }, { three, selected });
           const launcher = gallery.getByRole("button", { name: "How to move the map", exact: true });
           await launcher.click();
           const help = gallery.getByRole("dialog", { name: "How to move the map", exact: true });
