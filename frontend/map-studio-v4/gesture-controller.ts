@@ -1,5 +1,7 @@
+import type { AreaOutline } from "./area-outline";
 import type { AreaCircle } from "./backend-contracts";
 import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import { canEditCoordinates } from "./state";
 import {
   RendererController,
   type CameraState,
@@ -12,8 +14,10 @@ interface GestureCallbacks {
     circles: readonly AreaCircle[],
     record: boolean,
     previous?: readonly AreaCircle[],
+    previousOutline?: AreaOutline | null,
   ) => void;
   readonly onRoom: (roomId: string) => void;
+  readonly onOutlinePoint?: (point: MapPoint) => void;
 }
 
 interface PointerRecord {
@@ -81,8 +85,9 @@ export class GestureController {
   readonly #callbacks: GestureCallbacks;
   readonly #pointers = new Map<number, PointerRecord>();
   #spacePressed = false;
-  #mode: "idle" | "paint" | "erase" | "pan" | "orbit" | "pinch" = "idle";
+  #mode: "idle" | "paint" | "erase" | "pan" | "orbit" | "pinch" | "outline" = "idle";
   #baseline: AreaCircle[] = [];
+  #baselineOutline: AreaOutline | null = null;
   #draft: AreaCircle[] = [];
   #lastMapPoint: MapPoint | null = null;
   #pinchDistance = 0;
@@ -121,6 +126,8 @@ export class GestureController {
     if (isInteractiveControl(event)) return;
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
+    if (event.pointerType === "touch" && !event.isPrimary && this.#pointers.size === 0
+      && this.#callbacks.state().draw.tool === "outline") this.#navigationUntilRelease = true;
     const now = performance.now();
     const pointer: PointerRecord = {
       id: event.pointerId,
@@ -141,7 +148,7 @@ export class GestureController {
       this.#cancelTouchArm();
       if (this.#mode === "paint" || this.#mode === "erase") {
         this.#draft = cloneCircles(this.#baseline);
-        this.#callbacks.onCircles(this.#draft, false);
+        this.#callbacks.onCircles(this.#draft, false, this.#baseline, this.#baselineOutline);
       }
       this.#mode = "pinch";
       this.#host.classList.add("navigating");
@@ -166,8 +173,11 @@ export class GestureController {
     if (navigation) {
       this.#mode = "pan";
       this.#dragCamera = this.#renderer.camera;
+    } else if (drawing && state.draw.tool === "outline" && canEditCoordinates(state)) {
+      this.#mode = "outline";
     } else if (drawing && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       this.#baseline = cloneCircles(state.draw.circles);
+      this.#baselineOutline = state.draw.outline ?? null;
       this.#draft = cloneCircles(state.draw.circles);
       if (event.pointerType === "touch") {
         this.#mode = "idle";
@@ -262,9 +272,14 @@ export class GestureController {
     this.#pointers.delete(event.pointerId);
     this.#host.releasePointerCapture?.(event.pointerId);
     this.#cancelTouchArm();
+    if (this.#mode === "outline" && event.type !== "pointercancel"
+      && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7) {
+      const point = this.#renderer.screenToMap(pointer.x, pointer.y);
+      if (point) this.#callbacks.onOutlinePoint?.(point);
+    }
     if ((this.#mode === "paint" || this.#mode === "erase")
       && JSON.stringify(this.#draft) !== JSON.stringify(this.#baseline)) {
-      this.#callbacks.onCircles(this.#draft, true, this.#baseline);
+      this.#callbacks.onCircles(this.#draft, true, this.#baseline, this.#baselineOutline);
     } else if (this.#mode !== "pinch"
       && !this.#navigationUntilRelease
       && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7
@@ -300,7 +315,7 @@ export class GestureController {
     event.preventDefault();
   };
 
-  #applyBrush(clientX: number, clientY: number): void {
+  #applyBrush(clientX: number, clientY: number, publish = true): void {
     const point = this.#renderer.screenToMap(clientX, clientY);
     if (!point) return;
     const state = this.#callbacks.state();
@@ -330,7 +345,9 @@ export class GestureController {
       }
     }
     this.#lastMapPoint = point;
-    this.#callbacks.onCircles(this.#draft, false);
+    if (publish && JSON.stringify(this.#draft) !== JSON.stringify(state.draw.circles)) {
+      this.#callbacks.onCircles(this.#draft, false);
+    }
   }
 
   readonly #wheel = (event: WheelEvent): void => {
@@ -402,9 +419,43 @@ export class GestureController {
     if (owned && !isInteractiveControl(event)) event.preventDefault();
   };
 
+  #keyboardBrush(event: KeyboardEvent): void {
+    const state = this.#callbacks.state();
+    if (event.repeat || this.#disposed || this.#pointers.size
+      || event.composedPath()[0] !== this.#host || !this.#host.matches(":focus")
+      || state.workflow !== "draw" || !canEditCoordinates(state)
+      || (state.command !== "idle" && state.command !== "failed")
+      || (state.draw.tool !== "paint" && state.draw.tool !== "erase" && state.draw.tool !== "outline")) return;
+    const canvas = this.#host.querySelector<HTMLCanvasElement>(".scene-canvas");
+    const bounds = canvas?.getBoundingClientRect();
+    if (!bounds?.width || !bounds.height) return;
+    event.preventDefault();
+    this.#cancelMotion();
+    if (state.draw.tool === "outline") {
+      const point = this.#renderer.screenToMap(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
+      if (point) this.#callbacks.onOutlinePoint?.(point);
+      return;
+    }
+    this.#baseline = cloneCircles(state.draw.circles);
+    this.#baselineOutline = state.draw.outline ?? null;
+    this.#draft = cloneCircles(state.draw.circles);
+    this.#lastMapPoint = null;
+    this.#mode = state.draw.tool;
+    this.#applyBrush(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2, false);
+    this.#mode = "idle";
+    this.#lastMapPoint = null;
+    if (JSON.stringify(this.#draft) !== JSON.stringify(this.#baseline)) {
+      this.#callbacks.onCircles(this.#draft, true, this.#baseline, this.#baselineOutline);
+    }
+  }
+
   readonly #keyDown = (event: KeyboardEvent): void => {
     if (isInteractiveControl(event)) return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
+    if (event.key === "Enter") {
+      this.#keyboardBrush(event);
+      return;
+    }
     if (event.code === "Space") {
       this.#spacePressed = true;
       event.preventDefault();

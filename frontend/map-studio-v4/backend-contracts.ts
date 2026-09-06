@@ -1,3 +1,5 @@
+import type { AreaOutline } from "./area-outline";
+import { validOutline } from "./area-outline";
 export const CATALOG_URL = "/api/matic_robot/slam_entries";
 export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
@@ -119,6 +121,7 @@ export interface AreaCircle {
 }
 
 export interface SavedArea {
+  readonly outline?: AreaOutline | null;
   readonly id: string;
   readonly name: string;
   readonly circles: readonly AreaCircle[];
@@ -418,6 +421,18 @@ const parseCoverage = (value: unknown): CoverageSetting => {
   throw new ContractError("invalid-coverage-setting");
 };
 
+const parseOutline = (value: unknown): AreaOutline | null => {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || value.length < 3 || value.length > 64) throw new ContractError("invalid-area-outline");
+  const outline: AreaOutline = { closed: true, points: value.map((p) => {
+    const point = objectValue(p, "invalid-area-outline");
+    if (typeof point.x !== "number" || typeof point.y !== "number") throw new ContractError("invalid-area-outline");
+    return { x: point.x, y: point.y };
+  }) };
+  if (!validOutline(outline)) throw new ContractError("invalid-area-outline");
+  return outline;
+};
+
 const parseCircle = (value: unknown): AreaCircle => {
   const circle = objectValue(value, "invalid-area-circle");
   return {
@@ -449,6 +464,7 @@ export const parseAreasCatalog = (value: unknown): AreasCatalog => {
         id: boundedString(area.id, 128, "invalid-area-id"),
         name: boundedString(area.name, 128, "invalid-area-name"),
         circles: area.circles.map(parseCircle),
+        outline: parseOutline(area.outline),
         cleaningMode: parseCleaningMode(area.cleaning_mode),
         coverageSetting: parseCoverage(area.coverage_setting),
         status: bindingStatus(area.status),

@@ -2106,11 +2106,11 @@ test.describe("Map Studio v0.4 foundation", () => {
     }
   });
 
-  const DRAW_TOOL_NAMES = ["Paint", "Erase", "Move map", "Undo", "Redo", /^Brush width, 0\.60 m/];
+  const DRAW_TOOL_NAMES = ["Zone", "Paint", "Erase", "Move map", "Undo", "Redo", /^Brush width, 0\.60 m/];
 
   async function expectDrawTools(gallery, tools) {
-    await expect(tools).toHaveCount(6);
-    for (let index = 0; index < 6; index += 1) {
+    await expect(tools).toHaveCount(7);
+    for (let index = 0; index < 7; index += 1) {
       const tool = tools.nth(index);
       await expect(tool).toHaveAccessibleName(DRAW_TOOL_NAMES[index]);
       const bounds = await tool.boundingBox();
@@ -2126,7 +2126,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   }
 
   for (const width of [320, 390]) {
-    test(`fits all six 44px Draw tools inside the sheet without horizontal overflow at ${width}px`, async ({ page }) => {
+    test(`fits all seven 44px Draw tools inside the sheet without horizontal overflow at ${width}px`, async ({ page }) => {
       await page.setViewportSize({ width, height: 740 });
       const gallery = await loadGallery(page, { scenario: "draw", narrow: true });
       const toolbar = gallery.locator(".draw-tools");
@@ -2147,7 +2147,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  test("docks the six Draw tools on the map without overlapping the inspector at desktop width", async ({ page }) => {
+  test("docks the seven Draw tools on the map without overlapping the inspector at desktop width", async ({ page }) => {
     await page.setViewportSize({ width: 1180, height: 760 });
     const gallery = await loadGallery(page, { scenario: "draw" });
     const dock = gallery.locator("matic-map-canvas-v4 .map-dock");
@@ -3884,8 +3884,8 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
 
     await gallery.evaluate((element) => element.setScenario("draw"));
     const tools = gallery.locator(".sheet-tools .draw-tools button");
-    await expect(tools).toHaveCount(6);
-    for (let index = 0; index < 6; index += 1) await reach(tools.nth(index), `draw tool ${index}`);
+    await expect(tools).toHaveCount(7);
+    for (let index = 0; index < 7; index += 1) await reach(tools.nth(index), `draw tool ${index}`);
   });
 
   for (const width of [320, 390]) {
@@ -4017,6 +4017,7 @@ for (const narrow of [false, true]) {
     const gallery = await loadGallery(page, { scenario: "draw", narrow });
     const toolbar = gallery.getByRole("toolbar", { name: "Draw area tools" });
     await expect(toolbar).toBeVisible();
+    const zone = toolbar.getByRole("button", { name: "Zone", exact: true });
     const paint = toolbar.getByRole("button", { name: "Paint", exact: true });
     const erase = toolbar.getByRole("button", { name: "Erase", exact: true });
     const brush = toolbar.getByRole("button", { name: /^Brush width/ });
@@ -4029,11 +4030,11 @@ for (const narrow of [false, true]) {
     await erase.press("End");
     await expect(brush).toBeFocused();
     await brush.press("ArrowRight");
-    await expect(paint).toBeFocused();
-    await paint.press("ArrowLeft");
+    await expect(zone).toBeFocused();
+    await zone.press("ArrowLeft");
     await expect(brush).toBeFocused();
     await brush.press("Home");
-    await expect(paint).toBeFocused();
+    await expect(zone).toBeFocused();
     // Moving focus never paints or changes the map camera / chosen tool.
     expect((await snapshot(page)).draw).toEqual(before.draw);
     await expect(toolbar.locator('button[tabindex="0"]')).toHaveCount(1);
@@ -4044,7 +4045,7 @@ for (const narrow of [false, true]) {
       await page.keyboard.press("ArrowRight");
     }
     expect(reached).toEqual(expected);
-    await expect(paint).toBeFocused();
+    await expect(zone).toBeFocused();
   });
 }
 
@@ -4179,7 +4180,7 @@ test("short phone keeps plan footer reachable below the reserved map controls", 
   expect(body.y).toBeGreaterThan(view.y + view.height);
 });
 
-for (const width of [768, 820]) {
+for (const width of [1024, 1100]) {
   test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page, { scenario: "rooms" });
@@ -4209,7 +4210,7 @@ for (const width of [768, 820]) {
   });
 }
 
-for (const width of [768, 820]) {
+for (const width of [1024, 1100]) {
   for (const height of [500, 900]) {
     for (const three of [false, true]) {
       for (const selected of [false, true]) {
@@ -4326,4 +4327,261 @@ test("native floor keys and gestures do not drive the map", async ({ page }) => 
   const afterButton = (await snapshot(page)).cameras.three?.yaw ?? null;
   await gallery.locator(".map-root").press("ArrowRight");
   await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(afterButton);
+});
+
+test("keyboard drawing paints erases and restores one centered mark", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "draw" });
+  await page.evaluate((tag) => {
+    const element = document.querySelector(tag);
+    const state = element.getWorkspaceSnapshot();
+    element.replaceWorkspaceState({ ...state, draw: { ...state.draw, circles: [], undo: [], redo: [], strokeCount: 0, dirty: false } });
+  }, GALLERY_TAG);
+  const map = gallery.locator(".map-root");
+  await map.focus();
+  await expect(gallery.locator(".keyboard-aim")).toBeVisible();
+  // The fitted scene center is the unmapped gap between rooms. Aim onto floor.
+  await map.press("ArrowDown");
+  await map.press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBe(1);
+  const painted = (await snapshot(page)).draw.circles;
+  expect((await snapshot(page)).draw.undo).toHaveLength(1);
+  await map.press("e");
+  await map.press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.circles).toEqual([]);
+  await gallery.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).draw.circles).toEqual(painted);
+  const beforeButton = (await snapshot(page)).draw.circles;
+  await gallery.getByRole("button", { name: "Paint", exact: true }).press("Enter");
+  expect((await snapshot(page)).draw.circles).toEqual(beforeButton);
+  await map.focus();
+  await map.press("ArrowRight");
+  await map.press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBe(2);
+});
+
+for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "unfocused", "no-canvas"]) {
+  test(`keyboard drawing ignores ${blocked} targets`, async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    const map = gallery.locator(".map-root");
+    await map.focus();
+    await map.press("ArrowDown");
+    if (blocked === "out-of-bounds") {
+      for (let i = 0; i < 60; i++) await map.press("ArrowRight");
+    }
+    await page.evaluate(({ tag, blocked }) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      element.replaceWorkspaceState({ ...state,
+        ...(blocked === "read-only" ? { floor: { ...state.floor, readOnly: true } } : {}),
+        ...(blocked === "unverified" ? { coherence: "verifying" } : {}),
+        ...(blocked === "pending" ? { command: "pending" } : {}),
+        ...(blocked === "out-of-bounds" ? { cameras: { ...state.cameras, top: { yaw: 0, pitch: 0, zoom: 1, targetX: 1000, targetZ: 1000 } } } : {}),
+      });
+    }, { tag: GALLERY_TAG, blocked });
+    if (blocked === "unfocused") await gallery.getByRole("button", { name: "Paint", exact: true }).focus();
+    if (blocked === "no-canvas") await gallery.locator(".scene-canvas").evaluate((canvas) => { canvas.style.display = "none"; });
+    // Render state settles before capturing the unchanged draft contract.
+    await page.waitForTimeout(50);
+    const before = (await snapshot(page)).draw;
+    await map.dispatchEvent("keydown", { key: "Enter", code: "Enter", bubbles: true, composed: true });
+    expect((await snapshot(page)).draw).toEqual(before);
+  });
+}
+
+test("zone perimeter supports closing dragging inserting deleting and undo", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "draw" });
+  await page.evaluate((tag) => {
+    const element = document.querySelector(tag), state = element.getWorkspaceSnapshot();
+    element.replaceWorkspaceState({ ...state, cameras: { top: { yaw: 0, pitch: 0, zoom: 2, targetX: 2.475, targetZ: -1.975 } },
+      draw: { ...state.draw, circles: [], outline: null, undo: [], redo: [], strokeCount: 0, dirty: false } });
+  }, GALLERY_TAG);
+  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  const canvas = gallery.locator(".scene-canvas");
+  await expect(gallery.locator(".zone-help")).toBeVisible();
+  const box = await canvas.boundingBox();
+  for (const [x, y] of [[-45, -40], [45, -40], [45, 40], [-45, 40]]) {
+    await page.mouse.click(box.x + box.width * .3 + x, box.y + box.height * .25 + y);
+  }
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
+  // An image ancestor flattens these controls out of Safari's native AX tree.
+  const accessibleScene = await gallery.locator(".scene-window").ariaSnapshot();
+  expect(accessibleScene).toMatch(/^- group /);
+  expect(accessibleScene).toContain('button "Zone point 1"');
+  expect(accessibleScene).toContain('button "Close zone"');
+  await gallery.getByRole("button", { name: "Close zone", exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
+  expect((await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
+  const before = (await snapshot(page)).draw.outline;
+  const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+  const handle = await first.boundingBox();
+  await page.mouse.move(handle.x + 22, handle.y + 22); await page.mouse.down();
+  await page.mouse.move(handle.x + 12, handle.y + 17, { steps: 4 }); await page.mouse.up();
+  await expect.poll(async () => (await snapshot(page)).draw.outline).not.toEqual(before);
+  await first.focus();
+  await gallery.getByRole("button", { name: "Insert point", exact: true }).click();
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(5);
+  await gallery.getByRole("button", { name: "Zone point 2", exact: true }).press("Delete");
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
+  await gallery.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(5);
+  await gallery.getByRole("button", { name: "Redo", exact: true }).click();
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
+});
+
+test("zone keyboard creation and point editing stay local and undoable", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "draw" });
+  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  const map = gallery.locator(".map-root");
+  await map.focus();
+  await map.press("ArrowDown"); await map.press("Enter");
+  await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(1);
+  await expect(gallery.locator(".action-bar").getByRole("button", { name: "Name and save", exact: true })).toBeDisabled();
+  await map.press("ArrowLeft"); await map.press("Enter");
+  await map.press("ArrowDown"); await map.press("Enter");
+  await gallery.getByRole("button", { name: "Close zone", exact: true }).press("Enter");
+  const before = (await snapshot(page)).draw.outline;
+  await gallery.getByRole("button", { name: "Zone point 1", exact: true }).press("ArrowRight");
+  await expect.poll(async () => (await snapshot(page)).draw.outline.points[0].x).toBeCloseTo(before.points[0].x - .02);
+  await gallery.getByRole("button", { name: "Delete point 1", exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(false);
+  await gallery.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
+});
+
+test("zone geometry and saved perimeter survive the authenticated backend round trip", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: `export * from "./frontend/map-studio-v4/area-outline"; export { MaticBackend } from "./frontend/map-studio-v4/backend"; export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore, selectPrimaryAction } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/zone-contract.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const m = await import("/zone-contract.js");
+    const outline = { closed: true, points: [{x:1,y:1},{x:3,y:1},{x:3,y:3},{x:1,y:3}] };
+    const circles = m.outlineCircles(outline, () => true);
+    const inscribed = circles.every(c => m.insideOutline(c, outline.points) && outline.points.every((a,i) => m.edgeDistance(c,a,outline.points[(i+1)%4]) >= c.radius));
+    const crossed = m.validOutline({closed:true,points:[outline.points[0],outline.points[2],outline.points[1],outline.points[3]]});
+    const store = new m.WorkspaceStore(); store.replace(m.createGalleryState("draw"));
+    let saved, mutations = 0;
+    const backend = new m.MaticBackend(() => ({ fetchWithAuth: async (path, init) => {
+      if (init.method === "POST") { saved = JSON.parse(init.body); mutations++; return new Response(JSON.stringify({ id: "zone" })); }
+      return new Response(JSON.stringify({scene_url:store.value.resources.entry.sceneUrl,rooms:[],areas:[{id:"zone",name:saved.name,circles:saved.circles,outline:saved.outline,cleaning_mode:saved.cleaning_mode,coverage_setting:saved.coverage_setting,status:"current",can_rebind:false}]}));
+    }}));
+    const effects = new m.EffectController(store, backend);
+    store.patch({ areaDraft: {...store.value.areaDraft,id:null,name:""},draw:{...store.value.draw,circles,outline,dirty:true}});
+    for (const narrowHint of [false, true]) {
+      store.patch({workflow:"draw",narrowHint});
+      const action = m.selectPrimaryAction(store.value);
+      if (!action.enabled || action.id !== "review-area") throw new Error("Unnamed zone must open its review form");
+      await effects.executeAction(action.id);
+      if (store.value.workflow !== "areaReview" || mutations !== 0) throw new Error("Review must precede saving");
+    }
+    store.patch({areaDraft:{...store.value.areaDraft,name:"Zone"}});
+    await effects.executeAction(m.selectPrimaryAction(store.value).id);
+    const loaded = await backend.areas(store.value.resources.entry.areasUrl);
+    store.patch({ resources: {...store.value.resources, areas: {status:"ready",value:loaded,problem:null}} });
+    effects.selectArea("zone");
+    const reopened = store.value.draw.outline;
+    store.patch({workflow:"draw"});
+    if (!m.selectPrimaryAction(store.value).enabled) throw new Error("Saved unchanged outline must return to review");
+    effects.dispose();
+    return {inscribed,crossed,count:circles.length,mutations, savedPoints:saved.outline, reopened};
+  });
+  expect(result.inscribed).toBe(true); expect(result.crossed).toBe(false);
+  expect(result.count).toBeGreaterThan(0); expect(result.count).toBeLessThanOrEqual(512);
+  expect(result.mutations).toBe(1); expect(result.reopened).toEqual({closed:true,points:result.savedPoints});
+});
+
+for (const device of [
+  { name: "desktop", width: 1440, height: 900, touch: false },
+  { name: "tablet portrait", width: 820, height: 1180, touch: true },
+  { name: "tablet landscape", width: 1180, height: 820, touch: true },
+  { name: "phone", width: 390, height: 844, touch: true },
+  { name: "small phone", width: 320, height: 740, touch: true },
+]) for (const scheme of ["light", "dark"]) {
+  test(`zone controls fit and edit on ${device.name} in ${scheme}${device.touch ? " @mobile" : ""}`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width: device.width, height: device.height });
+    await page.emulateMedia({ colorScheme: scheme });
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await page.evaluate((tag) => {
+      const e = document.querySelector(tag), s = e.getWorkspaceSnapshot();
+      const stage = e.shadowRoot.querySelector(".stage");
+      stage.style.blockSize = "100dvh"; stage.style.minBlockSize = "0"; stage.style.maxInlineSize = "none";
+      e.replaceWorkspaceState({ ...s, draw: { ...s.draw, tool: "outline", undo: [], redo: [],
+        outline: { closed: true, points: [{x:1,y:1},{x:3.5,y:1},{x:3.5,y:2.5},{x:1,y:2.5}] },
+        circles: [{x:2.25,y:1.75,radius:.7}] } });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("button", { name: "Zone", exact: true })).toHaveAttribute("aria-pressed", "true");
+    const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+    if (device.touch) await first.tap(); else await first.click();
+    await expect(gallery.getByRole("button", { name: "Insert point", exact: true })).toBeVisible();
+    await expect(gallery.getByRole("button", {name:"Name and save",exact:true})).toBeEnabled();
+    const targets = gallery.locator(".zone-point, .draw-tools button, .zone-help button, .action-bar button");
+    for (const target of await targets.all()) {
+      const box = await target.boundingBox();
+      expect(box.width).toBeGreaterThanOrEqual(44); expect(box.height).toBeGreaterThanOrEqual(44);
+      expect(box.x).toBeGreaterThanOrEqual(0); expect(box.x + box.width).toBeLessThanOrEqual(device.width + 1);
+      expect(box.y).toBeGreaterThanOrEqual(0); expect(box.y + box.height).toBeLessThanOrEqual(device.height + 1);
+      if (await target.isDisabled()) continue;
+      expect(await target.evaluate(button => {
+        const r = button.getBoundingClientRect(), x = r.x + r.width / 2, y = r.y + r.height / 2;
+        let hit = document.elementFromPoint(x, y);
+        for (let i = 0; hit?.shadowRoot && i < 12; i++) { const next = hit.shadowRoot.elementFromPoint(x,y); if (!next || next === hit) break; hit = next; }
+        return hit === button || button.contains(hit);
+      }), await target.getAttribute("aria-label") || await target.innerText()).toBe(true);
+    }
+    const scale = await gallery.locator(".map-scale").boundingBox(), hint = await gallery.locator(".zone-help").boundingBox();
+    expect(scale.x < hint.x + hint.width && scale.x + scale.width > hint.x && scale.y < hint.y + hint.height && scale.y + scale.height > hint.y).toBe(false);
+    const insert = gallery.getByRole("button", { name: "Insert point", exact: true });
+    if (device.touch) await insert.tap(); else await insert.click();
+    await expect.poll(async () => (await snapshot(page)).draw.outline.points.length).toBe(5);
+    const remove = gallery.getByRole("button", { name: "Delete point 2", exact: true });
+    if (device.touch) await remove.tap(); else await remove.click();
+    await expect.poll(async () => (await snapshot(page)).draw.outline.points.length).toBe(4);
+    await page.screenshot({ path: testInfo.outputPath(`${device.name.replaceAll(" ", "-")}-${scheme}.png`) });
+  });
+}
+
+for (const interruption of ["Escape", "pointer cancel", "floor revalidation"]) {
+  test(`zone drag rolls back on ${interruption}`, async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "draw" });
+    await page.evaluate(tag => {
+      const e = document.querySelector(tag), s = e.getWorkspaceSnapshot();
+      e.replaceWorkspaceState({...s, draw:{...s.draw,tool:"outline",outline:{closed:true,points:[{x:1,y:1},{x:3.5,y:1},{x:3.5,y:2.5},{x:1,y:2.5}]},circles:[{x:2,y:1.75,radius:.5}]}});
+    }, GALLERY_TAG);
+    const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
+    const before = (await snapshot(page)).draw;
+    const box = await first.boundingBox();
+    await page.mouse.move(box.x + 22, box.y + 22); await page.mouse.down();
+    await page.mouse.move(box.x + 32, box.y + 25, {steps:3});
+    if (interruption === "Escape") await page.keyboard.press("Escape");
+    else if (interruption === "pointer cancel") await first.dispatchEvent("pointercancel", {pointerId:1,bubbles:true,composed:true});
+    else await page.evaluate(tag => { const e=document.querySelector(tag),s=e.getWorkspaceSnapshot();e.replaceWorkspaceState({...s,coherence:"verifying"}); }, GALLERY_TAG);
+    await page.mouse.up();
+    expect((await snapshot(page)).draw).toEqual(before);
+  });
+}
+
+test("painting can undo back to an editable perimeter and ignores no-op marks", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "draw" });
+  await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+  const map = gallery.locator(".map-root");
+  await map.focus();
+  await map.press("ArrowDown"); await map.press("Enter");
+  await map.press("ArrowLeft"); await map.press("Enter");
+  await map.press("ArrowDown"); await map.press("Enter");
+  await gallery.getByRole("button", { name: "Close zone", exact: true }).click();
+  const zone = (await snapshot(page)).draw.outline;
+  await gallery.getByRole("button", { name: "Paint", exact: true }).click();
+  await map.focus(); await map.press("ArrowLeft"); await map.press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.outline).toBeNull();
+  const paintedCircle = (await snapshot(page)).draw.circles.at(-1);
+  await gallery.getByRole("button", { name: "Undo", exact: true }).click();
+  await expect.poll(async () => (await snapshot(page)).draw.outline).toEqual(zone);
+  // A pointer click on an already painted circle must preserve the perimeter.
+  await page.evaluate(({tag, paintedCircle}) => {
+    const e=document.querySelector(tag),s=e.getWorkspaceSnapshot();
+    e.replaceWorkspaceState({...s,draw:{...s.draw,circles:[paintedCircle]}});
+  },{tag:GALLERY_TAG,paintedCircle});
+  await map.focus();
+  const box = await gallery.locator(".scene-canvas").boundingBox();
+  await page.mouse.click(box.x + box.width/2, box.y + box.height/2);
+  expect((await snapshot(page)).draw.outline).toEqual(zone);
 });

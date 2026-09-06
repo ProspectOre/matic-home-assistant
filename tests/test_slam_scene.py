@@ -1930,3 +1930,42 @@ async def test_history_views_list_serve_hide_and_require_admin() -> None:
             _request(hass), "entry", snapshot.snapshot_id
         )
     ).status == HTTPStatus.NOT_FOUND
+
+
+async def test_area_workspace_preserves_perimeter_and_rejects_excess_coverage() -> None:
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+    outline = [
+        {"x": 0, "y": 0},
+        {"x": 0.3, "y": 0},
+        {"x": 0.3, "y": 0.3},
+        {"x": 0, "y": 0.3},
+    ]
+    body = {
+        "name": "Zone",
+        "circles": [{"x": 0.15, "y": 0.15, "radius": 0.1}],
+        "outline": outline,
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+    response = await view.post(_json_request(hass, "POST", body), "entry")
+    assert response.status == HTTPStatus.OK
+    saved = runtime.cleaning_plans.async_save_area.await_args.args[2]
+    assert saved["outline"] == outline
+    runtime.cleaning_plans.areas.return_value = {"zone": saved}
+    response = await view.get(_request(hass), "entry")
+    assert json.loads(response.body)["areas"][0]["outline"] == outline
+    # The authenticated read must withhold perimeter coordinates with stale circles.
+    runtime.cleaning_plans.areas.return_value = {"zone": {**saved, "map_binding": None}}
+    response = await view.get(_request(hass), "entry")
+    assert "outline" not in json.loads(response.body)["areas"][0]
+    runtime.cleaning_plans.async_save_area.reset_mock()
+    response = await view.post(
+        _json_request(
+            hass, "POST", {**body, "circles": [{"x": 0.15, "y": 0.15, "radius": 0.2}]}
+        ),
+        "entry",
+    )
+    assert response.status == HTTPStatus.BAD_REQUEST
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()

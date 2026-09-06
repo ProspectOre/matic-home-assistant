@@ -317,11 +317,12 @@ export const shellStyles = [tokens, base, controls, css`
     .narrow .sheet-tools { display: block; padding-block: var(--ms-space-1) var(--ms-space-2); }
     .narrow .draw-tools--grid {
       display: grid;
-      grid-template-columns: repeat(3, minmax(0, 1fr));
+      grid-template-columns: repeat(12, minmax(0, 1fr));
       gap: var(--ms-space-1);
       padding: 0;
     }
     .narrow .draw-tools--grid .ms-btn {
+      grid-column: span 4;
       flex-direction: column;
       gap: var(--ms-space-1);
       min-inline-size: 0;
@@ -331,6 +332,8 @@ export const shellStyles = [tokens, base, controls, css`
       font-size: var(--ms-t-xs);
       white-space: normal;
     }
+    .narrow .draw-tools--grid .ms-btn[data-tool] { grid-column: span 3; padding-inline: 3px; }
+    .narrow .draw-tools--grid[data-zone="true"] .ms-btn:not([data-tool]) { grid-column: span 6; }
     .narrow .draw-tools--grid .ms-btn__label {
       position: static;
       overflow: visible;

@@ -48,6 +48,7 @@ interface RendererCallbacks {
     origin?: CameraOrigin,
   ) => void;
   readonly onRoom?: (roomId: string) => void;
+  readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
 }
 
@@ -581,6 +582,7 @@ export class RendererController {
   }
 
   #resize(): void {
+    let resized = false;
     const bounds = this.#measureViewport();
     const ratio = Math.min(window.devicePixelRatio || 1, 3);
     const width = Math.max(1, Math.round(bounds.width * ratio));
@@ -589,8 +591,10 @@ export class RendererController {
       if (canvas.width !== width || canvas.height !== height) {
         canvas.width = width;
         canvas.height = height;
+        resized = true;
       }
     }
+    if (resized) this.#callbacks.onViewport?.();
   }
 
   #cameraMatrix(): Float32Array {
@@ -710,12 +714,12 @@ export class RendererController {
     };
   }
 
-  #projectMeters(x: number, y: number, height = 0): MapPoint | null {
+  #projectMeters(x: number, y: number, height = 0, clipToViewport = true): MapPoint | null {
     const scene = this.#scene;
     if (!scene) return null;
     const cellX = x / scene.metadata.metersPerCell - scene.metadata.origin[0];
     const cellY = y / scene.metadata.metersPerCell - scene.metadata.origin[1];
-    return this.#projectCell(cellX, cellY, height);
+    return this.#projectCell(cellX, cellY, height, clipToViewport);
   }
 
   #renderOverlay(): void {
@@ -794,9 +798,28 @@ export class RendererController {
       context.fillStyle = rgba(palette.accent, .22);
       context.strokeStyle = rgba(palette.accent, .92);
       context.lineWidth = 1.5;
-      for (const circle of circles) this.#drawCircle(context, circle);
+      if (state.draw.outline?.closed) {
+        context.beginPath();
+        for (const circle of circles) this.#drawCircle(context, circle, false);
+        context.fill();
+      } else {
+        for (const circle of circles) this.#drawCircle(context, circle);
+      }
     }
-    if (this.#cursor && state.workflow === "draw" && state.draw.tool !== "pan") {
+    const outline = state.draw.outline;
+    if (outline && (state.workflow === "draw" || state.workflow === "areaReview")
+      && !(state.workflow === "draw" && state.draw.tool === "outline")) {
+      context.beginPath();
+      outline.points.forEach((point, i) => {
+        const p = this.#projectMeters(point.x, point.y, 0, false);
+        if (p) { if (i === 0) context.moveTo(p.x, p.y); else context.lineTo(p.x, p.y); }
+      });
+      if (outline.closed) context.closePath();
+      context.strokeStyle = rgba(palette.accent, 1);
+      context.lineWidth = 2;
+      context.stroke();
+    }
+    if (this.#cursor && state.workflow === "draw" && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
       const center = this.#projectMeters(this.#cursor.x, this.#cursor.y);
       const edge = this.#projectMeters(this.#cursor.x + state.draw.brushMeters / 2, this.#cursor.y);
       if (center && edge) {
@@ -832,14 +855,15 @@ export class RendererController {
       .map((room) => room.name.toLocaleLowerCase()));
   }
 
-  #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle): void {
+  #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle, paint = true): void {
     const center = this.#projectMeters(circle.x, circle.y);
     const edge = this.#projectMeters(circle.x + circle.radius, circle.y);
     if (!center || !edge) return;
-    context.beginPath();
-    context.arc(center.x, center.y, Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y)), 0, Math.PI * 2);
-    context.fill();
-    context.stroke();
+    const radius = Math.max(1, Math.hypot(edge.x - center.x, edge.y - center.y));
+    if (paint) context.beginPath();
+    context.moveTo(center.x + radius, center.y);
+    context.arc(center.x, center.y, radius, 0, Math.PI * 2);
+    if (paint) { context.fill(); context.stroke(); }
   }
 
   setPalette(palette: CanvasPalette): void {
@@ -850,6 +874,20 @@ export class RendererController {
   setCursor(point: MapPoint | null): void {
     this.#cursor = point;
     this.requestRender();
+  }
+
+  mapToScreen(point: MapPoint): MapPoint | null {
+    const scene = this.#scene;
+    if (!scene || !this.#camera.orthographic) return null;
+    const bounds = this.#measureViewport();
+    if (!bounds.width || !bounds.height) return null;
+    const worldPerPixel = this.#camera.distance * 2 / bounds.height;
+    const cellX = point.x / scene.metadata.metersPerCell - scene.metadata.origin[0];
+    const cellY = point.y / scene.metadata.metersPerCell - scene.metadata.origin[1];
+    const worldX = -(cellX - (scene.metadata.span[0] - 1) / 2) * scene.metadata.metersPerCell;
+    const worldZ = (cellY - (scene.metadata.span[1] - 1) / 2) * scene.metadata.metersPerCell;
+    return { x: bounds.width / 2 + (worldX - this.#camera.targetX) / worldPerPixel,
+      y: bounds.height / 2 + (worldZ - this.#camera.targetZ) / worldPerPixel };
   }
 
   screenToMap(clientX: number, clientY: number): MapPoint | null {

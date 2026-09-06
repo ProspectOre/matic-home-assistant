@@ -142,3 +142,48 @@ async def test_missing_serial_and_device_fall_back_safely() -> None:
     registry.async_update_entity.assert_called_once_with(
         "sensor.matic_2", new_entity_id="sensor.matic_battery"
     )
+
+
+async def test_minimum_ha_device_lookup_preserves_entry_ownership() -> None:
+    """HA 2026.7 has only the unscoped registry lookup."""
+    hass = _hass()
+    for device in (
+        None,
+        SimpleNamespace(name="Other", config_entries={"other"}),
+        SimpleNamespace(name="My Matic", config_entries={"entry"}),
+    ):
+        devices = SimpleNamespace(async_get_device=MagicMock(return_value=device))
+        registry = SimpleNamespace(
+            async_get=MagicMock(return_value=None), async_update_entity=MagicMock()
+        )
+        entities = [
+            SimpleNamespace(
+                unique_id="serial_battery", domain="sensor", entity_id="sensor.old"
+            )
+        ]
+        with (
+            patch(
+                "custom_components.matic_robot.migrations.dr.async_get",
+                return_value=devices,
+            ),
+            patch(
+                "custom_components.matic_robot.migrations.er.async_get",
+                return_value=registry,
+            ),
+            patch(
+                "custom_components.matic_robot.migrations.er.async_entries_for_config_entry",
+                return_value=entities,
+            ),
+        ):
+            assert await async_migrate_entry(hass, _entry()) is True
+        devices.async_get_device.assert_called_once_with(
+            identifiers={("matic_robot", "serial")}
+        )
+        expected = (
+            "my_matic_battery"
+            if device and "entry" in device.config_entries
+            else "matic_battery"
+        )
+        registry.async_update_entity.assert_called_once_with(
+            "sensor.old", new_entity_id=f"sensor.{expected}"
+        )

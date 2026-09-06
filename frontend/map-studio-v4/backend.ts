@@ -1,3 +1,4 @@
+import type { AreaOutline } from "./area-outline";
 import type { HassLike } from "./contracts";
 import {
   CATALOG_URL,
@@ -426,6 +427,7 @@ export class MaticBackend {
       readonly areaId: string | null;
       readonly name: string;
       readonly circles: readonly AreaCircle[];
+      readonly outline?: AreaOutline | null;
       readonly cleaningMode: CleaningMode;
       readonly coverageSetting: CoverageSetting;
     },
@@ -438,6 +440,7 @@ export class MaticBackend {
         ...(value.areaId ? { area_id: value.areaId } : {}),
         name: value.name,
         circles: value.circles,
+        ...(value.outline?.closed ? { outline: value.outline.points } : {}),
         cleaning_mode: value.cleaningMode,
         coverage_setting: value.coverageSetting,
       }),

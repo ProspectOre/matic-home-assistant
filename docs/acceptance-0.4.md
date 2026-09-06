@@ -1,9 +1,9 @@
 # 0.4 end-to-end acceptance
 
 Status: in progress, not release sign-off. Installed baseline: unpublished
-`9900db6`. The 2026-09-05 non-motion audit is installed and verified live.
-Subsequent handoff-feedback changes remain uninstalled. Run affected journeys
-and final gates against the exact candidate being promoted.
+`16e0ae7`. The 2026-09-05 non-motion audit and corner-control follow-up are
+installed and verified live. This is not physical acceptance of every workflow.
+Run affected journeys and final gates against the exact candidate being promoted.
 
 ## Evidence rules
 
@@ -35,7 +35,7 @@ and final gates against the exact candidate being promoted.
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 407 browser checks passed on installed audit baseline; native VoiceOver and physical phone/tablet open |
+| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 471 browser checks passed on installed baseline; native VoiceOver and physical phone/tablet open |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
 ## Latest bounded physical evidence
@@ -76,11 +76,21 @@ retest supersedes those failed cases for this bounded workflow only.
 9. End with the clean baseline. Stop on unexpected motion, identity mismatch,
    scene loss, incorrect credit or failure to settle; retain the failed case.
 
+## Perimeter editor acceptance
+
+Local checks cover vertex creation/closing, dragging, insertion/deletion,
+undo/redo, keyboard-only editing, cancellation and saved private metadata.
+The responsive matrix includes desktop, tablet portrait/landscape and phones
+at 320/390px in light and dark themes. Browser emulation checks 44px targets,
+hit testing and layout separation; it does not establish native-device acceptance.
+Run a bounded saved-zone cleaning and an interrupted zone only after the new
+candidate is reviewed, installed and current operator readiness is confirmed.
+
 ## Release gate
 
-- Current audit fixes need full Python/coverage, browser, lint, format, types,
-  privacy, artifact and fresh-install validation, then exact-head hosted gates
-  and clean regular review. Focused checks are not final-candidate acceptance.
+- Installed `16e0ae7` passed 1,301 Python tests at 100% coverage, 471 browser
+  checks, lint/format/types/privacy, packaging, hosted gates and clean regular
+  review. Revalidate affected checks after changes; this is not release sign-off.
 - Install the reviewed candidate and repeat affected live and physical checks.
 - Native VoiceOver, physical devices and fresh hardware-dependent setup checks
   retain explicit results or an explicit release decision; do not mark unrun
@@ -89,3 +99,14 @@ retest supersedes those failed cases for this bounded workflow only.
   and final metadata. Verify the release artifact matches the accepted code.
 - Intermediate testing remains unpublished. Publish one public `v0.4.0-rc1`
   only when ready and explicitly approved; no automatic merge or promotion.
+
+## Perimeter live follow-up
+
+The unpublished perimeter candidate after `16e0ae7` is installed; final frontend
+SHA-256 prefix `9eb8a5eac8ec`. Guarded file readback and idle restart passed.
+Live Safari found/fixed hidden vertex controls and the missing desktop naming
+step. Final responsive desktop/tablet/phone checks, point editing and save/reopen
+passed; a saved outline survived restart. Temporary test data was removed with
+recovery retained and original areas unchanged. No robot motion occurred.
+The final browser suite passes519 checks; native devices and VoiceOver remain
+open. See [release readiness](release-readiness-0.4.md) for separate gates.
