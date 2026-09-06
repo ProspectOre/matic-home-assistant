@@ -1,9 +1,9 @@
 # 0.4 release readiness
 
 Status: acceptance in progress; no release authorization implied.
-Installed candidate: unpublished working tree after `16e0ae7`, verified live
-on 2026-09-05 Pacific; frontend SHA-256 prefix `9eb8a5eac8ec`.
-Exact-head review and public release approval remain open.
+Installed candidate: unpublished `e29d7fd`, verified live after guarded restart.
+PR109/110 regular exact-head review and CI passed; public release approval is open.
+Saved-area startup recovery is the current follow-up under validation.
 
 ## Completed baseline evidence
 
@@ -30,35 +30,40 @@ Exact-head review and public release approval remain open.
   sheet. Phone tools use separate mode/history rows with 44px targets.
 - Light/dark layouts, mouse/touch/keyboard input, vertex edits, invalid geometry,
   cancellation, stale-floor privacy and saved metadata have automated coverage.
-- Local gates: 519 browser tests; 1,321 Python tests at100% coverage; lint,
+- Local gates: 521 browser tests; 1,321 Python tests at100% coverage; lint,
   types, privacy,76-file archive parity/fresh import and HA2026.7 migration pass.
 - Guarded installation and restart passed with exact file readback and rollback.
 - Live Safari exposed two defects: image semantics hid vertex controls, and
   desktop bypassed the naming step. Both are fixed and verified live; unchanged
-  saved outlines also return to review. The final tree passes 519 browser tests.
+  saved outlines also return to review. The installed tree passes 521 browser tests.
 - Actual HA passed create/close/drag, insert/delete, undo/redo, keyboard point
   editing, save/reopen and persistence across restart. Final responsive checks
   covered desktop, both tablet orientations and 320/390px phones.
-- Review follow-up uses the rendered camera transform for rotated zone handles,
-  pointer input and keyboard edits. It needs a fresh guarded frontend update
-  and affected live verification after the new review head passes.
+- Rendered camera transforms keep rotated zone handles, pointer input and
+  keyboard edits aligned; the reviewed change is installed and verified live.
+- Compact point actions, open-outline Clear/Undo and simplified naming copy
+  passed local/hosted checks and affected live verification.
+- Saved-area recovery resumes a deferred read after the live scene becomes
+  available; mismatched scene responses become retryable errors.
+- Exact HA2026.7 Bluetooth/camera and integration imports pass with platform
+  manifest dependencies installed; pip check passes. This is not hardware proof.
 - Native devices, VoiceOver and physical cleaning remain separate open gates.
 
 ## Work queue
 
 | Gate | Status and next evidence |
 | --- | --- |
-| Keyboard and perimeter editor | Installed and tested live, including naming and saved metadata; exact review and native-device acceptance remain open |
+| Keyboard and perimeter editor | Installed and tested live, including naming and saved metadata; exact review passed; native-device acceptance remains open |
 | Screen/state coverage | Reconcile frontend closure report with normal, empty, loading, error and recovery cases; retain explicit native-device gaps |
 | Performance/resource observation | Record final-build load and interaction conditions; synthetic traces do not prove live-map or long-session performance |
-| Minimum supported HA | Legacy migration fixed and exercised against the actual HA 2026.7 registry; supported Bluetooth/camera runtime checks remain separate |
+| Minimum supported HA | Legacy registry migration and Bluetooth/camera dependency imports pass on HA2026.7; hardware setup remains separate |
 | Stable upgrade and rollback | Rehearse stable-to-candidate upgrade and matching-backup recovery on a disposable instance; preserve plans/areas/configuration |
 | Native accessibility/devices | VoiceOver, actual phone/tablet, touch, orientation and enlarged text; emulation is separate |
 | Pairing/reauthentication | Supported hardware and Container credential replacement; imports and synthetic Bluetooth tests are separate |
 | Mixed-settings plan | Native multi-leg completion, handoff, exactly-once credit/events and ownership cleanup |
 | Stop/interruption | Map/action/automation Stop, pause/resume, reconnect/restart during work, no replay or false credit |
 | Finish-current-room | Below/at/above threshold, no next room, pause/recharge excluded; identify synthetic-only boundaries |
-| Custom-area runs | Small one-time/saved area completion plus a separately interrupted run |
+| Custom-area runs | One bounded saved zone completed; Stop returned to dock but native history marked completion, so interruption is unproved |
 | Physical floor round trip | Stopped robot A → B → A; coherent identity, scene, pose, rooms, actions and stable Repairs |
 | Affected issues | #65 localization on affected setup and #71 stop/countdown conditions; original #54 needs fresh regression evidence |
 | Final candidate | Freeze code/version, refresh affected checks, exact artifact parity, hosted gates and clean review |

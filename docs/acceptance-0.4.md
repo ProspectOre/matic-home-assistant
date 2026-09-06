@@ -29,13 +29,13 @@ Run affected journeys and final gates against the exact candidate being promoted
 | Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
 | One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
 | Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings multi-leg execution open |
-| Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Synthetic editing and live blank workspace/review inspection; current physical runs open |
+| Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Live create/save/reopen and one bounded saved-zone completion passed; separately interrupted run remains open |
 | Immediate stop | Settlement, replacement-work protection and prompt safe dock | Regression coverage; fresh physical #71 retest open |
 | Finish-current-room | Below threshold stops; exact/above finishes only current room; next room never starts | Synthetic boundaries; physical threshold/pause/recharge cases open |
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 471 browser checks passed on installed baseline; native VoiceOver and physical phone/tablet open |
+| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 521 browser checks passed on installed UI baseline; native VoiceOver and physical phone/tablet open |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
 ## Latest bounded physical evidence
@@ -54,6 +54,13 @@ for native completion evidence. The installed baseline separates native events
 from local display estimates, allows a bounded elapsed verification interval
 before terminal persistence, and deduplicates room starts. The successful
 retest supersedes those failed cases for this bounded workflow only.
+
+On unpublished `72a40d1`, one bounded saved perimeter completed in native
+history without whole-room credit. A separate Stop returned the robot to dock,
+but native history still marked that run completed, so interruption is not
+proved. A subsequent attempt was rejected before dispatch by the changed-map
+binding guard. The automation and original saved-area state were restored.
+The UI-only `e29d7fd` follow-up passed guarded restart and idle readback.
 
 ## Remaining physical sequence
 

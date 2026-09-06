@@ -400,6 +400,7 @@ export class EffectController {
         if (coherent && this.#store.value.resources.plans.problem === "map-rechecking") {
           void this.loadPlans();
         }
+        this.#resumeAreaCatalog();
         return;
       }
       this.#entryIdentity = identity;
@@ -521,6 +522,7 @@ export class EffectController {
     if (coherent && this.#store.value.resources.plans.status === "idle") {
       void this.loadPlans();
     }
+    this.#resumeAreaCatalog();
     if (coherent) {
       void this.#loadLiveScene(entry, stamp);
       void this.#loadPose(entry, stamp);
@@ -554,6 +556,7 @@ export class EffectController {
       if (plans.status === "idle" || plans.problem === "map-rechecking") {
         void this.loadPlans();
       }
+      this.#resumeAreaCatalog();
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
         void this.#streamDeltas(entry, stamp, response.scene, generation);
@@ -1091,6 +1094,14 @@ export class EffectController {
     };
   }
 
+  #resumeAreaCatalog(): void {
+    const state = this.#store.value;
+    if ((state.workflow === "draw" || state.workflow === "areaReview")
+      && state.resources.areas.status === "idle") {
+      void this.loadAreas();
+    }
+  }
+
   async loadAreas(): Promise<void> {
     const entry = this.#store.value.resources.entry;
     if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
@@ -1103,8 +1114,8 @@ export class EffectController {
       const areas = await this.#backend.areas(entry.areasUrl, controller.signal);
       const currentEntry = this.#store.value.resources.entry;
       if (controller.signal.aborted || this.#disposed || !currentEntry
-        || entryBoundaryKey(currentEntry) !== boundary
-        || areas.sceneUrl !== currentEntry.sceneUrl) return;
+        || entryBoundaryKey(currentEntry) !== boundary) return;
+      if (areas.sceneUrl !== currentEntry.sceneUrl) throw new BackendError("areas-unavailable");
       this.#store.patch({
         resources: { ...this.#store.value.resources, areas: resource("ready", areas) },
       });
