@@ -38,8 +38,8 @@ export class MaticMapPanelV4 extends LitElement {
 .return-v4 {
   position: absolute;
   z-index: 100;
-  inset-block-start: max(0.65rem, env(safe-area-inset-top));
-  inset-inline-end: max(0.65rem, env(safe-area-inset-right));
+  inset-block-start: max(0.65rem, var(--ms-safe-top));
+  inset-inline-end: max(0.65rem, var(--ms-safe-right));
   min-block-size: 2.75rem;
   padding-inline: 0.85rem;
   border: 1px solid var(--divider-color, #c2c8cc);

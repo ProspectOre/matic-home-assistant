@@ -3977,20 +3977,11 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
 
   test("pads the sheet for the home indicator", async ({ page }) => {
     const gallery = await loadPhone(page, { scenario: "ready" });
-    const rules = await gallery.evaluate((element) => {
-      const shell = element.shadowRoot.querySelector("matic-map-shell-v4");
-      const sheets = [...shell.shadowRoot.adoptedStyleSheets, ...shell.shadowRoot.styleSheets];
-      const matches = [];
-      for (const sheet of sheets) {
-        for (const rule of sheet.cssRules) {
-          if (!rule.selectorText?.includes(".mobile-sheet")) continue;
-          const bottom = rule.style.getPropertyValue("padding-bottom") || rule.style.getPropertyValue("padding-block-end") || rule.style.getPropertyValue("padding");
-          if (bottom.includes("env(safe-area-inset-bottom)")) matches.push(`${rule.selectorText} { ${bottom} }`);
-        }
-      }
-      return matches;
-    });
-    expect(rules.length, "a .mobile-sheet rule pads the bottom with env(safe-area-inset-bottom)").toBeGreaterThan(0);
+    await gallery.evaluate((element) => element.style.setProperty("--safe-area-inset-bottom", "34px"));
+    const sheet = gallery.locator(".mobile-sheet");
+    await expect(sheet).toHaveCSS("padding-bottom", "34px");
+    await gallery.evaluate((element) => element.style.setProperty("--safe-area-inset-bottom", "0px"));
+    await expect.poll(async () => Number.parseFloat(await sheet.evaluate((element) => getComputedStyle(element).paddingBottom))).toBeLessThan(34);
   });
 
   test("settles instantly under reduced motion", async ({ page }) => {
@@ -4704,4 +4695,42 @@ test("painting can undo back to an editable perimeter and ignores no-op marks", 
   const box = await gallery.locator(".scene-canvas").boundingBox();
   await page.mouse.click(box.x + box.width/2, box.y + box.height/2);
   expect((await snapshot(page)).draw.outline).toEqual(zone);
+});
+
+test("companion safe areas keep navigation and drawing actions clear of system UI", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const gallery = await loadGallery(page, { narrow: true });
+  await gallery.evaluate((element) => {
+    element.style.setProperty("--safe-area-inset-top", "62px");
+    element.style.setProperty("--safe-area-inset-bottom", "34px");
+  });
+  const navigation = gallery.getByRole("button", { name: "Open navigation", exact: true });
+  const bar = gallery.locator(".app-bar");
+  await expect.poll(async () => (await navigation.boundingBox())?.y).toBeGreaterThanOrEqual(62);
+  const initialHeight = (await bar.boundingBox()).height;
+  await gallery.getByRole("button", { name: /Clean a custom area/ }).click();
+  const clear = gallery.getByRole("button", { name: "Clear drawing", exact: true });
+  const clearBox = await clear.boundingBox();
+  expect(clearBox.y + clearBox.height).toBeLessThanOrEqual(844 - 34);
+  await expect(gallery.locator(".mobile-sheet")).toBeVisible();
+  await page.setViewportSize({ width: 844, height: 390 });
+  await gallery.evaluate((element) => {
+    element.style.setProperty("--safe-area-inset-top", "0px");
+    element.style.setProperty("--safe-area-inset-left", "62px");
+    element.style.setProperty("--safe-area-inset-right", "62px");
+    element.style.setProperty("--safe-area-inset-bottom", "21px");
+  });
+  await expect.poll(async () => Math.round(initialHeight - (await bar.boundingBox()).height)).toBe(62);
+  const floor = await gallery.getByRole("combobox", { name: "Choose floor" }).boundingBox();
+  expect(floor.x).toBeGreaterThanOrEqual(62);
+  const fit = await gallery.getByRole("button", { name: "Fit the whole map on screen" }).boundingBox();
+  expect(fit.x + fit.width).toBeLessThanOrEqual(844 - 62);
+  const overflow = gallery.getByRole("button", { name: "Map options", exact: true });
+  const overflowBox = await overflow.boundingBox();
+  expect(overflowBox.x + overflowBox.width).toBeLessThanOrEqual(844 - 62);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await gallery.evaluate((element) => {
+    for (const edge of ["top", "right", "bottom", "left"]) element.style.setProperty(`--safe-area-inset-${edge}`, "0px");
+  });
+  await expect.poll(async () => (await navigation.boundingBox())?.y).toBeLessThan(20);
 });
