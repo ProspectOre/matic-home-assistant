@@ -4849,3 +4849,26 @@ test("late plan deletion clears the deleted identity without replacing another w
     { destination: "same-editor", workflow: "plans", id: null, dirty: false },
   ]);
 });
+
+test("browser Back closes the plan editor then picker before leaving the route", async ({ page }) => {
+  await loadEffectHarness(page);
+  const route = page.url();
+  await page.evaluate(async () => {
+    const { WorkspaceStore, LayerHistoryController, createGalleryState } = await import("/plan-recovery-test.js");
+    const store = new WorkspaceStore(createGalleryState("ready"));
+    const layers = new LayerHistoryController(store);
+    layers.start();
+    store.dispatch({ type: "open-workflow", workflow: "plans" });
+    store.dispatch({ type: "select-plan", planId: "daily" });
+    window.__planLayers = { store, layers };
+  });
+  expect(await page.evaluate(() => history.state.maticMapLayer.depth)).toBe(2);
+  await page.evaluate(() => history.back());
+  await expect.poll(() => page.evaluate(() => window.__planLayers.store.value.workflow)).toBe("plans");
+  expect(await page.evaluate(() => history.state.maticMapLayer.depth)).toBe(1);
+  expect(page.url()).toBe(route);
+  await page.evaluate(() => history.back());
+  await expect.poll(() => page.evaluate(() => window.__planLayers.store.value.workflow)).toBe("none");
+  expect(page.url()).toBe(route);
+  await page.evaluate(() => window.__planLayers.layers.dispose());
+});
