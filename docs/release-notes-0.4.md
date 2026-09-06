@@ -39,7 +39,7 @@ not published releases.
 Earlier unpublished `56b4d4b` passed a bounded same-settings two-room run with one
 credit/start/completion per room and one correct native finished event, followed
 by clean return-to-charge and ownership cleanup. This is not evidence for all
-physical workflows. The installed audit passed 1,301 Python tests at 100%
+physical workflows. The earlier `16e0ae7` audit passed 1,301 Python tests at 100%
 coverage, 471 browser checks, hosted gates, exact-head review and affected live
 non-motion checks. Subsequent changes require their own validation.
 

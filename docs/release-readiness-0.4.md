@@ -27,7 +27,7 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
 - Different-settings handoff, interruption/native completion semantics, physical
   thresholds, fresh floor carries and affected reporter hardware remain open.
 
-## Completed baseline evidence
+## Historical audit evidence (`16e0ae7`)
 
 - 1,301 Python tests at 100% coverage and 471 browser tests; lint, format,
   types, privacy, packaging, hosted CI and clean exact-head review passed.
@@ -44,6 +44,9 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
 
 ## Perimeter editor and live verification
 
+The results below cover successive unpublished perimeter fixes; the current
+installed baseline and September 6 results are identified above.
+
 - Saved zones retain editable vertices as private optional metadata. Dispatch
   still uses the verified circle command, with coverage contained inside the
   perimeter and bound to the current map. Narrow edges can remain uncovered;
@@ -52,12 +55,13 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
   sheet. Phone tools use separate mode/history rows with 44px targets.
 - Light/dark layouts, mouse/touch/keyboard input, vertex edits, invalid geometry,
   cancellation, stale-floor privacy and saved metadata have automated coverage.
-- Local gates: 521 browser tests; 1,321 Python tests at100% coverage; lint,
-  types, privacy,76-file archive parity/fresh import and HA2026.7 migration pass.
+- Current UI baseline `2753701`: 567 browser checks. Candidate code passes
+  1,321 Python tests at 100% coverage, lint, types, privacy and 76-file archive
+  parity. Minimum-runtime fresh imports and synthetic migration also pass.
 - Guarded installation and restart passed with exact file readback and rollback.
 - Live Safari exposed two defects: image semantics hid vertex controls, and
   desktop bypassed the naming step. Both are fixed and verified live; unchanged
-  saved outlines also return to review. The installed tree passes 521 browser tests.
+  saved outlines also return to review.
 - Actual HA passed create/close/drag, insert/delete, undo/redo, keyboard point
   editing, save/reopen and persistence across restart. Final responsive checks
   covered desktop, both tablet orientations and 320/390px phones.
@@ -76,11 +80,11 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
 
 | Gate | Status and next evidence |
 | --- | --- |
-| Keyboard and perimeter editor | Installed and tested live, including naming and saved metadata; exact review passed; native-device acceptance remains open |
+| Keyboard and perimeter editor | Installed and tested live, including naming and saved metadata; exact review and scoped iPhone checks passed; broader device cases remain separate |
 | Screen/state coverage | Reconcile frontend closure report with normal, empty, loading, error and recovery cases; retain explicit native-device gaps |
 | Performance/resource observation | Record final-build load and interaction conditions; synthetic traces do not prove live-map or long-session performance |
 | Minimum supported HA | Legacy registry migration and Bluetooth/camera dependency imports pass on HA2026.7; hardware setup remains separate |
-| Stable upgrade and rollback | Rehearse stable-to-candidate upgrade and matching-backup recovery on a disposable instance; preserve plans/areas/configuration |
+| Stable upgrade and rollback | Synthetic Store rehearsal passed with plan/area selection and byte-for-byte backup restoration; live credential migration and HACS rollback remain open |
 | Native accessibility/devices | Phone and guided owner VoiceOver pass; iPad waived. Broader touch, orientation and enlarged-text evidence stays separate |
 | Pairing/reauthentication | Supported hardware and Container credential replacement; imports and synthetic Bluetooth tests are separate |
 | Mixed-settings plan | Native multi-leg completion, handoff, exactly-once credit/events and ownership cleanup |
