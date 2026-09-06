@@ -121,11 +121,12 @@ candidate is reviewed, installed and current operator readiness is confirmed.
 
 ## Perimeter live follow-up
 
-The unpublished perimeter candidate after `16e0ae7` is installed; final frontend
-SHA-256 prefix `9eb8a5eac8ec`. Guarded file readback and idle restart passed.
-Live Safari found/fixed hidden vertex controls and the missing desktop naming
-step. Final responsive desktop/tablet/phone checks, point editing and save/reopen
-passed; a saved outline survived restart. Temporary test data was removed with
-recovery retained and original areas unchanged. No robot motion occurred.
-The final browser suite passes519 checks; native devices and VoiceOver remain
-open. See [release readiness](release-readiness-0.4.md) for separate gates.
+The installed `2753701` UI baseline passed guarded file readback and restart.
+Live Safari verified point editing, automatic closure, further-point extension,
+save/exit without a false discard prompt and saved-outline reopen. Earlier
+perimeter checks also verified persistence across restart. Temporary test areas
+were removed with recovery retained and original areas unchanged.
+The current browser suite passes 567 checks. Actual iPhone navigation and saved
+outline checks passed; guided iPhone VoiceOver has an owner-reported pass, and
+separate iPad acceptance is waived. Broader assistive-technology and physical
+cleaning gates remain separate. See [release readiness](release-readiness-0.4.md).
