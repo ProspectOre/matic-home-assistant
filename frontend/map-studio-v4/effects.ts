@@ -1254,10 +1254,13 @@ export class EffectController {
     if (!planId) return;
     const deleted = await this.#serviceMutation("delete_plan", { plan: planId }, "Plan deleted", "Plan could not be deleted");
     if (deleted) {
-      if (this.#store.value.selection.entryId === entryId
-        && this.#store.value.planDraft.id === planId) {
-        this.selectPlan(null);
-        this.#store.dispatch({ type: "open-workflow", workflow: "plans" });
+      const current = this.#store.value;
+      if (current.selection.entryId === entryId && current.planDraft.id === planId) {
+        this.#store.patch({
+          selection: { ...current.selection, planId: null },
+          planDraft: initialWorkspaceState().planDraft,
+        });
+        if (current.workflow === "plan") this.#store.dispatch({ type: "open-workflow", workflow: "plans" });
       }
       await this.loadPlans();
     }

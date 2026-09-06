@@ -4814,3 +4814,38 @@ for (const boundary of ["service", "catalog"]) {
     for (const row of result) expect(row.actual).toEqual(row.expected);
   });
 }
+
+test("late plan deletion clears the deleted identity without replacing another workflow", async ({ page }) => {
+  await loadEffectHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+    const results = [];
+    for (const destination of ["rooms", "none", "plans", "other-editor", "same-editor"]) {
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, workflow: "plan" });
+      let finish;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const effects = new EffectController(store, { service: async () => pending, dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test",
+        entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      effects.loadPlans = async () => {};
+      try {
+        const deleting = effects.deletePlan();
+        store.dispatch({ type: "open-workflow", workflow: destination.endsWith("editor") ? "plan" : destination });
+        if (destination === "other-editor") store.patch({ selection: { ...store.value.selection, planId: "second" }, planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+        finish();
+        await deleting;
+        results.push({ destination, workflow: store.value.workflow, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty });
+      } finally { effects.dispose(); }
+    }
+    return results;
+  });
+  expect(result).toEqual([
+    { destination: "rooms", workflow: "rooms", id: null, dirty: false },
+    { destination: "none", workflow: "none", id: null, dirty: false },
+    { destination: "plans", workflow: "plans", id: null, dirty: false },
+    { destination: "other-editor", workflow: "plan", id: "second", dirty: true },
+    { destination: "same-editor", workflow: "plans", id: null, dirty: false },
+  ]);
+});
