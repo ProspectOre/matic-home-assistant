@@ -10,8 +10,8 @@ not published releases.
 
 - A map-first workspace brings one-time room cleaning, saved plans and custom
   areas together, with clearer loading, unavailable and recovery states.
-- Custom areas gain a perimeter editor: place points, close a zone, then drag,
-  insert or remove vertices. Saved points remain editable, with undo/redo and
+- Custom areas gain a perimeter editor: place three points to join the edges
+  automatically, then add, drag, insert or remove points. Saved points remain editable, with undo/redo and
   keyboard support. Paint and Erase remain available. Shading shows the bounded
   cleaning coverage inside the perimeter.
 - Portrait tablets use the sheet layout; desktop and landscape tablets retain

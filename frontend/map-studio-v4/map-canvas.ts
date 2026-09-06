@@ -719,7 +719,7 @@ export class MaticMapCanvasV4 extends LitElement {
         </div>
 
         ${showDraw ? html`
-          <p id="zone-keyboard-help" class="sr-only">${this.#t("v4_zone_keyboard_help", "Focus the map, aim with arrow keys, and press Enter to place points. Select the first point to close. Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag.")}</p>
+          <p id="zone-keyboard-help" class="sr-only">${this.#t("v4_zone_keyboard_help", "Focus the map, aim with arrow keys, and press Enter to place points. The edges join automatically after three points. Keep adding points or Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag.")}</p>
           <p id="keyboard-draw-help" class="sr-only">${this.#t("v4_keyboard_draw_help", "Keyboard: focus the map, use arrow keys to aim, then Enter to paint or erase at the crosshair. D selects Paint; E selects Erase.")}</p>
           <div class="map-scale" aria-label=${`Scale ${scale.label}`}>
             <span class="scale-line" style=${`--scale-width:${scale.pixels}px`}></span>

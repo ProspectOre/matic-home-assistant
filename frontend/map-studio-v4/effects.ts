@@ -1080,7 +1080,7 @@ export class EffectController {
     }
   }
 
-  async loadAreas(): Promise<void> {
+  async loadAreas({ reconcileDraft = true }: { reconcileDraft?: boolean } = {}): Promise<void> {
     const entry = this.#store.value.resources.entry;
     if (!entry || !this.#coherence.current() || !canReadFloorResources(this.#store.value)) return;
     const boundary = entryBoundaryKey(entry);
@@ -1104,8 +1104,8 @@ export class EffectController {
       // would be silently discarded. Existing selections still reconcile to
       // the returned catalog, including a deleted saved area.
       const selectedExists = areas.areas.some((area) => area.id === selectedId);
-      if ((!current.draw.dirty && !current.areaDraft.dirty)
-        || (selectedId !== null && !selectedExists)) {
+      if (reconcileDraft && ((!current.draw.dirty && !current.areaDraft.dirty)
+        || (selectedId !== null && !selectedExists))) {
         this.selectArea(selectedExists ? selectedId : null);
       }
     } catch (error) {
@@ -1180,9 +1180,32 @@ export class EffectController {
         coverageSetting: draft.coverageSetting,
       }, controller.signal);
       if (!current()) return;
-      this.#store.patch({ command: "idle", notice: { tone: "success", text: "Area saved" } });
-      await this.loadAreas();
-      if (current()) this.selectArea(id);
+      const latest = this.#store.value;
+      const sameDraft = latest.areaDraft === draft
+        && latest.draw.circles === state.draw.circles && latest.draw.outline === state.draw.outline
+        && latest.selection.entryId === state.selection.entryId
+        && (latest.workflow === "draw" || latest.workflow === "areaReview");
+      const savedDraft = sameDraft ? {
+        ...draft, id, name: draft.name.trim(), status: "current" as const, canRebind: false, dirty: false,
+      } : null;
+      // The write acknowledgement is the save boundary. Refreshing the list
+      // must not leave a successfully saved draft dirty or restore it after Back.
+      this.#store.patch({
+        command: "idle", notice: { tone: "success", text: "Area saved" },
+        ...(savedDraft ? {
+          dialog: latest.dialog === "discardDraft" ? null : latest.dialog,
+          selection: { ...latest.selection, areaId: id },
+          areaDraft: savedDraft,
+          draw: { ...latest.draw, dirty: false, strokeCount: 0, undo: [], redo: [], outlineUndo: [], outlineRedo: [] },
+        } : {}),
+      });
+      await this.loadAreas({ reconcileDraft: false });
+      const refreshed = this.#store.value;
+      if (current() && savedDraft && refreshed.areaDraft === savedDraft
+        && !refreshed.draw.dirty
+        && (refreshed.workflow === "draw" || refreshed.workflow === "areaReview")
+        && refreshed.selection.entryId === state.selection.entryId
+        && refreshed.resources.areas.value?.areas.some((area) => area.id === id)) this.selectArea(id);
     } catch (error) {
       if (isAbort(error) || !current()) return;
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "Area could not be saved" } });

@@ -494,15 +494,14 @@
     "v4_zone_point": "Zone point",
     "v4_zone_point_help": "Drag to move. Arrow keys adjust; Delete removes.",
     "v4_zone_add_point": "Add point after",
-    "v4_zone_edit_help": "Drag points to reshape.",
+    "v4_zone_edit_help": "Tap to add points. Drag points to reshape.",
     "v4_zone_point_short": "Point",
-    "v4_zone_create_help": "Place points. Select the first to close.",
-    "v4_zone_close": "Close zone",
+    "v4_zone_create_help": "Place points around the area. The edges join automatically.",
     "v4_zone_delete_point": "Delete point",
     "v4_zone_tool": "Zone",
     "v4_zone_coverage": "Place points around the zone. Shading shows cleaning coverage inside the perimeter; narrow edges may remain uncovered.",
     "v4_zone_insert_point": "Insert point",
-    "v4_zone_keyboard_help": "Focus the map, aim with arrow keys, and press Enter to place points. Select the first point to close. Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag."
+    "v4_zone_keyboard_help": "Focus the map, aim with arrow keys, and press Enter to place points. The edges join automatically after three points. Keep adding points or Tab to a point; arrows move it, Delete removes it, and Escape cancels a drag."
   },
   "config": {
     "abort": {
