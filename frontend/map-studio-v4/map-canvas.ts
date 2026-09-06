@@ -98,7 +98,7 @@ export class MaticMapCanvasV4 extends LitElement {
     }
 
     /* Navigation has stable corners; only orbit controls follow the sheet. */
-    .map-rail { --help-top: calc(44px + 2 * var(--ms-space-2)); --help-bottom: 116px; position: absolute; inset: 0.75rem; z-index: 4; pointer-events: none; }
+    .map-rail { --help-top: calc(44px + 2 * var(--ms-space-2)); --help-bottom: 116px; position: absolute; inset: 0.75rem; inset-inline: max(0.75rem, var(--ms-safe-left)) max(0.75rem, var(--ms-safe-right)); z-index: 4; pointer-events: none; }
     .map-rail > * { pointer-events: auto; }
     slot[name="scrim"] { display: contents; pointer-events: none; }
     ::slotted(.sheet-scrim) { pointer-events: auto; }
@@ -200,7 +200,7 @@ export class MaticMapCanvasV4 extends LitElement {
     .overlay-canvas { z-index: 1; pointer-events: none; }
 
     .map-scale {
-      inset-inline-start: 0.9rem;
+      inset-inline-start: max(0.9rem, var(--ms-safe-left));
       inset-block-end: calc(5.2rem + var(--map-sheet-offset, 0px));
       display: grid;
       justify-items: start;

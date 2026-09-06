@@ -19,6 +19,10 @@ import { css } from "lit";
 // to every browser.
 export const tokens = css`
 :host {
+--ms-safe-top: var(--safe-area-inset-top, env(safe-area-inset-top, 0px));
+--ms-safe-right: var(--safe-area-inset-right, env(safe-area-inset-right, 0px));
+--ms-safe-bottom: var(--safe-area-inset-bottom, env(safe-area-inset-bottom, 0px));
+--ms-safe-left: var(--safe-area-inset-left, env(safe-area-inset-left, 0px));
 --ms-accent: var(--primary-color, #0678ce);
 --ms-on-accent: var(--text-primary-color, #fff);
 --ms-danger: var(--error-color, #b3261e);

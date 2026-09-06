@@ -31,13 +31,13 @@ export const shellStyles = [tokens, base, controls, css`
     .skip-link:focus {
       position: absolute;
       z-index: 40;
-      inset-block-start: var(--ms-space-2);
+      inset-block-start: calc(var(--ms-space-2) + var(--ms-safe-top));
       inset-inline-start: var(--ms-space-2);
     }
 
     .app {
       display: grid;
-      grid-template-rows: 3.5rem minmax(0, 1fr);
+      grid-template-rows: calc(3.5rem + var(--ms-safe-top)) minmax(0, 1fr);
       min-block-size: 36rem;
       block-size: 100%;
       background: var(--ms-surface-app);
@@ -53,7 +53,8 @@ export const shellStyles = [tokens, base, controls, css`
       align-items: center;
       gap: var(--ms-space-2);
       min-inline-size: 0;
-      padding-inline: max(var(--ms-space-3), env(safe-area-inset-left)) max(var(--ms-space-3), env(safe-area-inset-right));
+      padding-block-start: var(--ms-safe-top);
+      padding-inline: max(var(--ms-space-3), var(--ms-safe-left)) max(var(--ms-space-3), var(--ms-safe-right));
       border-block-end: 1px solid var(--ms-line);
       background: var(--ms-local);
       box-shadow: var(--ms-shadow-1);
@@ -201,7 +202,7 @@ export const shellStyles = [tokens, base, controls, css`
       position: absolute;
       z-index: 9;
       inset-inline-end: var(--ms-space-3);
-      inset-block-end: max(var(--ms-space-3), env(safe-area-inset-bottom));
+      inset-block-end: max(var(--ms-space-3), var(--ms-safe-bottom));
       display: grid;
       grid-template-columns: minmax(0, 1fr) auto;
       gap: var(--ms-space-3);
@@ -231,7 +232,7 @@ export const shellStyles = [tokens, base, controls, css`
       inset: 0;
       display: grid;
       place-items: center;
-      padding: var(--ms-space-4);
+      padding: max(var(--ms-space-4), var(--ms-safe-top)) max(var(--ms-space-4), var(--ms-safe-right)) max(var(--ms-space-4), var(--ms-safe-bottom)) max(var(--ms-space-4), var(--ms-safe-left));
       background: var(--ms-scrim);
     }
 
@@ -252,7 +253,7 @@ export const shellStyles = [tokens, base, controls, css`
 
     /* Programmatic focus after a workflow change is for assistive tech; a ring on a heading reads as a control. */
     h2[tabindex="-1"]:focus { outline: 0; }
-    .narrow .app { grid-template-rows: 3.35rem minmax(0, 1fr); min-block-size: 28rem; }
+    .narrow .app { grid-template-rows: calc(3.35rem + var(--ms-safe-top)) minmax(0, 1fr); min-block-size: 28rem; }
     .narrow .workspace { grid-template-columns: minmax(0, 1fr); }
     .narrow .inspector { border-inline-start: 0; }
     .narrow .mobile-sheet {
@@ -264,7 +265,7 @@ export const shellStyles = [tokens, base, controls, css`
       flex-direction: column;
       block-size: auto;
       max-block-size: calc(100% - 2rem);
-      padding: 0 max(var(--ms-space-3), env(safe-area-inset-right)) max(var(--ms-space-3), env(safe-area-inset-bottom)) max(var(--ms-space-3), env(safe-area-inset-left));
+      padding: 0 max(var(--ms-space-3), var(--ms-safe-right)) max(var(--ms-space-3), var(--ms-safe-bottom)) max(var(--ms-space-3), var(--ms-safe-left));
       border-start-start-radius: var(--ms-radius-lg);
       border-start-end-radius: var(--ms-radius-lg);
       box-shadow: 0 -8px 26px rgb(0 0 0 / 14%);
@@ -357,7 +358,7 @@ export const shellStyles = [tokens, base, controls, css`
     }
     .narrow .title { font-size: var(--ms-t-md); }
     .narrow .context-switcher { max-inline-size: 7rem; }
-    .narrow .full-map-hud { inset-block-end: max(var(--ms-space-3), env(safe-area-inset-bottom)); }
+    .narrow .full-map-hud { inset-block-end: max(var(--ms-space-3), var(--ms-safe-bottom)); }
     .narrow .workspace.full-map .mobile-sheet { display: none; }
     .narrow .sheet-scrim {
       position: absolute;
