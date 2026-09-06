@@ -401,6 +401,15 @@ export class EffectController {
           void this.loadPlans();
         }
         this.#resumeAreaCatalog();
+        // Transient scene failures do not necessarily advance map identity.
+        // Retry on the next verified catalog poll, without interrupting a
+        // request that is still building the scene.
+        const stamp = this.#coherence.current();
+        if (coherent && stamp
+          && state.resources.scene.status === "error"
+          && !this.#controllers.has("scene")) {
+          void this.#loadLiveScene(selected, stamp);
+        }
         return;
       }
       this.#entryIdentity = identity;
