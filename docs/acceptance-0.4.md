@@ -1,9 +1,11 @@
 # 0.4 end-to-end acceptance
 
-Status: in progress, not release sign-off. Installed baseline: unpublished
-`16e0ae7`. The 2026-09-05 non-motion audit and corner-control follow-up are
-installed and verified live. This is not physical acceptance of every workflow.
-Run affected journeys and final gates against the exact candidate being promoted.
+Status: in progress, not release sign-off. Installed UI baseline: unpublished
+`2753701`, with exact three-file readback and guarded restart verified.
+September 6 actual iPhone navigation and saved-outline checks passed; the owner
+reported the guided iPhone VoiceOver flow worked and waived separate iPad
+acceptance. This is not physical acceptance of every robot workflow.
+Release preparation targets `0.4.0rc1`; rerun affected gates before promotion.
 
 ## Evidence rules
 
@@ -35,7 +37,7 @@ Run affected journeys and final gates against the exact candidate being promoted
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 521 browser checks passed on installed UI baseline; native VoiceOver and physical phone/tablet open |
+| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 567 browser checks; actual iPhone flows and guided owner VoiceOver pass; iPad waived; broader assistive-technology cases remain separate |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
 ## Latest bounded physical evidence

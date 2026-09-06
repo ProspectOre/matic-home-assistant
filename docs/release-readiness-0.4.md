@@ -1,9 +1,27 @@
 # 0.4 release readiness
 
 Status: acceptance in progress; no release authorization implied.
-Installed candidate: unpublished `e29d7fd`, verified live after guarded restart.
-PR109/110 regular exact-head review and CI passed; public release approval is open.
-Saved-area startup recovery is the current follow-up under validation.
+Installed UI baseline: unpublished `2753701` (PR #114), reviewed at `2443f8b`.
+Pre- and post-merge Python, browser, HACS and Hassfest checks passed. The three
+installed UI files matched their recorded hashes after guarded restart.
+Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
+
+## September 6 acceptance update
+
+- Actual iPhone Air testing passed companion safe areas, HA navigation, plan
+  selection/creation, draft discard, automatic outline closure, further points,
+  save/exit without a false discard prompt, and four-point saved-area reopen.
+- The owner reported the guided iPhone VoiceOver plan/create/discard navigation
+  check worked. This is an owner-reported pass, not an instrumented audit.
+- Separate physical iPad acceptance is waived by the owner following phone
+  acceptance; no physical iPad test is claimed.
+- Latest UI baseline: 567 local browser checks and 55 focused packaging/privacy
+  checks passed. Full Python baseline remains 1,321 tests at 100% coverage.
+- An isolated HA 2026.7 Store rehearsal preserved synthetic plan/area selection
+  across stable-to-candidate loading and restored the matching backup byte for
+  byte. This does not prove live credential migration or HACS rollback.
+- Different-settings handoff, interruption/native completion semantics, physical
+  thresholds, fresh floor carries and affected reporter hardware remain open.
 
 ## Completed baseline evidence
 
@@ -47,7 +65,8 @@ Saved-area startup recovery is the current follow-up under validation.
   available; mismatched scene responses become retryable errors.
 - Exact HA2026.7 Bluetooth/camera and integration imports pass with platform
   manifest dependencies installed; pip check passes. This is not hardware proof.
-- Native devices, VoiceOver and physical cleaning remain separate open gates.
+- Phone and guided owner VoiceOver checks passed as scoped above; broader
+  assistive technology and physical cleaning remain separate evidence.
 
 ## Work queue
 
@@ -58,7 +77,7 @@ Saved-area startup recovery is the current follow-up under validation.
 | Performance/resource observation | Record final-build load and interaction conditions; synthetic traces do not prove live-map or long-session performance |
 | Minimum supported HA | Legacy registry migration and Bluetooth/camera dependency imports pass on HA2026.7; hardware setup remains separate |
 | Stable upgrade and rollback | Rehearse stable-to-candidate upgrade and matching-backup recovery on a disposable instance; preserve plans/areas/configuration |
-| Native accessibility/devices | VoiceOver, actual phone/tablet, touch, orientation and enlarged text; emulation is separate |
+| Native accessibility/devices | Phone and guided owner VoiceOver pass; iPad waived. Broader touch, orientation and enlarged-text evidence stays separate |
 | Pairing/reauthentication | Supported hardware and Container credential replacement; imports and synthetic Bluetooth tests are separate |
 | Mixed-settings plan | Native multi-leg completion, handoff, exactly-once credit/events and ownership cleanup |
 | Stop/interruption | Map/action/automation Stop, pause/resume, reconnect/restart during work, no replay or false credit |

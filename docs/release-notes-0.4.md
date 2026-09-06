@@ -1,8 +1,8 @@
 # 0.4 release notes — draft
 
 Unpublished draft, not a release announcement or acceptance certificate.
-The installed unpublished candidate includes the perimeter editor and live
-Safari accessibility/naming fixes after `16e0ae7`. The intended first public candidate is `v0.4.0-rc1`, subject to
+The installed unpublished UI baseline is `2753701`, including automatic
+perimeter closure, saved-area recovery and companion-app safe-area fixes. The intended first public candidate is `v0.4.0-rc1`, subject to
 completed acceptance and explicit release approval. Intermediate builds are
 not published releases.
 
@@ -43,9 +43,12 @@ physical workflows. The installed audit passed 1,301 Python tests at 100%
 coverage, 471 browser checks, hosted gates, exact-head review and affected live
 non-motion checks. Subsequent changes require their own validation.
 
-Different-settings mission legs, custom-area runs, Stop/interruption and
-threshold behavior, a fresh floor round trip, affected #65/#71 hardware, native
-VoiceOver and physical phone/tablet acceptance remain open. Fresh hardware
+Actual iPhone navigation, plan creation/discard and saved-outline checks passed.
+The owner reported the guided iPhone VoiceOver flow worked; separate iPad
+acceptance was waived. Different-settings mission legs, Stop/interruption and
+threshold behavior, a fresh floor round trip and affected #65/#71 hardware
+remain open. A saved-zone completion passed, while its separate interrupted
+run retained an unresolved native completed classification. Fresh hardware
 pairing and Container reauthentication also remain distinct checks. See the
 [acceptance checklist](acceptance-0.4.md) for outcomes and release gates.
 
