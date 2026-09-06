@@ -142,8 +142,10 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
       return { title: t("v4_choose_rooms", "Choose rooms"), description: t("v4_choose_rooms_detail", "Select on the map or from the list.") };
     case "draw":
       return { title: t("v4_draw_area", "Draw an area"), description: t("v4_draw_area_detail", "Outline or paint the area, then review it before saving.") };
+    case "plans":
+      return { title: t("v4_your_plans", "Your plans"), description: t("v4_choose_plan_detail", "Choose a plan to edit or run, or create a new one.") };
     case "plan":
-      return { title: t("v4_cleaning_plan", "Cleaning plan"), description: t("v4_plan_detail", "Review rooms and cleaning settings.") };
+      return { title: state.planDraft.id ? t("v4_edit_plan", "Edit plan") : t("v4_create_plan", "Create a plan"), description: t("v4_plan_detail", "Review rooms and cleaning settings.") };
     case "areaReview":
       return { title: t("v4_name_this_area", "Name this area"), description: t("area_details_hint", "Name the area and choose cleaning settings.") };
     case "history":
@@ -173,6 +175,7 @@ const DEFAULT_DETENT: Readonly<Record<Workflow, SheetDetent>> = {
   rooms: "half",
   draw: "peek",
   plan: "full",
+  plans: "full",
   areaReview: "half",
   history: "half",
   support: "full",
@@ -514,7 +517,7 @@ export class MaticMapShellV4 extends LitElement {
     } else {
       this.#intent({ type: "discard-draft" });
     }
-    if (pending) queueMicrotask(() => this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
+    if (pending && pending.type !== "dismiss-top-layer") queueMicrotask(() => this.dispatchEvent(new CustomEvent<WorkspaceIntent>(WORKSPACE_INTENT_EVENT, {
       detail: pending, bubbles: true, composed: true,
     })));
   }
@@ -531,9 +534,6 @@ export class MaticMapShellV4 extends LitElement {
       if (floor) floor.value = this.state.selection.floorId;
       const robot = this.renderRoot.querySelector<HTMLSelectElement>(".robot-switcher");
       if (robot) robot.value = this.state.selection.entryId ?? "";
-      const workflow = this.renderRoot.querySelector<HTMLElement>(WORKFLOW_TAG);
-      const plan = workflow?.shadowRoot?.querySelector<HTMLSelectElement>('[name="saved-plan"]');
-      if (plan) plan.value = this.state.selection.planId ?? "";
     });
   }
 
@@ -999,7 +999,7 @@ export class MaticMapShellV4 extends LitElement {
       : null;
     const customAreaReason = locating
       ? t("v4_reason_locating", "Waiting for the robot to confirm which floor it is on.")
-      : t("v4_areas_quick_detail", "Sketch a one-time zone on the map");
+      : t("v4_areas_quick_detail", "Create or choose a saved area");
     return html`
       ${state.activity === "problem"
         ? this.#hostState(t("v4_attention_title", "The robot needs attention"), t("v4_attention_body", "Check the robot, then start a new task."))
@@ -1022,7 +1022,7 @@ export class MaticMapShellV4 extends LitElement {
               class="ms-row ms-row--card"
               type="button"
               aria-disabled=${locating ? "true" : nothing}
-              @click=${() => { if (!locating) this.#workflow("plan"); }}
+              @click=${() => { if (!locating) this.#workflow("plans"); }}
             >
               <span class="ms-row__lead">${icon(iconPlan)}</span>
               <span class="ms-row__body">
@@ -1107,10 +1107,10 @@ export class MaticMapShellV4 extends LitElement {
           <button
             class="panel-back ms-btn ms-btn--secondary"
             type="button"
-            aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+            aria-label=${state.workflow === "plan" ? this.#t("v4_back_to_plans", "Back to plans") : this.#t("v4_back_to_all_tasks", "Back to all tasks")}
             data-dialog-launcher="discardDraft"
-            @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
-          >${icon(iconBack)}<span class="ms-btn__label">${this.#t("v4_all_tasks", "All tasks")}</span></button>
+            @click=${(event: Event) => this.#workflow(state.workflow === "plan" ? "plans" : "none", event.currentTarget)}
+          >${icon(iconBack)}<span class="ms-btn__label">${state.workflow === "plan" ? this.#t("v4_your_plans", "Your plans") : this.#t("v4_all_tasks", "All tasks")}</span></button>
         ` : nothing}
         <h2 tabindex="-1">${workflow.title}</h2>
       </div>
@@ -1201,6 +1201,16 @@ export class MaticMapShellV4 extends LitElement {
         <button class="skip-link ms-btn ms-btn--primary" type="button" @click=${this.#skipToWorkspace}>${this.#t("v4_skip_to_workspace", "Skip to the map workspace")}</button>
         <div class="app" ?inert=${Boolean(dialog) || this._helpOpen}>
           <header class="app-bar">
+            ${!state.precisionOpen ? html`
+              <button
+                class="nav nav--menu ms-btn ms-btn--icon"
+                type="button"
+                aria-label=${this.#t("v4_open_navigation", "Open Home Assistant sidebar")}
+                title=${this.#t("v4_open_navigation", "Open Home Assistant sidebar")}
+                @click=${this.#toggleNavigation}
+              >${icon(iconMenu)}</button>
+            ` : nothing}
+
             ${state.precisionOpen ? html`
               <button
                 class="nav ms-btn ms-btn--icon"
@@ -1231,24 +1241,15 @@ export class MaticMapShellV4 extends LitElement {
                 class="workspace-toggle ms-btn ms-btn--icon"
                 type="button"
                 aria-label=${state.fullMap
-                  ? this.#t("v4_show_workspace", "Show workspace")
-                  : this.#t("v4_hide_workspace", "Hide workspace")}
+                  ? this.#t("v4_show_workspace", "Show cleaning panel")
+                  : this.#t("v4_hide_workspace", "Hide cleaning panel")}
                 aria-controls="map-workspace"
                 aria-expanded=${String(!state.fullMap)}
                 title=${state.fullMap
-                  ? this.#t("v4_show_workspace", "Show workspace")
-                  : this.#t("v4_hide_workspace", "Hide workspace")}
+                  ? this.#t("v4_show_workspace", "Show cleaning panel")
+                  : this.#t("v4_hide_workspace", "Hide cleaning panel")}
                 @click=${this.#toggleWorkspace}
               >${icon(iconWorkspace)}</button>
-            ` : nothing}
-            ${!state.precisionOpen ? html`
-              <button
-                class="nav nav--menu ms-btn ms-btn--icon"
-                type="button"
-                aria-label=${this.#t("v4_open_navigation", "Open navigation")}
-                title=${this.#t("v4_open_navigation", "Open navigation")}
-                @click=${this.#toggleNavigation}
-              >${icon(iconMenu)}</button>
             ` : nothing}
             <div class="overflow-wrap">
               <button
@@ -1340,10 +1341,10 @@ export class MaticMapShellV4 extends LitElement {
                     <button
                       class="sheet-back ms-btn ms-btn--icon ms-btn--sm"
                       type="button"
-                      aria-label=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
-                      title=${this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      aria-label=${state.workflow === "plan" ? this.#t("v4_back_to_plans", "Back to plans") : this.#t("v4_back_to_all_tasks", "Back to all tasks")}
+                      title=${state.workflow === "plan" ? this.#t("v4_back_to_plans", "Back to plans") : this.#t("v4_back_to_all_tasks", "Back to all tasks")}
                       data-dialog-launcher="discardDraft"
-                      @click=${(event: Event) => this.#workflow("none", event.currentTarget)}
+                      @click=${(event: Event) => this.#workflow(state.workflow === "plan" ? "plans" : "none", event.currentTarget)}
                     >${icon(iconBack)}</button>
                   ` : nothing}
                   <span class="sheet-status">${this.#sheetStatus(state, status)}</span>

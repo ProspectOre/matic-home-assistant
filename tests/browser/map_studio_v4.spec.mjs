@@ -675,25 +675,20 @@ test.describe("Map Studio v0.4 foundation", () => {
       element.replaceWorkspaceState({ ...state, workflow: "plan", planDraft: { ...state.planDraft, name: "Keep these edits", dirty: true } });
     }, GALLERY_TAG);
     const dialog = gallery.getByRole("dialog", { name: "Discard plan changes?" });
-    const plan = gallery.getByRole("combobox", { name: "Saved plan", exact: true });
-    await plan.selectOption("");
+    await gallery.getByRole("button", { name: "Back to plans" }).click();
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Keep editing" }).click();
-    await expect(plan).toHaveValue("daily");
-    await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Keep these edits");
-    await gallery.getByRole("button", { name: "Back to all tasks" }).click();
-    await expect(dialog).toBeVisible();
-    await dialog.press("Escape");
     await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Keep these edits");
     await gallery.getByRole("combobox", { name: "Choose floor" }).selectOption("saved-1");
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Keep editing" }).click();
     await expect(gallery.getByRole("combobox", { name: "Choose floor" })).toHaveValue("current");
-    await gallery.getByRole("button", { name: "New plan", exact: true }).click();
+    await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
     await expect(dialog).toBeVisible();
     await dialog.getByRole("button", { name: "Discard", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    expect(await snapshot(page)).toMatchObject({ workflow: "plan", selection: { planId: null }, planDraft: { dirty: false } });
+    await gallery.getByRole("button", { name: "Create a plan", exact: true }).click();
+    expect(await snapshot(page)).toMatchObject({ workflow: "plan", selection: { planId: null }, planDraft: { dirty: false, name: "", rooms: [] } });
   });
 
   test("preserves dirty drafts on browser-layer dismissal and freezes forms during a save", async ({ page }) => {
@@ -711,7 +706,6 @@ test.describe("Map Studio v0.4 foundation", () => {
       element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), command: "pending" });
     }, GALLERY_TAG);
     await expect(gallery.getByRole("textbox", { name: "Plan name" })).toBeDisabled();
-    await expect(gallery.getByRole("combobox", { name: "Saved plan", exact: true })).toBeDisabled();
     await expect(gallery.getByRole("combobox", { name: "Cleaning system for Kitchen", exact: true })).toBeDisabled();
   });
   test("preserves plan edits after a failed or blocked save and allows retry", async ({ page }) => {
@@ -1430,6 +1424,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }, GALLERY_TAG);
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
     const deletePlan = gallery.getByRole("button", { name: "Delete plan" });
     await expect(deletePlan).toBeVisible();
     await deletePlan.click();
@@ -1468,6 +1463,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator(".mobile-sheet")).toBeVisible();
 
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
     // Exactly one panel: two meant the launcher lookup could pick the hidden one.
     await expect(gallery.locator("matic-map-workflow-v4")).toHaveCount(1);
     const deletePlan = gallery.getByRole("button", { name: "Delete plan" });
@@ -1502,11 +1498,11 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: /^Brush width, 0\.20 m/ })).toBeFocused();
 
     const workspaceToggle = gallery.locator(".workspace-toggle");
-    await expect(workspaceToggle).toHaveAccessibleName("Hide workspace");
+    await expect(workspaceToggle).toHaveAccessibleName("Hide cleaning panel");
     await workspaceToggle.click();
     await expect.poll(async () => (await snapshot(page)).fullMap).toBe(true);
     await expect(gallery.locator(".inspector")).toBeHidden();
-    await expect(workspaceToggle).toHaveAccessibleName("Show workspace");
+    await expect(workspaceToggle).toHaveAccessibleName("Show cleaning panel");
     const precision = gallery.getByRole("button", { name: /^Brush width, 0\.20 m/ });
     await expect(precision).toBeVisible();
     await precision.click();
@@ -1713,6 +1709,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("uses one ordered room list for plan selection and per-room settings", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
     const inspector = gallery.locator(".inspector");
     // Groups are named by a visible h3 (aria-labelledby), not a bare
     // aria-label, so the outline is readable by sighted users as well.
@@ -1735,13 +1732,12 @@ test.describe("Map Studio v0.4 foundation", () => {
     )).toBe(true);
   });
 
-  test("keeps the saved-plan selector aligned with the loaded draft", async ({ page }) => {
+  test("keeps plan choices available after catalog loading", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
-    const selector = gallery.getByLabel("Saved plan");
-    await expect(selector).toHaveValue("daily");
-    await expect(selector.locator("option:checked")).toHaveText("Daily clean");
-    await expect(selector.locator('option[value="daily"]')).toHaveAttribute("selected", "");
+    const choice = gallery.getByRole("button", { name: /Daily clean.*Edit plan/ });
+    await expect(choice).toBeVisible();
+    await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveCount(0);
 
     await page.evaluate((tag) => {
       const element = document.querySelector(tag);
@@ -1765,8 +1761,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         resources: { ...current.resources, plans: ready.resources.plans },
       });
     }, GALLERY_TAG);
-    await expect(selector).toHaveValue("daily");
-    await expect(selector.locator("option:checked")).toHaveText("Daily clean");
+    await expect(choice).toBeVisible();
   });
 
   test("uses task-specific loading, empty, and error messages", async ({ page }) => {
@@ -2054,7 +2049,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps Stop reachable while paused and strips transition expanded map to safety controls", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "paused" });
-    await gallery.getByRole("button", { name: "Hide workspace" }).click();
+    await gallery.getByRole("button", { name: "Hide cleaning panel" }).click();
     await expect(gallery.getByRole("button", { name: "Resume cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
 
@@ -2068,7 +2063,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
     await expect.poll(async () => (await snapshot(page)).fullMap).toBe(true);
     await expect(gallery.locator(".map-tools button")).toHaveCount(0);
-    await expect(gallery.getByRole("button", { name: "Show workspace" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Show cleaning panel" })).toBeVisible();
     await expect(gallery.locator(".full-map-hud")).toContainText("Locating");
     await expect(gallery.locator(".map-message")).toHaveCount(0);
   });
@@ -2196,7 +2191,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("makes the first cleaning decision explicit without a phantom Run plan action", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
-    const navigation = gallery.getByRole("button", { name: "Open navigation" });
+    const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
     await expect(navigation).toBeVisible();
     await page.evaluate((tag) => {
       window.__navigationToggles = 0;
@@ -2224,7 +2219,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(quick.nth(0)).toHaveClass(/ms-row--featured/);
     await expect(quick.nth(1)).toHaveAccessibleName(/^Run a plan (1 saved routine|\d+ saved routines)/);
     await expect(gallery.getByRole("heading", { name: "Map tools", level: 3 })).toBeVisible();
-    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Clean a custom area Sketch a one-time zone on the map/ })).toBeVisible();
+    await expect(gallery.locator(".shelf").getByRole("button", { name: /^Clean a custom area Create or choose a saved area/ })).toBeVisible();
     await expect(gallery.locator(".shelf").getByRole("button", { name: /^Map history Saved maps are floor-scoped and read only/ })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run plan", exact: true })).toHaveCount(0);
@@ -2495,6 +2490,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     // shipped looking identical whether a room was in the plan or not.
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
     const inspector = gallery.locator(".inspector");
     const rows = inspector.locator(".plan-room");
     await expect(rows.first()).toBeVisible();
@@ -4158,6 +4154,7 @@ test("short phone keeps plan footer reachable below the reserved map controls", 
   const gallery = await loadGallery(page);
   await gallery.locator(".stage").evaluate((stage) => { stage.style.minBlockSize = "0"; stage.style.blockSize = "568px"; });
   await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
   await settleSheet(gallery);
   const sheet = gallery.locator(".mobile-sheet");
   await expect(sheet).toHaveAttribute("data-detent", "full");
@@ -4704,7 +4701,7 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     element.style.setProperty("--safe-area-inset-top", "62px");
     element.style.setProperty("--safe-area-inset-bottom", "34px");
   });
-  const navigation = gallery.getByRole("button", { name: "Open navigation", exact: true });
+  const navigation = gallery.getByRole("button", { name: "Open Home Assistant sidebar", exact: true });
   const bar = gallery.locator(".app-bar");
   await expect.poll(async () => (await navigation.boundingBox())?.y).toBeGreaterThanOrEqual(62);
   const initialHeight = (await bar.boundingBox()).height;
@@ -4733,4 +4730,145 @@ test("companion safe areas keep navigation and drawing actions clear of system U
     for (const edge of ["top", "right", "bottom", "left"]) element.style.setProperty(`--safe-area-inset-${edge}`, "0px");
   });
   await expect.poll(async () => (await navigation.boundingBox())?.y).toBeLessThan(20);
+});
+
+test("plan catalog refresh preserves explicit selection and reconciles a saved new plan", async ({ page }) => {
+  await loadEffectHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore(initial);
+    let catalog = initial.resources.plans.value;
+    const second = { ...catalog.plans[0], id: "second", name: "Evening routine", enabled: false };
+    catalog = { ...catalog, plans: [...catalog.plans, second] };
+    let writes = 0;
+    const effects = new EffectController(store, {
+      catalog: async () => [initial.resources.entry],
+      history: async () => initial.resources.history.value,
+      scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+      pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+      plans: async () => catalog,
+      service: async () => {
+        writes += 1;
+        catalog = { ...catalog, selectedPlan: "new", plans: [...catalog.plans, { ...second, id: "new", name: "New routine", enabled: true }] };
+      },
+      dispose() {},
+    });
+    try {
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test",
+        entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.refreshCatalog(true);
+      for (let i = 0; i < 20 && store.value.resources.plans.status === "loading"; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+      store.patch({ coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene } });
+      await effects.loadPlans();
+      effects.selectPlan("second");
+      await effects.loadPlans();
+      const selected = { id: store.value.planDraft.id, name: store.value.planDraft.name };
+      effects.selectPlan(null);
+      await effects.loadPlans();
+      const blank = { id: store.value.planDraft.id, name: store.value.planDraft.name, enabled: store.value.planDraft.enabled };
+      store.patch({ coherence: "current", floor: initial.floor, resources: { ...store.value.resources, scene: initial.resources.scene },
+        planDraft: { ...store.value.planDraft, name: "New routine", rooms: second.rooms, dirty: true } });
+      await effects.savePlan();
+      return { selected, blank, savedId: store.value.planDraft.id, dirty: store.value.planDraft.dirty, writes };
+    } finally { effects.dispose(); }
+  });
+  expect(result).toEqual({ selected: { id: "second", name: "Evening routine" }, blank: { id: null, name: "", enabled: true }, savedId: "new", dirty: false, writes: 1 });
+});
+
+for (const boundary of ["service", "catalog"]) {
+  test(`late plan save ${boundary} completion preserves navigation and later drafts`, async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async (boundary) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const results = [];
+      for (const destination of ["plans", "none", "other-editor"]) {
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore({ ...initial, workflow: "plan", planDraft: { ...initial.planDraft, dirty: true } });
+        let finish;
+        const pending = new Promise((resolve) => { finish = resolve; });
+        let reading = false;
+        const effects = new EffectController(store, { service: async () => { if (boundary === "service") await pending; }, dispose() {} });
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test",
+          entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        effects.loadPlans = async () => { reading = true; if (boundary === "catalog") await pending; };
+        try {
+          const saving = effects.savePlan();
+          if (boundary === "catalog") {
+            for (let i = 0; i < 20 && !reading; i += 1) await new Promise((resolve) => setTimeout(resolve, 0));
+            if (!reading) throw new Error("Save did not reach catalog refresh");
+          }
+          store.dispatch({ type: "discard-draft" });
+          store.dispatch({ type: "open-workflow", workflow: destination === "other-editor" ? "plan" : destination });
+          if (destination === "other-editor") store.patch({ planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+          const expected = { workflow: store.value.workflow, draft: store.value.planDraft };
+          finish();
+          await saving;
+          results.push({ expected, actual: { workflow: store.value.workflow, draft: store.value.planDraft } });
+        } finally { effects.dispose(); }
+      }
+      return results;
+    }, boundary);
+    for (const row of result) expect(row.actual).toEqual(row.expected);
+  });
+}
+
+test("late plan deletion clears the deleted identity without replacing another workflow", async ({ page }) => {
+  await loadEffectHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+    const results = [];
+    for (const destination of ["rooms", "none", "plans", "other-editor", "same-editor"]) {
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, workflow: "plan" });
+      let finish;
+      const pending = new Promise((resolve) => { finish = resolve; });
+      const effects = new EffectController(store, { service: async () => pending, dispose() {} });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test",
+        entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      effects.loadPlans = async () => {};
+      try {
+        const deleting = effects.deletePlan();
+        store.dispatch({ type: "open-workflow", workflow: destination.endsWith("editor") ? "plan" : destination });
+        if (destination === "other-editor") store.patch({ selection: { ...store.value.selection, planId: "second" }, planDraft: { ...initial.planDraft, id: "second", name: "Keep later edits", dirty: true } });
+        finish();
+        await deleting;
+        results.push({ destination, workflow: store.value.workflow, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty });
+      } finally { effects.dispose(); }
+    }
+    return results;
+  });
+  expect(result).toEqual([
+    { destination: "rooms", workflow: "rooms", id: null, dirty: false },
+    { destination: "none", workflow: "none", id: null, dirty: false },
+    { destination: "plans", workflow: "plans", id: null, dirty: false },
+    { destination: "other-editor", workflow: "plan", id: "second", dirty: true },
+    { destination: "same-editor", workflow: "plans", id: null, dirty: false },
+  ]);
+});
+
+test("browser Back closes the plan editor then picker before leaving the route", async ({ page }) => {
+  await loadEffectHarness(page);
+  const route = page.url();
+  await page.evaluate(async () => {
+    const { WorkspaceStore, LayerHistoryController, createGalleryState } = await import("/plan-recovery-test.js");
+    const store = new WorkspaceStore(createGalleryState("ready"));
+    const layers = new LayerHistoryController(store);
+    layers.start();
+    store.dispatch({ type: "open-workflow", workflow: "plans" });
+    store.dispatch({ type: "select-plan", planId: "daily" });
+    window.__planLayers = { store, layers };
+  });
+  expect(await page.evaluate(() => history.state.maticMapLayer.depth)).toBe(2);
+  await page.evaluate(() => history.back());
+  await expect.poll(() => page.evaluate(() => window.__planLayers.store.value.workflow)).toBe("plans");
+  expect(await page.evaluate(() => history.state.maticMapLayer.depth)).toBe(1);
+  expect(page.url()).toBe(route);
+  await page.evaluate(() => history.back());
+  await expect.poll(() => page.evaluate(() => window.__planLayers.store.value.workflow)).toBe("none");
+  expect(page.url()).toBe(route);
+  await page.evaluate(() => window.__planLayers.layers.dispose());
 });

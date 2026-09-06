@@ -3,7 +3,7 @@ import { WorkspaceStore } from "./state";
 import { needsDraftConfirmation } from "./draft-navigation";
 
 const layerDepth = (state: WorkspaceState): number =>
-  (state.workflow === "none" ? 0 : 1)
+  (state.workflow === "none" ? 0 : state.workflow === "plan" ? 2 : 1)
   + (state.fullMap ? 1 : 0)
   + (state.precisionOpen ? 1 : 0)
   + (state.dialog ? 1 : 0);

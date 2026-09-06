@@ -4,7 +4,7 @@ test("keeps checkbox state attached to its room when selected rows move", async 
   await page.goto("/map-studio-v4-audit");
   const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
   await gallery.getByRole("button", { name: /^Run a plan/ }).click();
-  await gallery.getByRole("button", { name: "New plan", exact: true }).click();
+  await gallery.getByRole("button", { name: "Create a plan", exact: true }).click();
   const rows = gallery.locator(".plan-room");
   await rows.last().getByRole("checkbox").click();
   await expect(rows.first()).toHaveAttribute("data-selected", "true");
@@ -150,7 +150,10 @@ for (const colorScheme of ["light", "dark"]) {
     test(`${colorScheme} ${surface} text has readable contrast`, async ({ page }) => {
       await page.emulateMedia({ colorScheme });
       await page.goto("/map-studio-v4-review");
-      if (surface === "primary") await page.getByRole("button", { name: "Run a plan 1 saved routine", exact: true }).click();
+      if (surface === "primary") {
+        await page.getByRole("button", { name: "Run a plan 1 saved routine", exact: true }).click();
+        await page.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+      }
       else await page.getByRole("button", { name: "transition", exact: true }).click();
       const element = page.locator(surface === "primary" ? ".action-bar .ms-btn--primary" : ".map-message");
       await expect(element).toBeVisible();
@@ -461,4 +464,74 @@ test("a rejected pose session cannot be resurrected by a same-floor catalog refr
   const result = await page.evaluate(() => ({ exactPose: window.poseRecoveryStore.value.map.exactPose, pose: window.poseRecoveryStore.value.resources.pose.value }));
   expect(result).toEqual({ exactPose: false, pose: null });
   await page.evaluate(() => window.poseRecoveryEffects.dispose());
+});
+
+for (const width of [320, 390, 820, 1280]) {
+  for (const theme of ["light", "dark"]) {
+    test(`plan picker separates selection and creation at ${width}px ${theme}`, async ({ page }, testInfo) => {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto("/map-studio-v4-audit");
+      const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
+      await gallery.evaluate((element, theme) => {
+        element.theme = theme;
+        const state = element.getWorkspaceSnapshot();
+        const plan = state.resources.plans.value.plans[0];
+        element.replaceWorkspaceState({ ...state, resources: { ...state.resources,
+          plans: { ...state.resources.plans, value: { ...state.resources.plans.value,
+            plans: [plan, { ...plan, id: "second", name: "Evening routine", enabled: false }] } } } });
+      }, theme);
+      const menu = gallery.getByRole("button", { name: "Open Home Assistant sidebar" });
+      const title = gallery.getByRole("heading", { name: "Matic Map", exact: true });
+      const toggle = gallery.getByRole("button", { name: "Hide cleaning panel", exact: true });
+      const [m, t, w] = await Promise.all([menu.boundingBox(), title.boundingBox(), toggle.boundingBox()]);
+      expect(m.x + m.width).toBeLessThanOrEqual(t.x);
+      expect(w.x).toBeGreaterThan(t.x);
+      await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+      await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
+      await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveCount(0);
+      await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toHaveCount(0);
+      const create = gallery.getByRole("button", { name: "Create a plan", exact: true });
+      const choice = gallery.getByRole("button", { name: /Evening routine.*paused.*Edit plan/ });
+      for (const control of [menu, create, choice]) {
+        const box = await control.boundingBox();
+        expect(box.width).toBeGreaterThanOrEqual(44);
+        expect(box.height).toBeGreaterThanOrEqual(44);
+        expect(box.x).toBeGreaterThanOrEqual(0);
+        expect(box.x + box.width).toBeLessThanOrEqual(width);
+      }
+      await page.screenshot({ path: testInfo.outputPath(`picker-${width}-${theme}.png`) });
+      await choice.click();
+      await expect(gallery.getByRole("heading", { name: "Edit plan", exact: true })).toBeVisible();
+      await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Evening routine");
+      await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
+      await create.click();
+      await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("");
+      const draft = await gallery.evaluate((element) => element.getWorkspaceSnapshot().planDraft);
+      expect(draft).toMatchObject({ id: null, name: "", rooms: [], enabled: true, dirty: false });
+    });
+  }
+}
+
+test("Escape from the plan editor returns to the picker", async ({ page }) => {
+  await page.goto("/map-studio-v4-audit");
+  const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
+  await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+  await page.keyboard.press("Escape");
+  await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
+});
+
+test("discarding plan edits through Escape returns to the picker", async ({ page }) => {
+  await page.goto("/map-studio-v4-audit");
+  const gallery = page.locator("matic-map-studio-gallery-v0-4-0");
+  await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+  await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+  await gallery.getByRole("textbox", { name: "Plan name" }).fill("Unsaved change");
+  await page.keyboard.press("Escape");
+  const dialog = gallery.getByRole("dialog", { name: "Discard plan changes?" });
+  await expect(dialog).toBeVisible();
+  await dialog.getByRole("button", { name: "Discard", exact: true }).click();
+  await expect(gallery.getByRole("heading", { name: "Your plans", exact: true })).toBeVisible();
+  await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+  await expect(gallery.getByRole("textbox", { name: "Plan name" })).toHaveValue("Daily clean");
 });
