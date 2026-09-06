@@ -4293,3 +4293,37 @@ for (const width of [320, 390]) {
     expect((await snapshot(page)).selection.roomIds).toEqual(selection);
   });
 }
+
+test("native floor keys and gestures do not drive the map", async ({ page }) => {
+  const gallery = await loadGallery(page, { scenario: "rooms" });
+  const floor = gallery.getByRole("combobox", { name: "Choose floor", exact: true });
+  await gallery.getByRole("button", { name: "3D", exact: true }).click();
+  await floor.focus();
+  const before = await snapshot(page);
+  const prevented = await floor.evaluate((element) => {
+    const events = [
+      ...["ArrowDown", "ArrowUp", "w", "a", "s", "d", " ", "Escape"].map((key) => new KeyboardEvent("keydown", { key, code: key === " " ? "Space" : key, bubbles: true, composed: true, cancelable: true })),
+      new WheelEvent("wheel", { deltaY: 100, bubbles: true, composed: true, cancelable: true }),
+      ...["gesturestart", "gesturechange", "gestureend"].map((name) => new Event(name, { bubbles: true, composed: true, cancelable: true })),
+    ];
+    return events.map((event) => { element.dispatchEvent(event); return event.defaultPrevented; });
+  });
+  expect(prevented).toEqual(Array(prevented.length).fill(false));
+  expect((await snapshot(page)).workflow).toBe("rooms");
+  expect((await snapshot(page)).cameras).toEqual(before.cameras);
+  // Real browser typeahead changes the selected native option and floor.
+  await floor.press("s");
+  await floor.press("Enter");
+  await expect(floor).toHaveValue("saved-1");
+  await expect.poll(async () => (await snapshot(page)).selection.floorId).toBe("saved-1");
+  await floor.selectOption("current");
+  await gallery.getByRole("button", { name: "3D", exact: true }).click();
+  const rotate = gallery.getByRole("button", { name: "Rotate right", exact: true });
+  await rotate.focus();
+  const yaw = (await snapshot(page)).cameras.three?.yaw ?? null;
+  await rotate.press("Space");
+  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(yaw);
+  const afterButton = (await snapshot(page)).cameras.three?.yaw ?? null;
+  await gallery.locator(".map-root").press("ArrowRight");
+  await expect.poll(async () => (await snapshot(page)).cameras.three?.yaw ?? null).not.toBe(afterButton);
+});

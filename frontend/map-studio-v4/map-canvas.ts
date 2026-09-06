@@ -9,7 +9,7 @@ import type { PropertyValues } from "lit";
 
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { MAP_CANVAS_TAG } from "./element-tags";
-import { GestureController } from "./gesture-controller";
+import { GestureController, isNativeSelectControl } from "./gesture-controller";
 import { RendererController, type RendererDiagnostics } from "./renderer-controller";
 import {
   canShowExactPose,
@@ -423,6 +423,7 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   #keyboard(event: KeyboardEvent): void {
+    if (isNativeSelectControl(event)) return;
     if (event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key === "Escape") {
       event.preventDefault();

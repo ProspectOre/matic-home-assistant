@@ -18,6 +18,7 @@ import {
   WORKFLOW_TAG,
 } from "./element-tags";
 import { renderDrawTools } from "./draw-tools";
+import { isNativeSelectControl } from "./gesture-controller";
 import { RovingFocusController } from "./roving-focus";
 import {
   icon,
@@ -784,6 +785,7 @@ export class MaticMapShellV4 extends LitElement {
   }
 
   #keyboard(event: KeyboardEvent): void {
+    if (isNativeSelectControl(event)) return;
     if (event.defaultPrevented || event.ctrlKey || event.metaKey || event.altKey) return;
     if (event.key !== "Escape") return;
     event.preventDefault();
