@@ -34,25 +34,19 @@ export class OutlineEditor {
       return;
     }
     const circles = outlineCircles(outline, (p) => this.renderer()?.containsMapPoint(p) ?? false);
-    if (outline.closed && !circles.length) {
-      this.#message = this.t("v4_zone_empty", "Make the zone wider and keep it on mapped floor.");
-      this.update();
-      return;
-    }
-    this.#message = "";
+    // Keep a small but valid outline editable so the next point can widen it.
+    // Saving remains disabled until it contains verified cleaning coverage.
+    this.#message = outline.closed && !circles.length
+      ? this.t("v4_zone_empty", "Make the zone wider and keep it on mapped floor.") : "";
     this.intent({ type: "set-draft-circles", circles, outline });
   }
 
   addPoint(point: AreaPoint): void {
     if (!this.#enabled() || !this.renderer()?.containsMapPoint(point)) return;
     const outline = this.state().draw.outline ?? { points: [], closed: false };
-    if (outline.closed || outline.points.length >= 64) return;
-    this.#commit({ points: [...outline.points, point], closed: false });
-  }
-
-  #close(): void {
-    const outline = this.state().draw.outline;
-    if (outline && outline.points.length >= 3) this.#commit({ ...outline, closed: true });
+    if (outline.points.length >= 64) return;
+    const points = [...outline.points, point];
+    this.#commit({ points, closed: points.length >= 3 });
   }
 
   #remove(index: number): void {
@@ -106,7 +100,6 @@ export class OutlineEditor {
     drag.target.releasePointerCapture(event.pointerId);
     if (this.state().draw.outline === drag.baseline && this.#enabled()) {
       if (drag.preview !== drag.baseline) this.#commit(drag.preview);
-      else if (drag.index === 0 && !drag.baseline.closed) this.#close();
     }
     this.update();
   }
@@ -157,7 +150,6 @@ export class OutlineEditor {
             @lostpointercapture=${() => { if (this.#drag) this.cancel(); }}
             @focus=${() => { this.#selected = i; this.update(); }}
             @keydown=${(e: KeyboardEvent) => this.#key(e, i)}
-            @click=${(e: MouseEvent) => { if (e.detail === 0 && i === 0 && !outline?.closed) this.#close(); }}
           >${i + 1}</button>
         ` : nothing)}
         ${points.map((a, i) => {
@@ -180,8 +172,7 @@ export class OutlineEditor {
             </div>` : nothing}
           ${selected === null || !outline?.closed ? html`
             <div class="zone-guidance ms-surface">
-              <span>${outline?.closed ? this.t("v4_zone_edit_help", "Drag points to reshape.") : this.t("v4_zone_create_help", "Place points. Select the first to close.")}</span>
-              ${points.length >= 3 && !outline?.closed ? html`<button class="ms-btn" type="button" @click=${() => this.#close()}>${this.t("v4_zone_close", "Close zone")}</button>` : nothing}
+              <span>${outline?.closed ? this.t("v4_zone_edit_help", "Tap to add points. Drag points to reshape.") : this.t("v4_zone_create_help", "Place points around the area. The edges join automatically.")}</span>
             </div>` : nothing}
           <span class="zone-feedback ms-surface" role="status" ?hidden=${!this.#message}>${this.#message}</span>
         </div>

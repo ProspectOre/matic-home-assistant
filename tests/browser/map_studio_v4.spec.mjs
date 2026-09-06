@@ -4375,7 +4375,7 @@ for (const blocked of ["read-only", "unverified", "pending", "out-of-bounds", "u
   });
 }
 
-test("zone perimeter supports closing dragging inserting deleting and undo", async ({ page }) => {
+test("zone perimeter closes automatically and supports extending dragging inserting deleting and undo", async ({ page }) => {
   const gallery = await loadGallery(page, { scenario: "draw" });
   await page.evaluate((tag) => {
     const element = document.querySelector(tag), state = element.getWorkspaceSnapshot();
@@ -4395,18 +4395,23 @@ test("zone perimeter supports closing dragging inserting deleting and undo", asy
   await gallery.getByRole("button", { name: "Undo", exact: true }).click();
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(1);
   await clear.click();
-  for (const [x, y] of [[-45, -40], [45, -40], [45, 40], [-45, 40]]) {
+  for (const [index, [x, y]] of [[-45, -40], [45, -40], [45, 40], [-45, 40]].entries()) {
     await page.mouse.click(box.x + box.width * .3 + x, box.y + box.height * .25 + y);
+    const outline = (await snapshot(page)).draw.outline;
+    expect(outline.points).toHaveLength(index + 1);
+    expect(outline.closed).toBe(index >= 2);
   }
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
   // An image ancestor flattens these controls out of Safari's native AX tree.
   const accessibleScene = await gallery.locator(".scene-window").ariaSnapshot();
   expect(accessibleScene).toMatch(/^- group /);
   expect(accessibleScene).toContain('button "Zone point 1"');
-  expect(accessibleScene).toContain('button "Close zone"');
-  await gallery.getByRole("button", { name: "Close zone", exact: true }).click();
+  expect(accessibleScene).not.toContain('button "Close zone"');
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
   expect((await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
+  const closed = (await snapshot(page)).draw.outline;
+  await gallery.getByRole("button", { name: "Zone point 1", exact: true }).click();
+  expect((await snapshot(page)).draw.outline).toEqual(closed);
   const before = (await snapshot(page)).draw.outline;
   const first = gallery.getByRole("button", { name: "Zone point 1", exact: true });
   const unrotated = await first.boundingBox();
@@ -4487,7 +4492,7 @@ test("zone keyboard creation and point editing stay local and undoable", async (
   await expect(gallery.locator(".action-bar").getByRole("button", { name: "Name and save", exact: true })).toBeDisabled();
   await map.press("ArrowLeft"); await map.press("Enter");
   await map.press("ArrowDown"); await map.press("Enter");
-  await gallery.getByRole("button", { name: "Close zone", exact: true }).press("Enter");
+  await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
   const before = (await snapshot(page)).draw.outline;
   await gallery.getByRole("button", { name: "Zone point 1", exact: true }).press("ArrowRight");
   await expect.poll(async () => (await snapshot(page)).draw.outline.points[0].x).toBeCloseTo(before.points[0].x - .02);
@@ -4675,7 +4680,6 @@ test("painting can undo back to an editable perimeter and ignores no-op marks", 
   await map.press("ArrowDown"); await map.press("Enter");
   await map.press("ArrowLeft"); await map.press("Enter");
   await map.press("ArrowDown"); await map.press("Enter");
-  await gallery.getByRole("button", { name: "Close zone", exact: true }).click();
   const zone = (await snapshot(page)).draw.outline;
   await gallery.getByRole("button", { name: "Paint", exact: true }).click();
   await map.focus(); await map.press("ArrowLeft"); await map.press("Enter");
@@ -4871,4 +4875,117 @@ test("browser Back closes the plan editor then picker before leaving the route",
   await expect.poll(() => page.evaluate(() => window.__planLayers.store.value.workflow)).toBe("none");
   expect(page.url()).toBe(route);
   await page.evaluate(() => window.__planLayers.layers.dispose());
+});
+
+for (const refresh of ["delayed", "failed"]) {
+  test(`area save acknowledgement permits leaving before ${refresh} catalog refresh`, async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async (refresh) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
+        areaDraft: { ...initial.areaDraft, id: null, name: "Saved zone", dirty: true },
+        draw: { ...initial.draw, circles: [{ x: 1, y: 1, radius: .2 }], dirty: true } });
+      let finish;
+      const pending = new Promise(resolve => { finish = resolve; });
+      let reading = false;
+      const effects = new EffectController(store, { saveArea: async () => "saved-zone", dispose() {} });
+      effects.loadAreas = async () => {
+        reading = true;
+        await pending;
+        if (refresh === "failed") store.patch({ resources: { ...store.value.resources, areas: { status: "error", value: null, problem: "areas-unavailable" } } });
+      };
+      try {
+        const saving = effects.saveArea();
+        for (let i = 0; i < 20 && !reading; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        if (!reading) throw new Error("Save did not reach catalog refresh");
+        const acknowledged = { notice: store.value.notice.text, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, id: store.value.areaDraft.id };
+        store.dispatch({ type: "dismiss-top-layer" });
+        const left = { workflow: store.value.workflow, dialog: store.value.dialog };
+        finish();
+        await saving;
+        return { acknowledged, left, afterRefresh: { workflow: store.value.workflow, dialog: store.value.dialog } };
+      } finally { effects.dispose(); }
+    }, refresh);
+    expect(result).toEqual({ acknowledged: { notice: "Area saved", areaDirty: false, drawDirty: false, id: "saved-zone" }, left: { workflow: "none", dialog: null }, afterRefresh: { workflow: "none", dialog: null } });
+  });
+}
+
+for (const boundary of ["write", "catalog"]) {
+  test(`late area save ${boundary} completion preserves a later area draft`, async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async (boundary) => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
+        areaDraft: { ...initial.areaDraft, id: null, name: "First area", dirty: true },
+        draw: { ...initial.draw, circles: [{ x: 1, y: 1, radius: .2 }], dirty: true } });
+      let finish;
+      const pending = new Promise(resolve => { finish = resolve; });
+      let reading = false;
+      const effects = new EffectController(store, { saveArea: async () => { if (boundary === "write") await pending; return "first"; }, dispose() {} });
+      effects.loadAreas = async () => { reading = true; if (boundary === "catalog") await pending; };
+      try {
+        const saving = effects.saveArea();
+        if (boundary === "catalog") {
+          for (let i = 0; i < 20 && !reading; i++) await new Promise(resolve => setTimeout(resolve, 0));
+          if (!reading) throw new Error("Save did not reach catalog refresh");
+        }
+        store.dispatch({ type: "discard-draft" });
+        store.dispatch({ type: "open-workflow", workflow: "draw" });
+        store.dispatch({ type: "patch-area-draft", patch: { name: "Later area" } });
+        store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }] });
+        const expected = { draft: store.value.areaDraft, draw: store.value.draw, selection: store.value.selection };
+        finish();
+        await saving;
+        store.dispatch({ type: "dismiss-top-layer" });
+        return { expected, actual: { draft: store.value.areaDraft, draw: store.value.draw, selection: store.value.selection }, dialog: store.value.dialog };
+      } finally { effects.dispose(); }
+    }, boundary);
+    expect(result.actual).toEqual(result.expected);
+    expect(result.dialog).toBe("discardDraft");
+  });
+}
+
+test("failed area write keeps the draft and leave confirmation", async ({ page }) => {
+  await loadEffectHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
+      areaDraft: { ...initial.areaDraft, id: null, name: "Keep this area", dirty: true },
+      draw: { ...initial.draw, circles: [{ x: 1, y: 1, radius: .2 }], dirty: true } });
+    const effects = new EffectController(store, { saveArea: async () => { throw new Error("Write failed"); }, dispose() {} });
+    try {
+      await effects.saveArea();
+      store.dispatch({ type: "dismiss-top-layer" });
+      return { name: store.value.areaDraft.name, areaDirty: store.value.areaDraft.dirty, drawDirty: store.value.draw.dirty, dialog: store.value.dialog, notice: store.value.notice.text };
+    } finally { effects.dispose(); }
+  });
+  expect(result).toEqual({ name: "Keep this area", areaDirty: true, drawDirty: true, dialog: "discardDraft", notice: "Area could not be saved" });
+});
+
+test("area save clears an obsolete discard prompt opened while the write was pending", async ({ page }) => {
+  await loadEffectHarness(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
+      areaDraft: { ...initial.areaDraft, id: null, name: "Saved zone", dirty: true },
+      draw: { ...initial.draw, circles: [{ x: 1, y: 1, radius: .2 }], dirty: true } });
+    let finish;
+    const effects = new EffectController(store, { saveArea: () => new Promise(resolve => { finish = resolve; }), dispose() {} });
+    effects.loadAreas = async () => {};
+    try {
+      const saving = effects.saveArea();
+      store.dispatch({ type: "dismiss-top-layer" });
+      const pendingDialog = store.value.dialog;
+      finish("saved-zone");
+      await saving;
+      const savedDialog = store.value.dialog;
+      store.dispatch({ type: "dismiss-top-layer" });
+      return { pendingDialog, savedDialog, workflow: store.value.workflow, notice: store.value.notice.text };
+    } finally { effects.dispose(); }
+  });
+  expect(result).toEqual({ pendingDialog: "discardDraft", savedDialog: null, workflow: "none", notice: "Area saved" });
 });
