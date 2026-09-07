@@ -49,6 +49,11 @@ MAX_CANDIDATE_MISSIONS = 2
 # bounds as an active map; the candidate count remains separately bounded.
 MAX_CANDIDATE_TILES_PER_LAYER = MAX_TILES
 MAX_CANDIDATE_BYTES = MAX_STORED_BYTES
+MAP_SNAPSHOT_MAX_PAGES = MAX_TILES * (MAX_CANDIDATE_MISSIONS + 1)
+MAP_SNAPSHOT_MAX_BYTES = MAX_STORED_BYTES * (MAX_CANDIDATE_MISSIONS + 1)
+MAP_SNAPSHOT_TIMEOUT = 30.0
+MAP_SNAPSHOT_FIRST_TIMEOUT = 3.0
+MAP_SNAPSHOT_IDLE_TIMEOUT = 0.25
 MAX_RETIRED_MISSIONS = 8
 # A candidate needs pages from both independent subscriptions.  Allow three
 # normal retry intervals for those streams to converge, then classify a
@@ -146,6 +151,7 @@ class SlamMapStore:
         self._mission_token: str | None = None
         self._mission_id: int | None = None
         self._expected_mission_id: int | None = None
+        self._selection_generation = 0
         self._entries: dict[str, HermesCollectionEntry] = {}
         self._structure_entries: dict[str, HermesCollectionEntry] = {}
         self._entry_content_digests: dict[str, bytes] = {}
@@ -536,17 +542,23 @@ class SlamMapStore:
         self, client: MaticHermesClient
     ) -> None:
         """Read one page from each map collection without trusting cache state."""
+        generation = self._selection_generation
         try:
             photo_entries, structure_entries = await asyncio.gather(
-                client.async_get_collection_entries("map_compressed_rgb", limit=1),
-                client.async_get_collection_entries("map_integrated", limit=1),
+                self._async_read_map_layer(client, "map_compressed_rgb", False),
+                self._async_read_map_layer(client, "map_integrated", True),
             )
         except asyncio.CancelledError:
             raise
         except Exception:
             self._schedule_candidate_refresh_retry()
             return
-        if self._closed or not self._needs_candidate_refresh():
+        if self._closed:
+            return
+        if generation != self._selection_generation:
+            self._schedule_candidate_refresh_retry()
+            return
+        if not self._needs_candidate_refresh():
             return
         try:
             for entry in photo_entries:
@@ -660,6 +672,61 @@ class SlamMapStore:
             if self._collection_client is client:
                 self._collection_client = None
 
+    async def _async_read_map_layer(
+        self,
+        client: MaticHermesClient,
+        name: str,
+        structural: bool,
+        *,
+        tracked: bool = False,
+    ) -> tuple[HermesCollectionEntry, ...]:
+        """Find fresh selected-floor proof past retained pages from other floors."""
+        mission_id = self._expected_mission_id
+        if mission_id is None:
+            read = (
+                client.async_get_tracked_collection_entries
+                if tracked
+                else client.async_get_collection_entries
+            )
+            return await read(name, limit=1)
+        iterator = client.async_subscribe_collection_entries(name)
+        generation = self._selection_generation
+        total_bytes = 0
+        deadline = monotonic() + MAP_SNAPSHOT_TIMEOUT
+        try:
+            for index in range(MAP_SNAPSHOT_MAX_PAGES):
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    break
+                timeout = min(
+                    MAP_SNAPSHOT_IDLE_TIMEOUT if index else MAP_SNAPSHOT_FIRST_TIMEOUT,
+                    remaining,
+                )
+                try:
+                    async with asyncio.timeout(timeout):
+                        entry = await anext(iterator)
+                except StopAsyncIteration, TimeoutError:
+                    break
+                if self._closed or generation != self._selection_generation:
+                    break
+                total_bytes += len(entry.key) + len(entry.value)
+                if total_bytes > MAP_SNAPSHOT_MAX_BYTES:
+                    break
+                decode: Callable[
+                    [HermesCollectionEntry], SlamTile | SlamStructureTile
+                ] = decode_slam_structure_tile if structural else decode_slam_tile
+                try:
+                    tile = await self._hass.async_add_executor_job(decode, entry)
+                except DecodeError:
+                    self._record_invalid()
+                    self._notify_listeners()
+                    continue
+                if tile.mission_id == mission_id:
+                    return (entry,)
+        finally:
+            await iterator.aclose()
+        return ()
+
     async def async_prime(self, client: MaticHermesClient) -> None:
         """Seed both map layers before relying on long-lived subscriptions.
 
@@ -675,12 +742,15 @@ class SlamMapStore:
         self._bootstrap_structure_seen = False
         self._bootstrap_failures = 0
         self._notify_listeners()
+        generation = self._selection_generation
         try:
             results = await asyncio.gather(
-                client.async_get_tracked_collection_entries(
-                    "map_compressed_rgb", limit=1
+                self._async_read_map_layer(
+                    client, "map_compressed_rgb", False, tracked=True
                 ),
-                client.async_get_tracked_collection_entries("map_integrated", limit=1),
+                self._async_read_map_layer(
+                    client, "map_integrated", True, tracked=True
+                ),
                 return_exceptions=True,
             )
         except asyncio.CancelledError:
@@ -688,6 +758,10 @@ class SlamMapStore:
             self._notify_listeners()
             raise
         if self._closed:
+            return
+        if generation != self._selection_generation:
+            self._bootstrap_state = "not_started"
+            self._notify_listeners()
             return
         for index, (result, structural) in enumerate(
             zip(results, (False, True), strict=True)
@@ -763,6 +837,7 @@ class SlamMapStore:
         if self._expected_mission_id == mission_id:
             return
         self._expected_mission_id = mission_id
+        self._selection_generation += 1
         self._cancel_candidate_expiry()
         self._cancel_candidate_refresh_retry()
         self._candidates = OrderedDict(
