@@ -35,7 +35,7 @@ jobs:
         with:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           claude_args: >-
-            --allowedTools "Read,Grep,Glob,LS,Bash(gh pr diff:*),Bash(gh pr
+            --allowedTools "Read,Grep,Glob,Bash(gh pr diff:*),Bash(gh pr
             view:*)" --disallowedTools "Task"
           prompt: |
             You are this repository's regular review gate. Review pull request
