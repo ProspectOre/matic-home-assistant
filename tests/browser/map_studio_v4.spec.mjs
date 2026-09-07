@@ -4507,6 +4507,54 @@ test("zone keyboard creation and point editing stay local and undoable", async (
   await expect.poll(async () => (await snapshot(page)).draw.outline.closed).toBe(true);
 });
 
+for (const change of ["revision", "floor", "session"]) test(`slow initial scene survives only a ${change} catalog update`, async ({ page }) => {
+  await loadEffectHarness(page);
+  await page.evaluate(async () => {
+    const m = await import("/plan-recovery-test.js");
+    const initial = m.createGalleryState("ready");
+    const recovery = window.__slowScene = {
+      entry: { ...initial.resources.entry, deltaUrl: null },
+      store: new m.WorkspaceStore(), requests: [],
+    };
+    const backend = {
+      dispose() {}, catalog: async () => [recovery.entry],
+      scene: (_url, revision, _coherent, _source, signal) => new Promise((resolve, reject) => {
+        const request = { revision, signal, resolve: (publishedRevision = revision) => resolve({ revision: publishedRevision, floorCoherent: true, scene: { ...initial.resources.scene.value, revision: publishedRevision } }) };
+        recovery.requests.push(request);
+        signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      }),
+      history: () => new Promise(resolve => { recovery.finishHistory = () => resolve(initial.resources.history.value); }),
+      pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+      plans: async () => initial.resources.plans.value,
+    };
+    recovery.effects = new m.EffectController(recovery.store, backend);
+    recovery.effects.sync({ userKey: "synthetic-user", entryKey: recovery.entry.entryId, host: initial.host, activity: "cleaning", batteryPercent: 90, robotLabel: initial.robotLabel, robots: initial.robots, language: "en" });
+    await recovery.effects.refreshCatalog(true);
+  });
+  await expect.poll(() => page.evaluate(() => window.__slowScene.requests.length)).toBe(1);
+  const result = await page.evaluate(async (change) => {
+    const s = window.__slowScene;
+    const first = s.requests[0];
+    s.entry = { ...s.entry, mapRevision: s.entry.mapRevision + 1,
+      ...(change === "floor" ? { selectedFloorOrdinal: 2, mapFloorOrdinal: 2 } : {}),
+      ...(change === "session" ? { mapSessionKey: "b".repeat(64) } : {}),
+    };
+    const finishFirstHistory = s.finishHistory;
+    await s.effects.refreshCatalog();
+    const publishedRevision = first.revision + 2;
+    first.resolve(publishedRevision);
+    await Promise.resolve();
+    finishFirstHistory();
+    await Promise.resolve();
+    const result = { history: s.store.value.resources.history.status, aborted: first.signal.aborted, requests: s.requests.length, available: s.store.value.map.available, advanced: s.store.value.resources.entry.mapRevision === publishedRevision };
+    s.effects.dispose();
+    return result;
+  }, change);
+  expect(result).toEqual(change === "revision"
+    ? { history: "ready", aborted: false, requests: 1, available: true, advanced: true }
+    : { history: "loading", aborted: true, requests: 2, available: false, advanced: false });
+});
+
 test("live scene recovers from a transient failure on an unchanged catalog", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
@@ -4557,7 +4605,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
       dispose: () => {}, catalog: async () => [entry],
       scene: async () => {
         recovery.calls++;
-        if (!recovery.healthy) return { revision: entry.mapRevision + (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
+        if (!recovery.healthy) return { revision: entry.mapRevision - (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
         return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value };
       },
       history: async () => initial.resources.history.value,

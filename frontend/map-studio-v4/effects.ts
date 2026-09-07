@@ -353,11 +353,15 @@ export class EffectController {
         && entryBoundaryKey(selected) === entryBoundaryKey(currentEntry)
         && entryFloorKey(selected) === entryFloorKey(currentEntry)
         && entryMissionKey(selected) === entryMissionKey(currentEntry)
-        && selected.mapRevision < currentEntry.mapRevision) {
+        && (selected.mapRevision < currentEntry.mapRevision
+          || (!force && this.#controllers.has("scene")))) {
         // A catalog request can capture the retained scene revision while the
         // delta request beside it finishes a newer verified scene. Never let
         // that older response roll the live workspace backward and hide the
         // precise pose; the next catalog poll will observe the new cache.
+        // Likewise, a same-session pixel revision must not cancel a full scene
+        // still downloading. Let that coherent snapshot arrive before loading
+        // the newer revision; floor/session changes still invalidate it above.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
       }
       this.#store.patch({
@@ -564,12 +568,21 @@ export class EffectController {
         });
         return;
       }
-      if (response.revision !== stamp.revision
+      if (response.revision < stamp.revision
         || !response.scene) throw new BackendError("scene-unavailable");
+      // Encoding can outlive a catalog pixel update. The server assigns the
+      // captured, still-coherent scene a fresh transport revision on publish.
+      // Follow that revision without replacing the floor/session generation.
+      const settledStamp = response.revision === stamp.revision
+        ? stamp : this.#coherence.advance(stamp, response.revision);
+      if (!settledStamp) throw new BackendError("scene-unavailable");
       const state = this.#store.value;
+      const settledEntry = { ...state.resources.entry ?? entry, mapRevision: response.revision };
+      this.#entryIdentity = entryIdentity(settledEntry);
       this.#store.patch({
         resources: {
           ...state.resources,
+          entry: settledEntry,
           scene: resource("ready", response.scene),
         },
         map: { ...state.map, available: true },
@@ -582,7 +595,7 @@ export class EffectController {
       this.#resumeAreaCatalog();
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
-        void this.#streamDeltas(entry, stamp, response.scene, generation);
+        void this.#streamDeltas(settledEntry, settledStamp, response.scene, generation);
       }
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
@@ -724,7 +737,10 @@ export class EffectController {
     const controller = this.#controller("history");
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
-      if (!this.#coherence.accepts(stamp) || history.entryId !== entry.entryId) return;
+      const current = this.#coherence.current();
+      if (controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)
+        || history.entryId !== entry.entryId) return;
       const state = this.#store.value;
       const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
       const selectedSnapshotExists = !state.selection.historyId
@@ -752,7 +768,9 @@ export class EffectController {
         await selection;
       }
     } catch (error) {
-      if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
+      const current = this.#coherence.current();
+      if (isAbort(error) || controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)) return;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
