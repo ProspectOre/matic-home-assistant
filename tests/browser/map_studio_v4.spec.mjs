@@ -3662,7 +3662,10 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await shimPointerCapture(page);
     await page.goto("/");
     await page.evaluate((direction) => { document.documentElement.dir = direction; }, dir);
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({
+      type: "module",
+      content: 'import * as module from "/map_studio_v4/index.js"; window.__phoneModule = module;',
+    });
     await page.evaluate(async ({ tag, selectedScenario }) => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -3683,8 +3686,10 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
   }
 
   async function replaceState(page, build) {
-    await page.evaluate(async ({ tag, source }) => {
-      const module = await import("/map_studio_v4/index.js");
+    // Retain the module in the page realm instead of creating a short-lived
+    // dynamic-import promise for each state change in mobile Chromium.
+    await page.evaluate(({ tag, source }) => {
+      const module = window.__phoneModule;
       const build = new Function("module", "state", `return (${source})(module, state);`);
       const element = document.querySelector(tag);
       element.replaceWorkspaceState(build(module, element.getWorkspaceSnapshot()));
