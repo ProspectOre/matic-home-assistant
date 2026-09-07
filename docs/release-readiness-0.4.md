@@ -1,10 +1,11 @@
 # 0.4 release readiness
 
-Status: acceptance in progress; no release authorization implied.
-Installed UI baseline: unpublished `2753701` (PR #114), reviewed at `2443f8b`.
-Pre- and post-merge Python, browser, HACS and Hassfest checks passed. The three
-installed UI files matched their recorded hashes after guarded restart.
-Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
+Status: owner approved stable release with explicit scoped waivers; release execution in progress, with no public beta.
+Installed candidate: unpublished `06b227e`, reviewed at `e82a906`.
+Pre- and post-merge Python, browser, HACS and Hassfest checks passed. All 76
+integration files, new HA process and served bundle matched after guarded restart.
+September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
+Installed development version remains `0.4.0rc1`; final stable metadata and artifact verification are pending. No public beta will be published, per the owner's September 7 instruction.
 
 ## September 6 acceptance update
 
@@ -15,8 +16,8 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
   check worked. This is an owner-reported pass, not an instrumented audit.
 - Separate physical iPad acceptance is waived by the owner following phone
   acceptance; no physical iPad test is claimed.
-- Latest UI baseline: 567 local browser checks and 55 focused packaging/privacy
-  checks passed. Full Python baseline remains 1,321 tests at 100% coverage.
+- Current candidate: 581 browser checks and 1,356 Python tests at 100%
+  coverage; lint, format, types, privacy and required hosted checks passed.
 - An isolated HA 2026.7 Store rehearsal preserved synthetic plan/area selection
   across stable-to-candidate loading and restored the matching backup byte for
   byte. This does not prove live credential migration or HACS rollback.
@@ -24,8 +25,15 @@ Release preparation targets `0.4.0rc1` / `v0.4.0-rc1`; it is not yet published.
   Docking succeeded and managed completion totals stayed unchanged; native
   history still reported completion and the stop-settlement fence remained.
   Original plans, selection and automation were restored; test plan removed.
-- Different-settings handoff, interruption/native completion semantics, physical
-  thresholds, fresh floor carries and affected reporter hardware remain open.
+- Current candidate passed native Safari scene loading and reload during
+  cleaning. Both different-settings legs completed once with automatic handoff
+  and exact configuration cleanup; no new failed/cancelled/unverified outcomes.
+  Pause elapsed stayed fixed while paused. Initial start-event capture was late;
+  native mode-ambiguous completion remains unknown as described in acceptance.
+  Later September 7 checks passed below/above thresholds, a fresh floor round trip,
+  early area cancellation and paused-run restart without replay or false credit.
+  Exact 50% boundary and live HACS rollback subsequently passed; recharge,
+  live network loss and affected reporter hardware remain open.
 
 ## Historical audit evidence (`16e0ae7`)
 
@@ -55,8 +63,8 @@ installed baseline and September 6 results are identified above.
   sheet. Phone tools use separate mode/history rows with 44px targets.
 - Light/dark layouts, mouse/touch/keyboard input, vertex edits, invalid geometry,
   cancellation, stale-floor privacy and saved metadata have automated coverage.
-- Current UI baseline `2753701`: 567 browser checks. Candidate code passes
-  1,321 Python tests at 100% coverage, lint, types, privacy and 76-file archive
+- Current candidate `1bfa475`: 581 browser checks and
+  1,341 Python tests at 100% coverage, lint, types, privacy and 76-file archive
   parity. Minimum-runtime fresh imports and synthetic migration also pass.
 - Guarded installation and restart passed with exact file readback and rollback.
 - Live Safari exposed two defects: image semantics hid vertex controls, and
@@ -84,18 +92,18 @@ installed baseline and September 6 results are identified above.
 | Screen/state coverage | Reconcile frontend closure report with normal, empty, loading, error and recovery cases; retain explicit native-device gaps |
 | Performance/resource observation | Record final-build load and interaction conditions; synthetic traces do not prove live-map or long-session performance |
 | Minimum supported HA | Legacy registry migration and Bluetooth/camera dependency imports pass on HA2026.7; hardware setup remains separate |
-| Stable upgrade and rollback | Synthetic Store rehearsal passed with plan/area selection and byte-for-byte backup restoration; live credential migration and HACS rollback remain open |
+| Stable upgrade and rollback | September 7 live HACS downgrade to verified 0.3.12 and candidate restoration passed; credentials/options and saved plans/areas preserved, complete live map restored; old stable map-dependent endpoint returned 409 |
 | Native accessibility/devices | Phone and guided owner VoiceOver pass; iPad waived. Broader touch, orientation and enlarged-text evidence stays separate |
-| Pairing/reauthentication | Supported hardware and Container credential replacement; imports and synthetic Bluetooth tests are separate |
-| Mixed-settings plan | Native multi-leg completion, handoff, exactly-once credit/events and ownership cleanup |
-| Stop/interruption | Map/action/automation Stop, pause/resume, reconnect/restart during work, no replay or false credit |
-| Finish-current-room | Below/at/above threshold, no next room, pause/recharge excluded; identify synthetic-only boundaries |
-| Custom-area runs | One bounded saved zone completed; Stop returned to dock but native history marked completion, so interruption is unproved |
-| Physical floor round trip | Stopped robot A → B → A; coherent identity, scene, pose, rooms, actions and stable Repairs |
-| Affected issues | #65 localization on affected setup and #71 stop/countdown conditions; original #54 needs fresh regression evidence |
+| Pairing/reauthentication | September 7 HAOS same-entry credential replacement and recovery passed; owner excludes Container replacement from this acceptance run, so it remains untested |
+| Mixed-settings plan | Both legs, handoff, once-per-room credit and cleanup passed; initial start-event capture incomplete, native general completion can remain unknown |
+| Stop/interruption | First-room Stop, early area Stop and paused-run HA restart have no false credit or next-room start; live network loss remains open; original state and automation restored, docked with ownership clear |
+| Finish-current-room | Physical below/exact/above 50% passed at20%/50%/60%; pause excluded. Exact request bracket measured 50% twice; recharge observation pending |
+| Custom-area runs | One bounded saved zone completed; September 7 early Stop has native incomplete session/area evidence and zero completed rooms; original areas/plans and automation restored, docked with ownership clear |
+| Physical floor round trip | September 7 A → B → A passed on installed `06b227e`: coherent complete maps, scenes/pose, room controls, stable Repairs; 40/37 samples, zero errors |
+| Affected issues | #65 affected firmware 172.15/protocol 25 remains unverified: owner has only the 173.10 robot; #71 stop/countdown conditions and original #54 retain their scoped evidence |
 | Final candidate | Freeze code/version, refresh affected checks, exact artifact parity, hosted gates and clean review |
-| Public RC | Explicit owner approval, one `v0.4.0-rc1`, then verify the published HACS artifact |
-| Stable release | Beta observation and separate owner approval; no automatic promotion |
+| Public RC | Omitted by explicit owner instruction; verification remains unpublished |
+| Stable release | Owner-approved with scoped waivers for live network loss, affected firmware 172.15/protocol 25 hardware and excluded Container reauthentication; final metadata/artifact checks, green CI and clean exact-head regular review still required; manual release only |
 
 ## Operating rules
 

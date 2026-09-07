@@ -1,10 +1,11 @@
 # 0.4 product review
 
-Status: in progress; not a claim of complete end-to-end or physical acceptance.
-Installed baseline: unpublished `2753701`; perimeter and phone follow-ups are
+Status: stable release approved with explicit scoped waivers; this is not a claim that unrun hardware cases passed.
+Installed candidate: unpublished `06b227e`; stationary recovery and September 7 physical floor round trip passed.
+Perimeter and phone follow-ups are
 verified live. Actual iPhone checks passed; the owner reported guided iPhone
 VoiceOver navigation passed and waived separate iPad acceptance. Broader physical
-acceptance remains open. Current baseline: 567 browser checks.
+acceptance remains open. Latest complete browser baseline: 581 checks.
 Authority: redesign structure and workflows where evidence supports it.
 Live walkthrough uses the actual signed-in HA; synthetic states are regression
 fixtures, never evidence of deployed behavior. Historical RC11 checks are
@@ -40,7 +41,7 @@ scoped below; the earlier audit is dated 2026-09-05. Current acceptance is in
 | Preferences/lifecycle | Detach, identity changes, persistence | Owner-scoped writes and draft clearing regressions pass |
 | Architecture | Contracts/state/effects/rendering boundaries | 32 TS modules, no local import cycles; client has no HA imports; lifecycle fixes tested |
 | Packaging/upgrades | Artifact parity, HACS, cache changes | Installed baseline parity/restart, packaging, CI and review verified |
-| Hardware | Multi-leg, area, interruption, floor round trip | Open; see acceptance-0.4.md |
+| Hardware | Multi-leg, area, interruption, floor round trip | Multi-leg, floor round trip, immediate Stop and below/above threshold passed; remaining interruption cases in acceptance-0.4.md |
 
 ## Historical non-motion audit — installed `16e0ae7`
 

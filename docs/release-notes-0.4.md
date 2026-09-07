@@ -1,10 +1,9 @@
-# 0.4 release notes — draft
+# 0.4 release notes
 
-Unpublished draft, not a release announcement or acceptance certificate.
-The installed unpublished UI baseline is `2753701`, including automatic
-perimeter closure, saved-area recovery and companion-app safe-area fixes. The intended first public candidate is `v0.4.0-rc1`, subject to
-completed acceptance and explicit release approval. Intermediate builds are
-not published releases.
+Release `v0.4.0` is being prepared from the reviewed `06b227e` tree after
+explicit owner approval. No public beta was published. The release includes
+automatic perimeter closure, saved-area recovery, companion-app safe-area
+fixes, map recovery, verified native room completion and guarded stop handling.
 
 ## What's changing
 
@@ -46,16 +45,15 @@ non-motion checks. Subsequent changes require their own validation.
 Actual iPhone navigation, plan creation/discard and saved-outline checks passed.
 The owner reported the guided iPhone VoiceOver flow worked; separate iPad
 acceptance was waived. Different-settings mission legs, Stop/interruption and
-threshold behavior, a fresh floor round trip and affected #65/#71 hardware
-remain open. A saved-zone completion passed, while its separate interrupted
-run retained an unresolved native completed classification. Fresh hardware
-pairing and Container reauthentication also remain distinct checks. See the
-[acceptance checklist](acceptance-0.4.md) for outcomes and release gates.
+threshold behavior, and a fresh floor round trip passed on the installed
+candidate. The release keeps explicit scoped waivers for live network-loss
+behavior and affected #65 firmware 172.15/protocol 25 hardware, unavailable to
+this owner; Container reauthentication was excluded. See the [acceptance
+checklist](acceptance-0.4.md) for outcomes and release limits.
 
 ## Upgrade preparation
 
-1. Wait for the approved candidate; do not interpret this draft as an available
-   HACS release. Confirm that its release notes identify the accepted commit.
+1. Confirm that the HACS release identifies the accepted commit.
 2. Back up Home Assistant and the integration's configuration before upgrading.
    Ensure the robot and relevant automations/scripts are idle before restart.
 3. Install the approved version through HACS and restart Home Assistant.
