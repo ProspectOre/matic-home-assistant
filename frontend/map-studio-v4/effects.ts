@@ -353,11 +353,15 @@ export class EffectController {
         && entryBoundaryKey(selected) === entryBoundaryKey(currentEntry)
         && entryFloorKey(selected) === entryFloorKey(currentEntry)
         && entryMissionKey(selected) === entryMissionKey(currentEntry)
-        && selected.mapRevision < currentEntry.mapRevision) {
+        && (selected.mapRevision < currentEntry.mapRevision
+          || (!force && this.#controllers.has("scene")))) {
         // A catalog request can capture the retained scene revision while the
         // delta request beside it finishes a newer verified scene. Never let
         // that older response roll the live workspace backward and hide the
         // precise pose; the next catalog poll will observe the new cache.
+        // Likewise, a same-session pixel revision must not cancel a full scene
+        // still downloading. Let that coherent snapshot arrive before loading
+        // the newer revision; floor/session changes still invalidate it above.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
       }
       this.#store.patch({
