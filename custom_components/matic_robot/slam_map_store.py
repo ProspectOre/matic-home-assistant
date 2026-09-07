@@ -714,7 +714,12 @@ class SlamMapStore:
                 decode: Callable[
                     [HermesCollectionEntry], SlamTile | SlamStructureTile
                 ] = decode_slam_structure_tile if structural else decode_slam_tile
-                tile = await self._hass.async_add_executor_job(decode, entry)
+                try:
+                    tile = await self._hass.async_add_executor_job(decode, entry)
+                except DecodeError:
+                    self._record_invalid()
+                    self._notify_listeners()
+                    continue
                 if tile.mission_id == mission_id:
                     return (entry,)
         finally:

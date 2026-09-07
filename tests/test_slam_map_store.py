@@ -1553,6 +1553,8 @@ async def test_selected_floor_snapshot_skips_retained_other_floor_pages(
             else synthetic_slam_entry
         )
         try:
+            consumed[name] += 1
+            yield HermesCollectionEntry(b"malformed-retained-key", b"invalid")
             for mission in (2, 3, 0x1234ABCD, 4):
                 consumed[name] += 1
                 yield make(mission_id=mission)
@@ -1566,7 +1568,8 @@ async def test_selected_floor_snapshot_skips_retained_other_floor_pages(
         await store._async_refresh_after_candidate_expiry(client)
     assert store.live_session_verified
     assert store.mission_identity.mission_id == 0x1234ABCD
-    assert consumed == {"map_compressed_rgb": 3, "map_integrated": 3}
+    assert consumed == {"map_compressed_rgb": 4, "map_integrated": 4}
+    assert store.health.invalid_tiles == 2
     assert sorted(closed) == ["map_compressed_rgb", "map_integrated"]
     assert store.tile_count == store.structure_tile_count == 1
     await store.async_shutdown()
