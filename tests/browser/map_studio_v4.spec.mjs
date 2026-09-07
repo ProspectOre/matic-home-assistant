@@ -4523,7 +4523,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
         recovery.requests.push(request);
         signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
       }),
-      history: async () => initial.resources.history.value,
+      history: () => new Promise(resolve => { recovery.finishHistory = () => resolve(initial.resources.history.value); }),
       pose: async () => { throw new DOMException("Aborted", "AbortError"); },
       plans: async () => initial.resources.plans.value,
     };
@@ -4539,17 +4539,20 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
       ...(change === "floor" ? { selectedFloorOrdinal: 2, mapFloorOrdinal: 2 } : {}),
       ...(change === "session" ? { mapSessionKey: "b".repeat(64) } : {}),
     };
+    const finishFirstHistory = s.finishHistory;
     await s.effects.refreshCatalog();
     const publishedRevision = first.revision + 2;
     first.resolve(publishedRevision);
     await Promise.resolve();
-    const result = { aborted: first.signal.aborted, requests: s.requests.length, available: s.store.value.map.available, advanced: s.store.value.resources.entry.mapRevision === publishedRevision };
+    finishFirstHistory();
+    await Promise.resolve();
+    const result = { history: s.store.value.resources.history.status, aborted: first.signal.aborted, requests: s.requests.length, available: s.store.value.map.available, advanced: s.store.value.resources.entry.mapRevision === publishedRevision };
     s.effects.dispose();
     return result;
   }, change);
   expect(result).toEqual(change === "revision"
-    ? { aborted: false, requests: 1, available: true, advanced: true }
-    : { aborted: true, requests: 2, available: false, advanced: false });
+    ? { history: "ready", aborted: false, requests: 1, available: true, advanced: true }
+    : { history: "loading", aborted: true, requests: 2, available: false, advanced: false });
 });
 
 test("live scene recovers from a transient failure on an unchanged catalog", async ({ page }) => {

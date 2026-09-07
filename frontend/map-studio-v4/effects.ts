@@ -737,7 +737,10 @@ export class EffectController {
     const controller = this.#controller("history");
     try {
       const history = await this.#backend.history(entry.historyUrl, controller.signal);
-      if (!this.#coherence.accepts(stamp) || history.entryId !== entry.entryId) return;
+      const current = this.#coherence.current();
+      if (controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)
+        || history.entryId !== entry.entryId) return;
       const state = this.#store.value;
       const selectedFloor = history.floors.find((floor) => floor.id === state.selection.floorId);
       const selectedSnapshotExists = !state.selection.historyId
@@ -765,7 +768,9 @@ export class EffectController {
         await selection;
       }
     } catch (error) {
-      if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
+      const current = this.#coherence.current();
+      if (isAbort(error) || controller.signal.aborted || !current
+        || !sameCoherenceGeneration(stamp, current)) return;
       this.#store.patch({
         resources: {
           ...this.#store.value.resources,
