@@ -1524,12 +1524,19 @@ def _validated_native_reconciliation(
     parsed_expiry = dt_util.parse_datetime(expires_at)
     if parsed_expiry is None or parsed_expiry.tzinfo is None:
         return None
+    cleaning_mode = value.get("cleaning_mode")
     return {
         "plan_id": plan_id,
         "room_id": room_id,
         "room": room,
         "dispatched_at": dispatched_at,
         "expires_at": expires_at,
+        **(
+            {"cleaning_mode": cleaning_mode}
+            if isinstance(cleaning_mode, str)
+            and cleaning_mode in ("vacuum", "mop", "vacuum_and_mop")
+            else {}
+        ),
     }
 
 
@@ -1587,7 +1594,10 @@ def _reconcile_pending_native_history(
     matches: list[tuple[CleaningSessionRecord, str, int]] = []
     for record in records:
         session = record.session
-        if session.completed is not True:
+        vacuum_proven = pending.get("cleaning_mode") == "vacuum" and target in {
+            _native_room_key(name) for name in session.vacuum_completed_rooms
+        }
+        if session.completed is not True and not vacuum_proven:
             continue
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")
@@ -1603,7 +1613,7 @@ def _reconcile_pending_native_history(
         if native_rooms != (target,):
             continue
         completed_rooms = {_native_room_key(name) for name in session.completed_rooms}
-        if target not in completed_rooms:
+        if target not in completed_rooms and not vacuum_proven:
             continue
         duration = next(
             (

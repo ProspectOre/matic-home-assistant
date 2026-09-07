@@ -145,6 +145,7 @@ class _NativeReconciliation:
     room_id: str
     room: str
     dispatched_at: datetime
+    cleaning_mode: str | None = None
 
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
@@ -2343,7 +2344,9 @@ def _build_native_reconciliation(
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
         return None
-    return _NativeReconciliation(plan_id, room.room_id, room.name, dispatched_at)
+    return _NativeReconciliation(
+        plan_id, room.room_id, room.name, dispatched_at, room.cleaning_mode
+    )
 
 
 def _native_reconciliation_data(
@@ -2357,6 +2360,7 @@ def _native_reconciliation_data(
         "room_id": value.room_id,
         "room": value.room,
         "dispatched_at": value.dispatched_at.isoformat(),
+        **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
     }
 
 
