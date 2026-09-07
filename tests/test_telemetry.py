@@ -238,7 +238,7 @@ def test_decode_wifi_schedule_and_history() -> None:
         _bfield(3, b"Kitchen")
         + _bfield(4, _vfield(1, 600))
         + _vfield(5, 2)
-        + _vfield(6, 1)
+        + _vfield(6, 2)
     )
     room = _bfield(2, details)
     summary = (
@@ -355,7 +355,7 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
             + b"".join(_vfield(field, value) for field, value in statuses)
         )
 
-    completed = details(b"Kitchen", 600, (5, 2), (6, 1))
+    completed = details(b"Kitchen", 600, (5, 2), (6, 2))
     interrupted = details(b"Hallway", 120, (5, 1), (6, 1))
     summary = _bfield(6, _bfield(1, _bfield(2, completed))) + _bfield(
         6, _bfield(1, _bfield(2, interrupted))
@@ -368,6 +368,25 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
     assert session.room_durations == (("Kitchen", 600), ("Hallway", 120))
     assert session.completed_rooms == ("Kitchen",)
     assert session.completed is False
+
+    # A confirmed cancelled native record mixed non-complete and complete
+    # mode statuses. Neither ordering proves completion of the whole room.
+    for status_pair in [(1, 2), (2, 1), (2, 3)]:
+        ambiguous = details(b"Office", 90, (5, status_pair[0]), (6, status_pair[1]))
+        ambiguous_session = _decode_cleaning_session(
+            _bfield(5, _bfield(6, _bfield(1, _bfield(2, ambiguous))))
+        )
+        assert ambiguous_session is not None
+        assert ambiguous_session.completed is None
+        assert ambiguous_session.completed_rooms == ()
+
+    malformed_complete = details(b"Office", 90, (5, 2)) + _bfield(6, b"unknown")
+    malformed_complete_session = _decode_cleaning_session(
+        _bfield(5, _bfield(6, _bfield(1, _bfield(2, malformed_complete))))
+    )
+    assert malformed_complete_session is not None
+    assert malformed_complete_session.completed is None
+    assert malformed_complete_session.completed_rooms == ()
 
     unknown = details(b"Office", 90, (5, 3))
     unknown_session = _decode_cleaning_session(
