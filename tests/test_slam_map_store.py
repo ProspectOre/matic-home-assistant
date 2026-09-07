@@ -1675,3 +1675,38 @@ async def test_map_snapshot_pair_discards_selection_change(hass, bootstrap):
     assert store.tile_count == 0
     assert not store.live_session_verified
     await store.async_shutdown()
+
+
+async def test_map_snapshot_retries_for_changed_selected_floor(hass):
+    """A retained one-sided candidate still gets its missing layer after selection."""
+    store = SlamMapStore(hass, "retry-changed-selected-floor")
+    store.set_expected_mission_id(0x1234ABCD)
+    await store.async_add(synthetic_slam_entry())
+    await store.async_add_structure(synthetic_structure_entry())
+    candidate = await store.async_add(synthetic_slam_entry(mission_id=2))
+    store._candidates[candidate.mission_token].blocks_active = False
+    calls = 0
+    store._collection_client = SimpleNamespace()
+
+    async def snapshot(_client, _name, structural):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            store.set_expected_mission_id(2)
+        make = synthetic_structure_entry if structural else synthetic_slam_entry
+        return (make(mission_id=0x1234ABCD if calls <= 2 else 2),)
+
+    with (
+        patch.object(store, "_async_read_map_layer", side_effect=snapshot),
+        patch.object(slam_map_store_module, "CANDIDATE_REFRESH_RETRY_SECONDS", 0),
+    ):
+        await store._async_refresh_after_candidate_expiry(store._collection_client)
+        assert not store.live_session_verified
+        assert store._candidate_refresh_retry_cancel is not None
+        await asyncio.sleep(0)
+        await hass.async_block_till_done()
+    assert calls == 4
+    assert store.live_session_verified
+    assert store.mission_identity.mission_id == 2
+    assert store._candidate_refresh_retry_cancel is None
+    await store.async_shutdown()

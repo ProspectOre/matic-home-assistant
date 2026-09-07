@@ -553,11 +553,12 @@ class SlamMapStore:
         except Exception:
             self._schedule_candidate_refresh_retry()
             return
-        if (
-            self._closed
-            or generation != self._selection_generation
-            or not self._needs_candidate_refresh()
-        ):
+        if self._closed:
+            return
+        if generation != self._selection_generation:
+            self._schedule_candidate_refresh_retry()
+            return
+        if not self._needs_candidate_refresh():
             return
         try:
             for entry in photo_entries:
