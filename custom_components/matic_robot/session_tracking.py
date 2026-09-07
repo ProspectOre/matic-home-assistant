@@ -155,6 +155,7 @@ class CleaningSessionTracker:
                 room_durations=native_session.room_durations,
                 completed=native_session.completed,
                 completed_rooms=native_session.completed_rooms,
+                vacuum_completed_rooms=native_session.vacuum_completed_rooms,
             )
         native_started = _parse_timestamp(native_session.started_at)
         tracked_started = _parse_timestamp(tracked.started_at)

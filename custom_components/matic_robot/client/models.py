@@ -224,6 +224,7 @@ class CleaningSession:
     room_durations: tuple[tuple[str, int], ...]
     completed: bool | None
     completed_rooms: tuple[str, ...] = ()
+    vacuum_completed_rooms: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

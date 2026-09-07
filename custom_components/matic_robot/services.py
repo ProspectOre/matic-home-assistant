@@ -53,7 +53,7 @@ from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
 from .client.floor_plan import pose_vector_paths
-from .client.models import CleaningSessionRecord, FloorPlan
+from .client.models import CleaningSession, CleaningSessionRecord, FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
@@ -145,6 +145,7 @@ class _NativeReconciliation:
     room_id: str
     room: str
     dispatched_at: datetime
+    cleaning_mode: str | None = None
 
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
@@ -1847,6 +1848,7 @@ async def _async_verify_leg_completion(
     if reader is None or baseline is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
+    modes = {room.name.strip().casefold(): room.cleaning_mode for room in rooms}
     evidence: dict[str, tuple[str, int]] | None = None
     matched_key: bytes | None = None
     try:
@@ -1907,11 +1909,21 @@ async def _async_verify_leg_completion(
                     completed_names = {
                         name.strip().casefold() for name in session.completed_rooms
                     }
+                    vacuum_completed_names = {
+                        name.strip().casefold()
+                        for name in session.vacuum_completed_rooms
+                    }
                     evidence = {}
                     for name, room_id in targets.items():
                         duration = durations.get(name)
                         if (
-                            name in completed_names
+                            (
+                                name in completed_names
+                                or (
+                                    modes[name] == CleaningMode.VACUUM
+                                    and name in vacuum_completed_names
+                                )
+                            )
                             and isinstance(duration, int)
                             and not isinstance(duration, bool)
                             and duration > 0
@@ -2137,7 +2149,9 @@ async def _async_verify_room_completion(
                 matches: list[CleaningSessionRecord] = []
                 for record in records:
                     session = record.session
-                    if record.key in baseline or session.completed is not True:
+                    if record.key in baseline or not _session_confirms_room_mode(
+                        session, room
+                    ):
                         continue
                     started = dt_util.parse_datetime(session.started_at or "")
                     ended = dt_util.parse_datetime(session.ended_at or "")
@@ -2330,7 +2344,9 @@ def _build_native_reconciliation(
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
         return None
-    return _NativeReconciliation(plan_id, room.room_id, room.name, dispatched_at)
+    return _NativeReconciliation(
+        plan_id, room.room_id, room.name, dispatched_at, room.cleaning_mode
+    )
 
 
 def _native_reconciliation_data(
@@ -2344,6 +2360,7 @@ def _native_reconciliation_data(
         "room_id": value.room_id,
         "room": value.room,
         "dispatched_at": value.dispatched_at.isoformat(),
+        **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
     }
 
 
@@ -2505,6 +2522,15 @@ async def _async_expire_native_reconciliation(
     _LOGGER.debug("Native Matic reconciliation expired without a history baseline")
 
 
+def _session_confirms_room_mode(session: CleaningSession, room: CleaningRoom) -> bool:
+    """Use explicit vacuum evidence only for a known vacuum-only dispatch."""
+    return session.completed is True or (
+        room.cleaning_mode == CleaningMode.VACUUM
+        and _area_key(room.name)
+        in {_area_key(name) for name in session.vacuum_completed_rooms}
+    )
+
+
 def _native_completion_match(
     records: tuple[CleaningSessionRecord, ...],
     baseline: frozenset[bytes],
@@ -2517,7 +2543,7 @@ def _native_completion_match(
     matches: list[tuple[CleaningSessionRecord, int]] = []
     for record in records:
         session = record.session
-        if record.key in baseline or session.completed is not True:
+        if record.key in baseline or not _session_confirms_room_mode(session, room):
             continue
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")
