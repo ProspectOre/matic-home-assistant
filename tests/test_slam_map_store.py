@@ -1496,27 +1496,36 @@ async def test_return_floor_retains_supported_map_before_selection_catches_up(ha
     assert store.health.layer_overlap == 1
 
 
-async def test_truncated_cache_rebuilds_on_fresh_same_mission_pages(hass):
+async def test_truncated_cache_stays_incomplete_until_verified_floor_replacement(hass):
     store = SlamMapStore(hass, "truncated-rebuild")
     with patch("custom_components.matic_robot.slam_map_store.MAX_TILES", 1):
         for page_x in (0, 1):
-            await store.async_add(synthetic_slam_entry(page_x=page_x))
-            await store.async_add_structure(synthetic_structure_entry(page_x=page_x))
+            await store.async_add(synthetic_slam_entry(page_x=page_x, mission_id=1))
+            await store.async_add_structure(
+                synthetic_structure_entry(page_x=page_x, mission_id=1)
+            )
     assert store.health.truncated
     await store.async_shutdown()
     restored = SlamMapStore(hass, "truncated-rebuild")
     await restored.async_load()
+    restored.set_expected_mission_id(1)
+    retained = restored.structure_entries()
+    await restored.async_add(synthetic_slam_entry(page_x=0, mission_id=1))
+    await restored.async_add_structure(
+        synthetic_structure_entry(page_x=0, mission_id=1)
+    )
+    assert restored.structure_entries() == retained
     assert restored.health.truncated
-    assert not restored.live_session_verified
-    await restored.async_add(synthetic_slam_entry(page_x=0))
-    assert not restored.live_session_verified
-    assert restored.structure_tile_count == 0
+    assert not restored.map_complete
     for page_x in (0, 1):
-        await restored.async_add(synthetic_slam_entry(page_x=page_x))
-        await restored.async_add_structure(synthetic_structure_entry(page_x=page_x))
+        await restored.async_add(synthetic_slam_entry(page_x=page_x, mission_id=2))
+        await restored.async_add_structure(
+            synthetic_structure_entry(page_x=page_x, mission_id=2)
+        )
+    assert not restored.live_session_verified
+    assert restored.health.truncated
+    restored.set_expected_mission_id(2)
     assert restored.tile_count == restored.structure_tile_count == 2
     assert restored.live_session_verified
     assert not restored.health.truncated
-    assert restored.health.dropped_photo_tiles == 0
-    assert restored.health.dropped_structure_tiles == 0
     assert restored.health.layer_overlap == 1

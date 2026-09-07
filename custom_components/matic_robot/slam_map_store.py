@@ -161,7 +161,6 @@ class SlamMapStore:
         self._live_photo_seen = False
         self._live_structure_seen = False
         self._truncated = False
-        self._rebuild_truncated_cache = False
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
@@ -199,7 +198,6 @@ class SlamMapStore:
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = loaded.truncated
-        self._rebuild_truncated_cache = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
         self._invalid_tiles = loaded.invalid_tiles
@@ -290,21 +288,6 @@ class SlamMapStore:
         identity_changed = self._mission_id is None and tile.mission_id is not None
         if identity_changed:
             self._mission_id = tile.mission_id
-        if self._rebuild_truncated_cache:
-            # A persisted truncated checkpoint cannot establish completeness.
-            # Rebuild it from this session's live replay, requiring fresh proof
-            # from both layers rather than combining new pages with old gaps.
-            self._entries.clear()
-            self._structure_entries.clear()
-            self._entry_content_digests.clear()
-            self._structure_content_digests.clear()
-            self._truncated = False
-            self._rebuild_truncated_cache = False
-            self._dropped_photo_tiles = 0
-            self._dropped_structure_tiles = 0
-            self._live_photo_seen = False
-            self._live_structure_seen = False
-            self._map_complete = False
         target = self._structure_entries if structural else self._entries
         content_digests = (
             self._structure_content_digests
@@ -608,7 +591,6 @@ class SlamMapStore:
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = candidate.truncated
-        self._rebuild_truncated_cache = False
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
