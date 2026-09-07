@@ -5,7 +5,7 @@ Installed candidate: unpublished `06b227e`, reviewed at `e82a906`.
 Pre- and post-merge Python, browser, HACS and Hassfest checks passed. All 76
 integration files, new HA process and served bundle matched after guarded restart.
 September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
-Installed development version remains `0.4.0rc1`; final stable metadata and artifact verification are pending. No public beta will be published, per the owner's September 7 instruction.
+Stable metadata is now `0.4.0`; final artifact verification and release gates are in progress. No public beta was published.
 
 ## September 6 acceptance update
 
@@ -63,7 +63,7 @@ installed baseline and September 6 results are identified above.
   sheet. Phone tools use separate mode/history rows with 44px targets.
 - Light/dark layouts, mouse/touch/keyboard input, vertex edits, invalid geometry,
   cancellation, stale-floor privacy and saved metadata have automated coverage.
-- Current candidate `1bfa475`: 581 browser checks and
+- Current release tree `06b227e`: 581 browser checks and
   1,341 Python tests at 100% coverage, lint, types, privacy and 76-file archive
   parity. Minimum-runtime fresh imports and synthetic migration also pass.
 - Guarded installation and restart passed with exact file readback and rollback.
