@@ -44,8 +44,11 @@ SPATIAL_BUCKETS_PER_AXIS = 8
 MAX_HEALTH_COUNTER = 2**31 - 1
 MAX_LOAD_ITEMS_PER_LAYER = MAX_TILES * 2
 MAX_CANDIDATE_MISSIONS = 2
-MAX_CANDIDATE_TILES_PER_LAYER = 128
-MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
+# Either subscription can replay a whole supported floor before its counterpart
+# or the selected-floor watcher catches up. Keep that floor within the same
+# bounds as an active map; the candidate count remains separately bounded.
+MAX_CANDIDATE_TILES_PER_LAYER = MAX_TILES
+MAX_CANDIDATE_BYTES = MAX_STORED_BYTES
 MAX_RETIRED_MISSIONS = 8
 # A candidate needs pages from both independent subscriptions.  Allow three
 # normal retry intervals for those streams to converge, then classify a
@@ -158,6 +161,7 @@ class SlamMapStore:
         self._live_photo_seen = False
         self._live_structure_seen = False
         self._truncated = False
+        self._rebuild_truncated_cache = False
         self._dropped_photo_tiles = 0
         self._dropped_structure_tiles = 0
         self._invalid_tiles = 0
@@ -195,6 +199,7 @@ class SlamMapStore:
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = loaded.truncated
+        self._rebuild_truncated_cache = loaded.truncated
         self._dropped_photo_tiles = loaded.dropped_photo_tiles
         self._dropped_structure_tiles = loaded.dropped_structure_tiles
         self._invalid_tiles = loaded.invalid_tiles
@@ -285,6 +290,21 @@ class SlamMapStore:
         identity_changed = self._mission_id is None and tile.mission_id is not None
         if identity_changed:
             self._mission_id = tile.mission_id
+        if self._rebuild_truncated_cache:
+            # A persisted truncated checkpoint cannot establish completeness.
+            # Rebuild it from this session's live replay, requiring fresh proof
+            # from both layers rather than combining new pages with old gaps.
+            self._entries.clear()
+            self._structure_entries.clear()
+            self._entry_content_digests.clear()
+            self._structure_content_digests.clear()
+            self._truncated = False
+            self._rebuild_truncated_cache = False
+            self._dropped_photo_tiles = 0
+            self._dropped_structure_tiles = 0
+            self._live_photo_seen = False
+            self._live_structure_seen = False
+            self._map_complete = False
         target = self._structure_entries if structural else self._entries
         content_digests = (
             self._structure_content_digests
@@ -588,6 +608,7 @@ class SlamMapStore:
         self._entry_content_digests.clear()
         self._structure_content_digests.clear()
         self._truncated = candidate.truncated
+        self._rebuild_truncated_cache = False
         self._dropped_photo_tiles = candidate.dropped_photo_tiles
         self._dropped_structure_tiles = candidate.dropped_structure_tiles
         self._invalid_tiles = 0
