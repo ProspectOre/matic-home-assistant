@@ -44,8 +44,11 @@ SPATIAL_BUCKETS_PER_AXIS = 8
 MAX_HEALTH_COUNTER = 2**31 - 1
 MAX_LOAD_ITEMS_PER_LAYER = MAX_TILES * 2
 MAX_CANDIDATE_MISSIONS = 2
-MAX_CANDIDATE_TILES_PER_LAYER = 128
-MAX_CANDIDATE_BYTES = 2 * 1024 * 1024
+# Either subscription can replay a whole supported floor before its counterpart
+# or the selected-floor watcher catches up. Keep that floor within the same
+# bounds as an active map; the candidate count remains separately bounded.
+MAX_CANDIDATE_TILES_PER_LAYER = MAX_TILES
+MAX_CANDIDATE_BYTES = MAX_STORED_BYTES
 MAX_RETIRED_MISSIONS = 8
 # A candidate needs pages from both independent subscriptions.  Allow three
 # normal retry intervals for those streams to converge, then classify a

@@ -1475,3 +1475,57 @@ def test_slam_map_store_bounds_health_metadata_and_spatial_helpers() -> None:
     assert _stored_mission_token("00" * 32) == "00" * 32
     assert _bucket(1, 1, 1) == 0
     assert _bucket(100, 0, 1) == 7
+
+
+async def test_return_floor_retains_supported_map_before_selection_catches_up(hass):
+    store = SlamMapStore(hass, "return-floor-buffer")
+    store.set_expected_mission_id(1)
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    for page_x in range(160):
+        await store.async_add(synthetic_slam_entry(page_x=page_x, mission_id=2))
+    for page_x in range(160):
+        await store.async_add_structure(
+            synthetic_structure_entry(page_x=page_x, mission_id=2)
+        )
+    assert not store.live_session_verified
+    store.set_expected_mission_id(2)
+    assert store.live_session_verified
+    assert store.tile_count == store.structure_tile_count == 160
+    assert not store.health.truncated
+    assert store.health.layer_overlap == 1
+
+
+async def test_truncated_cache_stays_incomplete_until_verified_floor_replacement(hass):
+    store = SlamMapStore(hass, "truncated-rebuild")
+    with patch("custom_components.matic_robot.slam_map_store.MAX_TILES", 1):
+        for page_x in (0, 1):
+            await store.async_add(synthetic_slam_entry(page_x=page_x, mission_id=1))
+            await store.async_add_structure(
+                synthetic_structure_entry(page_x=page_x, mission_id=1)
+            )
+    assert store.health.truncated
+    await store.async_shutdown()
+    restored = SlamMapStore(hass, "truncated-rebuild")
+    await restored.async_load()
+    restored.set_expected_mission_id(1)
+    retained = restored.structure_entries()
+    await restored.async_add(synthetic_slam_entry(page_x=0, mission_id=1))
+    await restored.async_add_structure(
+        synthetic_structure_entry(page_x=0, mission_id=1)
+    )
+    assert restored.structure_entries() == retained
+    assert restored.health.truncated
+    assert not restored.map_complete
+    for page_x in (0, 1):
+        await restored.async_add(synthetic_slam_entry(page_x=page_x, mission_id=2))
+        await restored.async_add_structure(
+            synthetic_structure_entry(page_x=page_x, mission_id=2)
+        )
+    assert not restored.live_session_verified
+    assert restored.health.truncated
+    restored.set_expected_mission_id(2)
+    assert restored.tile_count == restored.structure_tile_count == 2
+    assert restored.live_session_verified
+    assert not restored.health.truncated
+    assert restored.health.layer_overlap == 1
