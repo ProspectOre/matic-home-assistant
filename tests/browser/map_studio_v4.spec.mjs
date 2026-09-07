@@ -4519,7 +4519,7 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
     const backend = {
       dispose() {}, catalog: async () => [recovery.entry],
       scene: (_url, revision, _coherent, _source, signal) => new Promise((resolve, reject) => {
-        const request = { revision, signal, resolve: () => resolve({ revision, floorCoherent: true, scene: { ...initial.resources.scene.value, revision } }) };
+        const request = { revision, signal, resolve: (publishedRevision = revision) => resolve({ revision: publishedRevision, floorCoherent: true, scene: { ...initial.resources.scene.value, revision: publishedRevision } }) };
         recovery.requests.push(request);
         signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
       }),
@@ -4540,15 +4540,16 @@ for (const change of ["revision", "floor", "session"]) test(`slow initial scene 
       ...(change === "session" ? { mapSessionKey: "b".repeat(64) } : {}),
     };
     await s.effects.refreshCatalog();
-    first.resolve();
+    const publishedRevision = first.revision + 2;
+    first.resolve(publishedRevision);
     await Promise.resolve();
-    const result = { aborted: first.signal.aborted, requests: s.requests.length, available: s.store.value.map.available };
+    const result = { aborted: first.signal.aborted, requests: s.requests.length, available: s.store.value.map.available, advanced: s.store.value.resources.entry.mapRevision === publishedRevision };
     s.effects.dispose();
     return result;
   }, change);
   expect(result).toEqual(change === "revision"
-    ? { aborted: false, requests: 1, available: true }
-    : { aborted: true, requests: 2, available: false });
+    ? { aborted: false, requests: 1, available: true, advanced: true }
+    : { aborted: true, requests: 2, available: false, advanced: false });
 });
 
 test("live scene recovers from a transient failure on an unchanged catalog", async ({ page }) => {
@@ -4601,7 +4602,7 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
       dispose: () => {}, catalog: async () => [entry],
       scene: async () => {
         recovery.calls++;
-        if (!recovery.healthy) return { revision: entry.mapRevision + (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
+        if (!recovery.healthy) return { revision: entry.mapRevision - (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
         return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value };
       },
       history: async () => initial.resources.history.value,

@@ -568,12 +568,21 @@ export class EffectController {
         });
         return;
       }
-      if (response.revision !== stamp.revision
+      if (response.revision < stamp.revision
         || !response.scene) throw new BackendError("scene-unavailable");
+      // Encoding can outlive a catalog pixel update. The server assigns the
+      // captured, still-coherent scene a fresh transport revision on publish.
+      // Follow that revision without replacing the floor/session generation.
+      const settledStamp = response.revision === stamp.revision
+        ? stamp : this.#coherence.advance(stamp, response.revision);
+      if (!settledStamp) throw new BackendError("scene-unavailable");
       const state = this.#store.value;
+      const settledEntry = { ...state.resources.entry ?? entry, mapRevision: response.revision };
+      this.#entryIdentity = entryIdentity(settledEntry);
       this.#store.patch({
         resources: {
           ...state.resources,
+          entry: settledEntry,
           scene: resource("ready", response.scene),
         },
         map: { ...state.map, available: true },
@@ -586,7 +595,7 @@ export class EffectController {
       this.#resumeAreaCatalog();
       if (entry.deltaUrl) {
         const generation = ++this.#deltaGeneration;
-        void this.#streamDeltas(entry, stamp, response.scene, generation);
+        void this.#streamDeltas(settledEntry, settledStamp, response.scene, generation);
       }
     } catch (error) {
       if (isAbort(error) || !this.#coherence.accepts(stamp)) return;
