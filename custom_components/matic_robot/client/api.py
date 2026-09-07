@@ -1863,6 +1863,8 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     room_durations: dict[str, int] = {}
     room_mode_statuses: dict[str, set[int]] = {}
     rooms_with_unknown_status: set[str] = set()
+    room_vacuum_statuses: dict[str, set[int]] = {}
+    rooms_without_vacuum_status: set[str] = set()
     try:
         fields = _bounded_fields(
             summary,
@@ -1903,6 +1905,15 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                 seen_rooms.add(name)
                 rooms.append(name)
             status_fields = [field for field in detail_fields if field.number in (5, 6)]
+            vacuum_fields = [field for field in status_fields if field.number == 5]
+            if (
+                len(vacuum_fields) == 1
+                and vacuum_fields[0].wire_type == 0
+                and isinstance(vacuum_fields[0].value, int)
+            ):
+                room_vacuum_statuses.setdefault(name, set()).add(vacuum_fields[0].value)
+            else:
+                rooms_without_vacuum_status.add(name)
             statuses = room_mode_statuses.setdefault(name, set())
             for field in status_fields:
                 if field.wire_type == 0 and isinstance(field.value, int):
@@ -1953,6 +1964,20 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         else:
             room_completion[name] = None
     completed_rooms = tuple(name for name in rooms if room_completion.get(name) is True)
+    # Confirmed vacuum-only runs finish with field 5 == 2 even when field 6
+    # is 1; confirmed interrupted vacuum runs have field 5 == 1 and field 6
+    # == 2. Preserve this command-specific proof instead of merging the fields.
+    # Other cleaning modes still require the conservative whole-room result.
+    vacuum_completed_rooms = tuple(
+        name
+        for name in rooms
+        if completion_status == _SESSION_COMPLETED_STATUS
+        and room_vacuum_statuses.get(name) == {_ROOM_MODE_COMPLETED_STATUS}
+        and name not in rooms_without_vacuum_status
+        and name not in rooms_with_unknown_status
+        and room_mode_statuses[name]
+        <= {_ROOM_MODE_COMPLETED_STATUS, _ROOM_MODE_NON_COMPLETION_STATUS}
+    )
     completed: bool | None
     if completion_status not in (None, _SESSION_COMPLETED_STATUS):
         completed = False
@@ -1972,6 +1997,7 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         room_durations=tuple(room_durations.items()),
         completed=completed,
         completed_rooms=completed_rooms,
+        vacuum_completed_rooms=vacuum_completed_rooms,
     )
 
 
