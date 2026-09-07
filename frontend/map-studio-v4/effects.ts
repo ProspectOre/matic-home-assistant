@@ -551,8 +551,20 @@ export class EffectController {
       if (!this.#coherence.accepts(stamp)) return;
       // A rejected response has settled: leave the request retryable on the
       // next verified catalog poll instead of orphaning its loading state.
+      if (!response.floorCoherent) {
+        const state = this.#store.value;
+        this.#store.patch({
+          coherence: "verifying",
+          resources: {
+            ...state.resources,
+            scene: resource("error", null, "map-rechecking"),
+            pose: resource("idle", null),
+          },
+          map: { ...state.map, available: false, floorCoherent: false, exactPose: false },
+        });
+        return;
+      }
       if (response.revision !== stamp.revision
-        || !response.floorCoherent
         || !response.scene) throw new BackendError("scene-unavailable");
       const state = this.#store.value;
       this.#store.patch({
@@ -775,6 +787,7 @@ export class EffectController {
       if (!current
         || !sameCoherenceGeneration(stamp, current)
         || !currentEntry
+        || !this.#store.value.map.floorCoherent
         || !pose.floorCoherent) return;
       if (pose.mapSessionKey === null
         || pose.mapSessionKey !== currentEntry.mapSessionKey) {

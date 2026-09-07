@@ -4562,9 +4562,20 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
     const effects = recovery.effects = new m.EffectController(store, backend);
     effects.sync({userKey:"synthetic-user",entryKey:entry.entryId,host:initial.host,activity:initial.activity,batteryPercent:initial.batteryPercent,robotLabel:initial.robotLabel,robots:initial.robots,language:"en"}, undefined);
     await effects.refreshCatalog(true);
+    if (rejectedScene === "floor") {
+      // Simulate the verified scene retained while a replacement is loading.
+      store.patch({ resources: { ...store.value.resources, scene: initial.resources.scene }, map: { ...initial.map, available: true, floorCoherent: true, exactPose: true } });
+      await effects.refreshCatalog(true);
+    }
   }, rejectedScene);
   await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("error");
   expect(await page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(false);
+  if (rejectedScene === "floor") {
+    expect(await page.evaluate(() => {
+      const state = window.__sceneRecovery.store.value;
+      return { scene: state.resources.scene.value, coherent: state.map.floorCoherent, pose: state.map.exactPose, status: state.coherence };
+    })).toEqual({ scene: null, coherent: false, pose: false, status: "verifying" });
+  }
   await page.evaluate(async () => {
     window.__sceneRecovery.healthy = true;
     await window.__sceneRecovery.effects.refreshCatalog();
