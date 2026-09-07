@@ -1937,7 +1937,13 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     room_completion: dict[str, bool | None] = {}
     for name in rooms:
         statuses = room_mode_statuses.get(name, set())
-        if _ROOM_MODE_COMPLETED_STATUS in statuses:
+        # Mixed mode statuses occur in confirmed interrupted sessions. Until
+        # the requested mode can be verified, one completed mode is not proof
+        # that the whole commanded room finished.
+        if (
+            statuses == {_ROOM_MODE_COMPLETED_STATUS}
+            and name not in rooms_with_unknown_status
+        ):
             room_completion[name] = True
         elif (
             statuses == {_ROOM_MODE_NON_COMPLETION_STATUS}
