@@ -548,10 +548,12 @@ export class EffectController {
         "live",
         controller.signal,
       );
-      if (!this.#coherence.accepts(stamp)
-        || response.revision !== stamp.revision
+      if (!this.#coherence.accepts(stamp)) return;
+      // A rejected response has settled: leave the request retryable on the
+      // next verified catalog poll instead of orphaning its loading state.
+      if (response.revision !== stamp.revision
         || !response.floorCoherent
-        || !response.scene) return;
+        || !response.scene) throw new BackendError("scene-unavailable");
       const state = this.#store.value;
       this.#store.patch({
         resources: {

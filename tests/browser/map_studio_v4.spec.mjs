@@ -4538,6 +4538,42 @@ test("live scene recovers from a transient failure on an unchanged catalog", asy
   await page.evaluate(() => window.__sceneRecovery.effects.dispose());
 });
 
+for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene recovers after a rejected ${rejectedScene} response`, async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/scene-recovery-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  await page.evaluate(async (rejectedScene) => {
+    const m = await import("/scene-recovery-test.js");
+    const initial = m.createGalleryState("ready");
+    const entry = { ...initial.resources.entry, deltaUrl: null };
+    const store = new m.WorkspaceStore();
+    const recovery = window.__sceneRecovery = { store, calls: 0, healthy: false };
+    const backend = {
+      dispose: () => {}, catalog: async () => [entry],
+      scene: async () => {
+        recovery.calls++;
+        if (!recovery.healthy) return { revision: entry.mapRevision + (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
+        return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value };
+      },
+      history: async () => initial.resources.history.value,
+      pose: async () => initial.resources.pose.value,
+      plans: async () => initial.resources.plans.value,
+    };
+    const effects = recovery.effects = new m.EffectController(store, backend);
+    effects.sync({userKey:"synthetic-user",entryKey:entry.entryId,host:initial.host,activity:initial.activity,batteryPercent:initial.batteryPercent,robotLabel:initial.robotLabel,robots:initial.robots,language:"en"}, undefined);
+    await effects.refreshCatalog(true);
+  }, rejectedScene);
+  await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("error");
+  expect(await page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(false);
+  await page.evaluate(async () => {
+    window.__sceneRecovery.healthy = true;
+    await window.__sceneRecovery.effects.refreshCatalog();
+  });
+  await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(true);
+  expect(await page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("ready");
+  await page.evaluate(() => window.__sceneRecovery.effects.dispose());
+});
+
 test("saved areas recover when Draw opens before the live scene is ready", async ({ page }) => {
   const bundle = await build({ stdin: { contents: `export { EffectController } from "./frontend/map-studio-v4/effects"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";`, resolveDir: process.cwd(), loader: "ts" }, bundle: true, format: "esm", write: false });
   await page.route("**/area-loading-test.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
