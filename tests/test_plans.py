@@ -2485,6 +2485,7 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             "serial",
             _room("Kitchen", "room-kitchen"),
             active_session=AsyncMock(return_value=False),
+            session_identity=AsyncMock(return_value=b"native-task"),
         )
 
     manager.async_mark_suspended.assert_awaited_once_with(
@@ -3093,6 +3094,7 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
         "serial",
         rooms,
         session_history=history,
+        session_identity=AsyncMock(return_value=b"native-task"),
     )
 
     assert completed is True
@@ -3145,6 +3147,7 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
         "serial",
         rooms,
         session_history=history,
+        session_identity=AsyncMock(return_value=b"native-task"),
     )
 
     assert completed is True
@@ -4123,6 +4126,7 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             "serial",
             _room("Kitchen", "room-kitchen"),
             active_session=AsyncMock(return_value=False),
+            session_identity=AsyncMock(return_value=b"native-task"),
         )
 
     manager.async_mark_suspended.assert_awaited_once()
@@ -4155,6 +4159,7 @@ async def test_room_pause_and_resume_outcome() -> None:
         "serial",
         room,
         active_session=AsyncMock(return_value=False),
+        session_identity=AsyncMock(return_value=b"native-task"),
     )
     with (
         patch(
@@ -5349,7 +5354,7 @@ async def test_leg_handles_unknown_and_resumed_native_session(
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
         hass.async_create_task(return_later(), eager_start=True)
 
-    async def resolution(*args):
+    async def resolution(*args, **kwargs):
         nonlocal resolutions
         resolutions += 1
         if not resumes:

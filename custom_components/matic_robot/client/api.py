@@ -678,6 +678,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             await self.async_get_property("active_session_key")
         )
 
+    async def async_get_cleaning_session_identity(self) -> bytes | None:
+        """Keep the vetted session property opaque and in memory for ownership.
+
+        Empty bytes mean the native task ended; ``None`` means unknown. Never
+        expose this private identifier through entities, logs, or storage.
+        """
+        payload = await self.async_get_property("active_session_key")
+        present = _decode_presence_state(payload)
+        if present is None:
+            return None
+        return payload if present else b""
+
     async def async_get_cleaning_session_records(
         self,
     ) -> tuple[CleaningSessionRecord, ...]:

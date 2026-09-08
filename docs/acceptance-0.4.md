@@ -37,6 +37,7 @@ Release preparation targets `0.4.0rc1`; rerun affected gates before promotion.
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
+| Recharge and OEM replacement | Resume only the original native session; an ended, replaced or unverifiable session releases the plan without Stop, credit or another dispatch | Automated single/multi-room pause, charge, replacement and unknown-identity cases pass; affected live acceptance remains open |
 | Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 567 browser checks; actual iPhone flows and guided owner VoiceOver pass; iPad waived; broader assistive-technology cases remain separate |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
