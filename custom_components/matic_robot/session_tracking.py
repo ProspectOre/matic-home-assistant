@@ -143,7 +143,7 @@ class CleaningSessionTracker:
         if native_session is None:
             return tracked
         if _sessions_overlap(native_session, tracked):
-            if native_session.completed is False:
+            if native_session.mode_results or native_session.completed is False:
                 return native_session
             if tracked.completed is True:
                 return tracked
@@ -156,6 +156,9 @@ class CleaningSessionTracker:
                 completed=native_session.completed,
                 completed_rooms=native_session.completed_rooms,
                 vacuum_completed_rooms=native_session.vacuum_completed_rooms,
+                mop_completed_rooms=native_session.mop_completed_rooms,
+                combined_completed_rooms=native_session.combined_completed_rooms,
+                mode_results=native_session.mode_results,
             )
         native_started = _parse_timestamp(native_session.started_at)
         tracked_started = _parse_timestamp(tracked.started_at)

@@ -443,6 +443,7 @@ class MaticStateSensor(MaticEntity, SensorEntity):
             "latest_rooms",
             "latest_completed_rooms",
             "latest_room_durations",
+            "latest_mode_results",
         }
     )
 
@@ -512,15 +513,26 @@ class MaticStateSensor(MaticEntity, SensorEntity):
             latest = state.telemetry.latest_session
             if latest is None:
                 return None
-            return {
+            attributes: dict[str, object] = {
                 "latest_started_at": latest.started_at,
                 "latest_ended_at": latest.ended_at,
                 "latest_duration_seconds": latest.duration_seconds,
-                "latest_rooms": list(latest.rooms),
+                "latest_rooms": list(latest.visited_rooms),
                 "latest_completed_rooms": list(latest.completed_rooms),
                 "latest_room_durations": dict(latest.room_durations),
                 "latest_completed": latest.completed,
             }
+            if latest.mode_results:
+                attributes["latest_mode_results"] = [
+                    {
+                        "room": result.room,
+                        "cleaning_mode": result.cleaning_mode,
+                        "status": result.status,
+                        "duration_seconds": result.duration_seconds,
+                    }
+                    for result in latest.mode_results
+                ]
+            return attributes
         return None
 
 

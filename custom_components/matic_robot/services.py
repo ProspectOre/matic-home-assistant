@@ -1934,7 +1934,6 @@ async def _async_verify_leg_completion(
     if reader is None or baseline is None:
         return None
     targets = {room.name.strip().casefold(): room.room_id for room in rooms}
-    modes = {room.name.strip().casefold(): room.cleaning_mode for room in rooms}
     evidence: dict[str, tuple[str, int]] | None = None
     matched_key: bytes | None = None
     try:
@@ -1988,33 +1987,29 @@ async def _async_verify_leg_completion(
                     session = matches[0].session
                     ended_at = session.ended_at
                     assert isinstance(ended_at, str)
-                    durations = {
-                        name.strip().casefold(): duration
-                        for name, duration in session.room_durations
-                    }
-                    completed_names = {
-                        name.strip().casefold() for name in session.completed_rooms
-                    }
-                    vacuum_completed_names = {
-                        name.strip().casefold()
-                        for name in session.vacuum_completed_rooms
-                    }
                     evidence = {}
-                    for name, room_id in targets.items():
+                    for room in rooms:
+                        name = room.name.strip().casefold()
+                        durations = {
+                            name.strip().casefold(): duration
+                            for name, duration in session.room_durations_for_mode(
+                                room.cleaning_mode
+                            )
+                        }
+                        completed_names = {
+                            name.strip().casefold()
+                            for name in session.completed_rooms_for_mode(
+                                room.cleaning_mode
+                            )
+                        }
                         duration = durations.get(name)
                         if (
-                            (
-                                name in completed_names
-                                or (
-                                    modes[name] == CleaningMode.VACUUM
-                                    and name in vacuum_completed_names
-                                )
-                            )
+                            name in completed_names
                             and isinstance(duration, int)
                             and not isinstance(duration, bool)
                             and duration > 0
                         ):
-                            evidence[room_id] = (ended_at, duration)
+                            evidence[room.room_id] = (ended_at, duration)
                     # Native history can publish timestamps before per-room results.
                     # Keep polling the same record until complete or the bounded window
                     # expires; never combine evidence from different physical sessions.
@@ -2248,7 +2243,9 @@ async def _async_verify_room_completion(
                     rooms = [name.strip().casefold() for name in session.rooms]
                     durations = [
                         duration
-                        for name, duration in session.room_durations
+                        for name, duration in session.room_durations_for_mode(
+                            room.cleaning_mode
+                        )
                         if name.strip().casefold() == target and duration > 0
                     ]
                     if rooms == [target] and len(durations) == 1:
@@ -2658,7 +2655,12 @@ async def _async_expire_native_reconciliation(
 
 
 def _session_confirms_room_mode(session: CleaningSession, room: CleaningRoom) -> bool:
-    """Use explicit vacuum evidence only for a known vacuum-only dispatch."""
+    """Require the requested mode's native proof, including partial sessions."""
+    if session.mode_results:
+        return _area_key(room.name) in {
+            _area_key(name)
+            for name in session.completed_rooms_for_mode(room.cleaning_mode)
+        }
     return session.completed is True or (
         room.cleaning_mode == CleaningMode.VACUUM
         and _area_key(room.name)
@@ -2689,7 +2691,7 @@ def _native_completion_match(
         rooms = [_area_key(name) for name in session.rooms]
         durations = [
             duration
-            for name, duration in session.room_durations
+            for name, duration in session.room_durations_for_mode(room.cleaning_mode)
             if _area_key(name) == target and duration > 0
         ]
         if rooms == [target] and len(durations) == 1:

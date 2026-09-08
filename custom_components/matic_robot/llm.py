@@ -399,7 +399,7 @@ def _bounded_native_room_evidence(
     remaining_bytes: int,
 ) -> tuple[list[JsonObjectType], int, int, int]:
     """Normalize and bound one session's room evidence across the response."""
-    visited = set(session.rooms)
+    visited = set(session.visited_rooms)
     completed = set(session.completed_rooms)
     durations: dict[str, int] = {}
     for room, duration in session.room_durations:
@@ -420,6 +420,16 @@ def _bounded_native_room_evidence(
                 "duration_seconds": durations.get(room),
             }
         )
+        modes: JsonObjectType = {
+            result.cleaning_mode: {
+                "status": result.status,
+                "duration_seconds": result.duration_seconds,
+            }
+            for result in session.mode_results
+            if result.room == room
+        }
+        if modes:
+            evidence[-1]["modes"] = modes
         remaining_items -= 1
         remaining_bytes -= room_bytes
     return evidence, remaining_items, remaining_bytes, len(ordered_rooms)
