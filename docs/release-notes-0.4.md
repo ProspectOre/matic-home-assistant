@@ -36,5 +36,7 @@ See [installation](../README.md#install) for setup and recovery guidance.
 Firmware 172.15/protocol 25 localization behavior, live network-loss recovery,
 and Container reauthentication remain unverified on their affected setups.
 Separate iPad and broader assistive-technology coverage is incomplete.
+The final history correction was verified against a recorded mission;
+new-run validation and a controlled OEM-task replacement retest remain open.
 Older stable versions may not render maps from newer firmware.
 See [compatibility and validation](acceptance-0.4.md).
