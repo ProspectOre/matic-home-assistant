@@ -6,6 +6,10 @@ separate vacuum and mop results for each room. Each mode reports `completed`,
 An absent mode has no result. Unattempted does not establish a cause: the
 integration does not infer an obstruction or the absence of moppable floor.
 The additional sensor attribute `latest_mode_results` is excluded from recorder.
+The shared visited-room list excludes unattempted and unknown results in the
+sensor, finished event, and MCP response. Partial or completed native work
+updates rotation opportunity; an external run does not earn managed completion
+credit merely from this activity import.
 
 A managed vacuum-only dispatch requires explicit vacuum completion; mop-only
 requires mop completion; vacuum-and-mop requires both. A completed vacuum mode

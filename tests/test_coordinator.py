@@ -1171,3 +1171,38 @@ async def test_finished_event_observed_native_run_ignores_host_clock_skew(hass):
     await hass.async_block_till_done()
     assert len(events) == 1
     assert events[0].data["completed"] is True
+
+
+async def test_native_finished_event_excludes_unattempted_room_scope(hass):
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.client.models import CleaningModeResult
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    client = _client()
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 1, 45, tzinfo=UTC),
+    ):
+        coordinator = _coordinator(hass, client)
+    session = CleaningSession(
+        "2026-07-20T02:00:00+00:00",
+        "2026-07-20T02:30:00+00:00",
+        1800,
+        ("Study", "Store", "Unknown"),
+        (("Study", 30),),
+        False,
+        mode_results=(
+            CleaningModeResult("Study", "mop", "partial", 30),
+            CleaningModeResult("Store", "mop", "unattempted", 0),
+            CleaningModeResult("Unknown", "mop", None, None),
+        ),
+    )
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["rooms"] == ["Study"]
+    assert events[0].data["completed_rooms"] == []
+    assert events[0].data["completed"] is False

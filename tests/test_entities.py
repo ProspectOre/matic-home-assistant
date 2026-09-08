@@ -2065,7 +2065,12 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
             coordinator.data.telemetry,
             latest_session=replace(
                 latest,
-                mode_results=(CleaningModeResult("Study", "mop", "partial", 20),),
+                rooms=("Study", "Store", "Unknown"),
+                mode_results=(
+                    CleaningModeResult("Study", "mop", "partial", 20),
+                    CleaningModeResult("Store", "mop", "unattempted", 0),
+                    CleaningModeResult("Unknown", "mop", None, None),
+                ),
             ),
         ),
     )
@@ -2075,7 +2080,8 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
         if item.key == "local_cleaning_sessions"
     )
     attributes = sensor.MaticStateSensor(entry, description).extra_state_attributes
-    assert attributes["latest_mode_results"] == [
+    assert attributes["latest_rooms"] == ["Study"]
+    assert attributes["latest_mode_results"][:1] == [
         {
             "room": "Study",
             "cleaning_mode": "mop",

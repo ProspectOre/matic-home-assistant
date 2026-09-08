@@ -191,7 +191,7 @@ async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, m
     ]["study"].get("completed_runs", 0) == (1 if mode == "vacuum" else 0)
 
 
-async def test_seven_room_partial_session_credits_only_completed_requested_modes():
+async def test_seven_room_partial_session_credits_only_completed_requested_modes(hass):
     from custom_components.matic_robot.client.wire import first_bytes
     from custom_components.matic_robot.llm import _bounded_native_room_evidence
 
@@ -255,6 +255,33 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
     assert reported["Pantry"]["visited"] is True
     assert reported["Pantry"]["completed"] is False
     assert reported["Pantry"]["modes"]["mop"]["status"] == "unattempted"
+
+    from types import SimpleNamespace
+
+    from custom_components.matic_robot.client.models import FloorPlan, Room
+    from custom_components.matic_robot.plans import CleaningPlanManager
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor = FloorPlan(
+        1,
+        "synthetic",
+        b"synthetic",
+        tuple(
+            Room(row[0].lower(), row[0], row[0].lower(), b"synthetic-room", ())
+            for row in rows
+        ),
+    )
+    records = (CleaningSessionRecord(b"synthetic-leg", session),)
+    assert await manager.async_import_native_history("synthetic", floor, records)
+    history = manager._robot("synthetic")["rooms"]
+    for name in ("study", "gallery", "atrium", "den", "pantry"):
+        assert history[name]["last_opportunity"] == session.ended_at
+        assert not history[name].get("last_completed")
+        assert history[name].get("completed_runs", 0) == 0
+    for name in ("store", "utility"):
+        assert not history.get(name, {}).get("last_opportunity")
+    assert not await manager.async_import_native_history("synthetic", floor, records)
 
 
 @pytest.mark.parametrize("group", [6, 7])

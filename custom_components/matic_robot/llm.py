@@ -399,15 +399,7 @@ def _bounded_native_room_evidence(
     remaining_bytes: int,
 ) -> tuple[list[JsonObjectType], int, int, int]:
     """Normalize and bound one session's room evidence across the response."""
-    visited = (
-        {
-            result.room
-            for result in session.mode_results
-            if result.status in ("partial", "completed")
-        }
-        if session.mode_results
-        else set(session.rooms)
-    )
+    visited = set(session.visited_rooms)
     completed = set(session.completed_rooms)
     durations: dict[str, int] = {}
     for room, duration in session.room_durations:

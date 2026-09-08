@@ -225,7 +225,7 @@ class CleaningModeResult:
 
 @dataclass(frozen=True, slots=True)
 class CleaningSession:
-    """One native session with visited and verified-completed rooms separated."""
+    """One session's room scope, visited rooms, and native mode outcomes."""
 
     started_at: str | None
     ended_at: str | None
@@ -238,6 +238,18 @@ class CleaningSession:
     mop_completed_rooms: tuple[str, ...] = ()
     combined_completed_rooms: tuple[str, ...] = ()
     mode_results: tuple[CleaningModeResult, ...] = ()
+
+    @property
+    def visited_rooms(self) -> tuple[str, ...]:
+        """Keep requested but unattempted native rooms out of activity outputs."""
+        if not self.mode_results:
+            return self.rooms
+        visited = {
+            result.room
+            for result in self.mode_results
+            if result.status in ("partial", "completed")
+        }
+        return tuple(name for name in self.rooms if name in visited)
 
     def completed_rooms_for_mode(self, mode: str | None) -> tuple[str, ...]:
         """Require explicit evidence for every mode in a native dispatch."""

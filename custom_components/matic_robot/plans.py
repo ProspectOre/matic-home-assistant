@@ -1693,18 +1693,10 @@ def _import_native_room_activity(
 ) -> bool:
     """Record where the robot worked, which is not proof that it finished.
 
-    The robot marks the room it occupied when a session ended exactly the way
-    it marks a room it cleaned to the end, and it reports a stopped session as
-    completed, so its record cannot establish completion by itself.  Observed
-    live on firmware v172.12: a room entered sixty seconds before a stop and a
-    room cleaned for thirty-one minutes were recorded identically, and a clean
-    stopped after forty-five seconds still reported its room as completed.
-
-    Native evidence is therefore imported as a cleaning opportunity.  Rotation
-    fairness stays current for cleaning this integration did not manage - a
-    room the robot has just worked in does not keep monopolising short runs -
-    while "last cleaned" and completion counts continue to come only from runs
-    whose end was actually verified.
+    Native partial or completed modes establish activity, while unattempted or
+    unknown modes do not. External runs have no matching managed dispatch, so
+    this importer updates rotation opportunities without completion credit.
+    Legacy summaries retain their conservative completed-room activity subset.
     """
     room_lookup: dict[str, tuple[str, str] | None] = {}
     for room in floor_plan.rooms:
@@ -1717,7 +1709,10 @@ def _import_native_room_activity(
         timestamp = _latest_timestamp(session.ended_at)
         if timestamp is None or not isinstance(session.ended_at, str):
             continue
-        for worked_name in session.completed_rooms:
+        worked_rooms = (
+            session.visited_rooms if session.mode_results else session.completed_rooms
+        )
+        for worked_name in worked_rooms:
             mapped_room = room_lookup.get(_native_room_key(worked_name))
             if mapped_room is None:
                 continue

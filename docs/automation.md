@@ -286,17 +286,12 @@ cancelled, timed-out, or restart-interrupted rooms remain due, but a confirmed
 start moves them behind rooms that waited longer so one problem room cannot
 monopolize short runs. Saved room order breaks ties.
 
-Rotation fairness also follows the robot itself. Firmware cleans without Home
-Assistant in two ordinary cases — it resumes its own task after an error, and
-the vendor app can start one. The robot records which rooms such a run touched,
-but that record cannot prove a room was finished: the robot marks the room it
-occupied when a session ended exactly the way it marks a room cleaned to the
-end, and it reports a stopped session as completed. Each time a session
-finishes, the integration therefore imports that evidence as a cleaning
-*opportunity*: a room the robot has just worked in stops monopolising short
-runs, while **last cleaned**, per-room durations, and completion counts still
-come only from runs whose end was verified. A room worked on but not verified
-stays due.
+Rotation fairness also follows cleaning started outside Home Assistant. Native
+partial or completed mode results establish that the robot worked in a room;
+unattempted and unknown results do not. Those results update the room's latest
+cleaning *opportunity*, so a room recently worked on does not monopolise short
+runs. **Last cleaned**, per-room durations, and completion counts still require
+a verified managed dispatch. Partial work alone leaves the room due.
 
 The `matic_robot_cleaning_finished` event and local-sessions sensor expose the
 native session summary. The sensor and MCP history also separate vacuum and
@@ -306,10 +301,9 @@ room's **last cleaned** sensor. A combined clean requires completion evidence
 and positive duration for both modes; visiting a room or ending a mission is
 not enough. See [native cleaning results](native-cleaning-results.md).
 
-A task that ends where the robot stood was stopped, not finished, and is
-recorded as interrupted: the robot reports a room it was stopped in exactly the
-way it reports a finished one, so the return to the dock is what separates
-them. Late reconciliation is never scheduled for such a run.
+Ending in place does not establish completion. Managed runs without safe
+completion evidence remain interrupted or unverified, and an ambiguous native
+session identity prevents late reconciliation.
 
 Room history advances only after the managed runner positively matches the end
 of the commanded room. Returning, idle, or docked state alone is not completion:
