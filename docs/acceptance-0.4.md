@@ -4,9 +4,9 @@ Home Assistant 2026.7 is the minimum supported version. Validation includes
 Home Assistant Yellow, local Bluetooth pairing, and the integration's core
 imports on Home Assistant Container.
 
-Hardware checks on September 7–8 covered the following workflows. Earlier
-failed mixed-settings and interruption checks were superseded by successful
-retests; these results do not certify every later change on hardware.
+Hardware checks for 0.4 covered the following workflows. Successful September
+7–8 retests superseded earlier failed mixed-settings and interruption checks;
+these results do not certify every later change on hardware.
 
 - Same-entry reauthentication and recovery of saved configuration.
 - Live maps and robot position, floor changes, and returning to a prior floor.
