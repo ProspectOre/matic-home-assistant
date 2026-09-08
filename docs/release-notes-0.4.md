@@ -1,7 +1,8 @@
 # 0.4 release notes
 
-Release `v0.4.0` is being prepared from the reviewed `06b227e` tree after
-explicit owner approval. No public beta was published. The release includes
+Release `v0.4.0` is being prepared with the reviewed `f7f3347` session fix after
+explicit owner approval. Publication remains held for affected physical acceptance.
+No public beta was published. The release includes
 automatic perimeter closure, saved-area recovery, companion-app safe-area
 fixes, map recovery, verified native room completion and guarded stop handling.
 
@@ -32,8 +33,17 @@ fixes, map recovery, verified native room completion and guarded stop handling.
 - Managed completion waits for positive native per-room evidence before
   crediting history. Native finished events use native history, and room starts
   are deduplicated.
+- Paused and recharging plans verify the original native session before
+  resuming. A new task started in the OEM app cannot inherit the old plan,
+  even when it cleans the same room. Lost ownership interrupts HA tracking
+  without sending a cleanup Stop to the independent task.
 
 ## Validation and known limits
+
+The installed session-ownership fix passed 1,459 Python tests at 100% coverage,
+required CI/browser/review and full artifact readback after a guarded restart.
+The new bounded physical run is in progress; same-session recharge/resume,
+terminal completion evidence and final restoration remain open.
 
 Earlier unpublished `56b4d4b` passed a bounded same-settings two-room run with one
 credit/start/completion per room and one correct native finished event, followed
@@ -45,10 +55,10 @@ non-motion checks. Subsequent changes require their own validation.
 Actual iPhone navigation, plan creation/discard and saved-outline checks passed.
 The owner reported the guided iPhone VoiceOver flow worked; separate iPad
 acceptance was waived. Different-settings mission legs, Stop/interruption and
-threshold behavior, and a fresh floor round trip passed on the installed
-candidate. The release keeps explicit scoped waivers for live network-loss
-behavior and affected #65 firmware 172.15/protocol 25 hardware, unavailable to
-this owner; Container reauthentication was excluded. See the [acceptance
+threshold behavior, and a fresh floor round trip passed on earlier installed
+candidates. Live network-loss behavior remains unverified under an explicit
+scoped waiver. Affected #65 firmware 172.15/protocol 25 hardware was unavailable,
+and Container reauthentication was excluded. See the [acceptance
 checklist](acceptance-0.4.md) for outcomes and release limits.
 
 ## Upgrade preparation

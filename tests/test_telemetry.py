@@ -102,6 +102,20 @@ async def test_active_cleaning_session_reads_only_presence() -> None:
     ]
 
 
+async def test_active_session_identity_distinguishes_tasks_end_and_unknown() -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    first, second = b"\x0a\x05first", b"\x0a\x06second"
+    client.async_get_property = AsyncMock(
+        side_effect=(first, first, second, b"tombstone-value!", b"", b"\x0a\xff")
+    )
+    assert await client.async_get_cleaning_session_identity() == first
+    assert await client.async_get_cleaning_session_identity() == first
+    assert await client.async_get_cleaning_session_identity() == second
+    assert await client.async_get_cleaning_session_identity() == b""
+    assert await client.async_get_cleaning_session_identity() == b""
+    assert await client.async_get_cleaning_session_identity() is None
+
+
 async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     def timestamp(value: int) -> bytes:
         return _bfield(1, _vfield(1, value))

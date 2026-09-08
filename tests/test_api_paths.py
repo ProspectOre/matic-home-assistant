@@ -1651,10 +1651,13 @@ def test_decode_cleaning_session_skips_unusable_room_entries() -> None:
     assert session.duration_seconds == 600
 
 
-async def test_command_wrappers_encode_and_route(monkeypatch) -> None:
+async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._async_send_channel_payload = AsyncMock()
-    await client.async_send_user_command(UserCommand.STOP)
+    with caplog.at_level("DEBUG"):
+        await client.async_send_user_command(UserCommand.STOP)
+    assert "Requesting Matic user command STOP" in caplog.text
+    assert "robot.invalid" not in caplog.text
     await client.async_start_coverage(
         FloorPlan(
             1,

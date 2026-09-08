@@ -1,7 +1,7 @@
 # 0.4 product review
 
-Status: stable release approved with explicit scoped waivers; this is not a claim that unrun hardware cases passed.
-Installed candidate: unpublished `06b227e`; stationary recovery and September 7 physical floor round trip passed.
+Status: stable release approved with scoped waivers; publication is held for affected session-ownership acceptance. Unrun hardware cases remain unverified.
+Installed candidate: unpublished `f7f3347`; the session fix is reviewed and installed, with its bounded physical run active. Stationary recovery and the September 7 floor round trip passed on `06b227e`.
 Perimeter and phone follow-ups are
 verified live. Actual iPhone checks passed; the owner reported guided iPhone
 VoiceOver navigation passed and waived separate iPad acceptance. Broader physical

@@ -1,11 +1,17 @@
 # 0.4 release readiness
 
-Status: owner approved stable release with explicit scoped waivers; release execution in progress, with no public beta.
-Installed candidate: unpublished `06b227e`, reviewed at `e82a906`.
+Status: owner approved stable release with scoped waivers; publication is held for affected session-ownership acceptance. No public beta is planned.
+Installed candidate: unpublished `f7f3347`, reviewed at `b8372f9`.
 Pre- and post-merge Python, browser, HACS and Hassfest checks passed. All 76
 integration files, new HA process and served bundle matched after guarded restart.
 September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
 Stable metadata is now `0.4.0`; final artifact verification and release gates are in progress. No public beta was published.
+
+## Session-ownership follow-up
+
+- PR #126 passed 1,459 Python tests at 100% coverage, required CI/browser and a clean exact-head regular review. All 76 installed files and a fresh HA startup were verified, followed by the rendered live map and available Stop control.
+- A cancelled native task could previously be replaced by an OEM task while HA continued the old plan. The fix binds a newly started native identity and checks continuity through cleaning, recharge and cleanup. A replacement is not resume evidence; the earlier cancellation source remains unknown.
+- A new seven-room Optimal vacuum-and-mop run is active. Its terminal credits, same-session recharge/resume and original-state restoration remain open. Keep the release held and retain the scoped waivers; do not convert activity into acceptance.
 
 ## September 6 acceptance update
 
@@ -16,7 +22,7 @@ Stable metadata is now `0.4.0`; final artifact verification and release gates ar
   check worked. This is an owner-reported pass, not an instrumented audit.
 - Separate physical iPad acceptance is waived by the owner following phone
   acceptance; no physical iPad test is claimed.
-- Current candidate: 581 browser checks and 1,356 Python tests at 100%
+- Earlier `06b227e` candidate: 581 browser checks and 1,356 Python tests at 100%
   coverage; lint, format, types, privacy and required hosted checks passed.
 - An isolated HA 2026.7 Store rehearsal preserved synthetic plan/area selection
   across stable-to-candidate loading and restored the matching backup byte for
@@ -63,7 +69,7 @@ installed baseline and September 6 results are identified above.
   sheet. Phone tools use separate mode/history rows with 44px targets.
 - Light/dark layouts, mouse/touch/keyboard input, vertex edits, invalid geometry,
   cancellation, stale-floor privacy and saved metadata have automated coverage.
-- Current release tree `06b227e`: 581 browser checks and
+- Earlier perimeter validation: 581 browser checks and
   1,341 Python tests at 100% coverage, lint, types, privacy and 76-file archive
   parity. Minimum-runtime fresh imports and synthetic migration also pass.
 - Guarded installation and restart passed with exact file readback and rollback.
@@ -98,12 +104,13 @@ installed baseline and September 6 results are identified above.
 | Mixed-settings plan | Both legs, handoff, once-per-room credit and cleanup passed; initial start-event capture incomplete, native general completion can remain unknown |
 | Stop/interruption | First-room Stop, early area Stop and paused-run HA restart have no false credit or next-room start; live network loss remains open; original state and automation restored, docked with ownership clear |
 | Finish-current-room | Physical below/exact/above 50% passed at20%/50%/60%; pause excluded. Exact request bracket measured 50% twice; recharge observation pending |
+| Native session continuity | Installed `f7f3347`; automated ownership/start/cleanup cases pass, with a new bounded physical run active; recharge/resume and terminal cleanup pending |
 | Custom-area runs | One bounded saved zone completed; September 7 early Stop has native incomplete session/area evidence and zero completed rooms; original areas/plans and automation restored, docked with ownership clear |
 | Physical floor round trip | September 7 A → B → A passed on installed `06b227e`: coherent complete maps, scenes/pose, room controls, stable Repairs; 40/37 samples, zero errors |
 | Affected issues | #65 affected firmware 172.15/protocol 25 remains unverified: owner has only the 173.10 robot; #71 stop/countdown conditions and original #54 retain their scoped evidence |
 | Final candidate | Freeze code/version, refresh affected checks, exact artifact parity, hosted gates and clean review |
 | Public RC | Omitted by explicit owner instruction; verification remains unpublished |
-| Stable release | Owner-approved with scoped waivers for live network loss, affected firmware 172.15/protocol 25 hardware and excluded Container reauthentication; final metadata/artifact checks, green CI and clean exact-head regular review still required; manual release only |
+| Stable release | Owner-approved with scoped waivers for live network loss, affected firmware 172.15/protocol 25 hardware and excluded Container reauthentication; affected session-ownership acceptance, final metadata/artifact checks, green CI and clean exact-head regular review still required; manual release only |
 
 ## Operating rules
 

@@ -1,6 +1,6 @@
 # 0.4 end-to-end acceptance
 
-Status: stable release approved with explicit scoped waivers; release execution in progress. Installed: unpublished `06b227e` (reviewed `e82a906`), with 76-file parity and restart/bundle proof.
+Status: stable release approved with scoped waivers, but publication is held for affected physical acceptance. Installed: unpublished `f7f3347` (reviewed `b8372f9`), with 76-file parity, a fresh HA restart and rendered verified map.
 September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
 September 6 actual iPhone navigation and saved-outline checks passed; the owner
 reported the guided iPhone VoiceOver flow worked and waived separate iPad
@@ -29,7 +29,7 @@ Release target is `v0.4.0`; final artifact and exact-head release gates are in p
 | First map | Coherent floor, verified pose, honest loading/error states | Live read-only proof; affected #65 hardware open |
 | Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; installed narrow drawing exit and arrow/End navigation passed |
 | Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
-| One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
+| One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded run passed; a seven-room Optimal vacuum-and-mop run on `f7f3347` is active, with native and managed cleaning confirmed; terminal evidence and cleanup pending |
 | Saved plan | Persist settings/order; preview matches legs; no duplicate start | Current different-settings two-leg completion, handoff, once-per-room credit and exact cleanup passed |
 | Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Live create/save/reopen and one bounded saved-zone completion passed; September 7 stopped area has native incomplete evidence |
 | Immediate stop | Settlement, replacement-work protection and prompt safe dock | September 7 first-room cancellation passed, no next-room start or credit; affected #71 setup remains separate |
@@ -37,6 +37,7 @@ Release target is `v0.4.0`; final artifact and exact-head release gates are in p
 | Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
 | Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | September 7 installed `06b227e` physical regression passed; 77 stable reads, unchanged Repairs |
 | Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Safari reload during cleaning passed; September 7 HA restart preserved a paused session without replay, restored scene/pose and recorded interruption without credit; live network loss remains separate |
+| Recharge and OEM replacement | Resume only the original native session; an ended, replaced or unverifiable session releases the plan without Stop, credit or another dispatch | Automated single/multi-room cleaning, pause, charge, pre-existing/replaced sessions, unknown identity and delayed-start cleanup cases pass; affected live acceptance remains open |
 | Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 581 browser checks; actual iPhone flows and guided owner VoiceOver pass; iPad waived; broader assistive-technology cases remain separate |
 | Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
 
@@ -46,12 +47,14 @@ September 7 live HACS rollback installed all 71 stable 0.3.12 integration files 
 
 September 7 exact-boundary Stop on `06b227e` passed: seven existing matching samples gave a 341s estimate; both sides of the 36ms Stop request measured 171 active seconds, exactly 50% at the integer decision boundary. Only the first room completed, with positive native evidence (346s), one start/completion event and one credit; cancelled/failed/unverified totals stayed unchanged. No second-room start occurred. The temporary plan was deleted and original plans/selection/automation restored, docked with ownership clear.
 
-The owner then authorized a Heavy Duty vacuum-and-mop run across the current floor to exercise natural recharge. It reached low charge, suspended with the active timer stopped, resumed after charging, and was later stopped by the owner after the official app queue was shortened. The partial run is retained as recharge/resume evidence only; it is not a whole-run completion claim. The robot is now docked/ready with no native session or managed lock, and release cleanup is restoring the original plan and automation state.
+Earlier recharge attempts retain partial observations of low charge, suspended timing and later activity. In a later attempt, the OEM app reported cancellation and the old HA runner adopted a separately started OEM task after its own native session ended. That adoption is not automatic-resume evidence; the source of the OEM cancellation remains unknown. The abandoned run was retired while docked with no native task, without new completion credit; original plans, selection and areas were verified and its observer stopped.
+
+PR #126 (`f7f3347`, reviewed `b8372f9`) binds managed cleaning to a new native identity and verifies continuity through start, cleaning, recharge and cleanup. Its 1,459 Python tests pass at 100% coverage, and required CI/browser/review, artifact parity and guarded installation passed. A new owner-scoped seven-room Optimal vacuum-and-mop run is active. Same-session recharge/resume, terminal room evidence and final restoration remain pending; no new release acceptance is claimed from activity alone.
 
 September 7 on `06b227e`: immediate Stop and Stop at 20% against a 50% threshold each cancelled only the first room with zero credit. Stop at 60% finished only that room, with one credit and positive native room evidence (275s). Paused active time stayed 98s before resume. The above-threshold observer recorded 99 reads without errors. Native events show one start and the correct terminal room event per test, with no second-room start. All temporary plans were removed; six original plans, selection and automation were restored, docked with every ownership marker clear. The later exact-boundary run is recorded above; recharge and owner visual confirmation remain separate.
 
 September 7 paused-run restart on `06b227e`: a changed HA run lock and 32 unavailable reads proved restart; 19 successful reads covered recovery and a further minute without automatic cleaning. The managed runner ended as interrupted, while the robot stayed paused until Stop.
-Native history contains only Kitchen, incomplete with 43s cleaning. Completion credit stayed unchanged; interruption and suspension each increased once. The full scene/verified pose returned, and original plans/areas/selections match after test-plan deletion. The Stop fence expired normally; automation was restored ON, docked with ownership clear. Matic Repairs are unchanged.
+Native history contains only the first room, incomplete with 43s cleaning. Completion credit stayed unchanged; interruption and suspension each increased once. The full scene/verified pose returned, and original plans/areas/selections match after test-plan deletion. The Stop fence expired normally; automation was restored ON, docked with ownership clear. Matic Repairs are unchanged.
 
 The current unpublished candidate fixes changing-pixel scene-load starvation and preserves same-generation history reads. Guarded restart and full artifact readback passed. Safari rendered the scene before dispatch and after reload during cleaning, with verified pose and reachable Stop.
 A different-settings plan completed both legs with one credit per room and no new failed, cancelled or unverified outcomes; the owner confirmed both rooms. All 282 state reads succeeded, and paused elapsed time stayed unchanged.
@@ -76,7 +79,7 @@ retest supersedes those failed cases for this bounded workflow only.
 On unpublished `72a40d1`, a bounded saved perimeter completed without whole-room credit.
 A separate Stop returned to dock but native history marked completion; a later attempt failed closed on map binding. Baseline state was restored. The UI-only `e29d7fd` follow-up passed guarded restart and idle readback.
 
-September 7 on `06b227e`, a fresh four-point Kitchen outline saved and reopened. Its 26s native Drawn Area session and area evidence were incomplete; the matching event reported zero completed rooms.
+September 7 on `06b227e`, a fresh four-point outline saved and reopened. Its 26s native Drawn Area session and area evidence were incomplete; the matching event reported zero completed rooms.
 This proves early area-session interruption, not cleaning duration at the target.
 The temporary area was deleted; both original areas and all six plans matched their pre-run API records. The Stop fence expired normally; automation was restored ON, docked with every ownership marker clear.
 
@@ -89,13 +92,13 @@ and emitted a finished event. The stop-settlement fence remained set. This histo
 current evidence are described above; stopped-run completion and remaining
 physical gates require their own results.
 
-## Remaining physical sequence
+## Physical verification procedure
 
 1. Record the exact installed candidate and clean baseline: available,
    docked/idle, error-free, with no native session, managed lock, active plan,
    stop-settle or reconciliation marker. Retain credit baselines privately.
 2. Isolate interfering automations and restore their original states afterward.
-3. Run a different-settings two-leg saved plan; verify handoff, native evidence,
+3. When required by the affected change, run a two-leg saved plan; verify handoff, native evidence,
    per-room credit, events and cleanup.
 4. Exercise immediate Stop, pause/resume and interruption separately; verify
    interrupted work gains no completion credit and no next room starts.
@@ -122,30 +125,23 @@ candidate is reviewed, installed and current operator readiness is confirmed.
 
 ## Release gate
 
-- Installed `16e0ae7` passed 1,301 Python tests at 100% coverage, 471 browser
-  checks, lint/format/types/privacy, packaging, hosted gates and clean regular
-  review. Revalidate affected checks after changes; this is not release sign-off.
-- Install the reviewed candidate and repeat affected live and physical checks.
+- Historical `16e0ae7` gates passed; current `f7f3347` has 1,459 Python tests at 100%, CI/browser/review and installed artifact proof. Neither closes unrun physical cases.
+- Complete affected `f7f3347` session-ownership acceptance and final cleanup before publication; prior candidate results do not close this gate.
 - Native VoiceOver, physical devices and fresh hardware-dependent setup checks
   retain explicit results or an explicit release decision; do not mark unrun
   cases passed.
 - Prepare [draft release notes](release-notes-0.4.md), upgrade/rollback guidance
   and final metadata. Verify the release artifact matches the accepted code.
-- Intermediate testing remains unpublished. The owner explicitly approves a
-  stable release with the documented scoped waivers: live network-loss behavior
-  and the affected firmware 172.15/protocol 25 setup remain unverified because
-  that hardware is unavailable; Container reauthentication is excluded. Freeze
+- Intermediate testing remains unpublished. The owner explicitly approves a stable release with the documented scoped waivers: live network-loss behavior
+  remains unverified; the affected firmware 172.15/protocol 25 setup is
+  unavailable, and Container reauthentication is excluded. Freeze
   final metadata, verify the artifact and complete the required exact-head
   review/CI before manual release; no public beta or automatic promotion.
 
 ## Perimeter live follow-up
 
-The installed `2753701` UI baseline passed guarded file readback and restart.
-Live Safari verified point editing, automatic closure, further-point extension,
-save/exit without a false discard prompt and saved-outline reopen. Earlier
-perimeter checks also verified persistence across restart. Temporary test areas
-were removed with recovery retained and original areas unchanged.
-The current browser suite passes 567 checks. Actual iPhone navigation and saved
+The installed `2753701` UI baseline passed guarded file readback/restart and live Safari point editing, automatic closure, further points, save/exit without false discard and outline reopen. Earlier checks verified persistence across restart; temporary areas were removed and original areas retained.
+That historical browser suite passed 567 checks. Actual iPhone navigation and saved
 outline checks passed; guided iPhone VoiceOver has an owner-reported pass, and
 separate iPad acceptance is waived. Broader assistive-technology and physical
 cleaning gates remain separate. See [release readiness](release-readiness-0.4.md).

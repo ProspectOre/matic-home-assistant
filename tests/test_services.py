@@ -751,6 +751,9 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             client=SimpleNamespace(
                 async_has_active_cleaning_session=AsyncMock(return_value=False),
                 async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_identity=AsyncMock(
+                    return_value=b"native-task"
+                ),
                 async_send_user_command=AsyncMock(),
             ),
             slam_map=SimpleNamespace(
@@ -859,6 +862,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     client = SimpleNamespace(
         async_has_active_cleaning_session=AsyncMock(return_value=False),
         async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
         async_send_user_command=AsyncMock(),
     )
     entry = SimpleNamespace(
