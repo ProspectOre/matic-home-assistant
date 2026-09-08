@@ -1,323 +1,88 @@
-<p align="center"><img src="custom_components/matic_robot/brand/robot-mark.svg" alt="" width="140"></p>
+<p align="center"><img src="custom_components/matic_robot/brand/robot-mark.svg" alt="Robot vacuum icon" width="120"></p>
 
-# Matic (Unofficial) for Home Assistant
+# Matic for Home Assistant
 
-> Independent community project. Not affiliated with, endorsed by, or supported
-> by Matic Robots Inc.
+Local control, live maps, and room-by-room cleaning for Matic robot vacuums.
+Pair once over Bluetooth; Home Assistant then connects directly over your LAN.
 
-Matic is a trademark of Matic Robots Inc. It is used here only to identify
-compatible hardware. This project does not use Matic's logo or product photography.
-
-An MIT-licensed Home Assistant custom integration for Matic robot vacuums.
-Setup uses the robot's **Add another user** Bluetooth window. Routine control,
-state, and maps use the robot's encrypted local service without Matter or cloud
-relays.
-
-**[Documentation](docs/README.md)** — Installation, local pairing, cleaning
-plans, automation, privacy, and troubleshooting.
-
-> **Buying a Matic?** If you are already planning to buy one, you can use the
-> [maintainer's Matic referral link](https://referrals.maticrobots.com/maticrobots/u/dbaef97f?sub=maticrobots).
-> Under Matic's current referral program, you receive an Annual Bag Pass and the
-> maintainer receives $100 in Matic store credit. Using the link is optional and
-> does not affect this independent integration. Referral benefits may change.
-
-## Status
-
-Home Assistant 2026.7 is the minimum version accepted by HACS. Live validation
-has covered 2026.7 and 2026.8 releases; this does not establish compatibility
-with every Home Assistant release or installation type. Tested workflows and remaining limits are described in
-[compatibility and validation](docs/acceptance-0.4.md).
-
-The integration has been tested on real robots and Home Assistant Yellow and
-Container installations. One robot creates 55 fixed entities — 23 sensors,
-13 binary sensors, 5 buttons, 4 switches, 4 selects, 1 number, 2 cameras,
-1 event, 1 update, and 1 vacuum — plus two opt-in room statistics sensors per
-mapped room.
-Setup, state, map, cleaning, and settings paths have been exercised on the robot,
-and the integration is covered by automated tests.
+**[Install](#install) · [User guide](docs/cleaning.md) · [Automations](docs/automation.md) · [What's new in 0.4](docs/release-notes-0.4.md)**
 
 ## Features
 
-- Zeroconf discovery, pinned Matic TLS identity, Bluetooth credential issuance,
-  authenticated local sessions, reload, and unload.
-- Start/resume, pause, stop, dock, full-floor cleaning, named-room
-  cleaning, and Home Assistant Area-to-room mapping.
-- A visible-by-default labeled room-map camera, plus a default-disabled private
-  photographic SLAM camera and admin-only 3D Map Studio.
-- Activity, battery, rooms, hardware/software/protocol, current area, update,
-  Wi-Fi, schedule, local cleaning history, dock/sink, Matter-pairing,
-  robot SSH-tunnel permission, diagnostic-upload state, Cues voice/gesture
-  lifecycle and following state, and persistent firmware compatibility health.
-- Controls for child lock, pet-waste avoidance, Matic Cues, double-pass mopping,
-  and water flow.
-- Payload-free endpoint inspection and automatic firmware compatibility
-  snapshots for every known non-credential Hermes read surface, including
-  bounded value-free wire-shape candidates for newly added protocol fields.
+- **Live maps:** explore your floor in 3D or 2D, follow the robot, and browse saved maps.
+- **Room cleaning:** vacuum, mop, or both with Quick, Optimal, or Heavy Duty coverage.
+- **Saved plans:** set each room's cleaning preferences and order, or rotate through rooms that have waited longest.
+- **Custom areas:** draw an outline on the map, adjust its points, and save it for repeated use.
+- **Home Assistant controls:** start, pause, stop, dock, adjust settings, and build routines with sensors, actions, and blueprints.
+- **Cleaning history:** see vacuum and mop results separately, including partial and unattempted work.
 
-## Home Assistant capabilities
-
-The integration adds Home Assistant-native planning and automation:
-
-- **Saved cleaning plans.** Named, reusable plans with a per-room cleaning
-  mode and Quick, Optimal, or Heavy Duty coverage, include toggles, and
-  drag-orderable room lists,
-  managed alongside custom areas in the Matic Map **Cleaning** workspace. Each plan can stop
-  immediately or finish a sufficiently progressed current room without
-  starting the next one. Consecutive rooms with matching mode and coverage
-  share one native mission. Settings changes require separate missions; the
-  robot may visit the dock before the next mission starts.
-- **Fair intelligent rotation.** A plan run starts with the room least recently
-  given a cleaning opportunity, using shared room opportunity history and saved
-  order to break ties. Priority changes only after the robot reports the
-  commanded room as its current cleaning area; a rejected command or lingering
-  prior-room state does not move it. Last-cleaned history advances only after a
-  matching robot-native record reports verified completion.
-  Stopping partway never credits the room or changes its learned duration, but a
-  room that started cannot monopolize every short run if it later fails. Duration
-  learning is shared across plans only when the robot, stable room ID, cleaning
-  mode, and coverage level all match.
-- **Dust-bag verification.** Robots that report the typed bag error field are
-  observed through the read-only operations surface, including bounded full and
-  confirmed-replacement transition counts with timestamps. Public bag entities
-  remain withheld until those transitions are verified on a real robot.
-- **Top-to-bottom runs.** Deterministic whole-plan runs in the exact saved
-  room order, every time.
-- **Plan operations as actions.** Preview, run, stop-and-dock, history
-  reset, and plan management are Home Assistant actions, so schedules,
-  presence, and scripts can drive them unattended.
-- **Matic Cues.** Enable or disable Cues from a switch, observe its live voice
-  and gesture lifecycle, react to classified cleaning/navigation/following
-  intents, and use following-person state in automations. The integration
-  exposes only classifications and lifecycle state: no transcript, audio,
-  image, video, person identity, or pointing coordinate enters Home Assistant.
-- **Room-level automation events.** `room_started`, `room_completed`,
-  `room_failed`, `room_interrupted`, `room_cancelled`, and
-  `room_ended_unverified` events per run, with Home Assistant Area-to-room
-  mapping. Only `room_completed` advances successful history.
-- **A dashboard map.** The live floor-plan camera renders rooms, labels,
-  and robot pose on any dashboard with a standard Picture Entity card.
-- **A private 3D map workspace.** The admin-only Matic Map sidebar panel renders
-  the robot's local color SLAM point cloud through clear **3D** and **2D** views.
-  The 2D appearance can use the photo map or stable labeled room map. It supports orbit, pan, pinch,
-  twist, tilt, mouse-wheel zoom, trackpad navigation, fit, refresh, keyboard
-  control, full-screen use, live point-cloud deltas, a private map timeline,
-  mode-specific camera framing, and same-floor last-good-scene recovery. When
-  retained history contains more than one verified floor, a floor selector
-  offers the current live floor plus clearly read-only saved floors. A compact
-  native toolbar preserves map space, 2D stays aligned and planar, and the room
-  map stays centered at any aspect ratio. No map is uploaded to a vendor or
-  third party.
-- **Painted custom areas.** Open **Matic Map → Cleaning → Custom areas**, focus a labeled
-  room, and paint over the authenticated Photo or Rooms layer without
-  leaving the map workspace. Erase mistakes or move the map independently,
-  then save the footprint by name, run it immediately,
-  or call it from an automation. Geometry stays in Home Assistant; action calls
-  contain only the saved name. The device page also exposes a **Custom cleaning
-  area** select and **Clean selected area** button for native dashboards and
-  automations. The Configure flow remains available as a compatibility entry
-  point.
-
-Camera and microphone recording, clip retrieval and caching, recording metadata,
-and vendor share or discard decisions are not included because these
-privacy-sensitive support operations can have external or irreversible effects.
-See [Recording-related protocol notes](docs/recording-protocol.md).
-
-The Cues switch changes a local robot setting, but enabling it opts the robot
-into Matic's documented Cues processing. Matic says wake-word, direction, and
-gesture processing happen on-device, while audio after the chime is sent to
-Google Gemini; video is not sent. Review Matic's
-[Cues overview](https://maticrobots.com/hey-matic) and
-[voice-data explanation](https://maticrobots.com/blog/how-your-voice-data-is-handled)
-before enabling it.
+Maps and cleaning data stay in Home Assistant. The integration has no telemetry
+or cloud service. Optional Matic Cues follows [Matic's own voice-data policy](docs/privacy.md#matic-cues).
 
 ## Install
 
-In HACS, add this repository as a custom integration repository and install
-**Matic (Unofficial)**. Restart Home Assistant, then complete the
-Bluetooth authorization prompt.
+Requires **Home Assistant 2026.7+** and a Bluetooth adapter built into or attached
+to the Home Assistant host for pairing. Bluetooth proxies cannot complete setup.
 
-For a manual install, copy `custom_components/matic_robot` into Home
-Assistant's `custom_components`, restart, select the discovered robot under
-**Settings → Devices & services**, and complete the Bluetooth prompt.
+1. In HACS, add [this repository](https://github.com/ProspectOre/matic-home-assistant) as a custom **Integration** repository.
+2. Download **Matic (Unofficial)** and restart Home Assistant.
+3. Open **Settings → Devices & services** and configure the discovered Matic.
 
-## Local pairing
+If Matic is not discovered, add the integration manually and enter the robot's
+address and port when offered.
 
-1. Add **Matic (Unofficial)**. Home Assistant discovers the robot
-   automatically; homes with multiple robots choose one from a list.
-2. In the Matic app, open **Settings → Connectivity → Add another user** and
-   turn on Pairing mode. The robot's screen stays on its idle view until
-   pairing actually starts, and the window expires silently — open it right
-   before the next step.
-3. Select **Pairing mode is on**, then **Submit** in Home Assistant and keep
-   the setup dialog open. Setup narrates its progress; when Bluetooth pairing
-   starts, Matic displays a six-digit code and Home Assistant asks for it.
-4. Enter the code right away — each code is valid for roughly 20 seconds, and
-   if it lapses the flow automatically starts a fresh pairing and asks for the
-   robot's new code. Home Assistant then requests its own local credential and
-   verifies the robot's pinned TLS identity before saving.
+For a manual install, copy `custom_components/matic_robot` into Home Assistant's
+`custom_components` directory and restart.
 
-Any displayed six-digit code belongs only to the current pairing attempt and is
-never stored by the integration. After setup, routine operation uses the robot's
-encrypted local service. See [Hermes pairing](docs/hermes-pairing.md) for
-pairing and platform requirements.
+### Local pairing
 
-## Cleaning UX and automation
+1. Place Matic near Home Assistant's local Bluetooth adapter.
+2. In the Matic app, open **Settings → Connectivity → Add another user** and turn on Pairing mode.
+3. Continue in Home Assistant and enter the six-digit code shown on the robot.
 
-The map is a visible camera entity and can be added directly to any dashboard
-with a Picture Entity card. Each plan is created or edited in the room-aware
-**Matic Map → Cleaning → Plans** view: plan name, cleaning order, return-to-dock, every mapped
-room, include toggles, per-room mode/coverage dropdowns, and saved top-to-bottom
-order. The Configure flow remains available as a compatibility entry point.
+Enter the code promptly. If it expires, turn Pairing mode off and on before
+retrying. [Pairing and recovery guide](docs/hermes-pairing.md).
 
-The adjacent **Matic Map → Cleaning → Custom areas** view uses the same private photo map,
-room geometry, and saved-area store as **Configure → Custom cleaning areas**. Draw over the
-local room map, choose the saved mode and coverage, and name the result (for
-example, `Litter box`). Automations call `matic_robot.clean_area` with that
-name, so coordinates never appear in automation YAML, Logbook service data, or
-diagnostics. Each saved area is bound to the floor/map geometry it was drawn
-against; after a remap or floor change, the integration blocks the stale area
-instead of sending old coordinates. The editor opens as a full-screen workspace with room labels,
-room focus, separate Draw and Pan modes, cursor-centered zoom, Undo/Redo,
-reversible Clear, keyboard controls, and a clear return to Home Assistant's
-name/settings form.
+### Updating
 
-Use **Intelligent rotation** when cleaning windows vary: it starts with rooms
-that have waited longest since their last cleaning opportunity and uses shared
-opportunity history—including native sessions started manually or by the
-vendor app—plus saved order to break ties. Use
-**Run all — top to bottom** when every selected room should clean in the saved
-order every time. Room actions resolve stable map IDs before display names and
-reject ambiguous names instead of targeting an arbitrary room.
+Back up Home Assistant, let the robot dock, update through HACS, and restart.
+Saved plans, areas, and credentials are preserved. Check the map before cleaning;
+areas affected by a changed map may need confirmation.
 
-To reduce settings transitions in a saved-order plan, place rooms with matching
-mode and coverage together when your preferred order allows it. Intelligent
-rotation preserves cleaning-opportunity priority, so its settings groups can
-change between runs. Completion verification remains required between missions.
+<a id="cleaning-ux-and-automation"></a>
 
-Entities and actions work with standard Home Assistant automations, scripts,
-scenes, schedules, and dashboards. Ready-to-import blueprints live in
-`blueprints/automation/matic_robot/`. The entity contract, action reference,
-and automation guidance are in [the automation reference](docs/automation.md).
+## Cleaning
 
-## Privacy model
+Open **Matic Map** from the sidebar:
 
-Routine traffic stays local between Home Assistant and the robot. The
-integration has no telemetry, crash uploader, analytics endpoint, or maintainer
-cloud.
+- **One-time clean** selects rooms for a single run.
+- **Create a plan** or **Run a plan** manages reusable room routines.
+- **Clean a custom area** creates or selects a saved outline.
+- **Map history** browses saved maps; saved floors are read-only.
 
-If a user explicitly clicks **Download diagnostics**, Home Assistant generates
-a local report from a strict safe-field allowlist. It omits credentials,
-addresses, certificate identity, serial numbers, names, maps, pose, room and Area
-context, Wi-Fi identities, schedules, and session details. See
-[the privacy model](docs/privacy.md).
+Use Home Assistant schedules and presence automations to decide when plans run.
+See the [cleaning guide](docs/cleaning.md), [entity reference](docs/entities.md),
+and [automation examples](docs/automation.md).
 
-The photographic SLAM cache can reveal the layout and contents of a home. It is
-stored only in private Home Assistant integration storage, may be included in a
-Home Assistant backup, and is deleted with the config entry. Its camera is
-disabled by default and the interactive Map Studio and scene endpoints require
-an administrator. Treat screenshots, backups, and enabled camera access as
-sensitive household data.
+<a id="limits-and-troubleshooting"></a>
 
-## Official Matic Home Assistant support
+## Help
 
-Matic also documents an official Home Assistant connection path. This project
-is separate: it is an unofficial, community-maintained, local Hermes integration
-for users who want its entity model, saved plans, local map workspace, and
-automation surfaces. Do not configure both integrations to issue competing
-motion commands unless you understand how each one arbitrates an active robot
-task. For the vendor-supported route, follow Matic's
-[Home Assistant guide](https://support.maticrobots.com/how-to-connect-matic-to-home-assistant).
+- [Pairing and Bluetooth](docs/hermes-pairing.md#troubleshooting)
+- [Compatibility](docs/acceptance-0.4.md) and [firmware notes](docs/firmware-compatibility.md)
+- [Report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml)
+- [Community discussion](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684)
 
-## Bluetooth permissions
+Review diagnostics and screenshots before sharing them. [Privacy](docs/privacy.md)
+explains stored data and removal; report vulnerabilities through [Security](SECURITY.md).
 
-Home Assistant OS manages supported local Bluetooth adapters; the robot-display
-passkey flow was tested on Home Assistant Yellow. For setup, place the local
-adapter within a few feet of Matic with as little furniture or other obstruction
-between them as practical; receiving a passive advertisement from farther away
-does not prove the adapter can sustain the interactive pairing connection.
-Home Assistant Container
-installations need `NET_ADMIN`, `NET_RAW`, and the read-only host D-Bus socket;
-follow Home Assistant's [Bluetooth container instructions](https://www.home-assistant.io/integrations/bluetooth/#additional-details-for-container).
-If Home Assistant reports the adapter as degraded, fix that repair and restart
-before pairing. Bluetooth is used only for authorization; routine operation
-uses the LAN.
+## About
 
-## Limits and troubleshooting
+An independent community project, not affiliated with Matic Robots Inc.
+Matic is its trademark; this project uses original robot artwork.
+For vendor-supported setup, see [Matic's Home Assistant guide](https://support.maticrobots.com/how-to-connect-matic-to-home-assistant).
 
-- Firmware changes can require an integration update because this is an
-  unofficial local protocol integration. Check the
-  [firmware compatibility ledger](docs/firmware-compatibility.md) for observed
-  versions and validation status. A newly observed version emits the
-  `matic_robot_firmware_changed` event and automatically compares all known read
-  endpoints with the prior snapshot. `matic_robot_firmware_analyzed` carries a
-  silent, payload-free result for advanced automations; the **Firmware
-  snapshot** action remains available for a deliberate repeat. A Repair is
-  created only when the comparison finds endpoint availability or transport
-  drift, never merely because a new structural candidate appeared.
-- Rooms without an exact Area name or unique alias require one manual mapping.
-- Managed plans require unique mapped room names because the robot's completion
-  ledger identifies rooms by name. Duplicate names are blocked before motion
-  instead of risking credit to the wrong room.
-- Home Assistant motion actions are serialized per robot. Starting another
-  Home Assistant clean, custom-area clean, stop, or dock replaces a managed
-  plan; pause/resume keeps it resumable. Commands from the official app or
-  another client cannot be intercepted before the robot receives them, so avoid
-  concurrent control during a managed plan.
-- The room camera is geometric. The optional photographic camera and Map Studio
-  use the robot's accumulated local SLAM color/structure data, not a live video
-  stream or recording browser. Map detail arrives only while the robot emits
-  pages; it can be incomplete, stale, or unavailable after a remap, stream
-  interruption, storage limit, or unsupported firmware.
-- Map Studio starts with one bounded full scene, then long-polls authenticated
-  revision changes and applies compressed point-cloud deltas. If its retained
-  base is unavailable or a delta would be inefficient, the same request returns
-  a complete scene. A same-floor rebuild can keep the last complete checkpoint
-  under the current robot-position overlay. If SLAM and floor-plan mission
-  identities diverge during a physical floor move, the room overlay, pose, and
-  coordinate editing fail closed until both sources agree; a previous-floor
-  checkpoint is never substituted as the live map. Private, time-spaced map
-  checkpoints are grouped by verified floor identity and limited to 12 items
-  and 48 MiB of compressed data; deleting the integration removes them. Map
-  health is not proof that every part of the home has been scanned.
-- Pairing credentials, certificate secrets, Wi-Fi passwords, account tokens,
-  Matter setup codes, and arbitrary raw writes are never exposed.
-- If discovery fails, confirm the robot and Home Assistant share a
-  multicast-capable LAN.
-- Every Bluetooth pairing displays a fresh six-digit code on Matic. Enter that
-  code only in the active Home Assistant setup dialog.
-- If a displayed code expires or is rejected, turn Pairing mode off and back on
-  before retrying. The flow returns to confirmation instead of waiting on a
-  replacement code that current Matic firmware may not issue.
-- If setup times out, review **Settings → System → Logs** for the sanitized
-  `matic_robot` pairing-timeout entry before retrying.
-- A new Bluetooth pairing deliberately proves physical access: someone at the
-  robot must read its displayed code, and Home Assistant must use a Bluetooth
-  adapter built into or directly attached to its host for that interactive
-  exchange. Bluetooth proxies are not supported for setup. If a proxy can see
-  Matic but the local adapter cannot, move the local adapter closer and remove
-  obstructions. If pairing fails, temporarily disable Bluetooth proxies while
-  retrying so discovery and pairing stay on the local adapter. If Matic is not
-  retained in that adapter's Home Assistant scanner cache, compare with a
-  phone-side scan. Reload the Bluetooth integration or replug the adapter only
-  if the local scanner also cannot see nearby Bluetooth devices. Routine use is
-  LAN-only after authorization, but reauthentication and explicit credential
-  replacement need the same local Bluetooth path as initial setup.
-- For bugs, use the repository's bug-report form after reviewing and sanitizing
-  diagnostics. Report vulnerabilities privately as described in
-  [SECURITY.md](SECURITY.md). Never attach credentials, maps, captures, backups,
-  or Home Assistant storage publicly.
+[MIT license](LICENSE) · [Contributing](CONTRIBUTING.md) · [All documentation](docs/README.md)
 
-## Development
-
-```sh
-python -m venv .venv
-.venv/bin/pip install -e '.[test]'
-.venv/bin/pytest --cov=custom_components/matic_robot --cov-report=term-missing
-.venv/bin/ruff check .
-.venv/bin/ruff format --check .
-.venv/bin/mypy custom_components/matic_robot
-.venv/bin/python scripts/check_public_tree.py
-```
-
-Keep all private data out of git.
+Buying a robot? The maintainer may receive store credit through this
+[optional referral link](https://referrals.maticrobots.com/maticrobots/u/dbaef97f?sub=maticrobots).

@@ -424,28 +424,33 @@ def test_user_copy_matches_pairing_and_plan_behavior() -> None:
 def test_readme_states_the_actual_runtime_and_validation_scope() -> None:
     """Do not imply unsupported runtimes or universal live-device validation."""
     readme = (ROOT / "README.md").read_text()
+    compatibility = (ROOT / "docs" / "acceptance-0.4.md").read_text()
+    minimum = json.loads((ROOT / "hacs.json").read_text())["homeassistant"]
+    supported_version = ".".join(minimum.split(".")[:2])
 
-    assert "2026.7 is the minimum version accepted by HACS" in readme
-    assert "has covered 2026.7 and 2026.8 releases" in readme
-    assert "this does not establish compatibility" in readme
+    assert f"Home Assistant {supported_version}+" in readme
+    assert "docs/acceptance-0.4.md" in readme
+    assert f"Home Assistant {supported_version}+" in compatibility
+    assert "Live use has covered 2026.7 and 2026.8" in compatibility
     assert "Each exposed command is tested against a real robot" not in readme
 
 
 def test_documented_entity_surface_matches_release_contract() -> None:
-    """Keep public counts aligned with the tested 0.3 entity platforms."""
+    """Keep the linked entity reference aligned with the release contract."""
     readme = " ".join((ROOT / "README.md").read_text().split())
     automation = " ".join((ROOT / "docs" / "automation.md").read_text().split())
+    entities = " ".join((ROOT / "docs" / "entities.md").read_text().split())
     surface = (
         "55 fixed entities — 23 sensors, 13 binary sensors, 5 buttons, "
         "4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and "
         "1 vacuum"
     )
 
-    assert surface in readme
-    assert surface in automation
-    assert "two opt-in room statistics sensors per mapped room" in readme
-    assert "two opt-in statistics sensors per mapped room" in automation
-    assert "default-disabled private photographic SLAM camera" in readme
+    assert "docs/entities.md" in readme
+    assert "entities.md" in automation
+    assert surface in entities
+    assert "two opt-in statistics sensors per mapped room" in entities
+    assert "photographic SLAM camera is disabled by default" in entities
 
 
 def test_away_blueprint_starts_and_stops_intelligent_cleaning() -> None:
