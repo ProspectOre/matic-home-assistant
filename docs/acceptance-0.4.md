@@ -1,133 +1,39 @@
-# 0.4 end-to-end acceptance
+# 0.4 compatibility and validation
 
-Status: in progress, not release sign-off. Installed UI baseline: unpublished
-`2753701`, with exact three-file readback and guarded restart verified.
-September 6 actual iPhone navigation and saved-outline checks passed; the owner
-reported the guided iPhone VoiceOver flow worked and waived separate iPad
-acceptance. This is not physical acceptance of every robot workflow.
-Release preparation targets `0.4.0rc1`; rerun affected gates before promotion.
+Home Assistant 2026.7 is the minimum supported version. Validation includes
+Home Assistant Yellow, local Bluetooth pairing, and the integration's core
+imports on Home Assistant Container.
 
-## Evidence rules
+Hardware checks for 0.4 covered the following workflows. Successful September
+7–8 retests superseded earlier failed mixed-settings and interruption checks;
+these results do not certify every later change on hardware.
 
-- Record commit, installed-file parity, date, platform, result and sanitized
-  evidence for each journey. Mark unrun cases **open**.
-- Keep maps, coordinates, room names, identifiers and raw diagnostics private.
-- Source tests, browser emulation, live HA, native assistive technology and
-  physical robot behavior are separate evidence; none substitutes for another.
-- After a change, rerun affected journeys and candidate gates. Do not silently
-  transfer older physical acceptance to a new build.
-- Physical runs require an operator, a clear area and an available Stop control.
-  Carry between floors only when stopped; verify localization independently of
-  the selected floor name.
+- Same-entry reauthentication and recovery of saved configuration.
+- Live maps and robot position, floor changes, and returning to a prior floor.
+- One-time room cleaning, saved plans with different room settings, and custom areas.
+- Immediate Stop and finish-current-room at 20%, 50%, and 60% against a 50%
+  threshold, with no next-room start; paused time stayed excluded.
+- Natural recharge/resume with the original native cleaning session; that
+  mission ultimately ended partially complete.
+- Native vacuum/mop history from a partial mission.
+- Home Assistant restart recovery without replaying a cleaning command.
+- iPhone navigation, saved outlines, and guided VoiceOver use.
 
-## User journeys and pass conditions
+Automated checks cover protocol decoding, command ownership, interruption,
+privacy, packaging, and browser behavior in Chromium and WebKit. Hardware
+results cover the tested setup, not every robot firmware or network condition.
 
-| Journey | Required outcome | Evidence / remaining work |
-| --- | --- | --- |
-| Install and upgrade | Artifact parity, restart, available entities and recovery | Installed audit baseline verified by full-file readback and idle restart; fresh-install packaging automated |
-| Setup and reauthentication | Clear stages, cancellation, useful errors and preserved identity | Synthetic coverage and historical HAOS proof; fresh candidate hardware and Container reauth open |
-| First map | Coherent floor, verified pose, honest loading/error states | Live read-only proof; affected #65 hardware open |
-| Everyday navigation | 2D/3D, room/photo views, drafts, preferences and reopen preserve intent | Automated and live checks; installed narrow drawing exit and arrow/End navigation passed |
-| Saved floor | Read-only history, no live pose or cleaning actions; return restores live controls | Fresh 2026-09-05 live read-only pass |
-| One-time clean | Explicit settings, one dispatch, visible scene and native completion | Earlier bounded room run passed; current settings inspected without dispatch |
-| Saved plan | Persist settings/order; preview matches legs; no duplicate start | Same-settings two-room baseline passed; different-settings attempt stopped after scene loss; handoff open |
-| Custom area | Draw/save/reopen/run selected geometry; stale geometry has safe recovery | Live create/save/reopen and one bounded saved-zone completion passed; separately interrupted run remains open |
-| Immediate stop | Settlement, replacement-work protection and prompt safe dock | Regression coverage; fresh physical #71 retest open |
-| Finish-current-room | Below threshold stops; exact/above finishes only current room; next room never starts | Synthetic boundaries; physical threshold/pause/recharge cases open |
-| Completion credit/events | Only positive native room evidence earns credit; events occur once | Installed baseline two-room pass: one credit/start/completion per room and one correct native finished event |
-| Floor round trip | Floor A → B → A scene/pose/rooms/history/actions agree; no duplicate Repairs | Earlier stable #54 proof; fresh 0.4 physical regression open |
-| Recovery | Honest reconnect/auth/reopen; no stale actions or command replay | Synthetic and prior live non-motion checks; interruption during motion open |
-| Recharge and OEM replacement | Resume only the original native session; an ended, replaced or unverifiable session releases the plan without Stop, credit or another dispatch | Automated single/multi-room cleaning, pause, charge, pre-existing/replaced sessions, unknown identity and delayed-start cleanup cases pass; affected live acceptance remains open |
-| Accessibility | Keyboard/focus/labels/zoom/touch usable throughout | 567 browser checks; actual iPhone flows and guided owner VoiceOver pass; iPad waived; broader assistive-technology cases remain separate |
-| Support | Useful redacted diagnostics and discoverable recovery | Privacy tests; fresh live diagnostics connected with verified floor/session; reporter confirmation open |
+## Known limits
 
-## Latest bounded physical evidence
+- Firmware 172.15/protocol 25 localization behavior remains unverified on the
+  affected hardware.
+- Live network-loss recovery and Container reauthentication have not been
+  physically verified for this release.
+- Separate iPad and broader assistive-technology coverage remains incomplete.
+- The final per-mode history fix was checked against the retained partial
+  mission, without a new cleaning run. Protection against replacement by an
+  unrelated OEM task has automated coverage but no controlled hardware retest.
+- Older stable versions may not render maps produced by newer firmware.
 
-On unpublished `56b4d4b`, one Quick-vacuum mission completed two requested rooms
-with positive native per-room evidence. Managed history credited each exactly
-once; each room emitted one start and completion, and one native finished event
-covered both. Cancellation, failure and interruption counts did not change.
-The robot returned to charge without errors or remaining ownership markers.
-Original configuration was restored and the temporary test plan removed.
-This proves the tested same-settings mission, not different-settings handoff,
-custom areas, interruption, floor carries or affected reporter hardware.
-
-Earlier candidates exposed premature finished events and insufficient waiting
-for native completion evidence. The installed baseline separates native events
-from local display estimates, allows a bounded elapsed verification interval
-before terminal persistence, and deduplicates room starts. The successful
-retest supersedes those failed cases for this bounded workflow only.
-
-On unpublished `72a40d1`, one bounded saved perimeter completed in native
-history without whole-room credit. A separate Stop returned the robot to dock,
-but native history still marked that run completed, so interruption is not
-proved. A subsequent attempt was rejected before dispatch by the changed-map
-binding guard. The automation and original saved-area state were restored.
-The UI-only `e29d7fd` follow-up passed guarded restart and idle readback.
-
-On unpublished `2753701`, a different-settings two-leg plan was stopped after
-its first leg lost the visible live scene. The second leg never started. Return
-to dock succeeded, managed completion totals stayed unchanged, and the temporary
-plan was removed with original plan definitions, selection and automation state
-restored. Native history nevertheless marked the interrupted first leg completed
-and emitted a finished event. The stop-settlement fence remained set. Mixed-leg
-handoff, scene recovery and interrupted native completion remain unresolved;
-this attempt is not a release acceptance pass. Retain the fence and investigate
-before another physical run.
-
-## Remaining physical sequence
-
-1. Record the exact installed candidate and clean baseline: available,
-   docked/idle, error-free, with no native session, managed lock, active plan,
-   stop-settle or reconciliation marker. Retain credit baselines privately.
-2. Isolate interfering automations and restore their original states afterward.
-3. Run a different-settings two-leg saved plan; verify handoff, native evidence,
-   per-room credit, events and cleanup.
-4. Exercise immediate Stop, pause/resume and interruption separately; verify
-   interrupted work gains no completion credit and no next room starts.
-5. Exercise finish-current-room below/at/above its threshold, excluding paused
-   and recharge time. Do not fabricate an exact-boundary hardware result.
-6. Run small one-time and saved custom areas; stop a separate run and verify
-   cancellation and credit behavior.
-7. Carry the stopped robot A → B → A and verify identity and Repair stability
-   at all three checkpoints. Viewing saved floors does not prove this.
-8. Retest #65 on the affected map/localization setup and #71's stop/countdown
-   conditions. Another robot's success is supporting evidence only.
-9. End with the clean baseline. Stop on unexpected motion, identity mismatch,
-   scene loss, incorrect credit or failure to settle; retain the failed case.
-
-## Perimeter editor acceptance
-
-Local checks cover vertex creation/closing, dragging, insertion/deletion,
-undo/redo, keyboard-only editing, cancellation and saved private metadata.
-The responsive matrix includes desktop, tablet portrait/landscape and phones
-at 320/390px in light and dark themes. Browser emulation checks 44px targets,
-hit testing and layout separation; it does not establish native-device acceptance.
-Run a bounded saved-zone cleaning and an interrupted zone only after the new
-candidate is reviewed, installed and current operator readiness is confirmed.
-
-## Release gate
-
-- Installed `16e0ae7` passed 1,301 Python tests at 100% coverage, 471 browser
-  checks, lint/format/types/privacy, packaging, hosted gates and clean regular
-  review. Revalidate affected checks after changes; this is not release sign-off.
-- Install the reviewed candidate and repeat affected live and physical checks.
-- Native VoiceOver, physical devices and fresh hardware-dependent setup checks
-  retain explicit results or an explicit release decision; do not mark unrun
-  cases passed.
-- Prepare [draft release notes](release-notes-0.4.md), upgrade/rollback guidance
-  and final metadata. Verify the release artifact matches the accepted code.
-- Intermediate testing remains unpublished. Publish one public `v0.4.0-rc1`
-  only when ready and explicitly approved; no automatic merge or promotion.
-
-## Perimeter live follow-up
-
-The installed `2753701` UI baseline passed guarded file readback and restart.
-Live Safari verified point editing, automatic closure, further-point extension,
-save/exit without a false discard prompt and saved-outline reopen. Earlier
-perimeter checks also verified persistence across restart. Temporary test areas
-were removed with recovery retained and original areas unchanged.
-The current browser suite passes 567 checks. Actual iPhone navigation and saved
-outline checks passed; guided iPhone VoiceOver has an owner-reported pass, and
-separate iPad acceptance is waived. Broader assistive-technology and physical
-cleaning gates remain separate. See [release readiness](release-readiness-0.4.md).
+See the [release notes](release-notes-0.4.md), [installation guide](../README.md#install),
+and [native cleaning results](native-cleaning-results.md).

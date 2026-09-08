@@ -421,7 +421,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
 )
 @pytest.mark.parametrize("final_identity", [ORIGINAL, REPLACEMENT, None, b""])
 async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
-    hass, multi_room, stale_state, delayed_identity, final_identity
+    hass, monkeypatch, multi_room, stale_state, delayed_identity, final_identity
 ):
     from custom_components.matic_robot.client.commands import UserCommand
 
@@ -430,8 +430,20 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     sender, history = AsyncMock(), AsyncMock(return_value=())
     dispatched = []
     bound = asyncio.Event()
+    identity_changed = asyncio.Event()
+    expire_start = asyncio.Event()
     identity = ORIGINAL
     reads = 0
+
+    async def unconfirmed_start(*args):
+        await expire_start.wait()
+        raise TimeoutError
+
+    # Control expiry after the post-bind read instead of racing a 30 ms timer.
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+        unconfirmed_start,
+    )
 
     async def read_identity():
         nonlocal reads
@@ -440,6 +452,9 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         reads += 1
         if delayed_identity and reads <= 2:
             return b"" if reads == 1 else None
+        if bound.is_set():
+            await identity_changed.wait()
+            expire_start.set()
         bound.set()
         return identity
 
@@ -462,7 +477,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         "intelligent_clean",
         {
             "plan_id": "test-plan",
-            "start_timeout": 0.03,
+            "start_timeout": 10,
             "completion_timeout": 10,
             "return_to_base": True,
         },
@@ -483,6 +498,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     )
     await asyncio.wait_for(bound.wait(), 1)
     identity = final_identity
+    identity_changed.set()
     with pytest.raises(ServiceValidationError) as error:
         await asyncio.wait_for(runner, 1)
     assert error.value.translation_key == (

@@ -9,6 +9,8 @@ the integration so instructions and behavior stay aligned with each release.
 
 ## Get started
 
+- [Release notes — 0.4.0](release-notes-0.4.md) — Map-based cleaning, editable custom areas, and native completion results.
+
 - [Release notes — 0.3.12](release-notes-0.3.12.md) — Safer service access, bounded robot data, and floor-coherent maps
 
 - [Install Matic (Unofficial)](../README.md#install) — Add the HACS custom
@@ -67,9 +69,7 @@ the integration so instructions and behavior stay aligned with each release.
 
 ## Project
 
-- [0.4 UI quality review](quality-0.4.md) — Local fixes, screen matrix, and validation scope.
-- [0.4 end-to-end acceptance](acceptance-0.4.md) — Candidate evidence,
-  physical user journeys, and stable-release gates.
+- [0.4 compatibility and validation](acceptance-0.4.md) — Tested workflows and known limitations.
 - [Contributing](../CONTRIBUTING.md) — Set up development, run the required
   checks, and prepare a focused pull request.
 - [License](../LICENSE) — MIT License.

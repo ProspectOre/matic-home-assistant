@@ -22,17 +22,3 @@ unambiguous room names. A partially completed multi-room mission credits only
 its verified subset and cannot automatically advance to the next settings leg.
 Missing, duplicate, malformed, and unknown results remain uncredited. Existing
 managed records are not retroactively rewritten by this decoder correction.
-
-## Protocol evidence
-
-The official app's `AreaModeSummary` encoder and conversion model establish
-that SessionSummary groups 6 and 7 contain vacuum and mop maps. Map-value field
-5 is a per-mode status: protobuf default 0 is unattempted, 1 is partial, and 2
-is completed. Field 6 is a cleaning setting, not a second mode status. This
-mapping also matches a physical mixed-outcome session and the app's displayed
-per-mode results. No cleaning commands change.
-
-Synthetic coverage includes separate and combined modes, partial multi-room
-missions, an absent mode, omitted zero status/duration, settings independent of
-status, ambiguous/unknown values, missing duration, and restart reconciliation.
-See `tests/test_native_completion_modes.py`.
