@@ -728,3 +728,104 @@ async def test_final_dock_cannot_interrupt_an_independent_native_task(
         with pytest.raises(ManagedMotionReplacedError):
             await guarded(token, UserCommand.DOCK)
         sender.assert_not_awaited()
+
+
+@pytest.mark.parametrize("phase", ["start", "resume", "return", "outcome"])
+@pytest.mark.parametrize("after_transition", [REPLACEMENT, None, ORIGINAL])
+async def test_state_transition_requires_a_new_identity_read(
+    hass, phase, after_transition
+):
+    from custom_components.matic_robot.services import (
+        _async_wait_for_active_session_resolution,
+        _async_wait_for_owned_start,
+        _async_wait_with_native_identity,
+    )
+
+    read_started, release_read, transition = (
+        asyncio.Event(),
+        asyncio.Event(),
+        asyncio.Event(),
+    )
+    reads = 0
+
+    async def reader():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            # This request captured the old identity before the state changed,
+            # but its response arrives after the new cleaning state.
+            read_started.set()
+            await release_read.wait()
+            return ORIGINAL
+        return after_transition
+
+    async def outcome():
+        await transition.wait()
+        return "transition"
+
+    hass.states.async_set("vacuum.matic", "docked", {"current_area": ROOM.name})
+    if phase == "start":
+        waiter = _async_wait_for_owned_start(
+            hass, "vacuum.matic", 10, None, ROOM, reader, lambda _: None, b"", ORIGINAL
+        )
+    elif phase == "resume":
+        waiter = _async_wait_for_owned_resume(
+            hass, "vacuum.matic", 10, None, ROOM, reader, ORIGINAL
+        )
+    elif phase == "return":
+        waiter = _async_wait_for_active_session_resolution(
+            hass,
+            "vacuum.matic",
+            None,
+            identity_reader=reader,
+            expected_identity=ORIGINAL,
+        )
+    else:
+        waiter = _async_wait_with_native_identity(outcome, reader, ORIGINAL)
+    task = asyncio.create_task(waiter)
+    await asyncio.wait_for(read_started.wait(), 1)
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+    transition.set()
+    await hass.async_block_till_done()
+    release_read.set()
+    if after_transition == ORIGINAL:
+        await asyncio.wait_for(task, 1)
+    else:
+        with pytest.raises(RoomTakenOverError):
+            await asyncio.wait_for(task, 1)
+    assert reads >= 2
+
+
+async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(hass):
+    from custom_components.matic_robot.services import (
+        _async_wait_for_active_session_resolution,
+    )
+
+    read_started, release_read = asyncio.Event(), asyncio.Event()
+    reads = 0
+
+    async def reader():
+        nonlocal reads
+        reads += 1
+        if reads == 1:
+            read_started.set()
+            await release_read.wait()
+            return b""
+        return REPLACEMENT
+
+    hass.states.async_set("vacuum.matic", "returning")
+    task = asyncio.create_task(
+        _async_wait_for_active_session_resolution(
+            hass,
+            "vacuum.matic",
+            None,
+            identity_reader=reader,
+            expected_identity=ORIGINAL,
+        )
+    )
+    await asyncio.wait_for(read_started.wait(), 1)
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+    release_read.set()
+    with pytest.raises(RoomTakenOverError):
+        await asyncio.wait_for(task, 1)
+    assert reads == 2

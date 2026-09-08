@@ -4137,7 +4137,11 @@ async def test_unknown_active_session_interrupts_without_room_credit(
 async def test_room_starting_paused_is_suspended_until_resume() -> None:
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(
+        services=services,
+        bus=bus,
+        states=SimpleNamespace(get=MagicMock(return_value=None)),
+    )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
         async_mark_completed=AsyncMock(),
@@ -4184,7 +4188,11 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
 async def test_room_pause_and_resume_outcome() -> None:
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
-    hass = SimpleNamespace(services=services, bus=bus)
+    hass = SimpleNamespace(
+        services=services,
+        bus=bus,
+        states=SimpleNamespace(get=MagicMock(return_value=None)),
+    )
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
         async_mark_completed=AsyncMock(),

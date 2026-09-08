@@ -2312,20 +2312,21 @@ async def _async_wait_for_active_session_resolution(
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
+        observed_state = hass.states.get(entity_id)
         identity = await _async_read_session_identity(identity_reader)
-        if identity_reader is not None:
-            if identity == b"":
-                return False
-            if identity is not None and identity != expected_identity:
-                raise RoomTakenOverError("The returning native task was replaced")
         state = hass.states.get(entity_id)
+        if identity_reader is not None:
+            if identity == b"" and state is observed_state:
+                return False
+            if identity and identity != expected_identity:
+                raise RoomTakenOverError("The returning native task was replaced")
         if state is not None:
             if state.state == "error":
                 raise _validation_error(
                     "The selected Matic robot reported an error", "robot_error"
                 )
             if state.state == "cleaning" and (
-                identity_reader is None or identity is not None
+                identity_reader is None or (identity and state is observed_state)
             ):
                 return True
         try:
@@ -2741,7 +2742,8 @@ async def _async_wait_with_native_identity[T](
     unknown_reads = 0
     try:
         while True:
-            if changed.done():
+            transition_observed = changed.done()
+            if transition_observed:
                 changed.result()
             identity = await _async_read_session_identity(reader)
             if identity is None:
@@ -2756,7 +2758,7 @@ async def _async_wait_with_native_identity[T](
                 # An ended session can precede HA's normal return update;
                 # its history still needs independent completion verification.
                 unknown_reads = 0
-                if changed.done():
+                if transition_observed:
                     return changed.result()
             if changed.done():
                 changed.result()
@@ -2835,6 +2837,7 @@ async def _async_confirm_started_identity(
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
+        transition_observed = started.done()
         identity = await _async_read_session_identity(reader)
         if identity and identity != identity_baseline and expected is None:
             expected = identity
@@ -2843,7 +2846,7 @@ async def _async_confirm_started_identity(
             raise RoomTakenOverError("The dispatched native task ended or was replaced")
         if started.done():
             state = started.result()
-            if identity and identity == expected:
+            if transition_observed and identity and identity == expected:
                 return state
             unknown_reads = unknown_reads + 1 if identity is None else 0
             if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
@@ -2884,6 +2887,7 @@ async def _async_wait_for_owned_resume(
             while True:
                 if cancel_event is not None and cancel_event.is_set():
                     raise PlanCancelledError
+                transition_observed = resumed.done()
                 identity = await _async_read_session_identity(reader)
                 if identity is None:
                     unknown_reads += 1
@@ -2897,8 +2901,9 @@ async def _async_wait_for_owned_resume(
                     )
                 else:
                     unknown_reads = 0
-                    if resumed.done():
-                        # Propagate errors/cancellation before recording a resume.
+                    if transition_observed:
+                        # The identity read began after the observed resume.
+                        # Propagate errors/cancellation before recording it.
                         resumed.result()
                         return
                 # Check again after the state transition, and keep checking
