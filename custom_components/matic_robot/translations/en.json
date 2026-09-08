@@ -1187,7 +1187,7 @@
       "message": "{room} stopped without verified completion."
     },
     "room_taken_over": {
-      "message": "Another cleaning task replaced the managed run in {room}."
+      "message": "The original cleaning task in {room} could no longer be verified. The plan was interrupted."
     },
     "room_plan_unavailable": {
       "message": "The robot's room map is unavailable."

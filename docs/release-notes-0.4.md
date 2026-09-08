@@ -33,6 +33,10 @@ not published releases.
 - Managed completion waits for positive native per-room evidence before
   crediting history. Native finished events use native history, and room starts
   are deduplicated.
+- Paused and recharging plans verify the original native session before
+  resuming. A new task started in the OEM app cannot inherit the old plan,
+  even when it cleans the same room. Lost ownership interrupts HA tracking
+  without sending a cleanup Stop to the independent task.
 
 ## Validation and known limits
 
