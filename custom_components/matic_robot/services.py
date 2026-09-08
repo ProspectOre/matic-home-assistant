@@ -1025,7 +1025,13 @@ async def _async_dispatch_leg_command(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await _async_session_history_baseline(session_history)
-    identity_baseline = await _async_read_session_identity(session_identity)
+    identity_baseline: bytes | None = None
+    for attempt in range(ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
+        identity_baseline = await _async_read_session_identity(session_identity)
+        if session_identity is None or identity_baseline is not None:
+            break
+        if attempt + 1 < ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+            await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
     if session_identity is not None and identity_baseline is None:
         raise RoomTakenOverError(
             "The native task before dispatch could not be verified"

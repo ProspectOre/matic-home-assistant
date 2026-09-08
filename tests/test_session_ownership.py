@@ -829,3 +829,32 @@ async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(has
     with pytest.raises(RoomTakenOverError):
         await asyncio.wait_for(task, 1)
     assert reads == 2
+
+
+@pytest.mark.parametrize("transient", [None, MaticError("temporary read failure")])
+@pytest.mark.parametrize("baseline", [b"", ORIGINAL])
+async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, baseline):
+    from custom_components.matic_robot.services import _async_dispatch_leg_command
+
+    command = AsyncMock()
+    hass.services.async_register("vacuum", "send_command", command)
+    reader = AsyncMock(side_effect=[transient, baseline, REPLACEMENT])
+    identity_observed = []
+    call = ServiceCall(
+        hass, "matic_robot", "intelligent_clean", {"plan_id": "test-plan"}
+    )
+    prepared = await _async_dispatch_leg_command(
+        hass,
+        call,
+        "vacuum.matic",
+        [ROOM],
+        7,
+        None,
+        session_identity=reader,
+        on_identity=identity_observed.append,
+    )
+    command.assert_awaited_once()
+    assert prepared.native_identity_baseline == baseline
+    assert prepared.native_identity == REPLACEMENT
+    assert identity_observed == [REPLACEMENT]
+    assert reader.await_count == 3
