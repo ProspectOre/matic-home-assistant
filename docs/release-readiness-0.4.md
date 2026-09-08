@@ -4,7 +4,7 @@ Status: owner approved stable release with scoped waivers; publication is held f
 Installed candidate: unpublished `f7f3347`, reviewed at `b8372f9`.
 Pre- and post-merge Python, browser, HACS and Hassfest checks passed. All 76
 integration files, new HA process and served bundle matched after guarded restart.
-September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
+September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Floor B and 37 Floor A return samples without errors; plans/Repairs unchanged and automation restored.
 Stable metadata is now `0.4.0`; final artifact verification and release gates are in progress. No public beta was published.
 
 ## Session-ownership follow-up

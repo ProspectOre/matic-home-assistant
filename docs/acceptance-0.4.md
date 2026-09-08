@@ -1,7 +1,7 @@
 # 0.4 end-to-end acceptance
 
 Status: stable release approved with scoped waivers, but publication is held for affected physical acceptance. Installed: unpublished `f7f3347` (reviewed `b8372f9`), with 76-file parity, a fresh HA restart and rendered verified map.
-September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Shed and 37 return samples without errors; plans/Repairs unchanged and automation restored.
+September 7 repaired floor round trip passed: complete untruncated maps, verified scenes/pose, 40 Floor B and 37 Floor A return samples without errors; plans/Repairs unchanged and automation restored.
 September 6 actual iPhone navigation and saved-outline checks passed; the owner
 reported the guided iPhone VoiceOver flow worked and waived separate iPad
 acceptance. This is not physical acceptance of every robot workflow.
