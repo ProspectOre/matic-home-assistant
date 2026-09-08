@@ -5,7 +5,7 @@
 ## Requirements
 
 - **Home Assistant 2026.7+**. Live use has covered 2026.7 and 2026.8.
-- A Matic robot reachable over the local network, with multicast discovery available.
+- A Matic robot reachable over the local network. Multicast enables automatic discovery; manual setup accepts the robot's address and port.
 - A Bluetooth adapter built into or attached to the Home Assistant host for setup and credential recovery. Proxies cannot pair the robot.
 - A Home Assistant administrator for the interactive map and saved-area editor.
 

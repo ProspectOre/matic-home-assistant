@@ -28,6 +28,9 @@ to the Home Assistant host for pairing. Bluetooth proxies cannot complete setup.
 2. Download **Matic (Unofficial)** and restart Home Assistant.
 3. Open **Settings → Devices & services** and configure the discovered Matic.
 
+If Matic is not discovered, add the integration manually and enter the robot's
+address and port when offered.
+
 For a manual install, copy `custom_components/matic_robot` into Home Assistant's
 `custom_components` directory and restart.
 

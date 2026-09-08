@@ -54,7 +54,7 @@ and include the relevant log lines in a bug report after removing private data.
 When Home Assistant requests reauthentication, repeat the pairing steps. The
 integration replaces its saved credential after the new connection succeeds.
 Explicit credential replacement is also available through **Reconfigure**.
-Both paths need the same local Bluetooth adapter as initial setup.
+Both paths need a local Bluetooth adapter; a replacement adapter works too.
 
 ## Removing access
 
