@@ -2051,3 +2051,36 @@ async def test_room_statistics_sensors_use_verified_managed_runs() -> None:
     assert duration.native_value == 600
     assert last_cleaned.native_value is not None
     assert last_cleaned.native_value.isoformat() == "2026-01-01T08:10:00+00:00"
+
+
+def test_native_session_exposes_unrecorded_per_mode_outcomes():
+    from custom_components.matic_robot.client.models import CleaningModeResult
+
+    entry = _entry()
+    coordinator = entry.runtime_data.coordinator
+    latest = coordinator.data.telemetry.latest_session
+    coordinator.data = replace(
+        coordinator.data,
+        telemetry=replace(
+            coordinator.data.telemetry,
+            latest_session=replace(
+                latest,
+                mode_results=(CleaningModeResult("Study", "mop", "partial", 20),),
+            ),
+        ),
+    )
+    description = next(
+        item
+        for item in sensor.STATE_DESCRIPTIONS
+        if item.key == "local_cleaning_sessions"
+    )
+    attributes = sensor.MaticStateSensor(entry, description).extra_state_attributes
+    assert attributes["latest_mode_results"] == [
+        {
+            "room": "Study",
+            "cleaning_mode": "mop",
+            "status": "partial",
+            "duration_seconds": 20,
+        }
+    ]
+    assert "latest_mode_results" in sensor.MaticStateSensor._unrecorded_attributes

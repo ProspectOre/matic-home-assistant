@@ -7,7 +7,10 @@ from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 
 from custom_components.matic_robot import session_tracking as session_tracking_module
-from custom_components.matic_robot.client.models import CleaningSession
+from custom_components.matic_robot.client.models import (
+    CleaningModeResult,
+    CleaningSession,
+)
 from custom_components.matic_robot.session_tracking import (
     CleaningSessionTracker,
     _build_session,
@@ -242,6 +245,12 @@ def test_session_preference_uses_newest_and_richer_source() -> None:
         completed_rooms=("Office",),
     )
     assert tracker.preferred_session(overlapping_native) is tracked
+    native_modes = replace(
+        overlapping_native,
+        completed=None,
+        mode_results=(CleaningModeResult("Study", "mop", None, 20),),
+    )
+    assert tracker.preferred_session(native_modes) is native_modes
 
     interrupted = CleaningSession(
         tracked.started_at,

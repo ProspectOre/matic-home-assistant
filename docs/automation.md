@@ -298,13 +298,13 @@ runs, while **last cleaned**, per-room durations, and completion counts still
 come only from runs whose end was verified. A room worked on but not verified
 stays due.
 
-The `matic_robot_cleaning_finished` event and the local-sessions sensor pass
-the robot's own session report through unchanged, including its `completed` and
-`completed_rooms` fields. Those are what the robot said, not proof: it reports
-a room it was stopped in, and a stopped session, exactly the way it reports
-finished ones. Automations that need a room to have actually been cleaned
-should use the `matic_robot_room_completed` event or the room's **last
-cleaned** sensor, both of which come only from verified runs.
+The `matic_robot_cleaning_finished` event and local-sessions sensor expose the
+native session summary. The sensor and MCP history also separate vacuum and
+mop outcomes, including partial and unattempted results. Automations that need
+verified managed completion should use `matic_robot_room_completed` or the
+room's **last cleaned** sensor. A combined clean requires completion evidence
+and positive duration for both modes; visiting a room or ending a mission is
+not enough. See [native cleaning results](native-cleaning-results.md).
 
 A task that ends where the robot stood was stopped, not finished, and is
 recorded as interrupted: the robot reports a room it was stopped in exactly the

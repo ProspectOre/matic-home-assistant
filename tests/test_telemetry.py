@@ -383,46 +383,42 @@ def test_decode_room_completion_statuses_fail_closed() -> None:
     assert session.completed_rooms == ("Kitchen",)
     assert session.completed is False
 
-    # A confirmed cancelled native record mixed non-complete and complete
-    # mode statuses. Neither ordering proves completion of the whole room.
+    # Vacuum and mop statuses live in separate groups; the setting is ignored.
     for status_pair in [(1, 2), (2, 1), (2, 3)]:
-        ambiguous = details(b"Office", 90, (5, status_pair[0]), (6, status_pair[1]))
-        ambiguous_session = _decode_cleaning_session(
-            _bfield(5, _bfield(6, _bfield(1, _bfield(2, ambiguous))))
+        vacuum = details(b"Study", 90, (5, status_pair[0]), (6, 1))
+        mop = details(b"Study", 50, (5, status_pair[1]), (6, 1))
+        mixed = _decode_cleaning_session(
+            _bfield(
+                5,
+                _bfield(6, _bfield(1, _bfield(2, vacuum)))
+                + _bfield(7, _bfield(1, _bfield(2, mop))),
+            )
         )
-        assert ambiguous_session is not None
-        assert ambiguous_session.completed is None
-        assert ambiguous_session.completed_rooms == ()
+        assert mixed is not None
+        assert mixed.completed is (None if 3 in status_pair else False)
+        assert mixed.completed_rooms == ()
+        assert mixed.room_durations == (("Study", 140),)
 
-    malformed_complete = details(b"Office", 90, (5, 2)) + _bfield(6, b"unknown")
-    malformed_complete_session = _decode_cleaning_session(
-        _bfield(5, _bfield(6, _bfield(1, _bfield(2, malformed_complete))))
-    )
-    assert malformed_complete_session is not None
-    assert malformed_complete_session.completed is None
-    assert malformed_complete_session.completed_rooms == ()
+    for status in (
+        _vfield(5, 3),
+        _bfield(5, b"unknown"),
+        _vfield(5, 2) + _vfield(5, 2),
+    ):
+        unknown = details(b"Study", 90) + status
+        session = _decode_cleaning_session(
+            _bfield(5, _bfield(6, _bfield(1, _bfield(2, unknown))))
+        )
+        assert session is not None
+        assert session.completed is None
+        assert session.completed_rooms == ()
 
-    unknown = details(b"Office", 90, (5, 3))
-    unknown_session = _decode_cleaning_session(
-        _bfield(5, _bfield(6, _bfield(1, _bfield(2, unknown))))
-    )
-    assert unknown_session is not None
-    assert unknown_session.completed is None
-    assert unknown_session.completed_rooms == ()
-
-    malformed = details(b"Office", 90, (5, 1)) + _bfield(6, b"unknown")
-    malformed_session = _decode_cleaning_session(
-        _bfield(5, _bfield(6, _bfield(1, _bfield(2, malformed))))
-    )
-    assert malformed_session is not None
-    assert malformed_session.completed is None
-
-    missing = details(b"Office", 90)
-    missing_session = _decode_cleaning_session(
+    missing = details(b"Study", 90)
+    session = _decode_cleaning_session(
         _bfield(5, _bfield(6, _bfield(1, _bfield(2, missing))))
     )
-    assert missing_session is not None
-    assert missing_session.completed is None
+    assert session is not None
+    assert session.completed is False
+    assert session.mode_results[0].status == "unattempted"
 
 
 def test_decode_auxiliary_states() -> None:

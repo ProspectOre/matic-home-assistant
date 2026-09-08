@@ -1597,7 +1597,11 @@ def _reconcile_pending_native_history(
         vacuum_proven = pending.get("cleaning_mode") == "vacuum" and target in {
             _native_room_key(name) for name in session.vacuum_completed_rooms
         }
-        if session.completed is not True and not vacuum_proven:
+        if (
+            not session.mode_results
+            and session.completed is not True
+            and not vacuum_proven
+        ):
             continue
         started = dt_util.parse_datetime(session.started_at or "")
         ended = dt_util.parse_datetime(session.ended_at or "")
@@ -1612,13 +1616,18 @@ def _reconcile_pending_native_history(
         native_rooms = tuple(_native_room_key(name) for name in session.rooms)
         if native_rooms != (target,):
             continue
-        completed_rooms = {_native_room_key(name) for name in session.completed_rooms}
-        if target not in completed_rooms and not vacuum_proven:
+        completed_rooms = {
+            _native_room_key(name)
+            for name in session.completed_rooms_for_mode(pending.get("cleaning_mode"))
+        }
+        if target not in completed_rooms:
             continue
         duration = next(
             (
                 value
-                for name, value in session.room_durations
+                for name, value in session.room_durations_for_mode(
+                    pending.get("cleaning_mode")
+                )
                 if _native_room_key(name) == target
                 and isinstance(value, int)
                 and not isinstance(value, bool)

@@ -214,6 +214,16 @@ class CleaningSchedule:
 
 
 @dataclass(frozen=True, slots=True)
+class CleaningModeResult:
+    """One room's native result for one cleaning mode."""
+
+    room: str
+    cleaning_mode: str
+    status: str | None
+    duration_seconds: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class CleaningSession:
     """One native session with visited and verified-completed rooms separated."""
 
@@ -225,6 +235,42 @@ class CleaningSession:
     completed: bool | None
     completed_rooms: tuple[str, ...] = ()
     vacuum_completed_rooms: tuple[str, ...] = ()
+    mop_completed_rooms: tuple[str, ...] = ()
+    combined_completed_rooms: tuple[str, ...] = ()
+    mode_results: tuple[CleaningModeResult, ...] = ()
+
+    def completed_rooms_for_mode(self, mode: str | None) -> tuple[str, ...]:
+        """Require explicit evidence for every mode in a native dispatch."""
+        if self.mode_results:
+            return {
+                "vacuum": self.vacuum_completed_rooms,
+                "mop": self.mop_completed_rooms,
+                "vacuum_and_mop": self.combined_completed_rooms,
+            }.get(mode or "", ())
+        # Locally tracked sessions predate native per-mode evidence.
+        if mode == "vacuum" and self.vacuum_completed_rooms:
+            return self.vacuum_completed_rooms
+        return self.completed_rooms
+
+    def room_durations_for_mode(self, mode: str | None) -> tuple[tuple[str, int], ...]:
+        """Sum only the requested native modes, retaining tracked-session data."""
+        if not self.mode_results:
+            return self.room_durations
+        durations: dict[str, int | None] = {}
+        for result in self.mode_results:
+            if mode not in (result.cleaning_mode, "vacuum_and_mop"):
+                continue
+            previous = durations.get(result.room, 0)
+            duration = result.duration_seconds
+            # A second mode must not conceal a missing or unusable duration.
+            durations[result.room] = (
+                previous + duration
+                if previous is not None and duration is not None and duration > 0
+                else None
+            )
+        return tuple(
+            (name, value) for name, value in durations.items() if value is not None
+        )
 
 
 @dataclass(frozen=True, slots=True)
