@@ -1,85 +1,40 @@
-# 0.4 release notes
+# 0.4.0
 
-Release `v0.4.0` is being prepared with the reviewed `f7f3347` session fix after
-explicit owner approval. Publication remains held for affected physical acceptance.
-No public beta was published. The release includes
-automatic perimeter closure, saved-area recovery, companion-app safe-area
-fixes, map recovery, verified native room completion and guarded stop handling.
+A new map-based cleaning workspace brings one-time room cleaning, saved plans,
+and custom areas together.
 
-## What's changing
+## Highlights
 
-- A map-first workspace brings one-time room cleaning, saved plans and custom
-  areas together, with clearer loading, unavailable and recovery states.
-- Custom areas gain a perimeter editor: place three points to join the edges
-  automatically, then add, drag, insert or remove points. Saved points remain editable, with undo/redo and
-  keyboard support. Paint and Erase remain available. Shading shows the bounded
-  cleaning coverage inside the perimeter.
-- Portrait tablets use the sheet layout; desktop and landscape tablets retain
-  the sidebar. Drawing controls and map contrast adapt to size and theme.
-- Older config entries migrate on the minimum supported Home Assistant version.
-- Original robot artwork is shared by the sidebar and cleaning controls.
-- Floor selection and 2D/3D sit at the top of the map, with Fit opposite and
-  camera controls above the cleaning sheet. Active plans remain visibly in
-  progress during dock visits; mixed-settings guidance explains transitions.
-- Room-based cleaning follows verified native room identities, so ordinary
-  boundary refinement does not invalidate an unchanged room target.
-- Coordinate-based areas retain their own geometry checks. Confirmable
-  same-map changes stay in the area workspace rather than creating a global
-  Repair; unsafe or different-floor geometry still requires recovery.
-- Drafts, asynchronous results and preferences stay scoped to their owner.
-  Navigation and failed saves preserve intent without applying stale results.
-- Stop stays reachable while a start is awaiting acknowledgement. Status
-  recovery does not automatically replay a possibly accepted cleaning command.
-- Managed completion waits for positive native per-room evidence before
-  crediting history. Native finished events use native history, and room starts
-  are deduplicated.
-- Native history separates vacuum and mop outcomes and durations. Combined
-  cleaning credits only rooms with evidence for both modes; partial and
-  unattempted results remain visible in the local sensor and MCP history.
-- Paused and recharging plans verify the original native session before
-  resuming. A new task started in the OEM app cannot inherit the old plan,
-  even when it cleans the same room. Lost ownership interrupts HA tracking
-  without sending a cleanup Stop to the independent task.
+- Draw custom areas by placing perimeter points. Outlines close automatically;
+  points remain editable with dragging, insertion, deletion, and undo/redo.
+- Improved phone and tablet layouts, map controls, saved-area recovery, and
+  navigation in the Home Assistant companion app.
+- More reliable live maps and robot position when changing floors or returning
+  to a previously mapped floor.
+- Stop remains available while a cleaning request is starting. Threshold-based
+  stops finish only the active room when its progress qualifies.
+- Managed plans verify their original native session through cleaning, pause,
+  and recharge. An unrelated task cannot be adopted as a resumed plan.
+- Native history separates vacuum and mop outcomes and durations. Partial or
+  unattempted work cannot earn full completion credit; partial work still
+  updates rotation priority.
+- Improved setup, reauthentication, recovery, and compatibility with the
+  minimum supported Home Assistant version.
 
-## Validation and known limits
+## Updating
 
-The installed session-ownership fix passed 1,459 Python tests at 100% coverage,
-required CI/browser/review and full artifact readback after a guarded restart.
-The new bounded physical run is in progress; same-session recharge/resume,
-terminal completion evidence and final restoration remain open.
+Back up Home Assistant, ensure the robot is idle, install 0.4.0 through HACS,
+and restart Home Assistant. Confirm the live map, robot position, and available
+entities before starting a clean. Keep the backup until operation is verified.
 
-Earlier unpublished `56b4d4b` passed a bounded same-settings two-room run with one
-credit/start/completion per room and one correct native finished event, followed
-by clean return-to-charge and ownership cleanup. This is not evidence for all
-physical workflows. The earlier `16e0ae7` audit passed 1,301 Python tests at 100%
-coverage, 471 browser checks, hosted gates, exact-head review and affected live
-non-motion checks. Subsequent changes require their own validation.
+Home Assistant 2026.7 or newer is required. Existing saved plans and areas are
+preserved; an area whose map binding has changed may need confirmation or redrawing.
+See [installation](../README.md#install) for setup and recovery guidance.
 
-Actual iPhone navigation, plan creation/discard and saved-outline checks passed.
-The owner reported the guided iPhone VoiceOver flow worked; separate iPad
-acceptance was waived. Different-settings mission legs, Stop/interruption and
-threshold behavior, and a fresh floor round trip passed on earlier installed
-candidates. Live network-loss behavior remains unverified under an explicit
-scoped waiver. Affected #65 firmware 172.15/protocol 25 hardware was unavailable,
-and Container reauthentication was excluded. See the [acceptance
-checklist](acceptance-0.4.md) for outcomes and release limits.
+## Known limits
 
-## Upgrade preparation
-
-1. Confirm that the HACS release identifies the accepted commit.
-2. Back up Home Assistant and the integration's configuration before upgrading.
-   Ensure the robot and relevant automations/scripts are idle before restart.
-3. Install the approved version through HACS and restart Home Assistant.
-4. Verify the installed version/artifact, available entities, coherent live map
-   and pose, and clean native/managed state before authorizing a bounded run.
-5. Preserve the previous backup until the new candidate's affected workflows
-   have passed. Never run old and new integration copies simultaneously.
-
-## Rollback
-
-If verification fails, stop testing and keep the robot physically safe. Restore
-the previously accepted integration and its matching Home Assistant backup,
-then restart while idle and verify entity/map/runner state. Do not assume a
-code-only downgrade can read storage written by a newer candidate. Follow the
-specific published candidate's rollback guidance when it becomes available.
-Do not post backups, maps, credentials or raw Home Assistant storage publicly.
+Firmware 172.15/protocol 25 localization behavior, live network-loss recovery,
+and Container reauthentication remain unverified on their affected setups.
+Separate iPad and broader assistive-technology coverage is incomplete.
+Older stable versions may not render maps from newer firmware.
+See [compatibility and validation](acceptance-0.4.md).

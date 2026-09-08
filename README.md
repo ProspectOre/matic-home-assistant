@@ -26,8 +26,8 @@ plans, automation, privacy, and troubleshooting.
 
 Home Assistant 2026.7 is the minimum version accepted by HACS. Live validation
 has covered 2026.7 and 2026.8 releases; this does not establish compatibility
-with every Home Assistant release or installation type. Candidate-specific
-checks and remaining limits are recorded in the [acceptance checklist](docs/acceptance-0.4.md).
+with every Home Assistant release or installation type. Tested workflows and remaining limits are described in
+[compatibility and validation](docs/acceptance-0.4.md).
 
 The integration has been tested on real robots and Home Assistant Yellow and
 Container installations. One robot creates 55 fixed entities — 23 sensors,
