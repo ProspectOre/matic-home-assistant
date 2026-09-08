@@ -1166,7 +1166,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_send_user_command(self, command: UserCommand) -> None:
         """Send one live-verified command through the authenticated user channel."""
-        await self._async_send_user_payload(encode_user_command(command))
+        payload = encode_user_command(command)
+        _LOGGER.debug("Requesting Matic user command %s", command.name)
+        await self._async_send_user_payload(payload)
 
     async def async_start_coverage(
         self,

@@ -1097,6 +1097,14 @@ async def _async_run_room(
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
     history_baseline: frozenset[bytes] | None = None
     dispatched_at: datetime | None = None
+    native_identity: bytes | None = None
+    managed_user_command = _guard_native_commands(
+        managed_user_command,
+        manager,
+        serial_number,
+        session_identity,
+        lambda: native_identity,
+    )
 
     def mark_dispatch_attempted() -> None:
         nonlocal dispatch_attempted
@@ -1523,6 +1531,14 @@ async def _async_run_leg(
     stop_sent = False
     evidence: dict[str, tuple[str, int]] | None = None
     dispatch: _PreparedRoomDispatch | None = prepared_dispatch
+    native_identity: bytes | None = None
+    managed_user_command = _guard_native_commands(
+        managed_user_command,
+        manager,
+        serial_number,
+        session_identity,
+        lambda: native_identity,
+    )
 
     def mark_dispatch_attempted() -> None:
         nonlocal dispatch_attempted
@@ -2298,6 +2314,30 @@ async def _async_wait_for_active_session_resolution(
         except TimeoutError:
             continue
         raise PlanCancelledError
+
+
+def _guard_native_commands(
+    sender: Callable[[int, UserCommand], Awaitable[None]] | None,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    reader: Callable[[], Awaitable[bytes | None]] | None,
+    expected_identity: Callable[[], bytes | None],
+) -> Callable[[int, UserCommand], Awaitable[None]] | None:
+    """Recheck native ownership at cleanup, including cancellation/unload races."""
+    if sender is None or reader is None:
+        return sender
+
+    async def send(token: int, command: UserCommand) -> None:
+        expected = expected_identity()
+        identity = await _async_read_session_identity(reader)
+        if not expected or identity != expected:
+            # Revoke local ownership too, so outer abort cleanup and late
+            # history reconciliation cannot act for this obsolete mission.
+            await manager.async_replace_managed_motion(serial_number)
+            raise ManagedMotionReplacedError("Native task ownership was lost")
+        await sender(token, command)
+
+    return send
 
 
 async def _async_cleanup_managed_motion(

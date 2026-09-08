@@ -151,7 +151,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     snapshot = manager.snapshot("serial")
     assert snapshot["active_plan"] is None
     assert snapshot["last_completed_by_room"] == credit_before
-    assert snapshot.get("pending_native_reconciliation") is None
+    assert snapshot["native_reconciliation_pending"] is False
     assert not manager.lock("serial").locked()
     assert not manager.stop_pending("serial")
     assert ORIGINAL.decode() not in str(snapshot)
@@ -315,3 +315,93 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
         )
     sender.assert_not_awaited()
     assert manager.snapshot("serial")["active_plan"] is None
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+@pytest.mark.parametrize("identity", [ORIGINAL, REPLACEMENT, None])
+@pytest.mark.parametrize("suspension", ["paused", "low_charge"])
+async def test_unload_cleanup_rechecks_native_owner_before_stop(
+    hass, multi_room, identity, suspension
+):
+    from custom_components.matic_robot.client.commands import UserCommand
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    started, suspended = asyncio.Event(), asyncio.Event()
+    original_resume = manager.async_mark_resumed
+    original_suspend = manager.async_mark_suspended
+
+    async def resume(*args):
+        await original_resume(*args)
+        started.set()
+
+    async def suspend(*args):
+        await original_suspend(*args)
+        suspended.set()
+
+    manager.async_mark_resumed = resume
+    manager.async_mark_suspended = suspend
+    reader = AsyncMock(return_value=ORIGINAL)
+    sender = AsyncMock()
+    dispatched = []
+
+    async def dispatch(call):
+        dispatched.append(call.data)
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+
+    hass.services.async_register("vacuum", "send_command", dispatch)
+    rooms = [ROOM]
+    if multi_room:
+        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
+    rooms.append(
+        replace(ROOM, room_id="room-study", name="Study", coverage_setting="quick")
+    )
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "test-plan",
+            "start_timeout": 10,
+            "completion_timeout": 10,
+            "return_to_base": True,
+        },
+    )
+    runner = asyncio.create_task(
+        _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_identity=reader,
+            managed_user_command=sender,
+        )
+    )
+    await asyncio.wait_for(started.wait(), 1)
+    credit_before = manager.snapshot("serial")["last_completed_by_room"]
+    hass.states.async_set(
+        "vacuum.matic",
+        "paused" if suspension == "paused" else "returning",
+        {
+            "current_area": ROOM.name,
+            "low_charge": suspension == "low_charge",
+        },
+    )
+    await asyncio.wait_for(suspended.wait(), 1)
+    # Replace the native session and unload before the next polling interval.
+    reader.return_value = identity
+    await asyncio.wait_for(manager.async_cancel_and_wait("serial"), 1)
+    await runner
+    if identity == ORIGINAL:
+        assert sender.await_count == 1
+        assert sender.await_args.args[1] is UserCommand.STOP
+    else:
+        sender.assert_not_awaited()
+        assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    assert len(dispatched) == 1
+    assert manager.snapshot("serial")["active_plan"] is None
+    assert manager.snapshot("serial")["last_completed_by_room"] == credit_before
+    assert not manager.lock("serial").locked()
