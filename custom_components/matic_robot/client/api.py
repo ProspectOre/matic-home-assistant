@@ -54,6 +54,7 @@ from .history import (
 )
 from .mission import MissionClientState, decode_mission_client_state
 from .models import (
+    CleaningModeResult,
     CleaningSchedule,
     CleaningSession,
     CleaningSessionRecord,
@@ -101,7 +102,6 @@ MAX_HERMES_MESSAGE_BYTES = 16 * 1024 * 1024
 _COLLECTION_MAX_BYTES = 64 * 1024 * 1024
 _DISPLAYED_MISSION_LIMIT = 256
 _SESSION_COMPLETED_STATUS = 0
-_ROOM_MODE_NON_COMPLETION_STATUS = 1
 _ROOM_MODE_COMPLETED_STATUS = 2
 # Verified from the native KabukiDisplayedError mapping in the Matic client:
 # 205 = BAG_MISSING and 206 = BAG_FULL.  These are error-list values, not
@@ -1874,11 +1874,9 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     ended_at = _decode_nested_timestamp(summary, 4)
     rooms: list[str] = []
     seen_rooms: set[str] = set()
-    room_durations: dict[str, int] = {}
-    room_mode_statuses: dict[str, set[int]] = {}
-    rooms_with_unknown_status: set[str] = set()
-    room_vacuum_statuses: dict[str, set[int]] = {}
-    rooms_without_vacuum_status: set[str] = set()
+    statuses: dict[tuple[int, str], int | None] = {}
+    durations: dict[tuple[int, str], int | None] = {}
+    modes: set[int] = set()
     try:
         fields = _bounded_fields(
             summary,
@@ -1890,6 +1888,7 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
     for group in fields:
         if group.number not in (6, 7) or not isinstance(group.value, bytes):
             continue
+        modes.add(group.number)
         try:
             room_fields = _bounded_fields(
                 group.value,
@@ -1918,25 +1917,42 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
                     return None
                 seen_rooms.add(name)
                 rooms.append(name)
-            status_fields = [field for field in detail_fields if field.number in (5, 6)]
-            vacuum_fields = [field for field in status_fields if field.number == 5]
+            key = (group.number, name)
+            if key in statuses:
+                # Duplicate map entries cannot supply unambiguous room proof.
+                statuses[key] = None
+                durations[key] = None
+                continue
+            status_fields = [field for field in detail_fields if field.number == 5]
+            status = 0 if not status_fields else None
             if (
-                len(vacuum_fields) == 1
-                and vacuum_fields[0].wire_type == 0
-                and isinstance(vacuum_fields[0].value, int)
+                len(status_fields) == 1
+                and status_fields[0].wire_type == 0
+                and isinstance(status_fields[0].value, int)
+                and status_fields[0].value in (0, 1, 2)
             ):
-                room_vacuum_statuses.setdefault(name, set()).add(vacuum_fields[0].value)
-            else:
-                rooms_without_vacuum_status.add(name)
-            statuses = room_mode_statuses.setdefault(name, set())
-            for field in status_fields:
-                if field.wire_type == 0 and isinstance(field.value, int):
-                    statuses.add(field.value)
-                else:
-                    rooms_with_unknown_status.add(name)
+                status = status_fields[0].value
+            statuses[key] = status
+            durations[key] = None
             try:
                 duration = first_bytes(details, 4)
-                room_durations[name] = first_varint(duration, 1)
+                seconds_fields = [
+                    field
+                    for field in _bounded_fields(
+                        duration,
+                        max_bytes=_TELEMETRY_NESTED_MAX_BYTES,
+                        max_fields=_TELEMETRY_NESTED_MAX_FIELDS,
+                    )
+                    if field.number == 1
+                ]
+                if not seconds_fields:
+                    durations[key] = 0
+                elif (
+                    len(seconds_fields) == 1
+                    and seconds_fields[0].wire_type == 0
+                    and isinstance(seconds_fields[0].value, int)
+                ):
+                    durations[key] = seconds_fields[0].value
             except DecodeError:
                 pass
 
@@ -1959,39 +1975,49 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         and isinstance(status_fields[0].value, int)
     ):
         completion_status = status_fields[0].value
+    # SessionSummary groups 6/7 contain vacuum/mop AreaModeSummary maps.
+    # Within each map value field 5 is status (0/1/2); field 6 is a setting,
+    # not another mode. Omitted status is protobuf's unattempted default.
     room_completion: dict[str, bool | None] = {}
     for name in rooms:
-        statuses = room_mode_statuses.get(name, set())
-        # Mixed mode statuses occur in confirmed interrupted sessions. Until
-        # the requested mode can be verified, one completed mode is not proof
-        # that the whole commanded room finished.
-        if (
-            statuses == {_ROOM_MODE_COMPLETED_STATUS}
-            and name not in rooms_with_unknown_status
-        ):
+        results = [statuses.get((mode, name)) for mode in modes]
+        if all(status == _ROOM_MODE_COMPLETED_STATUS for status in results):
             room_completion[name] = True
-        elif (
-            statuses == {_ROOM_MODE_NON_COMPLETION_STATUS}
-            and name not in rooms_with_unknown_status
-        ):
+        elif any(status in (0, 1) for status in results):
             room_completion[name] = False
         else:
             room_completion[name] = None
     completed_rooms = tuple(name for name in rooms if room_completion.get(name) is True)
-    # Confirmed vacuum-only runs finish with field 5 == 2 even when field 6
-    # is 1; confirmed interrupted vacuum runs have field 5 == 1 and field 6
-    # == 2. Preserve this command-specific proof instead of merging the fields.
-    # Other cleaning modes still require the conservative whole-room result.
     vacuum_completed_rooms = tuple(
         name
         for name in rooms
         if completion_status == _SESSION_COMPLETED_STATUS
-        and room_vacuum_statuses.get(name) == {_ROOM_MODE_COMPLETED_STATUS}
-        and name not in rooms_without_vacuum_status
-        and name not in rooms_with_unknown_status
-        and room_mode_statuses[name]
-        <= {_ROOM_MODE_COMPLETED_STATUS, _ROOM_MODE_NON_COMPLETION_STATUS}
+        and statuses.get((6, name)) == _ROOM_MODE_COMPLETED_STATUS
     )
+    mop_completed_rooms = tuple(
+        name
+        for name in rooms
+        if completion_status == _SESSION_COMPLETED_STATUS
+        and statuses.get((7, name)) == _ROOM_MODE_COMPLETED_STATUS
+    )
+    combined_completed_rooms = tuple(
+        name for name in vacuum_completed_rooms if name in mop_completed_rooms
+    )
+    mode_results = tuple(
+        CleaningModeResult(
+            room=name,
+            cleaning_mode="vacuum" if mode == 6 else "mop",
+            status={0: "unattempted", 1: "partial", 2: "completed", None: None}[status],
+            duration_seconds=durations[(mode, name)],
+        )
+        for (mode, name), status in statuses.items()
+    )
+    room_durations: dict[str, int] = {}
+    for result in mode_results:
+        if result.duration_seconds is not None:
+            room_durations[result.room] = (
+                room_durations.get(result.room, 0) + result.duration_seconds
+            )
     completed: bool | None
     if completion_status not in (None, _SESSION_COMPLETED_STATUS):
         completed = False
@@ -2012,6 +2038,9 @@ def _decode_cleaning_session(payload: bytes) -> CleaningSession | None:
         completed=completed,
         completed_rooms=completed_rooms,
         vacuum_completed_rooms=vacuum_completed_rooms,
+        mop_completed_rooms=mop_completed_rooms,
+        combined_completed_rooms=combined_completed_rooms,
+        mode_results=mode_results,
     )
 
 

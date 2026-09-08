@@ -677,7 +677,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "ended_at": session.ended_at,
                 "duration_seconds": session.duration_seconds,
                 "completed": session.completed,
-                "rooms": list(session.rooms),
+                "rooms": list(session.visited_rooms),
                 "completed_rooms": list(session.completed_rooms),
                 "room_durations": dict(session.room_durations),
                 "firmware_version": version,

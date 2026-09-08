@@ -33,6 +33,9 @@ fixes, map recovery, verified native room completion and guarded stop handling.
 - Managed completion waits for positive native per-room evidence before
   crediting history. Native finished events use native history, and room starts
   are deduplicated.
+- Native history separates vacuum and mop outcomes and durations. Combined
+  cleaning credits only rooms with evidence for both modes; partial and
+  unattempted results remain visible in the local sensor and MCP history.
 - Paused and recharging plans verify the original native session before
   resuming. A new task started in the OEM app cannot inherit the old plan,
   even when it cleans the same room. Lost ownership interrupts HA tracking
