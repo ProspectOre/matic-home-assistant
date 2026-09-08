@@ -32,8 +32,17 @@ def fast_identity_polls(monkeypatch):
 
 
 @pytest.mark.parametrize("multi_room", [False, True])
-@pytest.mark.parametrize("replacement", [b"", REPLACEMENT, None, MaticError("offline")])
-@pytest.mark.parametrize("suspension", ["low_charge", "paused"])
+@pytest.mark.parametrize(
+    "suspension,replacement",
+    [
+        (suspension, replacement)
+        for suspension in ("low_charge", "paused", "returning")
+        for replacement in (b"", REPLACEMENT, None, MaticError("offline"))
+        # A cleared session during an ordinary return permits history
+        # verification; its absence alone does not imply replacement.
+        if not (suspension == "returning" and replacement == b"")
+    ],
+)
 async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     hass, multi_room, replacement, suspension
 ):
@@ -55,8 +64,12 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     manager.async_mark_suspended = suspend
     manager.async_mark_resumed = AsyncMock(side_effect=resume)
     identity = ORIGINAL
+    returning = asyncio.Event()
 
     async def read_identity():
+        current = hass.states.get("vacuum.matic")
+        if current is not None and current.state == "returning":
+            returning.set()
         if isinstance(identity, Exception):
             raise identity
         return identity
@@ -77,6 +90,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     )
     sender = AsyncMock()
     history = AsyncMock(return_value=())
+    presence = AsyncMock(return_value=None)
     call = ServiceCall(
         hass,
         "matic_robot",
@@ -98,6 +112,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
             rooms,
             intelligent=False,
             session_identity=read_identity,
+            active_session=presence,
             session_history=history,
             managed_user_command=sender,
         )
@@ -106,13 +121,15 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     credit_before = manager.snapshot("serial")["last_completed_by_room"]
     hass.states.async_set(
         "vacuum.matic",
-        "returning" if suspension == "low_charge" else "paused",
+        "paused" if suspension == "paused" else "returning",
         {
             "current_area": ROOM.name,
             "low_charge": suspension == "low_charge",
         },
     )
-    await asyncio.wait_for(suspended.wait(), 1)
+    await asyncio.wait_for(
+        (returning if suspension == "returning" else suspended).wait(), 1
+    )
     identity = replacement
     # Identical target room must not disguise an independent OEM mission.
     hass.states.async_set(
@@ -128,6 +145,7 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     assert error.value.translation_key == "room_taken_over"
     assert len(dispatched) == 1
     sender.assert_not_awaited()
+    presence.assert_not_awaited()
     history.assert_awaited_once()  # Baseline only; no new mission history credited.
     manager.async_mark_resumed.assert_awaited_once()
     snapshot = manager.snapshot("serial")

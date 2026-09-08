@@ -1165,38 +1165,29 @@ async def _async_run_room(
                         hass, entity_id, room, cancel_event
                     )
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        session_active = await _async_active_session_state(
-                            active_session
-                        )
-                        if session_active is False or active_session is None:
-                            mission_timeout.reschedule(None)
-                            await manager.async_mark_verifying(
-                                serial_number, call.data["plan_id"], room
+                        if session_identity is not None:
+                            session_resolution = (
+                                await _async_wait_for_active_session_resolution(
+                                    hass,
+                                    entity_id,
+                                    active_session,
+                                    cancel_event,
+                                    identity_reader=session_identity,
+                                    expected_identity=native_identity,
+                                )
                             )
-                            completion_verified = await _async_verify_room_completion(
-                                session_history,
-                                history_baseline,
-                                room,
-                                dispatched_at,
-                                hass=hass,
-                                entity_id=entity_id,
-                                cancel_event=cancel_event,
+                        else:
+                            session_resolution = await _async_active_session_state(
+                                active_session
                             )
-                            break
-                        if session_active is None:
-                            raise RoomInterruptedError(
-                                f"{room.name} completion could not be verified"
-                            )
-                        session_resolution = (
-                            await _async_wait_for_active_session_resolution(
-                                hass,
-                                entity_id,
-                                active_session,
-                                cancel_event,
-                                identity_reader=session_identity,
-                                expected_identity=native_identity,
-                            )
-                        )
+                            if active_session is None:
+                                session_resolution = False
+                            elif session_resolution is True:
+                                session_resolution = (
+                                    await _async_wait_for_active_session_resolution(
+                                        hass, entity_id, active_session, cancel_event
+                                    )
+                                )
                         if session_resolution is False:
                             mission_timeout.reschedule(None)
                             await manager.async_mark_verifying(
@@ -1635,7 +1626,7 @@ async def _async_run_leg(
                         )
                         continue
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
-                        if active_session is not None:
+                        if active_session is not None or session_identity is not None:
                             session_resolution = (
                                 await _async_wait_for_active_session_resolution(
                                     hass,
