@@ -405,3 +405,90 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     assert manager.snapshot("serial")["active_plan"] is None
     assert manager.snapshot("serial")["last_completed_by_room"] == credit_before
     assert not manager.lock("serial").locked()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+@pytest.mark.parametrize(
+    "stale_state,delayed_identity", [("docked", False), ("cleaning", True)]
+)
+@pytest.mark.parametrize("final_identity", [ORIGINAL, REPLACEMENT, None, b""])
+async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
+    hass, multi_room, stale_state, delayed_identity, final_identity
+):
+    from custom_components.matic_robot.client.commands import UserCommand
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    sender, history = AsyncMock(), AsyncMock(return_value=())
+    dispatched = []
+    bound = asyncio.Event()
+    identity = ORIGINAL
+    reads = 0
+
+    async def read_identity():
+        nonlocal reads
+        reads += 1
+        if delayed_identity and reads <= 2:
+            return b"" if reads == 1 else None
+        bound.set()
+        return identity
+
+    async def dispatch(call):
+        dispatched.append(call.data)
+        # The native task accepted the command, but HA still has the old
+        # activity or an unrelated room. Neither confirms the new start.
+        hass.states.async_set("vacuum.matic", stale_state, {"current_area": "Hallway"})
+
+    hass.services.async_register("vacuum", "send_command", dispatch)
+    rooms = [ROOM]
+    if multi_room:
+        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
+    rooms.append(
+        replace(ROOM, room_id="room-study", name="Study", coverage_setting="quick")
+    )
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "test-plan",
+            "start_timeout": 0.03,
+            "completion_timeout": 10,
+            "return_to_base": True,
+        },
+    )
+    runner = asyncio.create_task(
+        _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_identity=read_identity,
+            session_history=history,
+            managed_user_command=sender,
+        )
+    )
+    await asyncio.wait_for(bound.wait(), 1)
+    identity = final_identity
+    with pytest.raises(ServiceValidationError) as error:
+        await asyncio.wait_for(runner, 1)
+    assert error.value.translation_key == (
+        "room_taken_over"
+        if final_identity in (REPLACEMENT, b"")
+        else "plan_start_timeout"
+    )
+    if final_identity == ORIGINAL:
+        sender.assert_awaited_once()
+        assert sender.await_args.args[1] is UserCommand.STOP
+    else:
+        sender.assert_not_awaited()
+    assert len(dispatched) == 1
+    history.assert_awaited_once()
+    snapshot = manager.snapshot("serial")
+    assert snapshot["active_plan"] is None
+    assert not snapshot["last_completed_by_room"]
+    assert snapshot["native_reconciliation_pending"] is False
+    assert not manager.lock("serial").locked()

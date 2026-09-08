@@ -1110,6 +1110,10 @@ async def _async_run_room(
         nonlocal dispatch_attempted
         dispatch_attempted = True
 
+    def bind_native_identity(identity: bytes) -> None:
+        nonlocal native_identity
+        native_identity = identity
+
     try:
         if dispatch is None:
             dispatch = await _async_dispatch_leg_command(
@@ -1131,19 +1135,17 @@ async def _async_run_room(
         dispatched_at = dispatch.dispatched_at
         assert dispatched_at is not None
         try:
-            start_state = await _async_wait_for_vacuum_state(
+            start_state = await _async_wait_for_owned_start(
                 hass,
                 entity_id,
-                {"cleaning", "paused"},
                 call.data["start_timeout"],
                 cancel_event,
                 room,
+                session_identity,
+                bind_native_identity,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
-        native_identity = await _async_read_session_identity(session_identity)
-        if session_identity is not None and not native_identity:
-            raise RoomTakenOverError("The started native task could not be identified")
         if start_state == "paused":
             await manager.async_mark_suspended(
                 serial_number, call.data["plan_id"], room, "paused"
@@ -1544,6 +1546,10 @@ async def _async_run_leg(
         nonlocal dispatch_attempted
         dispatch_attempted = True
 
+    def bind_native_identity(identity: bytes) -> None:
+        nonlocal native_identity
+        native_identity = identity
+
     try:
         if dispatch is None:
             dispatch = await _async_dispatch_leg_command(
@@ -1564,19 +1570,17 @@ async def _async_run_leg(
         history_baseline = dispatch.history_baseline
         dispatched_at = dispatch.dispatched_at
         try:
-            start_state = await _async_wait_for_vacuum_state(
+            start_state = await _async_wait_for_owned_start(
                 hass,
                 entity_id,
-                {"cleaning", "paused"},
                 call.data["start_timeout"],
                 cancel_event,
                 leg,
+                session_identity,
+                bind_native_identity,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
-        native_identity = await _async_read_session_identity(session_identity)
-        if session_identity is not None and not native_identity:
-            raise RoomTakenOverError("The started native task could not be identified")
         if start_state == "paused":
             await manager.async_mark_suspended(
                 serial_number, call.data["plan_id"], active_room, "paused"
@@ -2671,6 +2675,72 @@ async def _async_read_session_identity(
         return await reader()
     except MaticError:
         return None
+
+
+async def _async_wait_for_owned_start(
+    hass: HomeAssistant,
+    entity_id: str,
+    timeout_seconds: int,
+    cancel_event: asyncio.Event | None,
+    rooms: CleaningRoom | Sequence[CleaningRoom],
+    reader: Callable[[], Awaitable[bytes | None]] | None,
+    bind_identity: Callable[[bytes], None],
+) -> str:
+    """Bind the dispatched task even while HA's activity/room update lags.
+
+    Publish ownership before the state waiter can fail, so timeout or unload
+    cleanup can stop the same accepted task. Never replace that identity with
+    a later OEM task. A successful HA state also needs a current native read.
+    """
+    if reader is None:
+        return await _async_wait_for_vacuum_state(
+            hass,
+            entity_id,
+            {"cleaning", "paused"},
+            timeout_seconds,
+            cancel_event,
+            rooms,
+        )
+    started = asyncio.create_task(
+        _async_wait_for_vacuum_state(
+            hass,
+            entity_id,
+            {"cleaning", "paused"},
+            timeout_seconds,
+            cancel_event,
+            rooms,
+        ),
+        eager_start=True,
+    )
+    expected: bytes | None = None
+    unknown_reads = 0
+    try:
+        while True:
+            identity = await _async_read_session_identity(reader)
+            if identity and expected is None:
+                expected = identity
+                bind_identity(identity)
+            elif identity is not None and expected and identity != expected:
+                raise RoomTakenOverError(
+                    "The dispatched native task ended or was replaced"
+                )
+            if started.done():
+                state = started.result()
+                if identity and identity == expected:
+                    return state
+                unknown_reads += 1
+                if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+                    raise RoomTakenOverError(
+                        "The started native task could not be identified"
+                    )
+                await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+            else:
+                await asyncio.wait(
+                    {started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS
+                )
+    finally:
+        started.cancel()
+        await asyncio.gather(started, return_exceptions=True)
 
 
 async def _async_wait_for_owned_resume(
