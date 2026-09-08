@@ -1,36 +1,33 @@
 name: Bug report
-description: Report an integration problem without including private home data.
+description: Report a problem with the Matic integration.
 title: "[Bug]: "
 labels: [bug]
 body:
   - type: checkboxes
     attributes:
-      label: Privacy check
+      label: Privacy
       options:
-        - label: I removed private home data, including credentials, addresses, serial numbers, certificate details, device and room names, maps, captures, backups, and raw Home Assistant storage.
+        - label: I removed credentials and private home data, and have not attached raw storage, backups, maps, or captures.
           required: true
   - type: input
     attributes:
       label: Integration version
-      placeholder: 0.1.1
+      placeholder: 0.4.0
     validations:
       required: true
   - type: input
     attributes:
-      label: Home Assistant version and installation method
+      label: Home Assistant version and installation
       placeholder: 2026.7.2, Home Assistant OS
     validations:
       required: true
   - type: input
     attributes:
-      label: Bluetooth setup
-      description: Local adapter model, approximate distance and obstructions to Matic, whether Bluetooth proxies are present, and any other BLE scanner integrations. Pairing needs the local adapter; proxies cannot run setup.
-      placeholder: USB adapter about 5 ft away with clear line of sight; 3 ESPHome proxies; Bermuda installed
-    validations:
-      required: true
+      label: Bluetooth setup (pairing problems only)
+      description: Local adapter model, distance to the robot, and other Bluetooth integrations.
   - type: dropdown
     attributes:
-      label: Failure stage
+      label: Where does it fail?
       options:
         - Discovery
         - Bluetooth pairing
@@ -43,18 +40,14 @@ body:
       required: true
   - type: textarea
     attributes:
-      label: Reproduction
-      description: Give the smallest ordered reproduction using sanitized names.
+      label: What happened?
+      description: Include steps to reproduce, what you expected, and what happened instead.
     validations:
       required: true
   - type: textarea
     attributes:
-      label: Sanitized diagnostics or logs
+      label: Relevant logs or diagnostics
       description: >-
-        For pairing problems, paste the matic_robot warning from Settings →
-        System → Logs (it names the failing stage). For deeper detail, enable
-        debug logging first — Developer tools → Actions → logger.set_level
-        with data `custom_components.matic_robot: debug` — then reproduce and
-        paste the matic_robot lines. The integration never logs codes,
-        addresses, or credentials, but review your paste anyway. Do not attach
-        raw storage or captures.
+        Paste the Matic entries from Settings → System → Logs. For more detail,
+        enable debug logging on the integration, reproduce the problem, then
+        disable it. Review all attachments for private information.

@@ -1,39 +1,26 @@
-# 0.4 compatibility and validation
+# Compatibility
 
-Home Assistant 2026.7 is the minimum supported version. Validation includes
-Home Assistant Yellow, local Bluetooth pairing, and the integration's core
-imports on Home Assistant Container.
+[Documentation](README.md) · [Firmware observations](firmware-compatibility.md)
 
-Hardware checks for 0.4 covered the following workflows. Successful September
-7–8 retests superseded earlier failed mixed-settings and interruption checks;
-these results do not certify every later change on hardware.
+## Requirements
 
-- Same-entry reauthentication and recovery of saved configuration.
-- Live maps and robot position, floor changes, and returning to a prior floor.
-- One-time room cleaning, saved plans with different room settings, and custom areas.
-- Immediate Stop and finish-current-room at 20%, 50%, and 60% against a 50%
-  threshold, with no next-room start; paused time stayed excluded.
-- Natural recharge/resume with the original native cleaning session; that
-  mission ultimately ended partially complete.
-- Native vacuum/mop history from a partial mission.
-- Home Assistant restart recovery without replaying a cleaning command.
-- iPhone navigation, saved outlines, and guided VoiceOver use.
+- **Home Assistant 2026.7+**. Live use has covered 2026.7 and 2026.8.
+- A Matic robot reachable over the local network, with multicast discovery available.
+- A Bluetooth adapter built into or attached to the Home Assistant host for setup and credential recovery. Proxies cannot pair the robot.
+- A Home Assistant administrator for the interactive map and saved-area editor.
 
-Automated checks cover protocol decoding, command ownership, interruption,
-privacy, packaging, and browser behavior in Chromium and WebKit. Hardware
-results cover the tested setup, not every robot firmware or network condition.
+Home Assistant OS handles Bluetooth setup. Container installations need host
+BlueZ, D-Bus access, and the permissions in the [pairing guide](hermes-pairing.md).
 
-## Known limits
+## Firmware and maps
 
-- Firmware 172.15/protocol 25 localization behavior remains unverified on the
-  affected hardware.
-- Live network-loss recovery and Container reauthentication have not been
-  physically verified for this release.
-- Separate iPad and broader assistive-technology coverage remains incomplete.
-- The final per-mode history fix was checked against the retained partial
-  mission, without a new cleaning run. Protection against replacement by an
-  unrelated OEM task has automated coverage but no controlled hardware retest.
-- Older stable versions may not render maps produced by newer firmware.
+The integration uses Matic's private local protocol, so robot updates can affect
+compatibility. The [firmware table](firmware-compatibility.md) records observed
+versions. A localization issue on firmware 172.15/protocol 25 remains tracked in
+[issue #65](https://github.com/ProspectOre/matic-home-assistant/issues/65).
 
-See the [release notes](release-notes-0.4.md), [installation guide](../README.md#install),
-and [native cleaning results](native-cleaning-results.md).
+Saved areas may need confirmation after a map change. Older integration versions
+may not display maps from newer firmware; keep a backup when updating.
+
+Matic Cues uses the robot's own voice service. See [privacy](privacy.md#matic-cues)
+before enabling it.

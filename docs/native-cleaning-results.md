@@ -1,24 +1,20 @@
-# Native cleaning results
+# Cleaning results
 
-The local cleaning-sessions sensor and administrator-only MCP history retain
-separate vacuum and mop results for each room. Each mode reports `completed`,
-`partial`, `unattempted`, or an unknown status, plus its recorded duration.
-An absent mode has no result. Unattempted does not establish a cause: the
-integration does not infer an obstruction or the absence of moppable floor.
-The additional sensor attribute `latest_mode_results` is excluded from recorder.
-The shared visited-room list excludes unattempted and unknown results in the
-sensor, finished event, and MCP response. Partial or completed native work
-updates rotation opportunity; an external run does not earn managed completion
-credit merely from this activity import.
+[Documentation](README.md) · [Automation events](automation.md#events-and-observability)
 
-A managed vacuum-only dispatch requires explicit vacuum completion; mop-only
-requires mop completion; vacuum-and-mop requires both. A completed vacuum mode
-cannot satisfy a combined dispatch with partial or absent mop evidence. Each
-requested mode also needs a positive duration. Combined duration adds the two
-mode durations; it never replaces vacuum time with mop time.
+History keeps separate vacuum and mop results for each room: **completed**,
+**partial**, **unattempted**, or unknown, with a duration for each mode.
+An absent result does not explain why a room was skipped.
 
-The native record must still be new, overlap the managed dispatch, and match
-unambiguous room names. A partially completed multi-room mission credits only
-its verified subset and cannot automatically advance to the next settings leg.
-Missing, duplicate, malformed, and unknown results remain uncredited. Existing
-managed records are not retroactively rewritten by this decoder correction.
+A vacuum-and-mop clean needs both modes completed with positive durations.
+Vacuum-only and mop-only runs need the corresponding mode. Visiting a room,
+docking, or ending the overall mission does not mark a room cleaned.
+
+Managed plans match results to their own run. A partially completed mission
+credits only completed rooms and does not start the next settings group.
+Older saved history is not rewritten.
+
+Partial or completed work affects rotation priority; unattempted work does not.
+For completion automations, use `matic_robot_room_completed` or **Last cleaned**.
+The `latest_mode_results` sensor attribute is available live but excluded from
+Recorder. Administrator-only MCP history includes the same per-mode detail.

@@ -1,91 +1,30 @@
-# Matic (Unofficial) documentation
+# Documentation
 
-[Project overview](../README.md) · [Install](../README.md#install) ·
-[Get support](#support)
+[Project overview](../README.md) · [Latest release](release-notes-0.4.md)
 
-This is the documentation home for the independent, community-maintained Home
-Assistant integration for Matic robot vacuums. The guides are versioned with
-the integration so instructions and behavior stay aligned with each release.
+| I want to… | Guide |
+| --- | --- |
+| Install or update | [Installation](../README.md#install) |
+| Pair or reconnect a robot | [Local pairing](hermes-pairing.md) |
+| Use maps, plans, and custom areas | [Cleaning](cleaning.md) |
+| Find a sensor or control | [Entities](entities.md) |
+| Build an automation | [Actions, events, and examples](automation.md) |
+| Understand cleaning history | [Cleaning results](native-cleaning-results.md) |
+| Check my setup | [Compatibility](acceptance-0.4.md) |
+| Understand stored data | [Privacy](privacy.md) |
 
-## Get started
+## Reference
 
-- [Release notes — 0.4.0](release-notes-0.4.md) — Map-based cleaning, editable custom areas, and native completion results.
-
-- [Release notes — 0.3.12](release-notes-0.3.12.md) — Safer service access, bounded robot data, and floor-coherent maps
-
-- [Install Matic (Unofficial)](../README.md#install) — Add the HACS custom
-  repository or install the integration manually.
-- [Local pairing](hermes-pairing.md) — Complete discovery and authorization,
-  understand Bluetooth requirements, and recover from pairing failures.
-- [Limits and troubleshooting](../README.md#limits-and-troubleshooting) — Check
-  discovery, passkey, room-mapping, firmware, and Bluetooth constraints.
-- [Firmware compatibility](firmware-compatibility.md) — Track observed robot
-  versions, validation status, regressions, and newly discovered capabilities.
-- [Release notes — 0.3.6](release-notes-0.3.6.md) — Local Matic Cues and
-  automatic, privacy-safe OTA analysis
-- [Release notes — 0.3.5](release-notes-0.3.5.md) — Safer managed-plan stops,
-  presence automation, and Map Studio recovery
-- [Release notes — 0.3.4](release-notes-0.3.4.md) — Reliable retained-device
-  discovery for local Bluetooth pairing
-- [Release notes — 0.3.3](release-notes-0.3.3.md) — Automatic custom-area map
-  revalidation with safe review when nearby geometry changes
-- [Release notes — 0.3.2](release-notes-0.3.2.md) — Native mobile gestures and
-  a touch-first Map Studio and custom-area workspace
-- [Release notes — 0.3.1](release-notes-0.3.1.md) — Quick, Optimal, and Heavy
-  Duty coverage for plans, custom areas, entities, and actions
-- [Release notes — 0.3.0](release-notes-0.3.0.md) — Private 3D/2D map workspace
-  Map Studio with an integrated photo-backed cleaning-area workspace
-- [Release notes — 0.2.3](release-notes-0.2.3.md) — Room-to-room plans and
-  accurate interrupted-run history
-- [Release notes — 0.2.2](release-notes-0.2.2.md) — Connection, session-history,
-  Activity, and map reliability
-- [Release notes — 0.2.1](release-notes-0.2.1.md) — Plan-editor reliability
-  fixes and configurable finish-current-room stopping.
-
-## Use and automate
-
-- [Entities, controls, and actions](automation.md#entity-contract) — Use the
-  complete Home Assistant surface exposed by one robot.
-- [Matic Cues](automation.md#matic-cues) — Automate privacy-safe voice, intent,
-  gesture, and following lifecycle state and review the enablement boundary.
-- [Saved cleaning plans](automation.md#saved-plans) — Choose rooms, customize
-  per-room cleaning, and save the top-to-bottom order.
-- [Intelligent rotation](automation.md#intelligent-rotation) — Rotate fairly
-  when a cleaning window ends early, without one unfinished room monopolizing it.
-- [Events and blueprints](automation.md#events-and-observability) — Build
-  presence, schedule, dashboard, and custom automation workflows.
-- [Map and cleaning experience](../README.md#cleaning-ux-and-automation) — Add
-  local map cameras, explore the Map Studio, and configure room-aware plans.
-
-## Privacy and security
-
-- [Privacy and local-data model](privacy.md) — Review stored credentials,
-  diagnostics, room and map data, backups, and deauthorization.
-- [Security policy](../SECURITY.md) — Understand the security model and report a
-  vulnerability privately.
-- [Recording-related protocol notes](recording-protocol.md) — Review observed
-  camera and microphone semantics that are intentionally outside the
-  integration's supported controls.
-
-## Project
-
-- [0.4 compatibility and validation](acceptance-0.4.md) — Tested workflows and known limitations.
-- [Contributing](../CONTRIBUTING.md) — Set up development, run the required
-  checks, and prepare a focused pull request.
-- [License](../LICENSE) — MIT License.
-- [Release](https://github.com/ProspectOre/matic-home-assistant/releases/latest)
-  — Download the current published version and review its release notes.
+[Firmware compatibility](firmware-compatibility.md) ·
+[Protocol endpoints](firmware-endpoint-map.md) ·
+[Recording protocol](recording-protocol.md) ·
+[Contributing](../CONTRIBUTING.md) · [Security](../SECURITY.md) ·
+[Release history](https://github.com/ProspectOre/matic-home-assistant/releases)
 
 ## Support
 
-Start with [limits and troubleshooting](../README.md#limits-and-troubleshooting)
-and the relevant guide above. If the problem remains:
-
-- [Ask the Home Assistant community](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684)
-- [Report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml)
-- [Request a feature](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=feature_request.yml)
-
-Home Assistant diagnostics are created only when you click **Download
-diagnostics**. The report uses a strict safe-field allowlist and omits map, room,
-Wi-Fi identity, schedule, session, credential, address, and certificate context;
-inspect it before sharing anyway.
+Start with the relevant guide, then
+[report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml),
+[request a feature](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=feature_request.yml),
+or [ask the community](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684).
+Remove private information from logs, diagnostics, and screenshots before posting.

@@ -1,47 +1,22 @@
-# Security policy
+# Security
 
-## Supported versions
+Security fixes target the latest release.
 
-Security fixes are provided for the latest published release.
+## Report a vulnerability
 
-## Reporting a vulnerability
-
-Use GitHub's private **Report a vulnerability** form as the primary channel. Do
-not open a public issue for a credential leak, certificate-validation bypass,
-unauthorized command path, or privacy failure.
-
-If the private form is unavailable, open a sanitized bug report asking for a
-private contact channel; do not include vulnerability details.
-
-Never attach a live robot credential, local address, serial number, certificate,
-packet capture, floor map, room list, device name, app backup, or raw Home
-Assistant storage file. Start with the integration version, Home Assistant
-version, installation method, sanitized diagnostics, and the smallest synthetic
-reproduction possible.
-
-Maintainers will review complete reports and coordinate fixes and disclosure as
-appropriate. No response-time or bounty commitment is made.
+Use GitHub's [private vulnerability report](https://github.com/ProspectOre/matic-home-assistant/security/advisories/new).
+If unavailable, open a sanitized issue asking for a private contact channel.
+Include versions and a minimal synthetic reproduction; keep credentials, home
+data, captures, and raw storage out of public reports.
 
 ## Security model
 
-- Setup validates Matic's certificate chain and robot identity before trusting
-  the endpoint, then pins the leaf fingerprint in the config entry.
-- Bluetooth is used only to issue a robot-scoped local credential during an
-  explicit pairing window. When a new Bluetooth pairing is required, the
-  robot-displayed passkey is scoped to one attempt and is never persisted or
-  included in diagnostics. An existing valid Home Assistant pairing can be
-  reused.
-- Normal state, maps, and commands travel directly between Home Assistant and
-  the robot over the local network.
-- Diagnostics redact credentials, endpoints, certificate identity, and serial
-  numbers. They retain user-owned map, room, Wi-Fi, and schedule data needed for
-  troubleshooting, so users must inspect downloads before sharing them.
-- Supported command paths use bounded, validated payloads and are covered by
-  automated tests. Core cleaning and settings paths have also been exercised on
-  a real robot.
+- Setup validates the robot's certificate and identity, then pins its fingerprint.
+- Bluetooth issues a local credential during pairing; passkeys are never stored.
+- Normal state, maps, and commands use an encrypted LAN connection.
+- Home Assistant permissions restrict commands and administrator-only map access.
+- Protocol inputs are validated and bounded; diagnostics omit private home data.
 
-Removing the Home Assistant config entry deletes the integration's stored
-local-service credential and stops local access from Home Assistant, but does
-not prove robot-side revocation. The tested Matic app and local service expose
-no verified per-user removal operation; see the privacy model before treating
-entry deletion as token invalidation.
+Deleting the integration removes its local credential and stored data from
+Home Assistant. It does not revoke the robot's copy or erase backups.
+See the [privacy guide](docs/privacy.md).
