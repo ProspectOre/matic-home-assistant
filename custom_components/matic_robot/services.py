@@ -10,7 +10,7 @@ from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
-from functools import wraps
+from functools import partial, wraps
 from time import monotonic
 from typing import Any
 
@@ -135,6 +135,8 @@ class _PreparedRoomDispatch:
     rooms: tuple[CleaningRoom, ...]
     history_baseline: frozenset[bytes] | None
     dispatched_at: datetime
+    native_identity_baseline: bytes | None = None
+    native_identity: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1013,6 +1015,8 @@ async def _async_dispatch_leg_command(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     on_dispatch: Callable[[], None] | None = None,
+    session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    on_identity: Callable[[bytes | None], None] | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline."""
     leg = tuple(rooms)
@@ -1021,6 +1025,11 @@ async def _async_dispatch_leg_command(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await _async_session_history_baseline(session_history)
+    identity_baseline = await _async_read_session_identity(session_identity)
+    if session_identity is not None and identity_baseline is None:
+        raise RoomTakenOverError(
+            "The native task before dispatch could not be verified"
+        )
     if floor_is_current is not None and not floor_is_current():
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
@@ -1049,7 +1058,13 @@ async def _async_dispatch_leg_command(
         blocking=True,
         context=call.context,
     )
-    return _PreparedRoomDispatch(leg, history_baseline, dispatched_at)
+    observed = await _async_read_session_identity(session_identity)
+    identity = observed if observed and observed != identity_baseline else None
+    if on_identity is not None:
+        on_identity(identity)
+    return _PreparedRoomDispatch(
+        leg, history_baseline, dispatched_at, identity_baseline, identity
+    )
 
 
 async def _async_run_room(
@@ -1073,6 +1088,7 @@ async def _async_run_room(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    on_native_identity: Callable[[bytes | None], None] | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1109,10 +1125,13 @@ async def _async_run_room(
     def mark_dispatch_attempted() -> None:
         nonlocal dispatch_attempted
         dispatch_attempted = True
+        bind_native_identity(None)
 
-    def bind_native_identity(identity: bytes) -> None:
+    def bind_native_identity(identity: bytes | None) -> None:
         nonlocal native_identity
         native_identity = identity
+        if on_native_identity is not None:
+            on_native_identity(identity)
 
     try:
         if dispatch is None:
@@ -1126,11 +1145,14 @@ async def _async_run_room(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                session_identity=session_identity,
+                on_identity=bind_native_identity,
             )
         else:
             if dispatch.rooms != (room,):
                 raise ValueError("prepared room dispatch does not match the room")
             dispatch_attempted = True
+            bind_native_identity(dispatch.native_identity)
         history_baseline = dispatch.history_baseline
         dispatched_at = dispatch.dispatched_at
         assert dispatched_at is not None
@@ -1143,6 +1165,8 @@ async def _async_run_room(
                 room,
                 session_identity,
                 bind_native_identity,
+                dispatch.native_identity_baseline,
+                native_identity,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
@@ -1171,8 +1195,12 @@ async def _async_run_room(
                 call.data["completion_timeout"]
             ) as mission_timeout:
                 while True:
-                    outcome = await _async_wait_for_room_outcome(
-                        hass, entity_id, room, cancel_event
+                    outcome = await _async_wait_with_native_identity(
+                        lambda: _async_wait_for_room_outcome(
+                            hass, entity_id, room, cancel_event
+                        ),
+                        session_identity,
+                        native_identity,
                     )
                     if outcome is RoomRunOutcome.HANDOFF_CANDIDATE:
                         if session_identity is not None:
@@ -1475,6 +1503,7 @@ async def _async_run_leg(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    on_native_identity: Callable[[bytes | None], None] | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1505,6 +1534,7 @@ async def _async_run_leg(
             floor_is_current=floor_is_current,
             floor_token=floor_token,
             session_identity=session_identity,
+            on_native_identity=on_native_identity,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1545,10 +1575,13 @@ async def _async_run_leg(
     def mark_dispatch_attempted() -> None:
         nonlocal dispatch_attempted
         dispatch_attempted = True
+        bind_native_identity(None)
 
-    def bind_native_identity(identity: bytes) -> None:
+    def bind_native_identity(identity: bytes | None) -> None:
         nonlocal native_identity
         native_identity = identity
+        if on_native_identity is not None:
+            on_native_identity(identity)
 
     try:
         if dispatch is None:
@@ -1562,11 +1595,14 @@ async def _async_run_leg(
                 floor_is_current=floor_is_current,
                 floor_token=floor_token,
                 on_dispatch=mark_dispatch_attempted,
+                session_identity=session_identity,
+                on_identity=bind_native_identity,
             )
         else:
             if dispatch.rooms != tuple(leg):
                 raise ValueError("prepared leg dispatch does not match the leg")
             dispatch_attempted = True
+            bind_native_identity(dispatch.native_identity)
         history_baseline = dispatch.history_baseline
         dispatched_at = dispatch.dispatched_at
         try:
@@ -1578,6 +1614,8 @@ async def _async_run_leg(
                 leg,
                 session_identity,
                 bind_native_identity,
+                dispatch.native_identity_baseline,
+                native_identity,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
@@ -1607,13 +1645,18 @@ async def _async_run_leg(
                 call.data["completion_timeout"]
             ) as mission_timeout:
                 while True:
-                    outcome, changed_room = await _async_wait_for_leg_outcome(
-                        hass,
-                        entity_id,
-                        leg,
-                        active_room,
-                        cancel_event,
-                        initial_observed=True,
+                    outcome, changed_room = await _async_wait_with_native_identity(
+                        partial(
+                            _async_wait_for_leg_outcome,
+                            hass,
+                            entity_id,
+                            leg,
+                            active_room,
+                            cancel_event,
+                            initial_observed=True,
+                        ),
+                        session_identity,
+                        native_identity,
                     )
                     if outcome is RoomRunOutcome.ROOM_CHANGED:
                         assert changed_room is not None
@@ -2326,6 +2369,8 @@ def _guard_native_commands(
     serial_number: str,
     reader: Callable[[], Awaitable[bytes | None]] | None,
     expected_identity: Callable[[], bytes | None],
+    *,
+    allow_ended_dock: bool = False,
 ) -> Callable[[int, UserCommand], Awaitable[None]] | None:
     """Recheck native ownership at cleanup, including cancellation/unload races."""
     if sender is None or reader is None:
@@ -2334,7 +2379,10 @@ def _guard_native_commands(
     async def send(token: int, command: UserCommand) -> None:
         expected = expected_identity()
         identity = await _async_read_session_identity(reader)
-        if not expected or identity != expected:
+        ended_dock = (
+            allow_ended_dock and command is UserCommand.DOCK and identity == b""
+        )
+        if not expected or (identity != expected and not ended_dock):
             # Revoke local ownership too, so outer abort cleanup and late
             # history reconciliation cannot act for this obsolete mission.
             await manager.async_replace_managed_motion(serial_number)
@@ -2677,6 +2725,51 @@ async def _async_read_session_identity(
         return None
 
 
+async def _async_wait_with_native_identity[T](
+    outcome: Callable[[], Awaitable[T]],
+    reader: Callable[[], Awaitable[bytes | None]] | None,
+    expected: bytes | None,
+) -> T:
+    """Notice replacement even when the OEM task keeps cleaning the same room."""
+    if reader is None:
+        return await outcome()
+
+    async def wait_for_outcome() -> T:
+        return await outcome()
+
+    changed = asyncio.create_task(wait_for_outcome(), eager_start=True)
+    unknown_reads = 0
+    try:
+        while True:
+            if changed.done():
+                changed.result()
+            identity = await _async_read_session_identity(reader)
+            if identity is None:
+                unknown_reads += 1
+                if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+                    raise RoomTakenOverError(
+                        "The native task ownership could not be verified"
+                    )
+            elif identity and identity != expected:
+                raise RoomTakenOverError("The native cleaning task was replaced")
+            else:
+                # An ended session can precede HA's normal return update;
+                # its history still needs independent completion verification.
+                unknown_reads = 0
+                if changed.done():
+                    return changed.result()
+            if changed.done():
+                changed.result()
+                await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+            else:
+                await asyncio.wait(
+                    {changed}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS
+                )
+    finally:
+        changed.cancel()
+        await asyncio.gather(changed, return_exceptions=True)
+
+
 async def _async_wait_for_owned_start(
     hass: HomeAssistant,
     entity_id: str,
@@ -2684,7 +2777,9 @@ async def _async_wait_for_owned_start(
     cancel_event: asyncio.Event | None,
     rooms: CleaningRoom | Sequence[CleaningRoom],
     reader: Callable[[], Awaitable[bytes | None]] | None,
-    bind_identity: Callable[[bytes], None],
+    bind_identity: Callable[[bytes | None], None],
+    identity_baseline: bytes | None,
+    expected: bytes | None,
 ) -> str:
     """Bind the dispatched task even while HA's activity/room update lags.
 
@@ -2712,35 +2807,52 @@ async def _async_wait_for_owned_start(
         ),
         eager_start=True,
     )
-    expected: bytes | None = None
-    unknown_reads = 0
     try:
-        while True:
-            identity = await _async_read_session_identity(reader)
-            if identity and expected is None:
-                expected = identity
-                bind_identity(identity)
-            elif identity is not None and expected and identity != expected:
-                raise RoomTakenOverError(
-                    "The dispatched native task ended or was replaced"
-                )
-            if started.done():
-                state = started.result()
-                if identity and identity == expected:
-                    return state
-                unknown_reads += 1
-                if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
-                    raise RoomTakenOverError(
-                        "The started native task could not be identified"
-                    )
-                await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
-            else:
-                await asyncio.wait(
-                    {started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS
-                )
+        async with asyncio.timeout(timeout_seconds):
+            return await _async_confirm_started_identity(
+                started,
+                reader,
+                bind_identity,
+                identity_baseline,
+                expected,
+                cancel_event,
+            )
     finally:
         started.cancel()
         await asyncio.gather(started, return_exceptions=True)
+
+
+async def _async_confirm_started_identity(
+    started: asyncio.Task[str],
+    reader: Callable[[], Awaitable[bytes | None]],
+    bind_identity: Callable[[bytes | None], None],
+    identity_baseline: bytes | None,
+    expected: bytes | None,
+    cancel_event: asyncio.Event | None,
+) -> str:
+    """Wait for a new identity, never the task that preceded dispatch."""
+    unknown_reads = 0
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PlanCancelledError
+        identity = await _async_read_session_identity(reader)
+        if identity and identity != identity_baseline and expected is None:
+            expected = identity
+            bind_identity(identity)
+        elif identity is not None and expected and identity != expected:
+            raise RoomTakenOverError("The dispatched native task ended or was replaced")
+        if started.done():
+            state = started.result()
+            if identity and identity == expected:
+                return state
+            unknown_reads = unknown_reads + 1 if identity is None else 0
+            if unknown_reads >= ACTIVE_SESSION_UNKNOWN_ATTEMPTS:
+                raise RoomTakenOverError(
+                    "The started native task could not be identified"
+                )
+            await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+        else:
+            await asyncio.wait({started}, timeout=ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
 
 
 async def _async_wait_for_owned_resume(
@@ -2942,6 +3054,20 @@ async def _async_execute_rooms(
         cancel_event = manager.prepare_run(serial_number)
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
+        native_identity: bytes | None = None
+
+        def bind_native_identity(identity: bytes | None) -> None:
+            nonlocal native_identity
+            native_identity = identity
+
+        outer_command = _guard_native_commands(
+            managed_user_command,
+            manager,
+            serial_number,
+            session_identity,
+            lambda: native_identity,
+            allow_ended_dock=True,
+        )
         try:
             # Publish ownership before the first suspending check. Otherwise
             # Stop can observe no run while this start waits for an old stop
@@ -2988,6 +3114,9 @@ async def _async_execute_rooms(
                             session_history,
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
+                            session_identity=session_identity,
+                            on_dispatch=lambda: bind_native_identity(None),
+                            on_identity=bind_native_identity,
                         )
                     except (HomeAssistantError, MaticError) as err:
                         _LOGGER.debug(
@@ -3029,6 +3158,7 @@ async def _async_execute_rooms(
                     floor_is_current=floor_is_current,
                     floor_token=floor_token,
                     session_identity=session_identity,
+                    on_native_identity=bind_native_identity,
                 )
                 if not completion_verified:
                     break
@@ -3039,7 +3169,7 @@ async def _async_execute_rooms(
                 if finish_room_event.is_set():
                     if prepared_dispatches:
                         await _async_cleanup_managed_motion(
-                            managed_user_command,
+                            outer_command,
                             motion_token,
                             dispatch_attempted=True,
                         )
@@ -3053,12 +3183,12 @@ async def _async_execute_rooms(
                 (call.data["return_to_base"] or finish_room_event.is_set())
                 and (current := hass.states.get(entity_id)) is not None
                 and current.state not in {"docked", "returning"}
-                and managed_user_command is not None
+                and outer_command is not None
                 and not cleanup_stop_sent
                 and not _stop_is_pending(manager, serial_number)
             ):
                 try:
-                    await managed_user_command(motion_token, UserCommand.DOCK)
+                    await outer_command(motion_token, UserCommand.DOCK)
                 except ManagedMotionReplacedError as err:
                     raise PlanCancelledError from err
                 except MaticError as err:
@@ -3119,7 +3249,7 @@ async def _async_execute_rooms(
                             )
                     if not session_ended:
                         await _async_cleanup_managed_motion(
-                            managed_user_command, motion_token, dispatch_attempted=True
+                            outer_command, motion_token, dispatch_attempted=True
                         )
             raise
         finally:

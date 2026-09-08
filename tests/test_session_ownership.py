@@ -36,11 +36,11 @@ def fast_identity_polls(monkeypatch):
     "suspension,replacement",
     [
         (suspension, replacement)
-        for suspension in ("low_charge", "paused", "returning")
+        for suspension in ("low_charge", "paused", "returning", "cleaning")
         for replacement in (b"", REPLACEMENT, None, MaticError("offline"))
         # A cleared session during an ordinary return permits history
         # verification; its absence alone does not imply replacement.
-        if not (suspension == "returning" and replacement == b"")
+        if not (suspension in ("returning", "cleaning") and replacement == b"")
     ],
 )
 async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
@@ -67,6 +67,8 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     returning = asyncio.Event()
 
     async def read_identity():
+        if not dispatched:
+            return b""
         current = hass.states.get("vacuum.matic")
         if current is not None and current.state == "returning":
             returning.set()
@@ -121,15 +123,18 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     credit_before = manager.snapshot("serial")["last_completed_by_room"]
     hass.states.async_set(
         "vacuum.matic",
-        "paused" if suspension == "paused" else "returning",
+        "paused"
+        if suspension == "paused"
+        else ("cleaning" if suspension == "cleaning" else "returning"),
         {
             "current_area": ROOM.name,
             "low_charge": suspension == "low_charge",
         },
     )
-    await asyncio.wait_for(
-        (returning if suspension == "returning" else suspended).wait(), 1
-    )
+    if suspension != "cleaning":
+        await asyncio.wait_for(
+            (returning if suspension == "returning" else suspended).wait(), 1
+        )
     identity = replacement
     # Identical target room must not disguise an independent OEM mission.
     hass.states.async_set(
@@ -310,7 +315,9 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
             "vacuum.matic",
             "serial",
             rooms,
-            session_identity=AsyncMock(return_value=None),
+            session_identity=AsyncMock(
+                side_effect=lambda: None if hass.states.get("vacuum.matic") else b""
+            ),
             managed_user_command=sender,
         )
     sender.assert_not_awaited()
@@ -344,6 +351,7 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     reader = AsyncMock(return_value=ORIGINAL)
     sender = AsyncMock()
     dispatched = []
+    reader.side_effect = lambda: reader.return_value if dispatched else b""
 
     async def dispatch(call):
         dispatched.append(call.data)
@@ -427,6 +435,8 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
 
     async def read_identity():
         nonlocal reads
+        if not dispatched:
+            return b""
         reads += 1
         if delayed_identity and reads <= 2:
             return b"" if reads == 1 else None
@@ -492,3 +502,229 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     assert not snapshot["last_completed_by_room"]
     assert snapshot["native_reconciliation_pending"] is False
     assert not manager.lock("serial").locked()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+@pytest.mark.parametrize(
+    "dispatch_result", ["rejected", "unchanged", "new_task", "cancelled"]
+)
+async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
+    hass, multi_room, dispatch_result
+):
+    from custom_components.matic_robot.client.commands import UserCommand
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    identity = ORIGINAL
+    started, command_returned = asyncio.Event(), asyncio.Event()
+    original_resume = manager.async_mark_resumed
+
+    async def resume(*args):
+        await original_resume(*args)
+        started.set()
+
+    manager.async_mark_resumed = resume
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+    sender, history = AsyncMock(), AsyncMock(return_value=())
+    commands = []
+
+    async def dispatch(call):
+        commands.append(call.data)
+        command_returned.set()
+        if dispatch_result == "rejected":
+            raise MaticError("command rejected")
+
+    hass.services.async_register("vacuum", "send_command", dispatch)
+    rooms = [ROOM]
+    if multi_room:
+        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "test-plan",
+            "start_timeout": 0.03,
+            "completion_timeout": 10,
+            "return_to_base": True,
+        },
+    )
+    runner = asyncio.create_task(
+        _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_identity=AsyncMock(side_effect=lambda: identity),
+            session_history=history,
+            managed_user_command=sender,
+        )
+    )
+    await asyncio.wait_for(command_returned.wait(), 1)
+    if dispatch_result == "new_task":
+        # The unchanged old HA state must not count as the new mission.
+        await asyncio.sleep(0.005)
+        assert not started.is_set()
+        identity = REPLACEMENT
+        await asyncio.wait_for(started.wait(), 1)
+        await manager.async_cancel_and_wait("serial")
+        await runner
+        sender.assert_awaited_once()
+        assert sender.await_args.args[1] is UserCommand.STOP
+    elif dispatch_result == "cancelled":
+        await asyncio.sleep(0.005)
+        await manager.async_cancel_and_wait("serial")
+        await runner
+        assert not started.is_set()
+        sender.assert_not_awaited()
+    else:
+        with pytest.raises(ServiceValidationError) as error:
+            await runner
+        assert error.value.translation_key == (
+            "robot_command_failed"
+            if dispatch_result == "rejected"
+            else "plan_start_timeout"
+        )
+        assert not started.is_set()
+        sender.assert_not_awaited()
+    assert len(commands) == 1
+    history.assert_awaited_once()
+    assert all(
+        value["runs"] == 0 and value["at"] is None
+        for value in manager.snapshot("serial")["last_completed_by_room"].values()
+    )
+    assert manager.snapshot("serial")["active_plan"] is None
+    assert not manager.lock("serial").locked()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
+    hass, multi_room
+):
+    from custom_components.matic_robot.services import _async_run_leg
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    command, sender = AsyncMock(), AsyncMock()
+    hass.services.async_register("vacuum", "send_command", command)
+    rooms = [ROOM]
+    if multi_room:
+        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "test-plan",
+            "start_timeout": 10,
+            "completion_timeout": 10,
+        },
+    )
+    with pytest.raises(ServiceValidationError) as error:
+        await _async_run_leg(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            session_identity=AsyncMock(return_value=None),
+            managed_user_command=sender,
+        )
+    assert error.value.translation_key == "room_taken_over"
+    command.assert_not_awaited()
+    sender.assert_not_awaited()
+
+
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_unexpected_outer_abort_cannot_stop_a_replacement(
+    hass, monkeypatch, multi_room
+):
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    identity = b""
+    commands = []
+    sender = AsyncMock()
+
+    async def dispatch(call):
+        nonlocal identity
+        commands.append(call.data)
+        identity = ORIGINAL
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+
+    async def fail_after_replacement(*args, **kwargs):
+        nonlocal identity
+        identity = REPLACEMENT
+        raise RuntimeError("unexpected observer failure")
+
+    hass.services.async_register("vacuum", "send_command", dispatch)
+    for waiter in ("_async_wait_for_room_outcome", "_async_wait_for_leg_outcome"):
+        monkeypatch.setattr(
+            "custom_components.matic_robot.services." + waiter, fail_after_replacement
+        )
+    rooms = [ROOM]
+    if multi_room:
+        rooms.append(replace(ROOM, room_id="room-office", name="Office"))
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "test-plan",
+            "start_timeout": 10,
+            "completion_timeout": 10,
+            "return_to_base": True,
+        },
+    )
+    with pytest.raises(RuntimeError, match="unexpected observer failure"):
+        await _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_identity=AsyncMock(side_effect=lambda: identity),
+            managed_user_command=sender,
+        )
+    sender.assert_not_awaited()
+    assert len(commands) == 1
+    assert manager.snapshot("serial")["active_plan"] is None
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+    assert not manager.lock("serial").locked()
+
+
+@pytest.mark.parametrize(
+    "identity,allowed",
+    [(b"", True), (ORIGINAL, True), (REPLACEMENT, False), (None, False)],
+)
+async def test_final_dock_cannot_interrupt_an_independent_native_task(
+    hass, identity, allowed
+):
+    from custom_components.matic_robot.client.commands import UserCommand
+    from custom_components.matic_robot.plans import ManagedMotionReplacedError
+    from custom_components.matic_robot.services import _guard_native_commands
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    token = manager.begin_managed_motion("serial")
+    sender = AsyncMock()
+    guarded = _guard_native_commands(
+        sender,
+        manager,
+        "serial",
+        AsyncMock(return_value=identity),
+        lambda: ORIGINAL,
+        allow_ended_dock=True,
+    )
+    if allowed:
+        await guarded(token, UserCommand.DOCK)
+        sender.assert_awaited_once_with(token, UserCommand.DOCK)
+    else:
+        with pytest.raises(ManagedMotionReplacedError):
+            await guarded(token, UserCommand.DOCK)
+        sender.assert_not_awaited()

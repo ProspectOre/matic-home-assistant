@@ -2486,7 +2486,11 @@ async def test_room_recharge_waits_for_resume_before_unverified_handoff() -> Non
             _room("Kitchen", "room-kitchen"),
             active_session=AsyncMock(return_value=False),
             session_identity=AsyncMock(
-                side_effect=lambda: b"" if outcome.await_count >= 2 else b"native-task"
+                side_effect=lambda: (
+                    b""
+                    if not services.async_call.await_count or outcome.await_count >= 2
+                    else b"native-task"
+                )
             ),
         )
 
@@ -3106,7 +3110,8 @@ async def test_leg_paused_start_suspends_until_cleaning(hass) -> None:
         session_identity=AsyncMock(
             side_effect=lambda: (
                 b""
-                if (
+                if not hass.states.get("vacuum.matic")
+                or (
                     hass.states.get("vacuum.matic").state == "returning"
                     and not hass.states.get("vacuum.matic").attributes.get("low_charge")
                 )
@@ -3175,7 +3180,8 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
         session_identity=AsyncMock(
             side_effect=lambda: (
                 b""
-                if (
+                if not hass.states.get("vacuum.matic")
+                or (
                     hass.states.get("vacuum.matic").state == "returning"
                     and not hass.states.get("vacuum.matic").attributes.get("low_charge")
                 )
@@ -4161,7 +4167,11 @@ async def test_room_starting_paused_is_suspended_until_resume() -> None:
             _room("Kitchen", "room-kitchen"),
             active_session=AsyncMock(return_value=False),
             session_identity=AsyncMock(
-                side_effect=lambda: b"" if outcome.await_count >= 1 else b"native-task"
+                side_effect=lambda: (
+                    b""
+                    if not services.async_call.await_count or outcome.await_count >= 1
+                    else b"native-task"
+                )
             ),
         )
 
@@ -4196,7 +4206,11 @@ async def test_room_pause_and_resume_outcome() -> None:
         room,
         active_session=AsyncMock(return_value=False),
         session_identity=AsyncMock(
-            side_effect=lambda: b"" if outcome.await_count >= 2 else b"native-task"
+            side_effect=lambda: (
+                b""
+                if not services.async_call.await_count or outcome.await_count >= 2
+                else b"native-task"
+            )
         ),
     )
     with (
