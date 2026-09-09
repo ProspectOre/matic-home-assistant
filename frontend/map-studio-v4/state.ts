@@ -222,6 +222,7 @@ export const reduceWorkspace = (
       return {
         ...state,
         workflow: intent.workflow,
+        notice: state.notice?.tone === "success" ? null : state.notice,
         precisionOpen: false,
       };
     case "enter-full-map":
@@ -343,6 +344,19 @@ export const reduceWorkspace = (
         precisionOpen: false,
       };
     case "toggle-room": {
+      if (state.workflow === "plan") {
+        const rooms = state.planDraft.rooms;
+        return {
+          ...state,
+          planDraft: {
+            ...state.planDraft,
+            dirty: true,
+            rooms: rooms.some((room) => room.roomId === intent.roomId)
+              ? rooms.filter((room) => room.roomId !== intent.roomId)
+              : [...rooms, { roomId: intent.roomId, cleaningMode: "vacuum", coverageSetting: "standard" }],
+          },
+        };
+      }
       const selected = state.selection.roomIds.includes(intent.roomId);
       return {
         ...state,
@@ -402,6 +416,7 @@ export const reduceWorkspace = (
       return {
         ...state,
         workflow: "plan",
+        notice: state.notice?.tone === "success" ? null : state.notice,
         selection: { ...state.selection, planId: intent.planId },
         planDraft: plan ? draftForPlan(plan) : initialWorkspaceState().planDraft,
       };

@@ -280,10 +280,12 @@ export class GestureController {
     if ((this.#mode === "paint" || this.#mode === "erase")
       && JSON.stringify(this.#draft) !== JSON.stringify(this.#baseline)) {
       this.#callbacks.onCircles(this.#draft, true, this.#baseline, this.#baselineOutline);
-    } else if (this.#mode !== "pinch"
+    } else if (event.type !== "pointercancel"
+      && this.#mode !== "pinch"
       && !this.#navigationUntilRelease
       && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7
-      && this.#callbacks.state().workflow === "rooms") {
+      && ["rooms", "plan"].includes(this.#callbacks.state().workflow)
+      && canEditCoordinates(this.#callbacks.state())) {
       const roomId = this.#renderer.roomAt(pointer.x, pointer.y);
       if (roomId) this.#callbacks.onRoom(roomId);
     }
