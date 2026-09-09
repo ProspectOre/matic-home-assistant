@@ -538,10 +538,14 @@ test.describe("Map Studio v0.4 foundation", () => {
         const failed = { id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name };
         reject = false;
         await effects.deletePlan();
-        return { failed, deleted: { selected: store.value.selection.planId, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name } };
+        const deletedDraft = { selected: store.value.selection.planId, id: store.value.planDraft.id, dirty: store.value.planDraft.dirty, name: store.value.planDraft.name };
+        const deletionNotice = store.value.notice?.text;
+        effects.selectPlan(null);
+        const nextNotice = store.value.notice;
+        return { failed, deletionNotice, nextNotice, deleted: deletedDraft };
       } finally { effects.dispose(); }
     });
-    expect(result).toEqual({ failed: { id: "daily", dirty: true, name: "Keep on failure" }, deleted: { selected: null, id: null, dirty: false, name: "" } });
+    expect(result).toEqual({ deletionNotice: "Plan deleted", nextNotice: null, failed: { id: "daily", dirty: true, name: "Keep on failure" }, deleted: { selected: null, id: null, dirty: false, name: "" } });
   });
   for (const pruned of ["snapshot", "floor", "all", "navigation"]) {
     test(`reconciles the scene and floor when history prunes the selected ${pruned}`, async ({ page }) => {
@@ -5124,4 +5128,64 @@ test("area save clears an obsolete discard prompt opened while the write was pen
     } finally { effects.dispose(); }
   });
   expect(result).toEqual({ pendingDialog: "discardDraft", savedDialog: null, workflow: "none", notice: "Area saved" });
+});
+
+test("map taps select run and plan rooms in both views and clear old deletion notices", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: `
+    export { RendererController } from "./frontend/map-studio-v4/renderer-controller";
+    export { GestureController } from "./frontend/map-studio-v4/gesture-controller";
+    export { WorkspaceStore } from "./frontend/map-studio-v4/state";
+    export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
+  `, resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/room-taps.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const { RendererController, GestureController, WorkspaceStore, createGalleryState } = await import("/room-taps.js");
+    const results = [];
+    for (const workflow of ["rooms", "plan"]) for (const view of ["top", "three"]) {
+      const canvas = document.createElement("canvas"), overlay = document.createElement("canvas");
+      for (const element of [canvas, overlay]) {
+        Object.assign(element.style, { position: "absolute", left: "31px", top: "47px", width: "720px", height: "540px" });
+        document.body.append(element);
+      }
+      const initial = createGalleryState("rooms");
+      const store = new WorkspaceStore({ ...initial, workflow, view, selection: { ...initial.selection, roomIds: [], roomSettings: [] }, planDraft: { ...initial.planDraft, rooms: [] } });
+      const renderer = new RendererController(canvas, overlay);
+      renderer.setState(store.value);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {} });
+      const bounds = canvas.getBoundingClientRect();
+      let hit;
+      for (let y = 20; y < 520 && !hit; y += 10) for (let x = 20; x < 700 && !hit; x += 10) {
+        const room = renderer.roomAt(bounds.left + x, bounds.top + y);
+        if (room) hit = { x: bounds.left + x, y: bounds.top + y, room };
+      }
+      if (!hit) throw new Error(`No selectable room in ${view}`);
+      const mapPoint = renderer.screenToMap(hit.x, hit.y);
+      const projected = renderer.mapToScreen(mapPoint);
+      if (Math.hypot(projected.x + bounds.left - hit.x, projected.y + bounds.top - hit.y) > .01) throw new Error("Room projection mismatch");
+      const tap = (end = "pointerup") => {
+        for (const type of ["pointerdown", end]) canvas.dispatchEvent(new PointerEvent(type, { pointerId: 1, isPrimary: true, pointerType: "mouse", clientX: hit.x, clientY: hit.y, bubbles: true }));
+      };
+      // Synthetic pointers have no browser capture owner.
+      canvas.setPointerCapture = () => {}; canvas.releasePointerCapture = () => {};
+      tap();
+      const selected = workflow === "plan" ? store.value.planDraft.rooms.map(room => room.roomId) : store.value.selection.roomIds;
+      tap("pointercancel");
+      const afterCancel = workflow === "plan" ? store.value.planDraft.rooms.map(room => room.roomId) : store.value.selection.roomIds;
+      tap();
+      const remaining = workflow === "plan" ? store.value.planDraft.rooms.length : store.value.selection.roomIds.length;
+      store.patch({ notice: { tone: "success", text: "Plan deleted" } });
+      store.dispatch({ type: "select-plan", planId: "daily" });
+      results.push({ selected, afterCancel, remaining, room: hit.room, notice: store.value.notice });
+      gestures.dispose(); renderer.dispose(); canvas.remove(); overlay.remove();
+    }
+    return results;
+  });
+  for (const result of results) {
+    expect(result.selected).toEqual([result.room]);
+    expect(result.afterCancel).toEqual(result.selected);
+    expect(result.remaining).toBe(0);
+    expect(result.notice).toBeNull();
+  }
 });

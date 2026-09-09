@@ -1103,10 +1103,11 @@ export class EffectController {
     }
   }
 
-  selectPlan(planId: string | null): void {
+  selectPlan(planId: string | null, preserveNotice = false): void {
     const plan = this.#store.value.resources.plans.value?.plans.find((candidate) => candidate.id === planId);
     this.#store.patch({
       workflow: "plan",
+      notice: !preserveNotice && this.#store.value.notice?.tone === "success" ? null : this.#store.value.notice,
       selection: { ...this.#store.value.selection, planId },
       planDraft: plan ? draftForPlan(plan) : {
         ...initialWorkspaceState().planDraft,
@@ -1308,7 +1309,7 @@ export class EffectController {
         && this.#store.value.selection.entryId === state.selection.entryId) {
         const catalog = this.#store.value.resources.plans.value;
         const savedId = draft.id || catalog?.selectedPlan;
-        if (savedId && catalog?.plans.some((plan) => plan.id === savedId)) this.selectPlan(savedId);
+        if (savedId && catalog?.plans.some((plan) => plan.id === savedId)) this.selectPlan(savedId, true);
       }
     }
   }
@@ -1325,7 +1326,7 @@ export class EffectController {
           selection: { ...current.selection, planId: null },
           planDraft: initialWorkspaceState().planDraft,
         });
-        if (current.workflow === "plan") this.#store.dispatch({ type: "open-workflow", workflow: "plans" });
+        if (current.workflow === "plan") this.#store.patch({ workflow: "plans", precisionOpen: false });
       }
       await this.loadPlans();
     }

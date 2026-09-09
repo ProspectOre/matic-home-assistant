@@ -850,7 +850,7 @@ export class RendererController {
   #selectedRoomNames(state: WorkspaceState): Set<string> {
     const rooms = state.resources.plans.value?.rooms || state.resources.areas.value?.rooms || [];
     return new Set(rooms
-      .filter((room) => state.selection.roomIds.includes(room.roomId))
+      .filter((room) => (state.workflow === "plan" ? state.planDraft.rooms.map((item) => item.roomId) : state.selection.roomIds).includes(room.roomId))
       .map((room) => room.name.toLocaleLowerCase()));
   }
 
@@ -876,7 +876,7 @@ export class RendererController {
   }
 
   mapToScreen(point: MapPoint): MapPoint | null {
-    if (!this.#scene || !this.#camera.orthographic) return null;
+    if (!this.#scene) return null;
     const bounds = this.#measureViewport();
     if (!bounds.width || !bounds.height) return null;
     return this.#projectMeters(point.x, point.y, 0, false, this.#cameraMatrix());
@@ -895,19 +895,24 @@ export class RendererController {
 
   screenToMap(clientX: number, clientY: number): MapPoint | null {
     const scene = this.#scene;
-    if (!scene || !this.#camera.orthographic) return null;
+    if (!scene) return null;
     const bounds = this.#measureViewport();
     if (!bounds.width || !bounds.height) return null;
-    // Orthographic projection is affine on the floor plane (world Y = 0).
-    // Invert that same transform so rotated/zoomed input matches rendered pixels.
+    // Invert the floor-plane homography, including perspective division in 3D.
     const matrix = this.#cameraMatrix();
-    const a = matrix[0]!, b = matrix[8]!, c = matrix[1]!, d = matrix[9]!;
+    const x = (clientX - bounds.left) / bounds.width * 2 - 1;
+    const y = 1 - (clientY - bounds.top) / bounds.height * 2;
+    const a = matrix[0]! - x * matrix[3]!;
+    const b = matrix[8]! - x * matrix[11]!;
+    const c = matrix[1]! - y * matrix[3]!;
+    const d = matrix[9]! - y * matrix[11]!;
     const determinant = a * d - b * c;
     if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return null;
-    const x = (clientX - bounds.left) / bounds.width * 2 - 1 - matrix[12]!;
-    const y = 1 - (clientY - bounds.top) / bounds.height * 2 - matrix[13]!;
-    const worldX = (x * d - b * y) / determinant;
-    const worldZ = (a * y - x * c) / determinant;
+    const u = x * matrix[15]! - matrix[12]!;
+    const v = y * matrix[15]! - matrix[13]!;
+    const worldX = (u * d - b * v) / determinant;
+    const worldZ = (a * v - u * c) / determinant;
+    if (matrix[3]! * worldX + matrix[11]! * worldZ + matrix[15]! <= 0) return null;
     const cellX = -worldX / scene.metadata.metersPerCell + (scene.metadata.span[0] - 1) / 2;
     const cellY = worldZ / scene.metadata.metersPerCell + (scene.metadata.span[1] - 1) / 2;
     return {

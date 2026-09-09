@@ -10,6 +10,8 @@ map or **2D** for a top-down view. The 2D appearance can show the photo or room 
 Drag to move around the map; use pinch or the wheel to zoom. **Fit map** recenters
 the floor. **How to move the map** lists mouse, touch, and keyboard controls.
 Map options include appearance, refresh, and full screen.
+When choosing rooms for a run or plan, click a room on either map view to select
+or deselect it. The map and room list stay in sync.
 
 **Map history** browses saved views. When history includes another floor, the
 floor selector can show it read-only. Cleaning is available only on the current
