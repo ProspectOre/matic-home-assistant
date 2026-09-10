@@ -410,14 +410,14 @@ export class EffectController {
         // Retry on the next verified catalog poll, without interrupting a
         // request that is still building the scene.
         const stamp = this.#coherence.current();
-        if (!coherent && stamp && !state.resources.scene.value
+        if (stamp && !state.resources.scene.value
           && !this.#controllers.has("history")) {
           // Saved scene reads can fail independently of a healthy catalog.
           // Retry on the next poll while there is still no map to display.
           void this.#loadHistory(selected, stamp);
         }
         if (coherent && stamp
-          && state.resources.scene.status === "error"
+          && (state.resources.scene.status === "error" || state.floor.readOnly)
           && !this.#controllers.has("scene")) {
           void this.#loadLiveScene(selected, stamp);
         }
@@ -784,8 +784,7 @@ export class EffectController {
           ...(activeFloor && !(state.dataMode === "live" && state.floor.readOnly) ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
       });
-      if (state.dataMode === "live" && !state.resources.scene.value
-        && !(entry.mapFloorCoherent && entry.mapSessionVerified)) {
+      if (state.dataMode === "live" && !state.resources.scene.value) {
         const snapshots = history.floors.flatMap((floor) => floor.snapshots.map((snapshot) => ({ floor, snapshot })))
           .sort((a, b) => Date.parse(b.snapshot.createdAt) - Date.parse(a.snapshot.createdAt));
         for (const saved of snapshots) {

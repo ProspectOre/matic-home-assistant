@@ -762,29 +762,31 @@ test.describe("Map Studio v0.4 foundation", () => {
       readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
   });
 
-  for (const scenario of ["unreadable-newest", "late-history", "transient-all"]) {
+  for (const scenario of ["unreadable-newest", "late-history", "transient-all", "live-unavailable"]) {
     test(`saved-map fallback handles ${scenario}`, async ({ page }) => {
       await loadEffectHarness(page);
       const result = await page.evaluate(async (scenario) => {
         const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
         const initial = createGalleryState("ready");
         const store = new WorkspaceStore({ ...initial, map: { ...initial.map, available: false }, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
-        let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, deltaUrl: null };
+        let entry = { ...initial.resources.entry, mapFloorCoherent: scenario === "live-unavailable", mapSessionVerified: scenario === "live-unavailable", deltaUrl: null };
         let historyReads = 0;
+        let liveOffline = scenario === "live-unavailable";
         let offline = scenario === "transient-all";
         const history = initial.resources.history.value;
-        let releaseHistory;
+        const historyReleases = [];
         const effects = new EffectController(store, {
           catalog: async () => [entry],
           history: async () => scenario === "transient-all"
             ? { ...history, floors: [{ ...history.floors[0], snapshots: history.floors[0].snapshots.slice(0, 1) }] }
             : history,
           scene: async (_url, revision, floorCoherent, mode) => {
+            if (mode === "live" && liveOffline) throw new Error("Live scene temporarily offline");
             if (mode === "history") {
               historyReads++;
               if (offline) throw new Error("Snapshot endpoint temporarily offline");
               if (scenario === "unreadable-newest" && historyReads === 1) throw new Error("Missing snapshot");
-              if (scenario === "late-history") await new Promise((resolve) => { releaseHistory = resolve; });
+              if (scenario === "late-history") await new Promise((resolve) => { historyReleases.push(resolve); });
             }
             return { revision, floorCoherent, scene: { ...initial.resources.scene.value, marker: mode } };
           },
@@ -795,7 +797,14 @@ test.describe("Map Studio v0.4 foundation", () => {
         try {
           effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId });
           await effects.refreshCatalog(true);
-          for (let i = 0; i < 20 && !(scenario === "late-history" ? releaseHistory : store.value.map.available); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          for (let i = 0; i < 20 && !(scenario === "late-history" ? historyReleases.length > 0 : store.value.map.available); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (scenario === "live-unavailable") {
+            if (!store.value.map.available || !store.value.floor.readOnly || store.value.resources.scene.value?.marker !== "history") throw new Error("Expected a saved map while live scene was unavailable");
+            liveOffline = false;
+            await new Promise(resolve => setTimeout(resolve, 0));
+            await effects.refreshCatalog();
+            for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+          }
           if (scenario === "transient-all") {
             if (store.value.map.available || historyReads !== 1) throw new Error("Expected one failed snapshot read");
             offline = false;
@@ -805,14 +814,14 @@ test.describe("Map Studio v0.4 foundation", () => {
           if (scenario === "late-history") {
             entry = { ...initial.resources.entry, deltaUrl: null };
             await effects.refreshCatalog();
-            releaseHistory();
+            for (const release of historyReleases) release();
             await new Promise((resolve) => setTimeout(resolve, 0));
           }
           return { historyReads, available: store.value.map.available, marker: store.value.resources.scene.value?.marker, readOnly: store.value.floor.readOnly };
         } finally { effects.dispose(); }
       }, scenario);
-      expect(result).toEqual(scenario === "late-history"
-        ? { historyReads: 1, available: true, marker: "live", readOnly: false }
+      expect(result).toEqual(scenario === "late-history" || scenario === "live-unavailable"
+        ? { historyReads: scenario === "late-history" ? 2 : 1, available: true, marker: "live", readOnly: false }
         : { historyReads: 2, available: true, marker: "history", readOnly: true });
     });
   }
@@ -4829,7 +4838,8 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
         if (!recovery.healthy) return { revision: entry.mapRevision - (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
         return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value };
       },
-      history: async () => initial.resources.history.value,
+      // Isolate live-scene rejection; saved-map fallback has dedicated cases.
+      history: async () => { throw new Error("No readable saved snapshots"); },
       pose: async () => initial.resources.pose.value,
       plans: async () => initial.resources.plans.value,
     };
