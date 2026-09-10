@@ -4545,6 +4545,41 @@ test("zone perimeter closes automatically and supports extending dragging insert
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
 });
 
+test("renderer hides a new pose until the read-only scene is replaced", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/pose-readonly.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/pose-readonly.js");
+    const scene = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const canvas of [scene, overlay]) {
+      Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+      document.body.append(canvas);
+    }
+    let markers = 0;
+    const context = overlay.getContext("2d"), originalArc = context.arc;
+    context.arc = function(x, y, radius, ...rest) {
+      if (radius === 7) markers++;
+      return originalArc.call(this, x, y, radius, ...rest);
+    };
+    const renderer = new RendererController(scene, overlay);
+    const initial = createGalleryState("ready");
+    const state = { ...initial, map: { ...initial.map, exactPose: true },
+      resources: { ...initial.resources, pose: { status: "ready", problem: null,
+        value: { ...initial.resources.pose.value, position: [1.3, 1.6] } } } };
+    const results = [];
+    for (const readOnly of [true, false, true]) {
+      markers = 0;
+      renderer.setState({ ...state, floor: { ...state.floor, readOnly } });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      results.push(markers > 0);
+    }
+    renderer.dispose();
+    return results;
+  });
+  expect(results).toEqual([false, true, false]);
+});
+
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));

@@ -1,5 +1,6 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
 import type { MapQuality, MapView, WorkspaceState } from "./contracts";
+import { canShowExactPose } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
 
 export interface MapPoint {
@@ -830,7 +831,7 @@ export class RendererController {
       }
     }
     const pose = state.resources.pose.value;
-    if (state.map.exactPose && pose?.position && state.dataMode === "live") {
+    if (canShowExactPose(state) && pose?.position) {
       // Pose coordinates share the floor-plan's meter space. Scene geometry is
       // stored in origin-relative cells, so it must cross the same conversion
       // boundary as custom-area coordinates before projection.

@@ -577,10 +577,9 @@ export const canShowExactPose = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
   && !state.floor.readOnly
   // A degraded map stream can still have an independently verified floor,
-  // session, and exact pose. Keep that last proven marker visible while the
-  // retained scene is read only; coordinate editing and motion remain gated
-  // on fully current coherence below. A real floor/session transition still
-  // clears the marker through these explicit identity checks.
+  // session, and exact pose. Keep that marker only on a verified live scene;
+  // a read-only snapshot must wait for its replacement even if pose arrives
+  // first. Coordinate editing and motion require fully current coherence.
   && (state.coherence === "current" || state.coherence === "degraded")
   && state.map.floorCoherent
   && state.map.sessionVerified
