@@ -956,7 +956,9 @@ export class EffectController {
         map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
         coherence: "verifying",
         floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
-        notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
+        notice: state.resources.scene.value
+          ? { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE }
+          : state.notice,
         workflow: "none",
         precisionOpen: false,
       });
