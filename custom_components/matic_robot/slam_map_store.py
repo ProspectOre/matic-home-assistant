@@ -372,13 +372,14 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
+        first_layer_page = not target
         target[_tile_key(tile)] = entry
         # A new candidate, or a late counterpart for an expired candidate,
         # makes the active map unsafe until this candidate is classified.  A
         # further page from an already-expired one-sided stream does not start
         # another indefinite pause; its retained page remains available for a
         # future independent counterpart instead.
-        if blocks_active:
+        if blocks_active and first_layer_page:
             candidate.blocks_active = True
         if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()

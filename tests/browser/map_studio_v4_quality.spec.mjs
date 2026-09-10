@@ -246,7 +246,7 @@ test("All tasks returns from area review to the task chooser", async ({ page }) 
 });
 
 
-test("a changed live floor clears the previous floor's drafts and scene", async ({ page }) => {
+test("a changed live floor clears drafts and retains the previous map read only", async ({ page }) => {
   await loadQualityModules(page);
   const result = await page.evaluate(async () => {
     const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
@@ -257,11 +257,11 @@ test("a changed live floor clears the previous floor's drafts and scene", async 
     const effects = new EffectController(store, { catalog: async () => [next], scene: aborted, pose: aborted, history: aborted, plans: aborted, dispose() {} });
     effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
     await effects.refreshCatalog(true);
-    const result = { circles: store.value.draw.circles, planName: store.value.planDraft.name, areaName: store.value.areaDraft.name, scene: store.value.resources.scene.value, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, precisionOpen: store.value.precisionOpen, dialog: store.value.dialog, fullMap: store.value.fullMap };
+    const result = { circles: store.value.draw.circles, planName: store.value.planDraft.name, areaName: store.value.areaDraft.name, sceneRetained: store.value.resources.scene.value === initial.resources.scene.value, readOnly: store.value.floor.readOnly, label: store.value.floor.displayName, exactPose: store.value.map.exactPose, rooms: store.value.selection.roomSettings, workflow: store.value.workflow, precisionOpen: store.value.precisionOpen, dialog: store.value.dialog, fullMap: store.value.fullMap };
     effects.dispose();
     return result;
   });
-  expect(result).toEqual({ circles: [], planName: "", areaName: "", scene: null, rooms: [], workflow: "none", precisionOpen: false, dialog: null, fullMap: false });
+  expect(result).toEqual({ circles: [], planName: "", areaName: "", sceneRetained: true, readOnly: true, label: "House", exactPose: false, rooms: [], workflow: "none", precisionOpen: false, dialog: null, fullMap: false });
 });
 
 
@@ -382,7 +382,7 @@ for (const sameFloor of [true, false]) {
       effects.dispose();
       return { unknown, restored, count: initial.draw.circles.length };
     }, sameFloor);
-    expect(result.unknown).toEqual({ name: "Edited outline", count: result.count, available: false });
+    expect(result.unknown).toEqual({ name: "Edited outline", count: result.count, available: true });
     expect(result.restored).toEqual(sameFloor ? { name: "Edited outline", plan: "Edited plan", count: result.count } : { name: "", plan: "", count: 0 });
   });
 }

@@ -28,7 +28,7 @@ const NAVIGATION_HELP_ID = "navigation-help";
 const describeMap = (state: WorkspaceState, localize?: Localize): string => {
   const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
     translate(localize, key, fallback, placeholders);
-  if (state.dataMode === "history") {
+  if (state.dataMode === "history" || state.floor.readOnly) {
     if (!state.map.available) {
       return state.resources.scene.status === "loading"
         ? t("v4_saved_map_loading_description", "The saved map is loading.")
@@ -500,6 +500,10 @@ export class MaticMapCanvasV4 extends LitElement {
     }
     if (this.state.host.robotCount === 0) {
       return { title: this.#t("v4_no_robot", "No Matic robot set up"), detail: this.#t("v4_no_robot_detail", "Set up a robot before opening its map.") };
+    }
+    if (this.state.dataMode === "live" && this.state.floor.readOnly
+      && this.state.map.available && this.state.notice) {
+      return { title: this.#t("v4_saved_map_read_only_title", "Saved map is read only"), detail: this.state.notice.text };
     }
     if (this.state.dataMode === "history") {
       if (!this.state.map.available && this.state.resources.scene.status === "loading") {

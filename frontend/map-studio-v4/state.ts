@@ -570,11 +570,12 @@ export class CoherenceMachine {
 export const canShowLiveMap = (state: WorkspaceState): boolean =>
   state.dataMode === "live"
   && state.map.available
-  && (state.coherence === "current" || state.coherence === "degraded")
+  && (state.coherence === "current" || state.coherence === "degraded" || state.coherence === "verifying")
   && state.host.administrator;
 
 export const canShowExactPose = (state: WorkspaceState): boolean =>
   canShowLiveMap(state)
+  && !state.floor.readOnly
   // A degraded map stream can still have an independently verified floor,
   // session, and exact pose. Keep that last proven marker visible while the
   // retained scene is read only; coordinate editing and motion remain gated

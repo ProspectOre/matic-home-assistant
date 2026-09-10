@@ -299,6 +299,17 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
     assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
 
+    # Repeated pages from the already-classified layer must not repeatedly
+    # disable every floor-bound button while the active robot is idle.
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+    ):
+        for page_x in range(10):
+            await store.async_add(synthetic_slam_entry(mission_id=2, page_x=page_x))
+            assert store.floor_plan_is_current(active_plan)
+            assert not store._candidates[candidate_token].blocks_active
+
 
 async def test_slam_map_store_promotes_a_late_candidate_counterpart(hass) -> None:
     """Expiry keeps the early candidate layer for a delayed subscription."""

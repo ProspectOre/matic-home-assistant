@@ -46,6 +46,11 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
 from custom_components.matic_robot.plans import PlanStopDecision
+from custom_components.matic_robot.slam_map_store import (
+    CANDIDATE_CLASSIFICATION_SECONDS,
+    SlamMapStore,
+)
+from tests.test_slam_map import synthetic_slam_entry, synthetic_structure_entry
 
 
 def _state(
@@ -2090,3 +2095,61 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
         }
     ]
     assert "latest_mode_results" in sensor.MaticStateSensor._unrecorded_attributes
+
+
+@pytest.mark.parametrize("structural_first", [False, True])
+async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
+    hass, structural_first: bool
+) -> None:
+    """Exercise all four actual button listeners through candidate recovery."""
+    entry = _entry(idle=True)
+    store = SlamMapStore(hass, "synthetic-idle-buttons")
+    entry.runtime_data.slam_map = store
+    await store.async_add(synthetic_slam_entry(mission_id=7))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=7))
+    buttons = [
+        button.MaticAreaButton(entry),
+        *(
+            button.MaticPlanButton(entry, service)
+            for service in (
+                "clean_entire_plan",
+                "run_selected_plan",
+                "intelligent_clean",
+            )
+        ),
+    ]
+    writes: list[tuple[int, bool]] = []
+    with patch.object(MaticEntity, "async_added_to_hass", AsyncMock()):
+        for index, entity in enumerate(buttons):
+            entity.async_write_ha_state = MagicMock(
+                side_effect=lambda index=index, entity=entity: writes.append(
+                    (index, entity.available)
+                )
+            )
+            await entity.async_added_to_hass()
+    assert all(entity.available for entity in buttons)
+    add = store.async_add_structure if structural_first else store.async_add
+    fixture = synthetic_structure_entry if structural_first else synthetic_slam_entry
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        await add(fixture(mission_id=2))
+    assert sorted(writes) == [(index, False) for index in range(4)]
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=7))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=7))
+        assert all(entity.available for entity in buttons)
+        assert sorted(writes[4:]) == [(index, True) for index in range(4)]
+        writes.clear()
+        for page_x in range(100):
+            await add(fixture(mission_id=2, page_x=page_x))
+        assert writes == []
+        assert all(entity.available for entity in buttons)
+        # A genuinely new candidate still disables every unsafe action.
+        await add(fixture(mission_id=3))
+        assert sorted(writes) == [(index, False) for index in range(4)]
+        assert not any(entity.available for entity in buttons)
+    await store.async_shutdown()
