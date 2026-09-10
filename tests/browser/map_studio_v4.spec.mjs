@@ -691,6 +691,77 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
+  test("retains the map when delta revalidation cannot refresh the catalog", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection,
+        roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
+      const entry = { ...initial.resources.entry, deltaUrl: "/api/matic_robot/synthetic/delta" };
+      let rejectCatalog = false, releaseDelta, commands = 0;
+      const effects = new EffectController(store, {
+        catalog: async () => { if (rejectCatalog) throw new Error("Catalog offline"); return [entry]; },
+        history: async () => initial.resources.history.value,
+        scene: async () => ({ revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value }),
+        sceneDelta: async () => new Promise(resolve => { releaseDelta = () => resolve({ revision: entry.mapRevision, floorCoherent: false, scene: null, notModified: true }); }),
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        areas: async () => initial.resources.areas.value,
+        service: async () => { commands++; },
+        dispose() {},
+      });
+      try {
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.refreshCatalog(true);
+        for (let i = 0; i < 20 && !releaseDelta; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        if (!releaseDelta) throw new Error("Delta stream did not start");
+        rejectCatalog = true;
+        releaseDelta();
+        for (let i = 0; i < 20 && store.value.resources.catalog.status !== "error"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        window.__deltaRecheckState = store.value;
+        return { retained: store.value.resources.scene.value === initial.resources.scene.value,
+          available: store.value.map.available, readOnly: store.value.floor.readOnly,
+          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0 });
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async tag => {
+      await customElements.whenDefined(tag);
+      const gallery = document.createElement(tag);
+      gallery.controls = false; gallery.scenario = "ready";
+      document.body.append(gallery); await gallery.updateComplete;
+      gallery.replaceWorkspaceState(window.__deltaRecheckState);
+    }, GALLERY_TAG);
+    await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
+    await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("rechecked");
+  });
+
+  test("returning to live keeps the saved map if the catalog is unavailable", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("history");
+      const store = new WorkspaceStore(initial);
+      const effects = new EffectController(store, {
+        catalog: async () => { throw new Error("Catalog offline"); }, dispose() {},
+      });
+      try {
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.selectFloor("current");
+        return { retained: store.value.resources.scene.value === initial.resources.scene.value,
+          labelRetained: store.value.floor.displayName === initial.floor.displayName,
+          available: store.value.map.available, readOnly: store.value.floor.readOnly,
+          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status,
+          floor: store.value.selection.floorId, mode: store.value.dataMode };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ retained: true, labelRetained: true, available: true,
+      readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
+  });
+
   for (const scenario of ["unreadable-newest", "late-history"]) {
     test(`saved-map fallback handles ${scenario}`, async ({ page }) => {
       await loadEffectHarness(page);

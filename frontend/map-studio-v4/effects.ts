@@ -685,18 +685,22 @@ export class EffectController {
             || generation !== this.#deltaGeneration
             || !this.#coherence.accepts(stamp)) return;
           if (!response.floorCoherent) {
+            const state = this.#store.value;
             this.#store.patch({
               coherence: "verifying",
               map: {
-                ...this.#store.value.map,
-                available: false,
+                ...state.map,
+                available: state.resources.scene.value !== null,
                 floorCoherent: false,
                 exactPose: false,
               },
+              floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
               resources: {
-                ...this.#store.value.resources,
+                ...state.resources,
+                scene: resource("error", state.resources.scene.value, "map-rechecking"),
                 pose: resource("idle", null),
               },
+              notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
             });
             this.#entryIdentity = "";
             void this.refreshCatalog(true);
@@ -946,12 +950,13 @@ export class EffectController {
           ...state.resources,
           plans: resource("idle", null),
           areas: resource("idle", null),
-          scene: resource("idle", null),
+          scene: resource("idle", state.resources.scene.value),
           pose: resource("idle", null),
         },
-        map: { ...state.map, available: false, exactPose: false },
+        map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
         coherence: "verifying",
-        floor: { ...state.floor, readOnly: false, displayName: "Current floor" },
+        floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+        notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
         workflow: "none",
         precisionOpen: false,
       });
