@@ -372,13 +372,29 @@ class SlamMapStore:
             if candidate.mission_id is None:
                 candidate.mission_id = tile.mission_id
         target = candidate.structure_entries if structural else candidate.entries
-        target[_tile_key(tile)] = entry
-        # A new candidate, or a late counterpart for an expired candidate,
-        # makes the active map unsafe until this candidate is classified.  A
-        # further page from an already-expired one-sided stream does not start
-        # another indefinite pause; its retained page remains available for a
-        # future independent counterpart instead.
-        if blocks_active:
+        key = _tile_key(tile)
+        previous = target.get(key)
+        fresh_page = previous is None
+        if previous is not None:
+            previous_tile = (
+                decode_slam_structure_tile(previous)
+                if structural
+                else decode_slam_tile(previous)
+            )
+            fresh_page = (
+                _tile_content_digest(previous_tile) != _tile_content_digest(tile)
+                or previous_tile.mission_id != tile.mission_id
+                or (previous.sequence_start_ns, previous.sequence_no)
+                != (entry.sequence_start_ns, entry.sequence_no)
+            )
+        target[key] = entry
+        # Only unchanged replays of a classified candidate are harmless.
+        # A new tile, changed content/version, or missing counterpart can
+        # signal a floor return before the selected-floor watcher catches up.
+        # Give that fresh evidence its own bounded classification window.
+        if blocks_active and fresh_page:
+            if not candidate.blocks_active:
+                candidate.first_seen_at = monotonic()
             candidate.blocks_active = True
         if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()

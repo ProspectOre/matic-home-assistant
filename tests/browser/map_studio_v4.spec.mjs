@@ -635,6 +635,197 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator(".action-bar")).toContainText("Map unavailable");
     await expect(gallery.locator(".action-bar")).not.toContainText("Finding the map");
   });
+  for (const retained of [false, true]) {
+    test(`keeps a ${retained ? "retained" : "saved"} map visible during live revalidation`, async ({ page }, testInfo) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async (retained) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection, areaId: "synthetic-area", roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
+        if (!retained) store.patch({ resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
+        let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null, deltaUrl: null };
+        let commands = 0;
+        const effects = new EffectController(store, {
+          catalog: async () => [entry],
+          history: async () => initial.resources.history.value,
+          scene: async (_url, revision, floorCoherent, mode) => ({ revision, floorCoherent, scene: { ...initial.resources.scene.value, marker: mode } }),
+          pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+          plans: async () => initial.resources.plans.value,
+          areas: async () => initial.resources.areas.value,
+          service: async () => { commands++; },
+          dispose() {},
+        });
+        try {
+          effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+          await effects.refreshCatalog(true);
+          for (let i = 0; i < 20 && !store.value.map.available; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          await effects.refreshCatalog();
+          for (const action of ["clean-rooms", "run-plan", "run-area"]) await effects.executeAction(action);
+          window.__pausedMapState = store.value;
+          const paused = { available: store.value.map.available, exactPose: store.value.map.exactPose, scene: !!store.value.resources.scene.value, notice: store.value.notice?.text, commands };
+          entry = { ...initial.resources.entry, deltaUrl: null };
+          await effects.refreshCatalog();
+          for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          await effects.executeAction("clean-rooms");
+          return { paused, commands, recovered: { available: store.value.map.available, readOnly: store.value.floor.readOnly, marker: store.value.resources.scene.value?.marker } };
+        } finally { effects.dispose(); }
+      }, retained);
+      expect(result.paused).toMatchObject({ available: true, exactPose: false, scene: true, commands: 0 });
+      expect(result.paused.notice).toContain(retained ? "rechecked" : "Saved map from");
+      expect(result.commands).toBe(1);
+      expect(result.recovered).toEqual({ available: true, readOnly: false, marker: "live" });
+      await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+      await page.evaluate(async (tag) => {
+        await customElements.whenDefined(tag);
+        const gallery = document.createElement(tag);
+        gallery.controls = false;
+        gallery.scenario = "ready";
+        document.body.append(gallery);
+        await gallery.updateComplete;
+        gallery.replaceWorkspaceState(window.__pausedMapState);
+      }, GALLERY_TAG);
+      await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
+      if (!retained) await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("Saved map from");
+      await page.screenshot({ path: testInfo.outputPath(`${retained ? "retained" : "saved"}-map.png`) });
+
+    });
+  }
+
+  test("retains the map when delta revalidation cannot refresh the catalog", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("ready");
+      const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection,
+        roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
+      const entry = { ...initial.resources.entry, deltaUrl: "/api/matic_robot/synthetic/delta" };
+      let rejectCatalog = false, releaseDelta, commands = 0;
+      const effects = new EffectController(store, {
+        catalog: async () => { if (rejectCatalog) throw new Error("Catalog offline"); return [entry]; },
+        history: async () => initial.resources.history.value,
+        scene: async () => ({ revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value }),
+        sceneDelta: async () => new Promise(resolve => { releaseDelta = () => resolve({ revision: entry.mapRevision, floorCoherent: false, scene: null, notModified: true }); }),
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        areas: async () => initial.resources.areas.value,
+        service: async () => { commands++; },
+        dispose() {},
+      });
+      try {
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.refreshCatalog(true);
+        for (let i = 0; i < 20 && !releaseDelta; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        if (!releaseDelta) throw new Error("Delta stream did not start");
+        rejectCatalog = true;
+        releaseDelta();
+        for (let i = 0; i < 20 && store.value.resources.catalog.status !== "error"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        window.__deltaRecheckState = store.value;
+        return { retained: store.value.resources.scene.value === initial.resources.scene.value,
+          available: store.value.map.available, readOnly: store.value.floor.readOnly,
+          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status, commands };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0 });
+    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.evaluate(async tag => {
+      await customElements.whenDefined(tag);
+      const gallery = document.createElement(tag);
+      gallery.controls = false; gallery.scenario = "ready";
+      document.body.append(gallery); await gallery.updateComplete;
+      gallery.replaceWorkspaceState(window.__deltaRecheckState);
+    }, GALLERY_TAG);
+    await expect(page.locator(GALLERY_TAG).locator(".scene-window")).toBeVisible();
+    await expect(page.locator(GALLERY_TAG).locator(".map-message")).toContainText("rechecked");
+  });
+
+  test("returning to live keeps the saved map if the catalog is unavailable", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = createGalleryState("history");
+      const store = new WorkspaceStore(initial);
+      const effects = new EffectController(store, {
+        catalog: async () => { throw new Error("Catalog offline"); }, dispose() {},
+      });
+      try {
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.selectFloor("current");
+        return { retained: store.value.resources.scene.value === initial.resources.scene.value,
+          labelRetained: store.value.floor.displayName === initial.floor.displayName,
+          available: store.value.map.available, readOnly: store.value.floor.readOnly,
+          exactPose: store.value.map.exactPose, catalog: store.value.resources.catalog.status,
+          floor: store.value.selection.floorId, mode: store.value.dataMode };
+      } finally { effects.dispose(); }
+    });
+    expect(result).toEqual({ retained: true, labelRetained: true, available: true,
+      readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
+  });
+
+  for (const scenario of ["unreadable-newest", "late-history", "transient-all", "live-unavailable"]) {
+    test(`saved-map fallback handles ${scenario}`, async ({ page }) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async (scenario) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore({ ...initial, map: { ...initial.map, available: false }, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
+        let entry = { ...initial.resources.entry, mapFloorCoherent: scenario === "live-unavailable", mapSessionVerified: scenario === "live-unavailable", deltaUrl: null };
+        let historyReads = 0;
+        let liveOffline = scenario === "live-unavailable";
+        let offline = scenario === "transient-all";
+        const history = initial.resources.history.value;
+        const historyReleases = [];
+        const effects = new EffectController(store, {
+          catalog: async () => [entry],
+          history: async () => scenario === "transient-all"
+            ? { ...history, floors: [{ ...history.floors[0], snapshots: history.floors[0].snapshots.slice(0, 1) }] }
+            : history,
+          scene: async (_url, revision, floorCoherent, mode) => {
+            if (mode === "live" && liveOffline) throw new Error("Live scene temporarily offline");
+            if (mode === "history") {
+              historyReads++;
+              if (offline) throw new Error("Snapshot endpoint temporarily offline");
+              if (scenario === "unreadable-newest" && historyReads === 1) throw new Error("Missing snapshot");
+              if (scenario === "late-history") await new Promise((resolve) => { historyReleases.push(resolve); });
+            }
+            return { revision, floorCoherent, scene: { ...initial.resources.scene.value, marker: mode } };
+          },
+          pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+          plans: async () => initial.resources.plans.value, areas: async () => initial.resources.areas.value,
+          dispose() {},
+        });
+        try {
+          effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId });
+          await effects.refreshCatalog(true);
+          for (let i = 0; i < 20 && !(scenario === "late-history" ? historyReleases.length > 0 : store.value.map.available); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (scenario === "live-unavailable") {
+            if (!store.value.map.available || !store.value.floor.readOnly || store.value.resources.scene.value?.marker !== "history") throw new Error("Expected a saved map while live scene was unavailable");
+            liveOffline = false;
+            await new Promise(resolve => setTimeout(resolve, 0));
+            await effects.refreshCatalog();
+            for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+          }
+          if (scenario === "transient-all") {
+            if (store.value.map.available || historyReads !== 1) throw new Error("Expected one failed snapshot read");
+            offline = false;
+            await effects.refreshCatalog();
+            for (let i = 0; i < 20 && !store.value.map.available; i++) await new Promise(resolve => setTimeout(resolve, 0));
+          }
+          if (scenario === "late-history") {
+            entry = { ...initial.resources.entry, deltaUrl: null };
+            await effects.refreshCatalog();
+            for (const release of historyReleases) release();
+            await new Promise((resolve) => setTimeout(resolve, 0));
+          }
+          return { historyReads, available: store.value.map.available, marker: store.value.resources.scene.value?.marker, readOnly: store.value.floor.readOnly };
+        } finally { effects.dispose(); }
+      }, scenario);
+      expect(result).toEqual(scenario === "late-history" || scenario === "live-unavailable"
+        ? { historyReads: scenario === "late-history" ? 2 : 1, available: true, marker: "live", readOnly: false }
+        : { historyReads: 2, available: true, marker: "history", readOnly: true });
+    });
+  }
+
   test("retries history reads and retains the selected saved floor label", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
@@ -4446,6 +4637,41 @@ test("zone perimeter closes automatically and supports extending dragging insert
   await expect(gallery.locator(".zone-point:not(.zone-midpoint)")).toHaveCount(4);
 });
 
+test("renderer hides a new pose until the read-only scene is replaced", async ({ page }) => {
+  const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+  await page.route("**/pose-readonly.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+  await page.goto("/");
+  const results = await page.evaluate(async () => {
+    const { RendererController, createGalleryState } = await import("/pose-readonly.js");
+    const scene = document.createElement("canvas"), overlay = document.createElement("canvas");
+    for (const canvas of [scene, overlay]) {
+      Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+      document.body.append(canvas);
+    }
+    let markers = 0;
+    const context = overlay.getContext("2d"), originalArc = context.arc;
+    context.arc = function(x, y, radius, ...rest) {
+      if (radius === 7) markers++;
+      return originalArc.call(this, x, y, radius, ...rest);
+    };
+    const renderer = new RendererController(scene, overlay);
+    const initial = createGalleryState("ready");
+    const state = { ...initial, map: { ...initial.map, exactPose: true },
+      resources: { ...initial.resources, pose: { status: "ready", problem: null,
+        value: { ...initial.resources.pose.value, position: [1.3, 1.6] } } } };
+    const results = [];
+    for (const readOnly of [true, false, true]) {
+      markers = 0;
+      renderer.setState({ ...state, floor: { ...state.floor, readOnly } });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      results.push(markers > 0);
+    }
+    renderer.dispose();
+    return results;
+  });
+  expect(results).toEqual([false, true, false]);
+});
+
 test("rotated zone coordinates match rendered coverage and preserve zoom anchors", async ({ page }) => {
   const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
   await page.route("**/zone-projection.js", route => route.fulfill({contentType:"text/javascript",body:bundle.outputFiles[0].text}));
@@ -4612,7 +4838,8 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
         if (!recovery.healthy) return { revision: entry.mapRevision - (rejectedScene === "revision" ? 1 : 0), floorCoherent: rejectedScene !== "floor", scene: rejectedScene === "empty" ? null : initial.resources.scene.value };
         return { revision: entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value };
       },
-      history: async () => initial.resources.history.value,
+      // Isolate live-scene rejection; saved-map fallback has dedicated cases.
+      history: async () => { throw new Error("No readable saved snapshots"); },
       pose: async () => initial.resources.pose.value,
       plans: async () => initial.resources.plans.value,
     };
@@ -4626,19 +4853,19 @@ for (const rejectedScene of ["revision", "floor", "empty"]) test(`live scene rec
     }
   }, rejectedScene);
   await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("error");
-  expect(await page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(false);
+  expect(await page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(rejectedScene === "floor");
   if (rejectedScene === "floor") {
     expect(await page.evaluate(() => {
       const state = window.__sceneRecovery.store.value;
-      return { scene: state.resources.scene.value, coherent: state.map.floorCoherent, pose: state.map.exactPose, status: state.coherence };
-    })).toEqual({ scene: null, coherent: false, pose: false, status: "verifying" });
+      return { scene: state.resources.scene.value !== null, coherent: state.map.floorCoherent, pose: state.map.exactPose, status: state.coherence };
+    })).toEqual({ scene: true, coherent: false, pose: false, status: "verifying" });
   }
   await page.evaluate(async () => {
     window.__sceneRecovery.healthy = true;
     await window.__sceneRecovery.effects.refreshCatalog();
   });
   await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.map.available)).toBe(true);
-  expect(await page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("ready");
+  await expect.poll(() => page.evaluate(() => window.__sceneRecovery.store.value.resources.scene.status)).toBe("ready");
   await page.evaluate(() => window.__sceneRecovery.effects.dispose());
 });
 

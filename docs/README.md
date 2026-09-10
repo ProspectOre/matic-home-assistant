@@ -1,6 +1,6 @@
 # Documentation
 
-[Project overview](../README.md) · [Latest release](release-notes-0.4.1.md)
+[Project overview](../README.md) · [Latest release](release-notes-0.4.2.md)
 
 | I want to… | Guide |
 | --- | --- |

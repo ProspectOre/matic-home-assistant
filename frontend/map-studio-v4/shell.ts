@@ -156,7 +156,9 @@ const workflowCopy = (state: WorkspaceState, localize?: Localize): {
       if (isReadOnlyWorkspace(state)) {
         return {
           title: t("v4_saved_map_read_only_title", "Saved map is read only"),
-          description: t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
+          description: state.dataMode === "live"
+            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is verified.")
+            : t("v4_saved_map_read_only_detail", "Return to the live map to choose rooms, run a plan, or draw a custom area."),
         };
       }
       return { title: t("v4_what_to_clean", "What should the robot clean?"), description: t("v4_clean_detail", "Choose rooms, a saved plan, or a custom area.") };
@@ -973,7 +975,9 @@ export class MaticMapShellV4 extends LitElement {
       return html`
         ${this.#hostState(
           t("v4_saved_map_read_only_notice", "Cleaning is unavailable on a saved map"),
-          t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
+          state.dataMode === "live"
+            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is verified.")
+            : t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
         )}
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">

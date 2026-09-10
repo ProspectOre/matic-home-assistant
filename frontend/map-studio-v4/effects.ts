@@ -83,6 +83,7 @@ const sameCoherenceGeneration = (left: ResourceStamp, right: ResourceStamp): boo
   && left.missionKey === right.missionKey;
 
 const LIVE_MAP_RECHECK_NOTICE = "Live map updates paused while the current map is rechecked.";
+const SAVED_MAP_NOTICE_PREFIX = "Saved map from ";
 const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.";
 const POSE_POLL_INTERVAL_MS = 1_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "draw", "areaReview"];
@@ -386,7 +387,7 @@ export class EffectController {
           coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
           map: {
             ...state.map,
-            available: coherent && state.resources.scene.value !== null,
+            available: state.resources.scene.value !== null,
             complete: selected.mapComplete && !selected.mapTruncated,
             floorCoherent: selected.mapFloorCoherent,
             sessionVerified: selected.mapSessionVerified,
@@ -409,8 +410,14 @@ export class EffectController {
         // Retry on the next verified catalog poll, without interrupting a
         // request that is still building the scene.
         const stamp = this.#coherence.current();
+        if (stamp && !state.resources.scene.value
+          && !this.#controllers.has("history")) {
+          // Saved scene reads can fail independently of a healthy catalog.
+          // Retry on the next poll while there is still no map to display.
+          void this.#loadHistory(selected, stamp);
+        }
         if (coherent && stamp
-          && state.resources.scene.status === "error"
+          && (state.resources.scene.status === "error" || state.floor.readOnly)
           && !this.#controllers.has("scene")) {
           void this.#loadLiveScene(selected, stamp);
         }
@@ -451,9 +458,12 @@ export class EffectController {
     this.#abortResources(sameResourceBoundary
       ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
       : ["catalog"]);
-    const retainedScene = sameResourceBoundary
+    const retainedScene = previousEntry?.entryId === entry.entryId
       ? previousState.resources.scene.value
       : null;
+    const retainedReadOnly = retainedScene !== null
+      && (previousState.floor.readOnly || !sameResourceBoundary || !coherent
+        || previousEntry?.mapSessionKey !== entry.mapSessionKey);
     const previousPose = previousState.resources.pose.value;
     const retainedPose = sameResourceBoundary
       && coherent
@@ -499,6 +509,7 @@ export class EffectController {
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
       dataMode: "live",
+      ...(!coherent && retainedScene ? { notice: { tone: "warning" as const, text: LIVE_MAP_RECHECK_NOTICE } } : {}),
       resources: {
         ...state.resources,
         entry,
@@ -509,16 +520,18 @@ export class EffectController {
         areas: sameResourceBoundary ? state.resources.areas : resource("idle", null),
       },
       map: {
-        available: coherent && retainedScene !== null,
+        available: retainedScene !== null,
         complete: entry.mapComplete && !entry.mapTruncated,
         floorCoherent: entry.mapFloorCoherent,
         sessionVerified: entry.mapSessionVerified,
-        exactPose: coherent && retainedPose !== null,
+        exactPose: coherent && retainedPose !== null && !retainedReadOnly,
       },
       floor: {
         classifiedCount: Math.max(1, entry.historyFloorCount),
-        displayName: entry.selectedFloorOrdinal ? `Floor ${entry.selectedFloorOrdinal}` : "Current floor",
-        readOnly: false,
+        displayName: retainedReadOnly
+          ? previousState.floor.displayName
+          : entry.selectedFloorOrdinal ? `Floor ${entry.selectedFloorOrdinal}` : "Current floor",
+        readOnly: retainedReadOnly,
       },
       selection: {
         ...state.selection,
@@ -561,10 +574,12 @@ export class EffectController {
           coherence: "verifying",
           resources: {
             ...state.resources,
-            scene: resource("error", null, "map-rechecking"),
+            scene: resource("error", state.resources.scene.value, "map-rechecking"),
             pose: resource("idle", null),
           },
-          map: { ...state.map, available: false, floorCoherent: false, exactPose: false },
+          map: { ...state.map, available: state.resources.scene.value !== null, floorCoherent: false, exactPose: false },
+          floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+          notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
         });
         return;
       }
@@ -586,7 +601,13 @@ export class EffectController {
           scene: resource("ready", response.scene),
         },
         map: { ...state.map, available: true },
-        notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE ? null : state.notice,
+        floor: {
+          ...state.floor,
+          readOnly: false,
+          displayName: state.resources.history.value?.floors.find((floor) => floor.active)?.label
+            || (settledEntry.selectedFloorOrdinal ? `Floor ${settledEntry.selectedFloorOrdinal}` : "Current floor"),
+        },
+        notice: state.notice?.text === LIVE_MAP_RECHECK_NOTICE || state.notice?.text.startsWith(SAVED_MAP_NOTICE_PREFIX) ? null : state.notice,
       });
       const plans = this.#store.value.resources.plans;
       if (plans.status === "idle" || plans.problem === "map-rechecking") {
@@ -671,18 +692,22 @@ export class EffectController {
             || generation !== this.#deltaGeneration
             || !this.#coherence.accepts(stamp)) return;
           if (!response.floorCoherent) {
+            const state = this.#store.value;
             this.#store.patch({
               coherence: "verifying",
               map: {
-                ...this.#store.value.map,
-                available: false,
+                ...state.map,
+                available: state.resources.scene.value !== null,
                 floorCoherent: false,
                 exactPose: false,
               },
+              floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
               resources: {
-                ...this.#store.value.resources,
+                ...state.resources,
+                scene: resource("error", state.resources.scene.value, "map-rechecking"),
                 pose: resource("idle", null),
               },
+              notice: { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE },
             });
             this.#entryIdentity = "";
             void this.refreshCatalog(true);
@@ -756,9 +781,34 @@ export class EffectController {
         floor: {
           ...this.#store.value.floor,
           classifiedCount: history.floors.length,
-          ...(activeFloor ? { displayName: safeFloorName(activeFloor, 1) } : {}),
+          ...(activeFloor && !(state.dataMode === "live" && state.floor.readOnly) ? { displayName: safeFloorName(activeFloor, 1) } : {}),
         },
       });
+      if (state.dataMode === "live" && !state.resources.scene.value) {
+        const snapshots = history.floors.flatMap((floor) => floor.snapshots.map((snapshot) => ({ floor, snapshot })))
+          .sort((a, b) => Date.parse(b.snapshot.createdAt) - Date.parse(a.snapshot.createdAt));
+        for (const saved of snapshots) {
+          let response;
+          try {
+            response = await this.#backend.scene(saved.snapshot.sceneUrl, saved.snapshot.revision, true, "history", controller.signal);
+          } catch (error) {
+            if (isAbort(error) || controller.signal.aborted) return;
+            continue;
+          }
+          const latest = this.#coherence.current();
+          if (controller.signal.aborted || !latest || !sameCoherenceGeneration(stamp, latest)
+            || this.#store.value.resources.scene.value) return;
+          if (!response.scene) continue;
+          const currentState = this.#store.value;
+          this.#store.patch({
+            floor: { ...currentState.floor, readOnly: true, displayName: safeFloorName(saved.floor, 1) },
+            resources: { ...currentState.resources, scene: resource("ready", response.scene), pose: resource("idle", null) },
+            map: { ...currentState.map, available: true, exactPose: false },
+            notice: { tone: "warning", text: `${SAVED_MAP_NOTICE_PREFIX}${new Date(saved.snapshot.createdAt).toLocaleString()}. Live position is unavailable.` },
+          });
+          break;
+        }
+      }
       if (state.dataMode === "history" && (!selectedFloor || !selectedSnapshotExists)) {
         const fallback = selectedFloor || history.floors.find((floor) => floor.active) || history.floors[0];
         const selection = this.selectFloor(fallback?.id || "current");
@@ -906,12 +956,15 @@ export class EffectController {
           ...state.resources,
           plans: resource("idle", null),
           areas: resource("idle", null),
-          scene: resource("idle", null),
+          scene: resource("idle", state.resources.scene.value),
           pose: resource("idle", null),
         },
-        map: { ...state.map, available: false, exactPose: false },
+        map: { ...state.map, available: state.resources.scene.value !== null, exactPose: false },
         coherence: "verifying",
-        floor: { ...state.floor, readOnly: false, displayName: "Current floor" },
+        floor: { ...state.floor, readOnly: state.resources.scene.value !== null },
+        notice: state.resources.scene.value
+          ? { tone: "warning", text: LIVE_MAP_RECHECK_NOTICE }
+          : state.notice,
         workflow: "none",
         precisionOpen: false,
       });

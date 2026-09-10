@@ -299,6 +299,81 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
     assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
 
+    # Repeated pages from the already-classified layer must not repeatedly
+    # disable every floor-bound button while the active robot is idle.
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+    ):
+        for _ in range(10):
+            await store.async_add(candidate)
+            assert store.floor_plan_is_current(active_plan)
+            assert not store._candidates[candidate_token].blocks_active
+
+
+@pytest.mark.parametrize("structural", [False, True])
+@pytest.mark.parametrize("change", ["page", "content", "version"])
+async def test_expired_candidate_reblocks_on_fresh_floor_return(
+    hass, structural: bool, change: str
+) -> None:
+    """Fresh candidate evidence blocks before either watcher catches up."""
+    store = SlamMapStore(hass, "fresh-floor-return")
+    store.set_expected_mission_id(1)
+    await store.async_add(synthetic_slam_entry(mission_id=1))
+    await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+    add = store.async_add_structure if structural else store.async_add
+    fixture = synthetic_structure_entry if structural else synthetic_slam_entry
+    first = replace(fixture(mission_id=2), sequence_start_ns=100, sequence_no=1)
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
+    ):
+        token = (await add(first)).mission_token
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 1,
+    ):
+        await store.async_add(synthetic_slam_entry(mission_id=1))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+        assert store.live_session_verified
+        # Opaque wire metadata alone is still an unchanged page replay.
+        await add(replace(first, value=first.value + b"\x98\x06\x01"))
+        assert store.live_session_verified
+        if change == "page":
+            fresh = fixture(mission_id=2, page_x=3)
+        elif change == "version":
+            fresh = replace(first, sequence_no=2)
+        elif structural:
+            fresh = replace(
+                first, value=first.value.replace(b"\x22" * 512, b"\x23" * 512)
+            )
+        else:
+            fresh = replace(
+                synthetic_slam_entry(mission_id=2, surface_height=8),
+                sequence_start_ns=100,
+                sequence_no=1,
+            )
+        await add(fresh)
+        assert not store.live_session_verified
+        assert store._candidates[token].blocks_active
+    with patch(
+        "custom_components.matic_robot.slam_map_store.monotonic",
+        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+    ):
+        # The renewed window cannot immediately expire using its old deadline.
+        await store.async_add(synthetic_slam_entry(mission_id=1))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=1))
+        assert not store.live_session_verified
+        counterpart = store.async_add if structural else store.async_add_structure
+        other_fixture = (
+            synthetic_slam_entry if structural else synthetic_structure_entry
+        )
+        await counterpart(other_fixture(mission_id=2))
+        assert not store.live_session_verified
+        store.set_expected_mission_id(2)
+        assert store.live_session_verified
+        assert store.mission_identity.mission_id == 2
+    await store.async_shutdown()
+
 
 async def test_slam_map_store_promotes_a_late_candidate_counterpart(hass) -> None:
     """Expiry keeps the early candidate layer for a delayed subscription."""
