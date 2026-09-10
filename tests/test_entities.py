@@ -2133,7 +2133,8 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
     with patch(
         "custom_components.matic_robot.slam_map_store.monotonic", return_value=0
     ):
-        await add(fixture(mission_id=2))
+        for page_x in range(100):
+            await add(fixture(mission_id=2, page_x=page_x))
     assert sorted(writes) == [(index, False) for index in range(4)]
     with patch(
         "custom_components.matic_robot.slam_map_store.monotonic",
@@ -2148,8 +2149,11 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
             await add(fixture(mission_id=2, page_x=page_x))
         assert writes == []
         assert all(entity.available for entity in buttons)
-        # A genuinely new candidate still disables every unsafe action.
-        await add(fixture(mission_id=3))
+        # Fresh content from the expired floor still disables every action.
+        await add(fixture(mission_id=2, page_x=100))
         assert sorted(writes) == [(index, False) for index in range(4)]
+        assert not any(entity.available for entity in buttons)
+        await store.async_add(synthetic_slam_entry(mission_id=7))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=7))
         assert not any(entity.available for entity in buttons)
     await store.async_shutdown()
