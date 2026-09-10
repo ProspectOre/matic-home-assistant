@@ -18,6 +18,7 @@ from .client.exceptions import MaticError
 from .client.models import CleaningSession
 from .const import (
     DOMAIN,
+    EVENT_ACTIVITY_OBSERVED,
     EVENT_CLEANING_FINISHED,
     EVENT_CUES,
     EVENT_FIRMWARE_ANALYZED,
@@ -33,6 +34,7 @@ MAX_NATIVE_HISTORY_ROOM_EVIDENCE = 64
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES = 32 * 1024
 _ADMIN_ERROR = "Administrator access is required for Matic operational tools"
 _MATIC_EVENT_TYPES = (
+    EVENT_ACTIVITY_OBSERVED,
     EVENT_CLEANING_FINISHED,
     EVENT_CUES,
     EVENT_FIRMWARE_CHANGED,
@@ -46,6 +48,17 @@ _MATIC_EVENT_TYPES = (
     f"{DOMAIN}_room_reconciled",
 )
 _SAFE_EVENT_FIELDS = (
+    "observation_session",
+    "sequence",
+    "observed_at",
+    "kind",
+    "source",
+    "command_id",
+    "command",
+    "channel",
+    "outcome",
+    "error_type",
+    "activity",
     "entry_id",
     "device_id",
     "entity_id",
@@ -105,6 +118,11 @@ class MaticOperationsAPI(llm.API):
                 data[key] = value
             elif isinstance(value, str):
                 data[key] = value[:256]
+        if event.event_type == EVENT_ACTIVITY_OBSERVED:
+            for key in ("state_codes", "error_codes"):
+                codes = event.data.get(key)
+                if isinstance(codes, list) and all(type(code) is int for code in codes):
+                    data[key] = codes[:256]
         if event.event_type == EVENT_CLEANING_FINISHED:
             rooms = event.data.get("rooms")
             completed_rooms = event.data.get("completed_rooms")
@@ -440,7 +458,8 @@ class MaticGetRecentEventsTool(_MaticTool):
 
     name = "MaticGetRecentEvents"
     description = (
-        "Inspect recent allowlisted Matic room, cleaning, Cues, and firmware events "
+        "Inspect recent allowlisted Matic command, raw-state, room, cleaning, Cues, "
+        "and firmware events "
         "retained during the current Home Assistant process."
     )
     parameters = vol.Schema(
