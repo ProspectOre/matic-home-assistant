@@ -410,6 +410,12 @@ export class EffectController {
         // Retry on the next verified catalog poll, without interrupting a
         // request that is still building the scene.
         const stamp = this.#coherence.current();
+        if (!coherent && stamp && !state.resources.scene.value
+          && !this.#controllers.has("history")) {
+          // Saved scene reads can fail independently of a healthy catalog.
+          // Retry on the next poll while there is still no map to display.
+          void this.#loadHistory(selected, stamp);
+        }
         if (coherent && stamp
           && state.resources.scene.status === "error"
           && !this.#controllers.has("scene")) {
@@ -456,7 +462,8 @@ export class EffectController {
       ? previousState.resources.scene.value
       : null;
     const retainedReadOnly = retainedScene !== null
-      && (previousState.floor.readOnly || !sameResourceBoundary || !coherent);
+      && (previousState.floor.readOnly || !sameResourceBoundary || !coherent
+        || previousEntry?.mapSessionKey !== entry.mapSessionKey);
     const previousPose = previousState.resources.pose.value;
     const retainedPose = sameResourceBoundary
       && coherent

@@ -762,7 +762,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       readOnly: true, exactPose: false, catalog: "error", floor: "current", mode: "live" });
   });
 
-  for (const scenario of ["unreadable-newest", "late-history"]) {
+  for (const scenario of ["unreadable-newest", "late-history", "transient-all"]) {
     test(`saved-map fallback handles ${scenario}`, async ({ page }) => {
       await loadEffectHarness(page);
       const result = await page.evaluate(async (scenario) => {
@@ -771,12 +771,18 @@ test.describe("Map Studio v0.4 foundation", () => {
         const store = new WorkspaceStore({ ...initial, map: { ...initial.map, available: false }, resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
         let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, deltaUrl: null };
         let historyReads = 0;
+        let offline = scenario === "transient-all";
+        const history = initial.resources.history.value;
         let releaseHistory;
         const effects = new EffectController(store, {
-          catalog: async () => [entry], history: async () => initial.resources.history.value,
+          catalog: async () => [entry],
+          history: async () => scenario === "transient-all"
+            ? { ...history, floors: [{ ...history.floors[0], snapshots: history.floors[0].snapshots.slice(0, 1) }] }
+            : history,
           scene: async (_url, revision, floorCoherent, mode) => {
             if (mode === "history") {
               historyReads++;
+              if (offline) throw new Error("Snapshot endpoint temporarily offline");
               if (scenario === "unreadable-newest" && historyReads === 1) throw new Error("Missing snapshot");
               if (scenario === "late-history") await new Promise((resolve) => { releaseHistory = resolve; });
             }
@@ -790,6 +796,12 @@ test.describe("Map Studio v0.4 foundation", () => {
           effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId });
           await effects.refreshCatalog(true);
           for (let i = 0; i < 20 && !(scenario === "late-history" ? releaseHistory : store.value.map.available); i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          if (scenario === "transient-all") {
+            if (store.value.map.available || historyReads !== 1) throw new Error("Expected one failed snapshot read");
+            offline = false;
+            await effects.refreshCatalog();
+            for (let i = 0; i < 20 && !store.value.map.available; i++) await new Promise(resolve => setTimeout(resolve, 0));
+          }
           if (scenario === "late-history") {
             entry = { ...initial.resources.entry, deltaUrl: null };
             await effects.refreshCatalog();

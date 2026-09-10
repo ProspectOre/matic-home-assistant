@@ -94,6 +94,39 @@ for (const action of ["save-plan", "clean-rooms"]) {
   });
 }
 
+test("a new session on the same floor waits for its scene even when pose arrives first", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("ready");
+    const store = new WorkspaceStore(initial);
+    const next = { ...initial.resources.entry, mapSessionKey: "new-session", deltaUrl: null };
+    let releaseScene;
+    const effects = new EffectController(store, {
+      catalog: async () => [next],
+      scene: () => new Promise(resolve => { releaseScene = () => resolve({ revision: next.mapRevision, floorCoherent: true, scene: { ...initial.resources.scene.value, replacement: true } }); }),
+      pose: async () => ({ ...initial.resources.pose.value, mapSessionKey: next.mapSessionKey }),
+      history: async () => initial.resources.history.value,
+      plans: async () => initial.resources.plans.value,
+      areas: async () => initial.resources.areas.value,
+      dispose() {},
+    });
+    try {
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.refreshCatalog(true);
+      for (let i = 0; i < 20 && (!releaseScene || !store.value.map.exactPose); i++) await new Promise(resolve => setTimeout(resolve, 0));
+      const paused = { retained: store.value.resources.scene.value === initial.resources.scene.value,
+        readOnly: store.value.floor.readOnly, poseReady: store.value.map.exactPose };
+      releaseScene();
+      for (let i = 0; i < 20 && store.value.floor.readOnly; i++) await new Promise(resolve => setTimeout(resolve, 0));
+      return { paused, recovered: { readOnly: store.value.floor.readOnly,
+        replaced: store.value.resources.scene.value?.replacement === true } };
+    } finally { effects.dispose(); }
+  });
+  expect(result).toEqual({ paused: { retained: true, readOnly: true, poseReady: true },
+    recovered: { readOnly: false, replaced: true } });
+});
+
 for (const context of ["disposed", "robot", "user"]) {
   for (const rejected of [false, true]) {
     test(`ignores a late ${rejected ? "failed" : "successful"} plan save after context becomes ${context}`, async ({ page }) => {
