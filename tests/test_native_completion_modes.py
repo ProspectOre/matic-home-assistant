@@ -124,6 +124,34 @@ def test_coverage_setting_is_not_cleaning_status(setting):
     assert session.combined_completed_rooms == ()
 
 
+@pytest.mark.parametrize("mop_status", [None, 0, 1, 2])
+def test_unscoped_history_does_not_infer_requested_modes_from_native_summaries(
+    mop_status,
+):
+    from custom_components.matic_robot.llm import _bounded_native_room_evidence
+
+    session = _decode_cleaning_session(
+        _session_payload(
+            _vfield(5, 2),
+            mop_statuses=None if mop_status is None else _vfield(5, mop_status),
+        )
+    )
+    # A native single-mode room summary can be true while combined proof is
+    # absent. Neither the summary nor missing mop data identifies user intent.
+    assert session.completed_rooms == (("Study",) if mop_status in (None, 2) else ())
+    generic, _, _, _ = _bounded_native_room_evidence(session, 20, 5000)
+    assert generic[0]["completed"] is None
+    vacuum, _, _, _ = _bounded_native_room_evidence(
+        session, 20, 5000, cleaning_mode="vacuum"
+    )
+    combined, _, _, _ = _bounded_native_room_evidence(
+        session, 20, 5000, cleaning_mode="vacuum_and_mop"
+    )
+    assert vacuum[0]["completed"] is True
+    assert vacuum[0]["duration_seconds"] == 30
+    assert combined[0]["completed"] is (mop_status == 2)
+
+
 @pytest.mark.parametrize(
     "mode", ["vacuum", "mop", "vacuum_and_mop", None, "unknown", 5]
 )
@@ -253,7 +281,7 @@ async def test_seven_room_partial_session_credits_only_completed_requested_modes
     assert reported["Store"]["visited"] is False
     assert reported["Utility"]["visited"] is False
     assert reported["Pantry"]["visited"] is True
-    assert reported["Pantry"]["completed"] is False
+    assert reported["Pantry"]["completed"] is None
     assert reported["Pantry"]["modes"]["mop"]["status"] == "unattempted"
 
     from types import SimpleNamespace

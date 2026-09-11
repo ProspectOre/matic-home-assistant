@@ -1184,7 +1184,7 @@
       "message": "The robot could not complete the requested command."
     },
     "room_interrupted": {
-      "message": "{room} stopped without verified completion."
+      "message": "Cleaning in {room} ended without verified completion."
     },
     "room_taken_over": {
       "message": "The original cleaning task in {room} could no longer be verified. The plan was interrupted."

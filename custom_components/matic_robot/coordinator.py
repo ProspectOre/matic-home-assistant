@@ -679,6 +679,22 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "completed": session.completed,
                 "rooms": list(session.visited_rooms),
                 "completed_rooms": list(session.completed_rooms),
+                "completion_scope": (
+                    "native_room_summary" if session.mode_results else "legacy"
+                ),
+                **{
+                    f"{label}_completed_room_count": sum(
+                        duration > 0
+                        for room, duration in session.room_durations_for_mode(mode)
+                        if room in session.completed_rooms_for_mode(mode)
+                    )
+                    for label, mode in (
+                        ("vacuum", "vacuum"),
+                        ("mop", "mop"),
+                        ("combined", "vacuum_and_mop"),
+                    )
+                    if session.mode_results
+                },
                 "room_durations": dict(session.room_durations),
                 "firmware_version": version,
             },

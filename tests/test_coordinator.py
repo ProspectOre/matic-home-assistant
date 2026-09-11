@@ -784,6 +784,57 @@ async def test_transient_sweep_failures_defer_then_record_degraded(hass) -> None
     assert coordinator._snapshot_attempts == {}
 
 
+async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_failed(
+    hass,
+) -> None:
+    from pytest_homeassistant_custom_component.common import async_capture_events
+
+    from custom_components.matic_robot.client.api import _decode_cleaning_session
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+    from custom_components.matic_robot.llm import MaticOperationsAPI
+    from tests.wire_builders import _bfield, _vfield
+
+    client = _client()
+    with patch(
+        "custom_components.matic_robot.coordinator.dt_util.utcnow",
+        return_value=datetime(2026, 7, 20, 1, tzinfo=UTC),
+    ):
+        coordinator = _coordinator(hass, client)
+    events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
+    summary = _bfield(3, _bfield(1, _vfield(1, 1784509800))) + _bfield(
+        4, _bfield(1, _vfield(1, 1784511000))
+    )
+    for name, status, duration in (
+        ("Study", 2, 120),
+        ("Gallery", 1, 300),
+        ("Den", 0, 0),
+    ):
+        detail = (
+            _bfield(3, name.encode())
+            + _bfield(4, _vfield(1, duration))
+            + _vfield(5, status)
+        )
+        summary += _bfield(6, _bfield(1, _bfield(2, detail)))
+    session = _decode_cleaning_session(_bfield(5, summary))
+    assert session.completed_rooms == ("Study",)
+    assert session.combined_completed_rooms == ()
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
+    await coordinator._async_update_data()
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    event = events[0]
+    assert event.data["completed_rooms"] == ["Study"]
+    assert event.data["completion_scope"] == "native_room_summary"
+    assert event.data["vacuum_completed_room_count"] == 1
+    assert event.data["mop_completed_room_count"] == 0
+    assert event.data["combined_completed_room_count"] == 0
+    api = MaticOperationsAPI(hass)
+    api._async_capture_event(event)
+    assert api.recent_events[-1]["data"]["vacuum_completed_room_count"] == 1
+    assert api.recent_events[-1]["data"]["completion_scope"] == "native_room_summary"
+    assert "Study" not in str(api.recent_events)
+
+
 async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
@@ -827,6 +878,7 @@ async def test_cleaning_finished_event_fires_once_per_new_session(hass) -> None:
     assert len(events) == 1
     assert events[0].data["duration_seconds"] == 1800
     assert events[0].data["completed_rooms"] == ["Study"]
+    assert events[0].data["completion_scope"] == "legacy"
     assert events[0].data["room_durations"] == {"Study": 1800}
     assert events[0].data["firmware_version"] == "v168.11"
     assert events[0].data["entry_id"] == "entry"

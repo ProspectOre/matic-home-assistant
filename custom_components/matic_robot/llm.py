@@ -16,6 +16,7 @@ from homeassistant.util.json import JsonObjectType
 
 from .client.exceptions import MaticError
 from .client.models import CleaningSession
+from .client.observations import MAX_OBSERVATIONS
 from .const import (
     DOMAIN,
     EVENT_ACTIVITY_OBSERVED,
@@ -32,6 +33,20 @@ MAX_RECENT_EVENTS = 64
 MAX_NATIVE_HISTORY_RESULTS = 20
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE = 64
 MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES = 32 * 1024
+MAX_ACTIVITY_RESULTS = 128
+_ACTIVITY_FIELDS = (
+    "observation_session",
+    "sequence",
+    "observed_at",
+    "kind",
+    "source",
+    "command_id",
+    "command",
+    "channel",
+    "outcome",
+    "error_type",
+    "activity",
+)
 _ADMIN_ERROR = "Administrator access is required for Matic operational tools"
 _MATIC_EVENT_TYPES = (
     EVENT_ACTIVITY_OBSERVED,
@@ -87,6 +102,10 @@ _SAFE_EVENT_FIELDS = (
     "ended_at",
     "duration_seconds",
     "completed",
+    "completion_scope",
+    "vacuum_completed_room_count",
+    "mop_completed_room_count",
+    "combined_completed_room_count",
 )
 
 
@@ -162,7 +181,12 @@ class MaticOperationsAPI(llm.API):
                 "Rooms in one leg share a native mission and should not dock "
                 "between them. A settings change starts another leg, where current "
                 "firmware may briefly touch the dock during handoff. Treat native "
-                "room completion and duration evidence as the completion authority."
+                "per-mode results as reported work, using the requested cleaning mode. "
+                "An intentional stop and successful docking are a successful stop "
+                "outcome, not proof that every room finished. An interruption label "
+                "alone does not establish a robot fault or the cause of a stop. "
+                "Use MaticGetActivity to correlate integration commands and raw "
+                "states; it cannot identify OEM-app or physical input."
             ),
             llm_context=llm_context,
             tools=[
@@ -170,6 +194,7 @@ class MaticOperationsAPI(llm.API):
                 MaticGetPlanTool(self),
                 MaticGetNativeHistoryTool(self),
                 MaticGetRecentEventsTool(self),
+                MaticGetActivityTool(self),
             ],
         )
 
@@ -332,7 +357,8 @@ class MaticGetNativeHistoryTool(_MaticTool):
     name = "MaticGetNativeHistory"
     description = (
         "Read recent native Matic cleaning records without opaque keys or map data, "
-        "including visited rooms, verified completed rooms, and room durations."
+        "including per-mode room results and durations. Supply cleaning_mode to "
+        "evaluate a vacuum-only, mop-only, or combined run correctly."
     )
     parameters = vol.Schema(
         {
@@ -340,6 +366,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
             vol.Optional("limit", default=5): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=MAX_NATIVE_HISTORY_RESULTS)
             ),
+            vol.Optional("cleaning_mode"): vol.In(("vacuum", "mop", "vacuum_and_mop")),
         }
     )
 
@@ -373,6 +400,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
                     record.session,
                     remaining_room_items,
                     remaining_room_bytes,
+                    cleaning_mode=args.get("cleaning_mode"),
                 )
             )
             sessions.append(
@@ -387,6 +415,8 @@ class MaticGetNativeHistoryTool(_MaticTool):
                         "room_evidence_returned": len(room_evidence),
                         "room_evidence_truncated": len(room_evidence) < total_rooms,
                         "completed": record.session.completed,
+                        "completion_scope": args.get("cleaning_mode")
+                        or ("unspecified" if record.session.mode_results else "legacy"),
                     },
                 )
             )
@@ -396,9 +426,17 @@ class MaticGetNativeHistoryTool(_MaticTool):
                 "read_only": True,
                 "robot": _entry_name(entry),
                 "completion_authority": (
-                    "Only returned room_evidence entries with completed true and a "
-                    "positive duration prove room completion; the global completed "
-                    "field and omitted evidence do not."
+                    "With cleaning_mode, room completed and duration_seconds apply "
+                    "to that completion_scope. Without it, native per-mode records "
+                    "have unspecified scope and completed is null; durations are "
+                    "totals across reported modes. Do not infer the requested mode "
+                    "from an omitted or unattempted mode. "
+                    "Read each requested mode's status and positive duration. "
+                    "Native results report work, not why cleaning ended; stopped "
+                    "rooms can also be reported completed. Managed room_completed "
+                    "events require additional run and terminal-state verification. "
+                    "The global completed field, docking, and omitted evidence "
+                    "do not prove plan completion."
                 ),
                 "room_evidence_limits": {
                     "max_items_across_response": MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
@@ -415,12 +453,22 @@ def _bounded_native_room_evidence(
     session: CleaningSession,
     remaining_items: int,
     remaining_bytes: int,
+    *,
+    cleaning_mode: str | None = None,
 ) -> tuple[list[JsonObjectType], int, int, int]:
     """Normalize and bound one session's room evidence across the response."""
     visited = set(session.visited_rooms)
-    completed = set(session.completed_rooms)
+    completed = set(session.completed_rooms_for_mode(cleaning_mode))
     durations: dict[str, int] = {}
-    for room, duration in session.room_durations:
+    room_durations = (
+        session.room_durations_for_mode(cleaning_mode)
+        if cleaning_mode is not None
+        else session.room_durations
+    )
+    unscoped = cleaning_mode is None and bool(session.mode_results)
+    if cleaning_mode is None and not unscoped:
+        completed = set(session.completed_rooms)
+    for room, duration in room_durations:
         durations.setdefault(room, duration)
     ordered_rooms = list(
         dict.fromkeys((*session.rooms, *session.completed_rooms, *durations.keys()))
@@ -434,7 +482,7 @@ def _bounded_native_room_evidence(
             {
                 "room": room,
                 "visited": room in visited,
-                "completed": room in completed,
+                "completed": None if unscoped else room in completed,
                 "duration_seconds": durations.get(room),
             }
         )
@@ -491,6 +539,119 @@ class MaticGetRecentEventsTool(_MaticTool):
                 "events": events,
             },
         )
+
+
+class MaticGetActivityTool(_MaticTool):
+    """Read the robot's bounded command journal without a network request."""
+
+    name = "MaticGetActivity"
+    description = (
+        "Inspect integration-issued commands and raw robot state observations, "
+        "with sequence coverage, retention limits, and pagination. No robot command "
+        "is sent. Use this to investigate who requested a stop or docking; external "
+        "app, physical, and internal robot actions have no command provenance here."
+    )
+    parameters = vol.Schema(
+        {
+            vol.Optional("robot"): vol.All(cv.string, vol.Length(min=1, max=128)),
+            vol.Optional("kind", default="commands"): vol.In(
+                ("all", "commands", "states", "stream")
+            ),
+            vol.Optional("limit", default=50): vol.All(
+                vol.Coerce(int), vol.Range(min=1, max=MAX_ACTIVITY_RESULTS)
+            ),
+            vol.Optional("before_sequence"): vol.All(vol.Coerce(int), vol.Range(min=1)),
+            vol.Optional("observation_session"): vol.All(
+                cv.string, vol.Match(r"^[a-f0-9]{32}$")
+            ),
+        }
+    )
+
+    @override
+    async def async_call(
+        self,
+        hass: HomeAssistant,
+        tool_input: llm.ToolInput,
+        llm_context: llm.LLMContext,
+    ) -> JsonObjectType:
+        """Return a detached page and the full available observation window."""
+        args = self.parameters(tool_input.tool_args)
+        entry = _resolve_entry(hass, args.get("robot"))
+        observations = [
+            _activity_observation(item)
+            for item in entry.runtime_data.client.activity_journal.snapshot
+        ]
+        first, last = observations[0], observations[-1]
+        session = last["observation_session"]
+        if "before_sequence" in args and "observation_session" not in args:
+            raise HomeAssistantError("Pagination requires observation_session")
+        if args.get("observation_session", session) != session:
+            raise HomeAssistantError(
+                "The activity journal restarted; read the new observation window"
+            )
+        kind = args["kind"]
+        prefixes = {
+            "commands": "command_",
+            "states": "state",
+            "stream": "state_stream_",
+        }
+        matching = [
+            item
+            for item in reversed(observations)
+            if (
+                kind == "all"
+                or (kind == "states" and item["kind"] == "state")
+                or (kind != "states" and item["kind"].startswith(prefixes[kind]))
+            )
+            and item["sequence"] < args.get("before_sequence", last["sequence"] + 1)
+        ]
+        page = matching[: args["limit"]]
+        has_more = len(matching) > len(page)
+        return cast(
+            JsonObjectType,
+            {
+                "read_only": True,
+                "robot": _entry_name(entry),
+                "retention": "current integration load; oldest observations evicted",
+                "observation_session": session,
+                "buffer_limit": MAX_OBSERVATIONS,
+                "retained_observations": len(observations),
+                "first_available_sequence": first["sequence"],
+                "last_available_sequence": last["sequence"],
+                "earliest_observed_at": first["observed_at"],
+                "latest_observed_at": last["observed_at"],
+                "older_observations_evicted": first["sequence"] > 1,
+                "kind": kind,
+                "observations": page,
+                "has_more": has_more,
+                "next_before_sequence": page[-1]["sequence"] if has_more else None,
+                "interpretation": (
+                    "Only this integration's commands are recorded. Absence applies "
+                    "only inside the available sequence window after all matching "
+                    "pages are read. Acknowledgement is not execution. State times "
+                    "are local receipt times; poll and push can arrive out of order. "
+                    "Correlate commands, native results, and automation traces; a "
+                    "ready or returning state alone cannot identify the stop cause."
+                ),
+            },
+        )
+
+
+def _activity_observation(item: dict[str, Any]) -> dict[str, Any]:
+    """Expose only bounded scalar metadata and raw integer state codes."""
+    result: dict[str, Any] = {
+        key: value[:256] if isinstance(value, str) else value
+        for key in _ACTIVITY_FIELDS
+        if key in item
+        and (
+            (value := item[key]) is None or isinstance(value, str | bool | int | float)
+        )
+    }
+    for key in ("state_codes", "error_codes"):
+        codes = item.get(key)
+        if isinstance(codes, list) and all(type(code) is int for code in codes):
+            result[key] = codes[:256]
+    return result
 
 
 @callback

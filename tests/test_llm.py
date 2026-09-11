@@ -13,6 +13,7 @@ from homeassistant.helpers import llm
 
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
+    CleaningModeResult,
     CleaningSession,
     CleaningSessionRecord,
     FloorPlan,
@@ -22,11 +23,16 @@ from custom_components.matic_robot.client.models import (
     RobotTelemetry,
     Room,
 )
+from custom_components.matic_robot.client.observations import (
+    MAX_OBSERVATIONS,
+    ActivityJournal,
+)
 from custom_components.matic_robot.llm import (
     LLM_API_ID,
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE,
     MAX_NATIVE_HISTORY_ROOM_EVIDENCE_BYTES,
     MAX_RECENT_EVENTS,
+    MaticGetActivityTool,
     MaticGetNativeHistoryTool,
     MaticGetOperationsTool,
     MaticGetPlanTool,
@@ -292,6 +298,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "MaticGetPlan",
         "MaticGetNativeHistory",
         "MaticGetRecentEvents",
+        "MaticGetActivity",
     ]
 
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
@@ -608,3 +615,143 @@ async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
         f"Room {MAX_RECENT_EVENTS - 1}",
     ]
     assert "current Home Assistant process" in result["retention"]
+
+
+async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
+    entry = _entry()
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        CleaningSessionRecord(
+            b"synthetic-key",
+            CleaningSession(
+                "2026-08-25T20:00:00+00:00",
+                "2026-08-25T20:10:00+00:00",
+                600,
+                ("Study", "Gallery"),
+                (("Study", 120), ("Gallery", 200)),
+                None,
+                vacuum_completed_rooms=("Study", "Gallery"),
+                mode_results=(
+                    CleaningModeResult("Study", "vacuum", "completed", 120),
+                    CleaningModeResult("Gallery", "vacuum", "completed", 200),
+                    CleaningModeResult("Gallery", "mop", "partial", 40),
+                ),
+            ),
+        ),
+    )
+    hass = _hass(entry)
+    tool = MaticGetNativeHistoryTool(MaticOperationsAPI(hass))
+    for mode, expected, durations in (
+        (None, [None, None], [120, 200]),
+        ("vacuum", [True, True], [120, 200]),
+        ("mop", [False, False], [None, 40]),
+        ("vacuum_and_mop", [False, False], [120, 240]),
+    ):
+        result = await tool.async_call(
+            hass,
+            llm.ToolInput(tool.name, {} if mode is None else {"cleaning_mode": mode}),
+            _context(),
+        )
+        session = result["sessions"][0]
+        assert session["completion_scope"] == (mode or "unspecified")
+        assert [room["completed"] for room in session["room_evidence"]] == expected
+        assert [
+            room["duration_seconds"] for room in session["room_evidence"]
+        ] == durations
+        assert "Do not infer the requested mode" in result["completion_authority"]
+        assert "not why cleaning ended" in result["completion_authority"]
+    with pytest.raises(vol.Invalid):
+        await tool.async_call(
+            hass, llm.ToolInput(tool.name, {"cleaning_mode": "unknown"}), _context()
+        )
+
+
+async def test_activity_journal_pagination_filtering_and_restart_guards() -> None:
+    entry = _entry()
+    journal = entry.runtime_data.client.activity_journal = ActivityJournal()
+    journal.record("command_requested", command="STOP", channel="user_command")
+    journal.record("command_sending", command_id=2, channel="user_command")
+    journal.record(
+        "command_result", command_id=2, command="STOP", outcome="acknowledged"
+    )
+    journal.record("state_stream_started", source="push")
+    journal.record(
+        "state", source="push", activity="ready", state_codes=[109], error_codes=[]
+    )
+    journal.record("state_stream_ended", source="push")
+    journal.record("command_requested", command="DOCK", channel="user_command")
+    journal.record("command_result", command_id=8, command="DOCK", outcome="failed")
+    hass = _hass(entry)
+    tool = MaticGetActivityTool(MaticOperationsAPI(hass))
+
+    async def read(**args):
+        return await tool.async_call(hass, llm.ToolInput(tool.name, args), _context())
+
+    result = await read(limit=2)
+    assert [item["sequence"] for item in result["observations"]] == [9, 8]
+    assert result["has_more"] is True
+    assert result["next_before_sequence"] == 8
+    assert result["first_available_sequence"] == 1
+    assert result["last_available_sequence"] == 9
+    assert result["older_observations_evicted"] is False
+    assert result["retained_observations"] == 9
+    older = await read(
+        before_sequence=8, observation_session=result["observation_session"]
+    )
+    assert [item["sequence"] for item in older["observations"]] == [4, 3, 2]
+    assert older["has_more"] is False
+    assert older["next_before_sequence"] is None
+    assert [
+        item["sequence"] for item in (await read(kind="states"))["observations"]
+    ] == [6]
+    assert [
+        item["sequence"] for item in (await read(kind="stream"))["observations"]
+    ] == [7, 5]
+    assert len((await read(kind="all"))["observations"]) == 9
+    assert not (
+        await read(before_sequence=1, observation_session=result["observation_session"])
+    )["observations"]
+    with pytest.raises(HomeAssistantError, match="requires observation_session"):
+        await read(before_sequence=8)
+    entry.runtime_data.client.activity_journal = ActivityJournal()
+    with pytest.raises(HomeAssistantError, match="restarted"):
+        await read(before_sequence=8, observation_session=result["observation_session"])
+    for invalid in (
+        {"limit": 129},
+        {"kind": "payload"},
+        {"observation_session": "bad"},
+        {"before_sequence": 0},
+    ):
+        with pytest.raises(vol.Invalid):
+            await read(**invalid)
+    entry.runtime_data.client.async_get_cleaning_session_records.assert_not_called()
+
+
+async def test_activity_journal_eviction_and_output_privacy() -> None:
+    entry = _entry()
+    journal = entry.runtime_data.client.activity_journal = ActivityJournal()
+    for _ in range(MAX_OBSERVATIONS):
+        journal.record("state", activity="ready", state_codes=[109], error_codes=[])
+    journal.record(
+        "command_result",
+        command="DOCK",
+        outcome="failed",
+        error_type="x" * 400,
+        channel={"private": "must-not-appear"},
+        payload="must-not-appear",
+        state_codes=[True],
+        error_codes="must-not-appear",
+    )
+    hass = _hass(entry)
+    result = await MaticGetActivityTool(MaticOperationsAPI(hass)).async_call(
+        hass, llm.ToolInput("MaticGetActivity", {"kind": "all", "limit": 2}), _context()
+    )
+    assert result["older_observations_evicted"] is True
+    assert result["first_available_sequence"] == 3
+    assert result["retained_observations"] == MAX_OBSERVATIONS
+    assert result["buffer_limit"] == MAX_OBSERVATIONS
+    assert "must-not-appear" not in str(result)
+    assert len(result["observations"][0]["error_type"]) == 256
+    assert "state_codes" not in result["observations"][0]
+    assert result["observations"][1]["state_codes"] == [109]
+    result["observations"][1]["state_codes"].append(1)
+    assert journal.snapshot[-2]["state_codes"] == [109]

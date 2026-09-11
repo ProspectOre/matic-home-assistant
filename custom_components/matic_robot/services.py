@@ -1257,7 +1257,8 @@ async def _async_run_room(
                         continue
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
                         raise RoomStoppedInPlaceError(
-                            f"{room.name} ended in place without returning"
+                            f"{room.name} ended in place without returning; "
+                            "the stop cause is unconfirmed"
                         )
                     if outcome is RoomRunOutcome.INTERRUPTED:
                         raise RoomInterruptedError(
@@ -1731,7 +1732,8 @@ async def _async_run_leg(
                         break
                     if outcome is RoomRunOutcome.STOPPED_IN_PLACE:
                         raise RoomStoppedInPlaceError(
-                            f"{active_room.name} ended in place without returning"
+                            f"{active_room.name} ended in place without returning; "
+                            "the stop cause is unconfirmed"
                         )
                     # INTERRUPTED cannot occur here: the leg loop starts only
                     # after a confirmed in-room start, so the waiter is seeded
@@ -3022,13 +3024,12 @@ class RoomInterruptedError(HomeAssistantError):
 
 
 class RoomStoppedInPlaceError(RoomInterruptedError):
-    """The robot's task ended where it stood, so the room was not finished.
+    """The robot's task ended in place without a verified completion handoff.
 
-    Home Assistant saw the task end in place rather than return, which is
-    positive evidence that the room was stopped.  Late native reconciliation
-    is deliberately not scheduled for it: the robot reports a stopped room the
-    same way it reports a finished one, so a marker would credit exactly the
-    room this transition proves was interrupted.
+    This observation does not identify the stop source or prove a robot fault.
+    Late native reconciliation is deliberately not scheduled: the robot can
+    report a stopped room the same way it reports a finished one, so history
+    alone cannot resolve this terminal ambiguity safely.
     """
 
 
