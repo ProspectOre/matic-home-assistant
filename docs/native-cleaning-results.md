@@ -18,3 +18,14 @@ Partial or completed work affects rotation priority; unattempted work does not.
 For completion automations, use `matic_robot_room_completed` or **Last cleaned**.
 The `latest_mode_results` sensor attribute is available live but excluded from
 Recorder. Administrator-only MCP history includes the same per-mode detail.
+
+For MCP history, supply `cleaning_mode` so the completion flags and durations
+match the work requested. `completion_scope` labels the selected mode; without
+one, native results use the combined vacuum-and-mop scope. Finished events retain
+their existing combined room list and also provide separate positive-duration
+vacuum, mop, and combined completion counts.
+
+A native result does not identify why a mission ended. Firmware can report a
+stopped room as completed; managed plans also verify ownership and the terminal
+transition. A requested stop followed by docking can succeed while unfinished
+rooms remain due. See [activity diagnostics](activity-diagnostics.md).
