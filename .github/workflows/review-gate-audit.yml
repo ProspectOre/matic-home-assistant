@@ -62,10 +62,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ matrix.pr_number }}
+          REVIEW_WORKFLOW_SHA: ${{ github.workflow_sha }}
           REPO: ${{ github.repository }}
           REVIEW_BOT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions' || 'chatgpt-codex-connector' }}
           REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
           REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -195,16 +197,17 @@ jobs:
           active_regular_finding_count() {
             local pr_number="$1"
             local head_sha="$2"
+            local include_summaries="$3"
             local head_prefix="${head_sha:0:10}"
             review_owner="$(printf '%s' "$REPO" | cut -d/ -f1)"
             review_repo="$(printf '%s' "$REPO" | cut -d/ -f2)"
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
             gh api graphql --paginate \
-              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { replyTo { databaseId } author { login } pullRequestReview { state body author { login } commit { oid } } } } pageInfo { hasNextPage endCursor } } } } } }' \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { originalCommit { oid } replyTo { databaseId } author { login } pullRequestReview { state body author { login } commit { oid } } } } pageInfo { hasNextPage endCursor } } } } } }' \
               -F owner="$review_owner" \
               -F name="$review_repo" \
               -F number="$pr_number" \
-              | jq -rs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+              | jq -rs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" --argjson include_summaries "$include_summaries" '
                   def regular_heading:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -230,13 +233,17 @@ jobs:
                    | select(.pullRequestReview != null)
                    | select((.pullRequestReview.author.login // "") == $bot)
                    | select((.pullRequestReview.state // "") != "DISMISSED")
-                   | select((.pullRequestReview.commit.oid // "") == $head)
+                   | select((.originalCommit.oid // .pullRequestReview.commit.oid // "") == $head)
                    | (.pullRequestReview.body // "") as $body
-                   | select($body | regular_heading)
-                   | select(($body | security_heading) | not)
-                   | select(($body | availability_notice) | not)
-                   | select($body | exact_head)
-                   | select($body | stock_clean_envelope)]
+                   | select(if $include_summaries then
+                       ($body | test("(?i)^[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:Codex[[:space:]]+)?Security[[:space:]-]+Review") | not)
+                     else
+                       ($body | regular_heading)
+                       and ($body | security_heading | not)
+                       and ($body | availability_notice | not)
+                       and ($body | exact_head)
+                       and ($body | stock_clean_envelope)
+                     end)]
                   | length'
           }
 
@@ -245,20 +252,35 @@ jobs:
               | jq -er '.head.sha'
           )" || exit 0
           [[ "$head_sha" =~ ^[0-9a-f]{40}$ && -n "$WORKFLOW_REF" ]] || exit 0
+          [[ "$REVIEW_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          review_summary_script="$(mktemp "$RUNNER_TEMP/review-summary.XXXXXX")"
+          trap 'rm -f "$review_summary_script"' EXIT
+          if ! gh api --method GET -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$REPO/contents/.github/scripts/review_summary.py?ref=$REVIEW_WORKFLOW_SHA" \
+            > "$review_summary_script"; then
+            stamp_pending "$head_sha" "Trusted review summary reader is unavailable"
+            exit 1
+          fi
+
           gate_snapshot="$(current_gate_snapshot "$head_sha")"
           gate_state="$(jq -r '.state' <<< "$gate_snapshot")"
           gate_updated_at="$(jq -r '.updated_at // empty' <<< "$gate_snapshot")"
           gate_description="$(jq -r '.description // empty' <<< "$gate_snapshot")"
           comment_records="$(current_regular_comment_records "$head_sha")"
           review_records="$(current_regular_review_records "$head_sha")"
-          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reviews "$review_records" '$comments + $reviews')"
+          if ! summary_records="$(python3 "$review_summary_script" records --head "$head_sha" | jq '[.[] | {id: (.id | capture("^review-summary-(?<comment>[0-9]+)-(?<reaction>[0-9]+)$") | "review-summary:\(.comment):\(.reaction)"), at}]')"; then
+            stamp_pending "$head_sha" "Current review summary evidence is unavailable"
+            exit 1
+          fi
+          include_summaries="$(jq 'length > 0' <<< "$summary_records")"
+          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reviews "$review_records" --argjson summaries "$summary_records" '$comments + $reviews + $summaries')"
           latest_evidence_at="$(jq -r '[.[].at] | max // empty' <<< "$evidence_records")"
           evidence_ids="$(jq -c '[.[].id]' <<< "$evidence_records")"
           evidence_marker="$(
             jq -r '
               (.description // "") as $description
-              | if ($description | test("; evidence (review|issue-comment):[1-9][0-9]*$")) then
-                  ($description | capture("; evidence (?<id>(?:review|issue-comment):[1-9][0-9]*)$").id)
+              | if ($description | test("; evidence (?:(?:review|issue-comment):[1-9][0-9]*|review-summary:[1-9][0-9]*:[1-9][0-9]*)$")) then
+                  ($description | capture("; evidence (?<id>(?:(?:review|issue-comment):[1-9][0-9]*|review-summary:[1-9][0-9]*:[1-9][0-9]*))$").id)
                 else
                   ""
                 end' <<< "$gate_snapshot"
@@ -279,6 +301,12 @@ jobs:
           elif [[ "$gate_state" == "success" && -n "$evidence_marker" ]] && ! jq -e --arg evidence "$evidence_marker" 'index($evidence) != null' <<< "$evidence_ids" >/dev/null; then
             needs_reconciliation=true
             reconciliation_reason="clean normal evidence that is no longer current"
+            if [[ "$evidence_marker" == review-summary:* ]]; then
+              invalidated_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+              gh api "repos/$REPO/statuses/$head_sha" --silent \
+                -f state=pending -f context="$REVIEW_COMMENT_CONTEXT" \
+                -f description="Regular issue-comment invalidated at $invalidated_at; summary evidence was withdrawn"
+            fi
           elif [[ "$gate_state" == "success" && -z "$evidence_marker" ]]; then
             needs_reconciliation=true
             reconciliation_reason="legacy clean normal evidence"
@@ -295,7 +323,7 @@ jobs:
           if [[ "$gate_state" != "success" ]]; then
             exit 0
           fi
-          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha" "$include_summaries")"
           if [[ "$findings" -eq 0 ]]; then
             exit 0
           fi
@@ -305,7 +333,7 @@ jobs:
           if [[ "$(jq -r '.state' <<< "$gate_snapshot")" != "success" ]]; then
             exit 0
           fi
-          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha")"
+          findings="$(active_regular_finding_count "$PR_NUMBER" "$head_sha" "$include_summaries")"
           if [[ "$findings" -eq 0 ]]; then
             exit 0
           fi

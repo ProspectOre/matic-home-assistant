@@ -28,12 +28,14 @@ jobs:
       - id: classify
         name: Classify regular Codex issue-comment verdicts
         env:
+          EVENT_ACTION: ${{ github.event.action }}
           EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
           EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
           EVENT_PREVIOUS_COMMENT_BODY: ${{ github.event.changes.body.from }}
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.issue.number }}
           REPO: ${{ github.repository }}
+          REVIEW_WORKFLOW_SHA: ${{ github.workflow_sha }}
           REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_GATE_CONTEXT: review-gate
@@ -93,6 +95,23 @@ jobs:
           fi
           head_prefix="${head_sha:0:10}"
 
+          [[ "$REVIEW_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          review_summary_script="$(mktemp "$RUNNER_TEMP/review-summary.XXXXXX")"
+          trap 'rm -f "$review_summary_script"' EXIT
+          if ! gh api --method GET -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$REPO/contents/.github/scripts/review_summary.py?ref=$REVIEW_WORKFLOW_SHA" \
+            > "$review_summary_script" \
+            || ! summary_event="$(python3 "$review_summary_script" classify --head "$head_sha")"; then
+            # An unreadable classifier cannot leave a prior success armed.
+            # Let the existing invalidation job revoke it under the PR lock.
+            echo "regular=true" >> "$GITHUB_OUTPUT"
+            echo "head_sha=$head_sha" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          summary_event_regular="$(jq -r '.regular' <<< "$summary_event")"
+          summary_event_completed="$(jq -r '.completed' <<< "$summary_event")"
+
           body_is_regular_comment() {
             local comment_body="$1"
             printf '%s' "$comment_body" \
@@ -142,7 +161,8 @@ jobs:
           }
 
           if ! body_is_regular_comment "$EVENT_COMMENT_BODY" \
-            && ! body_is_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
+            && ! body_is_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY" \
+            && [[ "$summary_event_regular" != "true" ]]; then
             echo "Ignoring a non-regular issue comment."
             exit 0
           fi
@@ -150,7 +170,9 @@ jobs:
             echo "regular=true"
             echo "head_sha=$head_sha"
           } >> "$GITHUB_OUTPUT"
-          if body_is_clean_comment "$EVENT_COMMENT_BODY"; then
+          # A completed summary still revokes the gate before evaluation. Its
+          # completion edit is not a new finding that requires another review.
+          if body_is_clean_comment "$EVENT_COMMENT_BODY" || [[ "$summary_event_completed" == "true" ]]; then
             echo "clean=true" >> "$GITHUB_OUTPUT"
           fi
 

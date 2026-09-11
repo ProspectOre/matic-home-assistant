@@ -43,6 +43,7 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
+          REVIEW_WORKFLOW_SHA: ${{ github.workflow_sha }}
           REVIEW_BOT: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
           REVIEW_BOT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions' || 'chatgpt-codex-connector' }}
           REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
@@ -220,7 +221,7 @@ jobs:
           # comments can qualify. Findings-bearing issue comments invalidate;
           # security review results and availability notices are ignored.
           regular_evidence() {
-            local review_records issue_comment_records
+            local review_records issue_comment_records summary_records
             review_records="$(
               # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
               gh api graphql --paginate \
@@ -293,37 +294,44 @@ jobs:
                         source: "issue_comment",
                         clean: ($body | stock_clean_issue_comment_envelope)}]'
             )"
-            jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
-              {deliveries: ($reviews + $issue_comments),
+            summary_records="$(PR_NUMBER="$pr_number" python3 "$review_summary_script" records --head "$head_sha")"
+            jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" --argjson summaries "$summary_records" '
+              {deliveries: ($reviews + $issue_comments + $summaries),
                review_ids: [$reviews[].id]}'
           }
 
           regular_review_thread_summary() {
             local review_ids="$1"
+            local include_summaries="$2"
             # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
             gh api graphql --paginate \
-              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { commit { oid } originalCommit { oid } replyTo { databaseId } pullRequestReview { databaseId } author { login } } } } pageInfo { hasNextPage endCursor } } } } }' \
+              -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviewThreads(first: 100, after: $endCursor) { nodes { isResolved isOutdated comments(first: 100) { nodes { updatedAt commit { oid } originalCommit { oid } replyTo { databaseId } pullRequestReview { databaseId body } author { login } } } } pageInfo { hasNextPage endCursor } } } } }' \
               -F owner="$review_owner" \
               -F name="$review_repo" \
               -F number="$pr_number" \
-              | jq -rs --argjson review_ids "$review_ids" --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" '
+              | jq -rs --argjson review_ids "$review_ids" --argjson include_summaries "$include_summaries" --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" '
                   [.[]
                    | .data.repository.pullRequest.reviewThreads.nodes[]? as $thread
                    | $thread.comments.nodes[]?
                    | select((.author.login // "") == $bot)
                    | select(.replyTo == null)
                    | select((((.pullRequestReview.databaseId // -1) | tostring) as $review_id
-                       | ($review_ids | index($review_id))) != null)
+                       | ($review_ids | index($review_id))) != null
+                       or ($include_summaries
+                           and ((.pullRequestReview.body // "")
+                                | test("(?i)^[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:Codex[[:space:]]+)?Security[[:space:]-]+Review") | not)))
                    # GitHub moves `commit` to the latest diff position after a
                    # later push. The original commit identifies the reviewed
                    # head that produced this finding, so it must win here.
                    | select((.originalCommit.oid // .commit.oid // "") == $head)
                    | {id: (.pullRequestReview.databaseId | tostring),
-                      active: (($thread.isResolved | not) and ($thread.isOutdated | not))}]
+                      active: (($thread.isResolved | not) and ($thread.isOutdated | not)),
+                      at: (.updatedAt // "")}]
                   | group_by(.id)
                   | map({id: .[0].id,
                          active_count: ([.[] | select(.active)] | length),
-                         total_count: length})'
+                         total_count: length,
+                         latest_at: ([.[].at] | max // "")})'
           }
 
           shared_open_head_count() {
@@ -346,12 +354,13 @@ jobs:
           }
 
           read_gate_snapshot() {
-            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_at review_invalidation_at
+            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_at review_invalidation_at include_summaries
             evidence="$(regular_evidence)"
             deliveries="$(jq -c '.deliveries' <<< "$evidence")"
             reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
             review_ids="$(jq -c '.review_ids' <<< "$evidence")"
-            thread_summary="$(regular_review_thread_summary "$review_ids")"
+            include_summaries="$(jq 'any(.deliveries[]; .source == "review_summary")' <<< "$evidence")"
+            thread_summary="$(regular_review_thread_summary "$review_ids" "$include_summaries")"
             verdict_selection="$(
               issue_comment_at="$(latest_regular_issue_comment_at)"
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
@@ -361,14 +370,23 @@ jobs:
                     + [$reviews[]
                        | select(.id as $id | ($finding_ids | index($id)) != null)
                        | .at]
+                    + [$thread_summary[] | select(.total_count > 0) | .latest_at]
                     + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
                     + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
                    | max // "") as $latest_finding_at
                 | ($deliveries | sort_by(.at) | last) as $latest_delivery
                 | {verdict:
                      (if $latest_delivery != null
-                           and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
+                           and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment" or $latest_delivery.source == "review_summary")
                            and $latest_delivery.clean
+                           # A PR-level reaction cannot retire findings from
+                           # a regular review on the same head. Push a new head
+                           # or obtain an explicit newer regular verdict.
+                           and (if $latest_delivery.source == "review_summary" then
+                             ($finding_ids | length) == 0
+                             and ([$deliveries[] | select(.source != "review_summary" and (.clean | not))] | length) == 0
+                             and ($latest_finding_at == "" or $latest_delivery.completed_at > $latest_finding_at)
+                             else true end)
                            and (($finding_ids | index($latest_delivery.id)) == null)
                            and $latest_delivery.at > $latest_finding_at
                       then $latest_delivery
@@ -448,6 +466,12 @@ jobs:
           # The event head was revoked before its first API read. Revoke the
           # resolved head as well for manual dispatches and stale event payloads.
           stamp_review_gate pending "Evaluating the regular review on $head_prefix"
+          [[ "$REVIEW_WORKFLOW_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          review_summary_script="$(mktemp "$RUNNER_TEMP/review-summary.XXXXXX")"
+          trap 'rm -f "$review_summary_script"' EXIT
+          gh api --method GET -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$REPO/contents/.github/scripts/review_summary.py?ref=$REVIEW_WORKFLOW_SHA" \
+            > "$review_summary_script"
           gate_snapshot="$(read_gate_snapshot)"
           require_clean_regular_snapshot "$gate_snapshot"
 
@@ -515,6 +539,10 @@ jobs:
               evidence_comment_id="${evidence_id#issue-comment-}"
               [[ "$evidence_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
               evidence_marker="issue-comment:$evidence_comment_id"
+              ;;
+            review_summary)
+              [[ "$evidence_id" =~ ^review-summary-([1-9][0-9]*)-([1-9][0-9]*)$ ]] || exit 1
+              evidence_marker="review-summary:${BASH_REMATCH[1]}:${BASH_REMATCH[2]}"
               ;;
             *)
               echo "Could not persist the current clean regular-review evidence." >&2

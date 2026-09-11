@@ -30,6 +30,15 @@ style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
 - Pairing changes must preserve the scoped BlueZ agent and cover success, malformed/rejected/expired codes, cancellation, and unavailable adapters.
 - Tests must retain 100% coverage. Required CI, privacy, HACS, Hassfest, and review must pass before a manual merge.
 
+The regular-review gate accepts an exact-commit verdict or the connector's
+completed Code Review summary paired with a later positive bot reaction on that
+PR. Abbreviated commits must resolve to the full current head, and active regular
+findings still block approval. A summary cannot retire findings on the same
+head; push the fix and get a new review. Security Review rows are independent. The quiet
+audit reconciles delayed or removed reactions; unavailable evidence leaves the
+gate pending. The summary reader comes from the trusted workflow's own commit,
+never from the proposed PR code. Regression checks run in `tests/test_review_summary.py`.
+
 ## Documentation
 
 Describe the feature or required action. Keep release notes focused on changes
