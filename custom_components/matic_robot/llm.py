@@ -416,11 +416,7 @@ class MaticGetNativeHistoryTool(_MaticTool):
                         "room_evidence_truncated": len(room_evidence) < total_rooms,
                         "completed": record.session.completed,
                         "completion_scope": args.get("cleaning_mode")
-                        or (
-                            "vacuum_and_mop"
-                            if record.session.mode_results
-                            else "legacy"
-                        ),
+                        or ("unspecified" if record.session.mode_results else "legacy"),
                     },
                 )
             )
@@ -430,9 +426,11 @@ class MaticGetNativeHistoryTool(_MaticTool):
                 "read_only": True,
                 "robot": _entry_name(entry),
                 "completion_authority": (
-                    "Room completed and duration_seconds apply to completion_scope. "
-                    "Without cleaning_mode, per-mode records use vacuum_and_mop; "
-                    "false does not mean a vacuum-only or mop-only run failed. "
+                    "With cleaning_mode, room completed and duration_seconds apply "
+                    "to that completion_scope. Without it, native per-mode records "
+                    "have unspecified scope and completed is null; durations are "
+                    "totals across reported modes. Do not infer the requested mode "
+                    "from an omitted or unattempted mode. "
                     "Read each requested mode's status and positive duration. "
                     "Native results report work, not why cleaning ended; stopped "
                     "rooms can also be reported completed. Managed room_completed "
@@ -467,7 +465,8 @@ def _bounded_native_room_evidence(
         if cleaning_mode is not None
         else session.room_durations
     )
-    if cleaning_mode is None:
+    unscoped = cleaning_mode is None and bool(session.mode_results)
+    if cleaning_mode is None and not unscoped:
         completed = set(session.completed_rooms)
     for room, duration in room_durations:
         durations.setdefault(room, duration)
@@ -483,7 +482,7 @@ def _bounded_native_room_evidence(
             {
                 "room": room,
                 "visited": room in visited,
-                "completed": room in completed,
+                "completed": None if unscoped else room in completed,
                 "duration_seconds": durations.get(room),
             }
         )

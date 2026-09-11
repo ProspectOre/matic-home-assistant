@@ -680,7 +680,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 "rooms": list(session.visited_rooms),
                 "completed_rooms": list(session.completed_rooms),
                 "completion_scope": (
-                    "vacuum_and_mop" if session.mode_results else "legacy"
+                    "native_room_summary" if session.mode_results else "legacy"
                 ),
                 **{
                     f"{label}_completed_room_count": sum(

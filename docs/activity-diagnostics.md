@@ -50,8 +50,10 @@ outside its available window. Use Recorder for older evidence when retained.
 
 Read `MaticGetNativeHistory` with the run's `cleaning_mode`: `vacuum`, `mop`, or
 `vacuum_and_mop`. Room completion and duration apply to the returned
-`completion_scope`. Without a mode, native per-mode records retain their combined
-scope; zero combined completions does not mean a vacuum-only run failed.
+`completion_scope`. Without a mode, native per-mode records have unspecified scope
+and nullable completion flags; durations total the reported modes. Missing or
+unattempted modes do not identify which work the user requested. A zero count in
+the older native room summary does not mean a vacuum-only run failed.
 
 Report three separate facts: what cleaning the native history reports, which
 integration commands were requested, and where the robot ended up. An intentional

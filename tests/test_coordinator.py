@@ -20,7 +20,6 @@ from custom_components.matic_robot.client.exceptions import (
 )
 from custom_components.matic_robot.client.mission import MissionClientState
 from custom_components.matic_robot.client.models import (
-    CleaningModeResult,
     CleaningSession,
     CuesGestureStatus,
     CuesIntent,
@@ -790,8 +789,10 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
 ) -> None:
     from pytest_homeassistant_custom_component.common import async_capture_events
 
+    from custom_components.matic_robot.client.api import _decode_cleaning_session
     from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
     from custom_components.matic_robot.llm import MaticOperationsAPI
+    from tests.wire_builders import _bfield, _vfield
 
     client = _client()
     with patch(
@@ -800,35 +801,37 @@ async def test_cleaning_finished_reports_mode_counts_without_calling_vacuum_fail
     ):
         coordinator = _coordinator(hass, client)
     events = async_capture_events(hass, EVENT_CLEANING_FINISHED)
-    client.async_get_telemetry.return_value = RobotTelemetry(
-        latest_session=CleaningSession(
-            "2026-07-20T01:10:00+00:00",
-            "2026-07-20T01:30:00+00:00",
-            1200,
-            ("Study", "Gallery", "Den"),
-            (("Study", 120), ("Gallery", 300)),
-            None,
-            vacuum_completed_rooms=("Study",),
-            mode_results=(
-                CleaningModeResult("Study", "vacuum", "completed", 120),
-                CleaningModeResult("Gallery", "vacuum", "partial", 300),
-                CleaningModeResult("Den", "vacuum", "unattempted", 0),
-            ),
-        )
+    summary = _bfield(3, _bfield(1, _vfield(1, 1784509800))) + _bfield(
+        4, _bfield(1, _vfield(1, 1784511000))
     )
+    for name, status, duration in (
+        ("Study", 2, 120),
+        ("Gallery", 1, 300),
+        ("Den", 0, 0),
+    ):
+        detail = (
+            _bfield(3, name.encode())
+            + _bfield(4, _vfield(1, duration))
+            + _vfield(5, status)
+        )
+        summary += _bfield(6, _bfield(1, _bfield(2, detail)))
+    session = _decode_cleaning_session(_bfield(5, summary))
+    assert session.completed_rooms == ("Study",)
+    assert session.combined_completed_rooms == ()
+    client.async_get_telemetry.return_value = RobotTelemetry(latest_session=session)
     await coordinator._async_update_data()
     await hass.async_block_till_done()
     assert len(events) == 1
     event = events[0]
-    assert event.data["completed_rooms"] == []
-    assert event.data["completion_scope"] == "vacuum_and_mop"
+    assert event.data["completed_rooms"] == ["Study"]
+    assert event.data["completion_scope"] == "native_room_summary"
     assert event.data["vacuum_completed_room_count"] == 1
     assert event.data["mop_completed_room_count"] == 0
     assert event.data["combined_completed_room_count"] == 0
     api = MaticOperationsAPI(hass)
     api._async_capture_event(event)
     assert api.recent_events[-1]["data"]["vacuum_completed_room_count"] == 1
-    assert api.recent_events[-1]["data"]["completion_scope"] == "vacuum_and_mop"
+    assert api.recent_events[-1]["data"]["completion_scope"] == "native_room_summary"
     assert "Study" not in str(api.recent_events)
 
 

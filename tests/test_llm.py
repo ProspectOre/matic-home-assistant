@@ -641,7 +641,7 @@ async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
     hass = _hass(entry)
     tool = MaticGetNativeHistoryTool(MaticOperationsAPI(hass))
     for mode, expected, durations in (
-        (None, [False, False], [120, 200]),
+        (None, [None, None], [120, 200]),
         ("vacuum", [True, True], [120, 200]),
         ("mop", [False, False], [None, 40]),
         ("vacuum_and_mop", [False, False], [120, 240]),
@@ -652,12 +652,12 @@ async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
             _context(),
         )
         session = result["sessions"][0]
-        assert session["completion_scope"] == (mode or "vacuum_and_mop")
+        assert session["completion_scope"] == (mode or "unspecified")
         assert [room["completed"] for room in session["room_evidence"]] == expected
         assert [
             room["duration_seconds"] for room in session["room_evidence"]
         ] == durations
-        assert "false does not mean" in result["completion_authority"]
+        assert "Do not infer the requested mode" in result["completion_authority"]
         assert "not why cleaning ended" in result["completion_authority"]
     with pytest.raises(vol.Invalid):
         await tool.async_call(
