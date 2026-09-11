@@ -10,6 +10,7 @@
 | Find a sensor or control | [Entities](entities.md) |
 | Build an automation | [Actions, events, and examples](automation.md) |
 | Understand cleaning history | [Cleaning results](native-cleaning-results.md) |
+| Investigate unexpected docking or stopping | [Activity diagnostics](activity-diagnostics.md) |
 | Check my setup | [Compatibility](acceptance-0.4.md) |
 | Understand stored data | [Privacy](privacy.md) |
 

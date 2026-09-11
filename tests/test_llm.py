@@ -151,7 +151,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticOperationsAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 11
+    assert hass.bus.async_listen.call_count == 12
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -297,7 +297,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)
     register.assert_called_once_with(hass, registered)
-    assert hass.bus.async_listen.call_count == 22
+    assert hass.bus.async_listen.call_count == 24
 
 
 async def test_operations_and_robot_resolution() -> None:

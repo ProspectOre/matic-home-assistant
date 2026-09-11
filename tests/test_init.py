@@ -804,7 +804,9 @@ async def test_restart_recovery_does_not_import_for_replacement_marker(hass) -> 
 async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
         http=SimpleNamespace(register_view=MagicMock()),
-        bus=SimpleNamespace(async_listen=MagicMock(return_value=MagicMock())),
+        bus=SimpleNamespace(
+            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+        ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={},
     )
@@ -918,7 +920,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
     hass = SimpleNamespace(
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
-        bus=SimpleNamespace(async_listen=MagicMock(return_value=MagicMock())),
+        bus=SimpleNamespace(
+            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+        ),
         data={
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
@@ -997,7 +1001,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
     )
 
     with (
-        patch("custom_components.matic_robot.MaticHermesClient", return_value=client),
+        patch(
+            "custom_components.matic_robot.MaticHermesClient", return_value=client
+        ) as client_factory,
         patch(
             "custom_components.matic_robot.MaticCoordinator",
             return_value=coordinator,
@@ -1021,6 +1027,11 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
+        client_factory.call_args.kwargs["observation_callback"]({"kind": "started"})
+        hass.bus.async_fire.assert_called_with(
+            "matic_robot_activity_observed",
+            {"entry_id": entry.entry_id, "kind": "started"},
+        )
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 

@@ -38,6 +38,7 @@ async def test_diagnostics_redact_access_material_but_keep_local_context() -> No
         entry_id="synthetic-entry",
         runtime_data=SimpleNamespace(
             client=SimpleNamespace(
+                activity_journal=SimpleNamespace(snapshot=[]),
                 endpoint_health={"current_version": "ok", "wifi_status": "failure"},
                 command_health={
                     "user_command": "acknowledged",

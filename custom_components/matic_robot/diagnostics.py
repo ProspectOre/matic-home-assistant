@@ -23,6 +23,7 @@ async def async_get_config_entry_diagnostics(
     command_health = entry.runtime_data.client.command_health
     bag_observation = getattr(entry.runtime_data.coordinator, "bag_observation", None)
     return {
+        "activity_observations": entry.runtime_data.client.activity_journal.snapshot,
         "entry": {
             "port": entry.data.get("port"),
             "credential_configured": CONF_HERMES_CREDENTIAL in entry.data,

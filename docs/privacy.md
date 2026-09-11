@@ -15,6 +15,7 @@ analytics, or maintainer cloud service.
 | Current photographic map and saved map history | Private integration storage; history is capped at 12 scenes and 48 MiB |
 | Firmware endpoint summaries | Private storage, up to 52 snapshots; sizes, hashes, and field shapes without payload values |
 | Activity and enabled entity states | Home Assistant Recorder, according to its configuration |
+| Command names, transport outcomes, and raw state transitions with timestamps | Last 512 observations in memory; local events follow Recorder retention |
 
 Room lists, Wi-Fi SSID, schedules, detailed session results, and plan history are
 live template attributes but are excluded from Recorder. Opt-in room statistics
@@ -50,7 +51,9 @@ The integration offers no recording, clip-sharing, or clip-deletion controls.
 
 **Download diagnostics** creates a report only when requested. It contains
 software/protocol versions, state and error codes, counters, and endpoint/map
-health. It omits credentials, addresses, serials, certificate identity, names,
+health, plus the bounded [command and state observation trail](activity-diagnostics.md).
+Observations contain no command payloads or exception messages.
+The report omits credentials, addresses, serials, certificate identity, names,
 room/map content, Wi-Fi identities, schedules, and detailed cleaning history.
 Review any report before sharing it.
 

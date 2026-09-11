@@ -6,11 +6,11 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import cast
+from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_HOST, CONF_PORT
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
 from homeassistant.helpers.typing import ConfigType
 from homeassistant.util import dt as dt_util
@@ -36,6 +36,7 @@ from .const import (
     DATA_LLM_API,
     DATA_PLAN_MANAGER,
     DOMAIN,
+    EVENT_ACTIVITY_OBSERVED,
     EVENT_CLEANING_FINISHED,
     PLATFORMS,
 )
@@ -93,6 +94,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Set up an unofficial Matic robot integration from a config entry."""
+
+    @callback
+    def _async_observe_activity(observation: dict[str, Any]) -> None:
+        hass.bus.async_fire(
+            EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+        )
+
     offset = dt_util.now().utcoffset()
     client = MaticHermesClient(
         entry.data[CONF_HOST],
@@ -103,6 +111,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         credential=HermesCredential.from_storage(entry.data[CONF_HERMES_CREDENTIAL])
         if CONF_HERMES_CREDENTIAL in entry.data
         else None,
+        observation_callback=_async_observe_activity,
         timezone_identifier=hass.config.time_zone,
         seconds_from_gmt=int(offset.total_seconds()) if offset is not None else 0,
     )

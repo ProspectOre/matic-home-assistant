@@ -70,6 +70,7 @@ from .models import (
     RobotTrajectory,
     WifiNetwork,
 )
+from .observations import ActivityJournal, ObservationCallback
 from .proto.hermes_auth_grpc import HermesAuthStub
 from .proto.hermes_auth_pb2 import TokenRequest
 from .proto.hermes_bot_info_grpc import HermesDiscoveryRPCStub
@@ -323,6 +324,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         credential: HermesCredential | None = None,
         timezone_identifier: str = "UTC",
         seconds_from_gmt: int = 0,
+        observation_callback: ObservationCallback | None = None,
     ) -> None:
         self._host = host
         self._port = port
@@ -336,6 +338,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self._connect_lock = asyncio.Lock()
         self._endpoint_health: dict[str, str] = {}
         self._command_health: dict[str, str] = {}
+        self.activity_journal = ActivityJournal(observation_callback)
 
     async def __aenter__(self) -> MaticHermesClient:
         await self.async_connect()
@@ -543,19 +546,27 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             payload = await self.async_get_property("kabuki_state")
 
         try:
-            return _decode_operational_state(payload)
+            state = _decode_operational_state(payload)
+            self.activity_journal.observe_state(state, "poll")
+            return state
         except DecodeError as err:
             raise CannotConnectError("Hermes returned malformed robot state") from err
 
     async def async_subscribe_state(self) -> AsyncIterator[RobotOperationalState]:
         """Yield live snapshots from the local ``kabuki_state`` property."""
-        async for entry in self.async_subscribe_collection_entries("kabuki_state"):
-            try:
-                yield _decode_operational_state(entry.value)
-            except DecodeError as err:
-                raise CannotConnectError(
-                    "Hermes returned malformed subscribed robot state"
-                ) from err
+        self.activity_journal.record("state_stream_started", source="push")
+        try:
+            async for entry in self.async_subscribe_collection_entries("kabuki_state"):
+                try:
+                    state = _decode_operational_state(entry.value)
+                    self.activity_journal.observe_state(state, "push")
+                    yield state
+                except DecodeError as err:
+                    raise CannotConnectError(
+                        "Hermes returned malformed subscribed robot state"
+                    ) from err
+        finally:
+            self.activity_journal.record("state_stream_ended", source="push")
 
     async def async_get_floor_plan(
         self, *, expected_mission_id: int | None = None
@@ -1168,7 +1179,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Send one live-verified command through the authenticated user channel."""
         payload = encode_user_command(command)
         _LOGGER.debug("Requesting Matic user command %s", command.name)
-        await self._async_send_user_payload(payload)
+        await self._async_send_user_payload(payload, command_name=command.name)
 
     async def async_start_coverage(
         self,
@@ -1188,7 +1199,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 cleaning_mode=cleaning_mode,
                 coverage_setting=coverage_setting,
                 ordered=ordered,
-            )
+            ),
+            command_name="START_COVERAGE",
         )
 
     async def async_start_custom_coverage(
@@ -1206,7 +1218,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 circles=circles,
                 cleaning_mode=cleaning_mode,
                 coverage_setting=coverage_setting,
-            )
+            ),
+            command_name="START_CUSTOM_COVERAGE",
         )
 
     async def async_set_binary_setting(self, setting: str, enabled: bool) -> None:
@@ -1239,14 +1252,46 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             b"\x0a\x05\x0d" + struct.pack("<f", rounded),
         )
 
-    async def _async_send_user_payload(self, payload: bytes) -> None:
+    async def _async_send_user_payload(
+        self, payload: bytes, *, command_name: str
+    ) -> None:
         """Send an encoded command through the authenticated user channel."""
-        await self._async_send_channel_payload("user_command", payload)
+        await self._async_send_channel_payload(
+            "user_command", payload, command_name=command_name
+        )
 
     async def _async_send_channel_payload(
-        self, channel_name: str, payload: bytes
+        self, channel_name: str, payload: bytes, *, command_name: str | None = None
     ) -> None:
-        """Send encoded bytes through one authenticated Hermes channel."""
+        """Observe every outgoing channel write, including internal cleanup."""
+        fields = {"channel": channel_name, "command": command_name or channel_name}
+        command_id = self.activity_journal.record("command_requested", **fields)
+        try:
+            outcome = await self._async_transmit_channel_payload(
+                channel_name, payload, command_id
+            )
+        except asyncio.CancelledError:
+            self.activity_journal.record(
+                "command_result", command_id=command_id, outcome="cancelled", **fields
+            )
+            raise
+        except Exception as err:
+            self.activity_journal.record(
+                "command_result",
+                command_id=command_id,
+                outcome="failed",
+                error_type=type(err).__name__,
+                **fields,
+            )
+            raise
+        self.activity_journal.record(
+            "command_result", command_id=command_id, outcome=outcome, **fields
+        )
+
+    async def _async_transmit_channel_payload(
+        self, channel_name: str, payload: bytes, command_id: int
+    ) -> str:
+        """Send unchanged bytes; record when transport transmission begins."""
         if self._channel is None:
             await self.async_connect()
         channel = self._channel
@@ -1267,6 +1312,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 async with HermesStub(channel).SendToChannel.open(
                     metadata=metadata
                 ) as stream:
+                    self.activity_journal.record(
+                        "command_sending", command_id=command_id, channel=channel_name
+                    )
                     await stream.send_message(request, end=True)
                     response = await stream.recv_message()
         except MaticError as err:
@@ -1287,6 +1335,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 channel_name,
                 response.ByteSize(),
             )
+
+        return self._command_health[channel_name]
 
     @property
     def command_health(self) -> dict[str, str]:
