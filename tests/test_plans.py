@@ -1891,6 +1891,30 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
         lock.release()
 
 
+async def test_snapshot_reports_running_active_elapsed(hass) -> None:
+    """Read-only snapshots include the currently open cleaning segment."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial", "away", {"name": "Away", "enabled": True, "rooms": []}
+    )
+    room = _room("Kitchen", "room-kitchen")
+    base = dt_util.utcnow()
+
+    with patch("custom_components.matic_robot.plans.dt_util.utcnow", return_value=base):
+        await manager.async_mark_started("serial", "away", room)
+        await manager.async_mark_resumed("serial", "away", room)
+
+    with patch(
+        "custom_components.matic_robot.plans.dt_util.utcnow",
+        return_value=base + timedelta(seconds=45),
+    ):
+        active = manager.snapshot("serial")["active_plan"]
+
+    assert active["status"] == "running"
+    assert active["active_elapsed_seconds"] == 45
+
+
 async def test_active_duration_excludes_suspension_and_cancel_is_not_learned(
     hass,
 ) -> None:
