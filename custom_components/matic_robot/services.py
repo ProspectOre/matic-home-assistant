@@ -3155,7 +3155,10 @@ def _failure_reason_code(error: BaseException) -> str:
         return "start_timeout"
     if isinstance(error, TimeoutError):
         return "completion_timeout"
-    if isinstance(error, MaticError):
+    if isinstance(error, MaticError) or (
+        isinstance(error, ServiceValidationError)
+        and error.translation_key == "robot_error"
+    ):
         return "robot_error"
     return "managed_failure"
 

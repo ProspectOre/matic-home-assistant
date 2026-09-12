@@ -208,6 +208,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
         (RoomStartTimeoutError(), "start_timeout"),
         (TimeoutError(), "completion_timeout"),
         (MaticError("synthetic rejection"), "robot_error"),
+        ("entity_error", "robot_error"),
     ],
 )
 async def test_plan_failure_keeps_the_room_reason_after_translation(
@@ -221,6 +222,9 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
     hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
 
     async def reject_dispatch(_call) -> None:
+        if error == "entity_error":
+            hass.states.async_set("vacuum.matic", "error")
+            return
         raise error
 
     hass.services.async_register("vacuum", "send_command", reject_dispatch)
@@ -234,6 +238,7 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
             [_room("Study", "room-study")],
             intelligent=False,
         )
+    await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "failed"
     assert last_run["reason_code"] == reason
