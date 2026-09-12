@@ -21,6 +21,7 @@ ENTITY = "vacuum.matic"
 def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the watcher's real control flow but drop its wait between polls."""
     monkeypatch.setattr(stop_return, "DOCK_SETTLE_POLL_SECONDS", 0)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0)
 
 
 def _manager(pending: bool = True) -> SimpleNamespace:
@@ -70,7 +71,10 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
     """The final DOCK observation and callback share the stopped run ID."""
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
-    refresh = AsyncMock()
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
+
     set_run_id = MagicMock()
     on_docked = AsyncMock()
 
@@ -90,6 +94,27 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
     assert set_run_id.call_args_list[0].args == ("run-1",)
     assert set_run_id.call_args_list[-1].args == (None,)
     on_docked.assert_awaited_once()
+
+
+async def test_final_dock_does_not_close_run_without_docked_state(hass) -> None:
+    """An accepted DOCK command alone does not create dock evidence."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    on_docked = AsyncMock()
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=AsyncMock(),
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            on_docked=on_docked,
+        )
+        is True
+    )
+    on_docked.assert_not_awaited()
 
 
 @pytest.mark.parametrize("state", ["docked", "returning"])

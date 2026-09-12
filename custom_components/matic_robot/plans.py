@@ -616,6 +616,7 @@ class CleaningPlanManager:
         active = robot.get("active_plan")
         if active is None:
             self.cancel(serial_number)
+            self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
         plan = robot["plans"].get(active["plan_id"], {})
         if not plan.get("finish_current_room", False):
@@ -644,6 +645,7 @@ class CleaningPlanManager:
         progress = _estimated_progress(active, expected)
         if progress is not None and progress < threshold:
             self.cancel(serial_number)
+            self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate", progress, threshold)
 
         self.cancellation_event(serial_number).clear()

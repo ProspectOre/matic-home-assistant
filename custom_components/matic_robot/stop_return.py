@@ -31,6 +31,7 @@ from .plans import OEM_STOP_FENCE_SECONDS, CleaningPlanManager
 
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
+DOCK_CONFIRM_TIMEOUT_SECONDS = 60
 # Coordinator state can still show the pre-STOP task for one refresh. Keep
 # that stale edge from abandoning the settlement watcher, but stop waiting if
 # cleaning or pause persists long enough to be replacement work.
@@ -38,6 +39,7 @@ DOCK_SETTLE_TRANSITION_GRACE_SECONDS = 60
 
 SETTLED_STATE = "idle"
 HOMEWARD_STATES = frozenset({"docked", "returning"})
+DOCKED_STATES = frozenset({"docked", "charging"})
 REPLACEMENT_STATES = frozenset({"cleaning", "paused"})
 
 _LOGGER = logging.getLogger(__name__)
@@ -148,7 +150,26 @@ async def async_dock_when_stop_settles(
                                 set_run_id(None)
                         await refresh()
                         if on_docked is not None:
-                            await on_docked()
+                            confirm_deadline = min(
+                                deadline,
+                                monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS,
+                            )
+                            while True:
+                                confirmed = hass.states.get(entity_id)
+                                if (
+                                    confirmed is not None
+                                    and confirmed.state in DOCKED_STATES
+                                ):
+                                    await on_docked()
+                                    break
+                                if monotonic() >= confirm_deadline:
+                                    _LOGGER.debug(
+                                        "Matic DOCK accepted but docked state was "
+                                        "not observed"
+                                    )
+                                    break
+                                await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+                                await refresh()
                         return True
         if now >= deadline:
             return False

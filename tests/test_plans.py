@@ -80,6 +80,7 @@ from custom_components.matic_robot.services import (
     _async_wait_for_vacuum_state,
     _entry_for_entity,
     _PreparedRoomDispatch,
+    _room_outcomes,
 )
 
 
@@ -281,6 +282,97 @@ async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "recharge_suspended"
     assert last_run["reason_code"] == "low_charge"
+
+
+async def test_explicit_stop_wins_over_recharge_suspension(hass) -> None:
+    """A managed stop remains cancellation even if the room was low-charge suspended."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+
+    async def suspended_leg(*_args, **_kwargs):
+        manager._robot("serial")["active_plan"] = {
+            "plan_id": "away",
+            "room_id": "room-kitchen",
+            "status": "suspended",
+            "suspend_reason": "low_charge",
+        }
+        manager._cancellation_reasons["serial"] = "managed_stop"
+        raise PlanCancelledError
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=suspended_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [room],
+            intelligent=False,
+        )
+
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["outcome"] == "cancelled"
+    assert last_run["reason_code"] == "managed_stop"
+
+
+async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> None:
+    """Graceful stop events use the public run outcome vocabulary."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+
+    async def stopped_leg(*_args, **_kwargs):
+        manager.finish_room_event("serial").set()
+        return False
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=stopped_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [room],
+            intelligent=False,
+        )
+
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+
+
+async def test_room_outcomes_ignore_prior_run_terminal_state(hass) -> None:
+    """A prior room failure cannot make an unvisited room partial now."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    robot = manager._robot("serial")
+    robot["plan_history"] = {
+        "away": {
+            "rooms": {
+                "room-kitchen": {
+                    "run_id": "old-run",
+                    "last_result": "failed",
+                }
+            }
+        }
+    }
+
+    outcomes = _room_outcomes(
+        manager,
+        "serial",
+        "away",
+        "new-run",
+        [_room("Kitchen", "room-kitchen")],
+        set(),
+    )
+    assert outcomes == [
+        {"room_id": "room-kitchen", "room": "Kitchen", "outcome": "unattempted"}
+    ]
 
 
 @pytest.mark.parametrize(

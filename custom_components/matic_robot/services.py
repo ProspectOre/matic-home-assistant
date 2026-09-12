@@ -3269,7 +3269,7 @@ def _room_outcomes(
         record = records.get(room.room_id, {}) if isinstance(records, dict) else {}
         attempted = isinstance(record, dict) and (
             record.get("run_id") == run_id
-            or record.get("last_result")
+            and record.get("last_result")
             in {
                 "running",
                 "suspended",
@@ -3481,7 +3481,7 @@ async def _async_execute_rooms(
                     break
             completed_room_count = len(completed_room_names)
             if finish_room_event.is_set() and completed_room_count < len(chosen):
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
                 run_cause = "managed_cancellation"
             elif completed_room_count == len(chosen):
@@ -3530,11 +3530,7 @@ async def _async_execute_rooms(
                 active_snapshot.get("status") == "suspended"
                 and active_snapshot.get("suspend_reason") == "low_charge"
             )
-            if recharge_suspended:
-                run_outcome = "recharge_suspended"
-                run_reason_code = "low_charge"
-                run_cause = "robot"
-            elif cancellation_reason == "config_entry_unload":
+            if cancellation_reason == "config_entry_unload":
                 run_outcome = "unverified"
                 run_reason_code = "config_entry_unload"
                 run_cause = "home_assistant"
@@ -3544,6 +3540,14 @@ async def _async_execute_rooms(
                 run_outcome = "cancelled"
                 run_reason_code = "managed_replaced"
                 run_cause = "replacement"
+            elif cancellation_reason == "managed_stop":
+                run_outcome = "cancelled"
+                run_reason_code = "managed_stop"
+                run_cause = "managed_cancellation"
+            elif recharge_suspended:
+                run_outcome = "recharge_suspended"
+                run_reason_code = "low_charge"
+                run_cause = "robot"
             else:
                 run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
