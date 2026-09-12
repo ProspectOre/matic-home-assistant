@@ -24,6 +24,7 @@ from typing import Any, Literal, cast, override
 
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
+from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
@@ -630,18 +631,43 @@ class CleaningPlanManager:
         floor_plan: FloorPlan | None,
         records: Iterable[CleaningSessionRecord],
     ) -> bool:
-        """Record robot-side cleaning activity without claiming completions."""
+        """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
             return False
         robot = self._robot(serial_number)
         records = tuple(records)
         changed = _import_native_room_activity(robot, floor_plan, records)
+        reconciled: list[dict[str, str]] = []
         changed = (
-            _reconcile_pending_native_history(robot, floor_plan, records) or changed
+            _reconcile_pending_native_history(
+                robot, floor_plan, records, on_reconciled=reconciled.append
+            )
+            or changed
         )
         if not changed:
             return False
-        await self._async_save_and_notify(serial_number)
+        try:
+            await self._async_save_and_notify(serial_number)
+        finally:
+            for marker in reconciled:
+                entity_id = er.async_get(self.hass).async_get_entity_id(
+                    "vacuum", DOMAIN, f"{serial_number}_vacuum"
+                )
+                self.hass.bus.async_fire(
+                    f"{DOMAIN}_room_reconciled",
+                    {
+                        **({"entity_id": entity_id} if entity_id else {}),
+                        "plan_id": marker["plan_id"],
+                        "room_id": marker["room_id"],
+                        "room": marker["room"],
+                        **(
+                            {"run_id": marker["run_id"]} if marker.get("run_id") else {}
+                        ),
+                        "native_stop_reconciled": True,
+                        "reason_code": "native_reconciled_completion",
+                        "cause": "late_native_history",
+                    },
+                )
         return True
 
     def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
@@ -1752,6 +1778,8 @@ def _reconcile_pending_native_history(
     robot: dict[str, Any],
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
+    *,
+    on_reconciled: Callable[[dict[str, str]], None] | None = None,
 ) -> bool:
     """Apply exactly one retained native completion to a pending plan room."""
     pending = _validated_native_reconciliation(
@@ -1832,6 +1860,8 @@ def _reconcile_pending_native_history(
         duration_seconds=matches[0][2],
     )
     robot.pop("pending_native_reconciliation", None)
+    if on_reconciled is not None:
+        on_reconciled(pending)
     return True
 
 

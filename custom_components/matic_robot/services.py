@@ -3259,6 +3259,7 @@ async def _async_execute_rooms(
             legs = leg_groups(chosen)
             begin_run = getattr(manager, "async_begin_run", None)
             if isinstance(manager, CleaningPlanManager) and callable(begin_run):
+                run_started = True
                 await begin_run(
                     serial_number,
                     call.data["plan_id"],
@@ -3267,7 +3268,6 @@ async def _async_execute_rooms(
                     trigger="service_call",
                     service=str(call.service),
                 )
-                run_started = True
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
                 if cancel_event.is_set() or not manager.managed_motion_is_current(

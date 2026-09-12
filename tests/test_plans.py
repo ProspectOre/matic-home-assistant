@@ -349,6 +349,40 @@ async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
     assert events[0].data["run_id"] == set_run_id.call_args_list[0].args[0]
 
 
+@pytest.mark.parametrize("persistent_failure", [False, True])
+async def test_initial_save_failure_still_retires_the_run(
+    hass, persistent_failure
+) -> None:
+    manager = CleaningPlanManager(hass)
+    error = OSError("synthetic initial storage failure")
+    manager._store = SimpleNamespace(
+        async_save=AsyncMock(side_effect=error if persistent_failure else [error, None])
+    )
+    events = []
+    hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
+    set_run_id = MagicMock()
+    with pytest.raises(OSError, match="synthetic initial storage failure"):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Study", "room-study")],
+            intelligent=False,
+            set_activity_run_id=set_run_id,
+        )
+    await hass.async_block_till_done()
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["outcome"] == "failed"
+    assert last_run["completed_room_count"] == 0
+    assert events[0].data["outcome"] == "failed"
+    assert events[0].data["run_id"] == last_run["run_id"]
+    assert set_run_id.call_args.args == (None,)
+    assert manager.lock("serial").locked() is False
+    assert "serial" not in manager._run_tasks
+
+
 @pytest.mark.parametrize(
     ("scenario", "outcome", "reason", "room_event", "credit"),
     [
@@ -1733,10 +1767,16 @@ async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> No
 
 async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     hass,
+    entity_registry,
 ) -> None:
     """A native session that finishes after STOP still credits the managed room."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
+    events = []
+    hass.bus.async_listen(f"{DOMAIN}_room_reconciled", events.append)
+    entity = entity_registry.async_get_or_create(
+        "vacuum", DOMAIN, "serial_vacuum", suggested_object_id="recovered_matic"
+    )
     room = _room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
     dispatched_at = (now - timedelta(seconds=5)).isoformat()
@@ -1751,6 +1791,7 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
             "room_id": room.room_id,
             "room": room.name,
             "dispatched_at": dispatched_at,
+            "run_id": "synthetic-recovered-run",
         },
     )
     floor_plan = FloorPlan(
@@ -1788,6 +1829,13 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     assert room_record["completed_runs"] == 1
     assert room_record["last_duration_seconds"] == 9
     assert snapshot["native_reconciliation_pending"] is False
+    await manager.async_import_native_history("serial", floor_plan, [record])
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["run_id"] == "synthetic-recovered-run"
+    assert events[0].data["entity_id"] == entity.entity_id
+    assert events[0].data["room_id"] == room.room_id
+    assert events[0].data["reason_code"] == "native_reconciled_completion"
 
 
 async def test_expired_native_reconciliation_is_cleared_without_plan_credit(
