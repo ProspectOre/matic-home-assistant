@@ -6,9 +6,9 @@ The managed runner keeps seven evidence boundaries explicit. A clean native
 history record is useful evidence, but it is not by itself proof that a saved
 plan completed or that a person caused a stop.
 
-1. **Managed outcomes.** Every managed run gets one local `run_id` and a
-   `matic_robot_plan_finished` event. Its `outcome` is `completed`, `partial`,
-   `stopped`, `failed`, or `interrupted`; `reason_code`, `cause`, and verified
+1. **Managed outcomes.** Every managed run gets one local `run_id` and emits a
+   `matic_robot_plan_finished` event when its runner exits. Its `outcome` is
+   `completed`, `partial`, `stopped`, `failed`, or `interrupted`; `reason_code`, `cause`, and verified
    room counts explain the result. `room_completed` is emitted only after the
    existing native completion guard passes.
 2. **Trigger provenance.** The run record carries the safe `trigger` label and
@@ -43,10 +43,16 @@ plan completed or that a person caused a stop.
 | All selected rooms verify | `plan_finished: completed`, matching `run_id`, all room events | Credit verified rooms only |
 | Native session ends early | `plan_finished: partial`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms due; a known in-place stop is a controlled partial result, not a generic service fault |
 | Managed stop | `plan_finished: stopped`, `managed_stop`, stop command/activity when available | Do not credit the unfinished room |
+| Independent command replaces a plan | `plan_finished: stopped`, `managed_replaced`, `cause: replacement` | Do not credit the unfinished room or dispatch another plan command |
 | Home Assistant unload | `plan_finished: interrupted`, `config_entry_unload` | No completion credit |
 | Timeout or robot error | `plan_finished: failed`, stable failure code, room failure event | No completion credit |
-| Rotation preview and execution | Same room order and selection reasons | Update opportunity only for verified work |
+| Rotation preview and execution | Same room order and selection reasons | Advance opportunity on a confirmed cleaning start; credit completion only after verification |
 | Activity churn or restart | Operational events remain visible; journal session/sequence boundaries are explicit | Never infer a cause from missing activity |
 
 Keep release evidence separate from robot credentials, network identifiers,
 serials, maps, and personal account identifiers.
+
+After an abrupt Home Assistant restart, the persisted run becomes `interrupted`
+with `reason_code: home_assistant_restart`. `recovered_at` records when recovery
+observed it; `ended_at` remains unknown. Recovery does not reconstruct a missing
+terminal event or award room credit.

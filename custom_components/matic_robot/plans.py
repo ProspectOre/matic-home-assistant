@@ -249,6 +249,18 @@ class CleaningPlanManager:
                 recovered = True
                 continue
             recovered = self._normalize_robot(robot) or recovered
+            last_run = robot.get("last_run")
+            if isinstance(last_run, dict) and last_run.get("outcome") == "running":
+                last_run.update(
+                    {
+                        "outcome": "interrupted",
+                        "reason_code": "home_assistant_restart",
+                        "cause": "home_assistant",
+                        "ended_at": None,
+                        "recovered_at": dt_util.utcnow().isoformat(),
+                    }
+                )
+                recovered = True
             fence_value = robot.get(STOP_FENCE_EXPIRES_AT)
             fence_remaining = _stop_fence_remaining_seconds(fence_value)
             if fence_value is not None:
@@ -390,7 +402,8 @@ class CleaningPlanManager:
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Cancel any managed plan before an independent motion command."""
-        self.cancel(serial_number)
+        if self.cancel(serial_number):
+            self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
         self.cancel_reconciliation_tasks(serial_number)
         reconciliation_removed = (
             self._robot(serial_number).pop("pending_native_reconciliation", None)
@@ -989,6 +1002,7 @@ class CleaningPlanManager:
         completed_room_count: int,
         *,
         terminal_activity: str | None = None,
+        cause: str = "unknown",
     ) -> bool:
         """Persist one terminal managed-run outcome when its ID still matches."""
         robot = self._robot(serial_number)
@@ -1002,6 +1016,7 @@ class CleaningPlanManager:
                 "ended_at": dt_util.utcnow().isoformat(),
                 "outcome": outcome[:64],
                 "reason_code": reason_code[:64],
+                "cause": cause[:64],
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
             }
         )

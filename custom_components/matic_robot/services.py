@@ -1354,7 +1354,12 @@ async def _async_run_room(
                 {
                     **event_data,
                     "reason_code": "managed_cancelled",
-                    "cause": "managed_cancellation",
+                    "cause": (
+                        "replacement"
+                        if manager.cancellation_reason(serial_number)
+                        == "motion_replaced"
+                        else "managed_cancellation"
+                    ),
                 },
                 context=call.context,
             )
@@ -1869,7 +1874,12 @@ async def _async_run_leg(
                 {
                     **event_data(active_room),
                     "reason_code": "managed_cancelled",
-                    "cause": "managed_cancellation",
+                    "cause": (
+                        "replacement"
+                        if manager.cancellation_reason(serial_number)
+                        == "motion_replaced"
+                        else "managed_cancellation"
+                    ),
                 },
                 context=call.context,
             )
@@ -3139,6 +3149,8 @@ class RoomStoppedInPlaceError(RoomInterruptedError):
 
 def _failure_reason_code(error: BaseException) -> str:
     """Map an internal failure to a stable, non-sensitive event code."""
+    if isinstance(error, ServiceValidationError) and error.__cause__ is not None:
+        error = error.__cause__
     if isinstance(error, RoomStartTimeoutError):
         return "start_timeout"
     if isinstance(error, TimeoutError):
@@ -3374,7 +3386,7 @@ async def _async_execute_rooms(
                         "The robot could not return to its dock",
                         "robot_command_failed",
                     ) from err
-        except PlanCancelledError:
+        except PlanCancelledError as err:
             cancellation_reason_reader = getattr(manager, "cancellation_reason", None)
             cancellation_reason = (
                 cancellation_reason_reader(serial_number)
@@ -3385,6 +3397,12 @@ async def _async_execute_rooms(
                 run_outcome = "interrupted"
                 run_reason_code = "config_entry_unload"
                 run_cause = "home_assistant"
+            elif cancellation_reason == "motion_replaced" or isinstance(
+                err.__cause__, ManagedMotionReplacedError
+            ):
+                run_outcome = "stopped"
+                run_reason_code = "managed_replaced"
+                run_cause = "replacement"
             else:
                 run_outcome = "stopped"
                 run_reason_code = "managed_stop"
@@ -3407,7 +3425,11 @@ async def _async_execute_rooms(
                 return
             run_outcome = "failed"
             run_reason_code = _failure_reason_code(err)
-            run_cause = "internal"
+            run_cause = (
+                "unknown"
+                if isinstance(err, HomeAssistantError | MaticError | TimeoutError)
+                else "internal"
+            )
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
             active = manager.snapshot(serial_number)["active_plan"]
@@ -3488,6 +3510,7 @@ async def _async_execute_rooms(
                         run_reason_code,
                         len(completed_room_names),
                         terminal_activity=terminal_activity,
+                        cause=run_cause,
                     )
                 bus = getattr(hass, "bus", None)
                 fire = getattr(bus, "async_fire", None)
