@@ -1444,6 +1444,11 @@ class CleaningPlanManager:
             }
             for plan_id, plan in robot["plans"].items()
         }
+        active_plan = deepcopy(robot.get("active_plan"))
+        if isinstance(active_plan, dict):
+            active_plan["active_elapsed_seconds"] = _active_elapsed_seconds(
+                active_plan, dt_util.utcnow()
+            )
         return {
             "completed_runs": completed_runs,
             "failed_runs": failed_runs,
@@ -1474,7 +1479,7 @@ class CleaningPlanManager:
             "selected_area_name": self._area_name(
                 serial_number, robot.get("selected_area")
             ),
-            "active_plan": deepcopy(robot.get("active_plan")),
+            "active_plan": active_plan,
             "last_interrupted_plan": deepcopy(robot.get("last_interrupted_plan")),
             "last_run": deepcopy(robot.get("last_run")),
         }
