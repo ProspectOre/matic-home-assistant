@@ -588,6 +588,8 @@ async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> No
     assert unverified[0].data["run_id"] == snapshot["last_run"]["run_id"]
     assert unverified[0].data["cleaning_mode"] == rooms[0].cleaning_mode
     assert unverified[0].data["coverage_setting"] == rooms[0].coverage_setting
+    assert unverified[0].data["reason_code"] == "unverified_completion"
+    assert unverified[0].data["cause"] == "unknown"
 
 
 @pytest.mark.parametrize("old_result", ["running", "suspended", "verifying"])

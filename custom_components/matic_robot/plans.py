@@ -1073,8 +1073,8 @@ class CleaningPlanManager:
                     **({"entity_id": entity_id} if entity_id else {}),
                     **room,
                     "run_id": run_id,
-                    "reason_code": "run_ended_without_room_evidence",
-                    "cause": "run_ended",
+                    "reason_code": "unverified_completion",
+                    "cause": "unknown",
                 },
                 context=context,
             )
