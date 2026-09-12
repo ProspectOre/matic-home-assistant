@@ -60,6 +60,7 @@ from custom_components.matic_robot.services import (
     _async_dispatch_leg_command,
     _async_execute_rooms,
     _async_expire_native_reconciliation,
+    _async_mark_run_docked,
     _async_reconcile_native_stop,
     _async_run_room,
     _async_wait_for_vacuum_state,
@@ -71,10 +72,45 @@ from custom_components.matic_robot.services import (
     _require_matic_control,
     _resolve_loaded_matic_vacuums,
     _resolve_room_id,
+    _run_provenance,
     _saved_plan_context,
     _schedule_native_reconciliation,
     async_register_services,
 )
+
+
+async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
+    """Automation/user context maps to labels and never stores identity."""
+    automation = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {},
+        context=Context(parent_id="parent", user_id="private-user"),
+    )
+    user = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {},
+        context=Context(user_id="private-user"),
+    )
+    unknown = ServiceCall(hass, DOMAIN, "run_selected_plan", {}, context=Context())
+    assert _run_provenance(automation) == "automation"
+    assert _run_provenance(user) == "user"
+    assert _run_provenance(unknown) == "external_unknown"
+
+    manager = SimpleNamespace(async_mark_run_docked=AsyncMock())
+    await _async_mark_run_docked(
+        manager, "serial", None, "vacuum.matic", automation.context
+    )
+    manager.async_mark_run_docked.assert_not_awaited()
+    await _async_mark_run_docked(
+        manager, "serial", "run-1", "vacuum.matic", automation.context
+    )
+    manager.async_mark_run_docked.assert_awaited_once_with(
+        "serial", "run-1", entity_id="vacuum.matic", context=automation.context
+    )
 
 
 def _registered_handler(services, service: str):

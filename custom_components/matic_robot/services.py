@@ -75,6 +75,7 @@ from .plans import (
     ManagedMotionReplacedError,
     SavedPlanLimitError,
     leg_groups,
+    normalize_run_provenance,
     plan_floor_token,
     resolve_room_reference,
     resolve_rooms,
@@ -480,6 +481,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
+            stop_run_id = (
+                manager.active_run_id(serial_number)
+                if command is UserCommand.STOP
+                else None
+            )
             async with manager.managed_command(serial_number, token):
                 await entry.runtime_data.client.async_send_user_command(command)
                 if command is UserCommand.STOP:
@@ -493,6 +499,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager=manager,
                     serial_number=serial_number,
                     entity_id=entity_id,
+                    run_id=stop_run_id,
+                    set_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "set_run_id",
+                        None,
+                    ),
+                    on_docked=partial(
+                        _async_mark_run_docked,
+                        manager,
+                        serial_number,
+                        stop_run_id,
+                        entity_id,
+                        call.context,
+                    ),
                 )
 
         await _async_execute_rooms(
@@ -569,6 +589,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
+            stop_run_id = (
+                manager.active_run_id(serial_number)
+                if command is UserCommand.STOP
+                else None
+            )
             async with manager.managed_command(serial_number, token):
                 await entry.runtime_data.client.async_send_user_command(command)
                 if command is UserCommand.STOP:
@@ -582,6 +607,20 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager=manager,
                     serial_number=serial_number,
                     entity_id=entity_id,
+                    run_id=stop_run_id,
+                    set_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "set_run_id",
+                        None,
+                    ),
+                    on_docked=partial(
+                        _async_mark_run_docked,
+                        manager,
+                        serial_number,
+                        stop_run_id,
+                        entity_id,
+                        call.context,
+                    ),
                 )
 
         await _async_execute_rooms(
@@ -1125,6 +1164,7 @@ async def _async_run_room(
         "cleaning_mode": room.cleaning_mode,
         "coverage_setting": room.coverage_setting,
         "run_id": run_id,
+        "provenance": _run_provenance(call),
     }
     await manager.async_mark_started(
         serial_number, call.data["plan_id"], room, run_id=run_id
@@ -1620,6 +1660,7 @@ async def _async_run_leg(
             "cleaning_mode": room.cleaning_mode,
             "coverage_setting": room.coverage_setting,
             "run_id": run_id,
+            "provenance": _run_provenance(call),
         }
 
     active_room = leg[0]
@@ -3183,6 +3224,78 @@ class RoomTakenOverError(HomeAssistantError):
     """The native task ended, changed, or could no longer be identified."""
 
 
+def _run_provenance(call: ServiceCall) -> str:
+    """Return bounded trigger provenance without retaining account identity."""
+    context = call.context
+    if getattr(context, "parent_id", None):
+        return "automation"
+    if getattr(context, "user_id", None):
+        return "user"
+    return normalize_run_provenance(None)
+
+
+async def _async_mark_run_docked(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    run_id: str | None,
+    entity_id: str,
+    context: Context,
+) -> None:
+    """Bridge the stop watcher to durable run closure for service calls."""
+    if run_id is None:
+        return
+    await manager.async_mark_run_docked(
+        serial_number,
+        run_id,
+        entity_id=entity_id,
+        context=context,
+    )
+
+
+def _room_outcomes(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    plan_id: str,
+    run_id: str,
+    chosen: Sequence[CleaningRoom],
+    completed_names: set[str],
+) -> list[dict[str, str]]:
+    """Return the bounded room outcome vocabulary for one terminal run."""
+    history = manager.snapshot(serial_number).get("plan_history", {})
+    plan_history = history.get(plan_id, {}) if isinstance(history, dict) else {}
+    records = plan_history.get("rooms", {}) if isinstance(plan_history, dict) else {}
+    result: list[dict[str, str]] = []
+    for room in chosen:
+        record = records.get(room.room_id, {}) if isinstance(records, dict) else {}
+        attempted = isinstance(record, dict) and (
+            record.get("run_id") == run_id
+            or record.get("last_result")
+            in {
+                "running",
+                "suspended",
+                "verifying",
+                "ended_unverified",
+                "cancelled",
+                "interrupted",
+                "failed",
+            }
+        )
+        result.append(
+            {
+                "room_id": room.room_id,
+                "room": room.name,
+                "outcome": (
+                    "completed"
+                    if room.name in completed_names
+                    else "partial"
+                    if attempted
+                    else "unattempted"
+                ),
+            }
+        )
+    return result
+
+
 async def _async_execute_rooms(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -3222,6 +3335,7 @@ async def _async_execute_rooms(
         run_outcome = "failed"
         run_reason_code = "run_not_finished"
         run_cause = "unknown"
+        run_provenance = _run_provenance(call)
         completed_room_names: set[str] = set()
         chosen: list[CleaningRoom] = []
 
@@ -3265,8 +3379,9 @@ async def _async_execute_rooms(
                     call.data["plan_id"],
                     run_id,
                     len(chosen),
-                    trigger="service_call",
+                    trigger=run_provenance,
                     service=str(call.service),
+                    provenance=run_provenance,
                 )
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
@@ -3374,7 +3489,7 @@ async def _async_execute_rooms(
                 run_reason_code = "all_rooms_verified"
                 run_cause = "verified_completion"
             else:
-                run_outcome = "partial"
+                run_outcome = "unverified"
                 run_reason_code = "partial_native_result"
                 run_cause = "native_result"
             if cancel_event.is_set() or not manager.managed_motion_is_current(
@@ -3405,18 +3520,32 @@ async def _async_execute_rooms(
                 if callable(cancellation_reason_reader)
                 else None
             )
-            if cancellation_reason == "config_entry_unload":
-                run_outcome = "interrupted"
+            snapshot_reader = getattr(manager, "snapshot", None)
+            active_snapshot = (
+                snapshot_reader(serial_number).get("active_plan")
+                if callable(snapshot_reader)
+                else None
+            )
+            recharge_suspended = isinstance(active_snapshot, dict) and (
+                active_snapshot.get("status") == "suspended"
+                and active_snapshot.get("suspend_reason") == "low_charge"
+            )
+            if recharge_suspended:
+                run_outcome = "recharge_suspended"
+                run_reason_code = "low_charge"
+                run_cause = "robot"
+            elif cancellation_reason == "config_entry_unload":
+                run_outcome = "unverified"
                 run_reason_code = "config_entry_unload"
                 run_cause = "home_assistant"
             elif cancellation_reason == "motion_replaced" or isinstance(
                 err.__cause__, ManagedMotionReplacedError
             ):
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_replaced"
                 run_cause = "replacement"
             else:
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
                 run_cause = "managed_cancellation"
             return
@@ -3431,7 +3560,7 @@ async def _async_execute_rooms(
                 getattr(err, "__cause__", None), RoomStoppedInPlaceError
             )
             if stopped_in_place:
-                run_outcome = "partial"
+                run_outcome = "unverified"
                 run_reason_code = "stopped_in_place"
                 run_cause = "unknown"
                 return
@@ -3441,7 +3570,7 @@ async def _async_execute_rooms(
                 else err
             )
             if isinstance(leaf_error, RoomInterruptedError | RoomTakenOverError):
-                run_outcome = "interrupted"
+                run_outcome = "unverified"
                 run_reason_code = (
                     "native_task_taken_over"
                     if isinstance(leaf_error, RoomTakenOverError)
@@ -3526,6 +3655,7 @@ async def _async_execute_rooms(
                         if current_state is not None
                         else "unknown"
                     )
+                    room_outcomes: list[dict[str, str]] = []
                     try:
                         finish_run = getattr(manager, "async_finish_run", None)
                         if callable(finish_run):
@@ -3540,7 +3670,19 @@ async def _async_execute_rooms(
                                 entity_id=entity_id,
                                 context=call.context,
                             )
+                        room_outcomes = _room_outcomes(
+                            manager,
+                            serial_number,
+                            call.data["plan_id"],
+                            run_id,
+                            chosen,
+                            completed_room_names,
+                        )
                     finally:
+                        # Room terminal events are queued by the HA bus. Yield
+                        # once so the plan terminal event is observed after the
+                        # room boundary it summarizes.
+                        await asyncio.sleep(0)
                         bus = getattr(hass, "bus", None)
                         fire = getattr(bus, "async_fire", None)
                         if callable(fire):
@@ -3550,7 +3692,8 @@ async def _async_execute_rooms(
                                     ATTR_ENTITY_ID: entity_id,
                                     "plan_id": call.data["plan_id"],
                                     "run_id": run_id,
-                                    "trigger": "service_call",
+                                    "trigger": run_provenance,
+                                    "provenance": run_provenance,
                                     "service": str(call.service),
                                     "started_at": run_started_at,
                                     "ended_at": finished_at,
@@ -3560,6 +3703,7 @@ async def _async_execute_rooms(
                                     "terminal_activity": terminal_activity,
                                     "room_count": len(chosen),
                                     "completed_room_count": len(completed_room_names),
+                                    "room_outcomes": room_outcomes,
                                 },
                                 context=call.context,
                             )

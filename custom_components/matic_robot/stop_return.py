@@ -80,6 +80,9 @@ async def async_dock_when_stop_settles(
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
+    run_id: str | None = None,
+    set_run_id: Callable[[str | None], None] | None = None,
+    on_docked: Callable[[], Awaitable[None]] | None = None,
 ) -> bool:
     """Dock once the stopped task ends and report whether DOCK was sent."""
     started = monotonic()
@@ -131,6 +134,8 @@ async def async_dock_when_stop_settles(
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
                         try:
+                            if set_run_id is not None:
+                                set_run_id(run_id)
                             await client.async_send_user_command(UserCommand.DOCK)
                         except MaticError as err:
                             _LOGGER.warning(
@@ -138,7 +143,12 @@ async def async_dock_when_stop_settles(
                                 type(err).__name__,
                             )
                             return False
+                        finally:
+                            if set_run_id is not None:
+                                set_run_id(None)
                         await refresh()
+                        if on_docked is not None:
+                            await on_docked()
                         return True
         if now >= deadline:
             return False
@@ -155,6 +165,9 @@ def schedule_dock_after_stop(
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
+    run_id: str | None = None,
+    set_run_id: Callable[[str | None], None] | None = None,
+    on_docked: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher that docks a settled stop."""
     create_background_task = getattr(hass, "async_create_background_task", None)
@@ -168,6 +181,9 @@ def schedule_dock_after_stop(
             manager=manager,
             serial_number=serial_number,
             entity_id=entity_id,
+            run_id=run_id,
+            set_run_id=set_run_id,
+            on_docked=on_docked,
         ),
         f"{DOMAIN} dock after stop",
     )

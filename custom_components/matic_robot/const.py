@@ -38,6 +38,7 @@ EVENT_FIRMWARE_CHANGED: Final = f"{DOMAIN}_firmware_changed"
 EVENT_FIRMWARE_ANALYZED: Final = f"{DOMAIN}_firmware_analyzed"
 EVENT_CLEANING_FINISHED: Final = f"{DOMAIN}_cleaning_finished"
 EVENT_PLAN_FINISHED: Final = f"{DOMAIN}_plan_finished"
+EVENT_PLAN_DOCKED: Final = f"{DOMAIN}_plan_docked"
 EVENT_ACTIVITY_OBSERVED: Final = f"{DOMAIN}_activity_observed"
 EVENT_CUES: Final = f"{DOMAIN}_cues"
 

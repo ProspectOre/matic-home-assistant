@@ -66,6 +66,32 @@ async def test_docks_once_the_stopped_task_reports_inactive(hass) -> None:
     refresh.assert_awaited_once()
 
 
+async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> None:
+    """The final DOCK observation and callback share the stopped run ID."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    refresh = AsyncMock()
+    set_run_id = MagicMock()
+    on_docked = AsyncMock()
+
+    docked = await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=set_run_id,
+        on_docked=on_docked,
+    )
+
+    assert docked is True
+    assert set_run_id.call_args_list[0].args == ("run-1",)
+    assert set_run_id.call_args_list[-1].args == (None,)
+    on_docked.assert_awaited_once()
+
+
 @pytest.mark.parametrize("state", ["docked", "returning"])
 async def test_skips_when_the_robot_is_already_home_or_heading_there(
     hass, state: str

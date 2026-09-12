@@ -36,7 +36,7 @@ from .area_binding import (
     binding_for_area,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
-from .const import DOMAIN
+from .const import DOMAIN, EVENT_PLAN_DOCKED
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 5
@@ -54,6 +54,48 @@ ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
+
+# These are the only terminal outcomes exposed for a managed run.  ``running``
+# remains an internal in-flight marker; room history keeps its own evidence
+# state and is never inferred from this run-level value.
+RUN_OUTCOMES = (
+    "completed",
+    "stopped_docked",
+    "recharge_suspended",
+    "cancelled",
+    "failed",
+    "unverified",
+)
+RunOutcome = Literal[
+    "completed",
+    "stopped_docked",
+    "recharge_suspended",
+    "cancelled",
+    "failed",
+    "unverified",
+]
+RUN_PROVENANCE = ("automation", "user", "internal", "external_unknown")
+RunProvenance = Literal["automation", "user", "internal", "external_unknown"]
+
+_LEGACY_RUN_OUTCOMES: dict[str, RunOutcome] = {
+    "partial": "unverified",
+    "stopped": "cancelled",
+    "interrupted": "unverified",
+}
+
+
+def normalize_run_outcome(value: str) -> RunOutcome:
+    """Map older persisted labels into the explicit terminal vocabulary."""
+    if value in RUN_OUTCOMES:
+        return cast(RunOutcome, value)
+    return _LEGACY_RUN_OUTCOMES.get(value, "unverified")
+
+
+def normalize_run_provenance(value: str | None) -> RunProvenance:
+    """Keep provenance bounded and free of account identifiers."""
+    if value in RUN_PROVENANCE:
+        return cast(RunProvenance, value)
+    return "external_unknown"
 
 
 class SavedPlanLimitError(HomeAssistantError):
@@ -80,6 +122,7 @@ class _RotationCandidate:
     effective_value: str | None
     source: str | None
     last_result: str | None
+    last_completion: str | None
 
 
 def plan_floor_token(floor_plan: FloorPlan) -> str:
@@ -256,7 +299,7 @@ class CleaningPlanManager:
             if isinstance(last_run, dict) and last_run.get("outcome") == "running":
                 last_run.update(
                     {
-                        "outcome": "interrupted",
+                        "outcome": "unverified",
                         "reason_code": "home_assistant_restart",
                         "cause": "home_assistant",
                         "ended_at": None,
@@ -914,6 +957,7 @@ class CleaningPlanManager:
                     "last_result": candidate.last_result,
                     "last_opportunity": candidate.effective_value,
                     "last_opportunity_source": candidate.source,
+                    "last_completion": candidate.last_completion,
                     "selection_reason": reason,
                 }
             )
@@ -988,6 +1032,11 @@ class CleaningPlanManager:
                 effective = global_opportunity
                 source = "global"
             last_result = record.get("last_result")
+            completion_values = _latest_timestamp_value(
+                record.get("last_completed"),
+                global_record.get("last_completed"),
+                now=now,
+            )
             candidates.append(
                 _RotationCandidate(
                     index=index,
@@ -996,6 +1045,9 @@ class CleaningPlanManager:
                     effective_value=effective[1] if effective else None,
                     source=source,
                     last_result=last_result if isinstance(last_result, str) else None,
+                    last_completion=(
+                        completion_values[1] if completion_values else None
+                    ),
                 )
             )
         return candidates
@@ -1009,9 +1061,11 @@ class CleaningPlanManager:
         *,
         trigger: str,
         service: str,
+        provenance: str | None = None,
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
         robot = self._robot(serial_number)
+        safe_provenance = normalize_run_provenance(provenance or trigger)
         robot["last_run"] = {
             "run_id": run_id,
             "plan_id": plan_id,
@@ -1020,7 +1074,8 @@ class CleaningPlanManager:
             "ended_at": None,
             "outcome": "running",
             "reason_code": "run_started",
-            "trigger": trigger[:64],
+            "trigger": safe_provenance,
+            "provenance": safe_provenance,
             "service": service[:128],
             "room_count": max(0, room_count),
             "completed_room_count": 0,
@@ -1057,7 +1112,7 @@ class CleaningPlanManager:
         last_run.update(
             {
                 "ended_at": ended_at,
-                "outcome": outcome[:64],
+                "outcome": normalize_run_outcome(outcome),
                 "reason_code": reason_code[:64],
                 "cause": cause[:64],
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
@@ -1078,6 +1133,62 @@ class CleaningPlanManager:
                 },
                 context=context,
             )
+        return True
+
+    @callback
+    def active_run_id(self, serial_number: str) -> str | None:
+        """Return the current managed run ID without exposing user context."""
+        last_run = self._robot(serial_number).get("last_run")
+        if isinstance(last_run, dict) and last_run.get("outcome") == "running":
+            run_id = last_run.get("run_id")
+            return run_id if isinstance(run_id, str) else None
+        return None
+
+    async def async_mark_run_docked(
+        self,
+        serial_number: str,
+        run_id: str,
+        *,
+        entity_id: str | None = None,
+        context: Context | None = None,
+    ) -> bool:
+        """Close a stopped run only after a correlated final DOCK settles."""
+        robot = self._robot(serial_number)
+        last_run = robot.get("last_run")
+        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+            return False
+        if last_run.get("outcome") not in {"cancelled", "unverified"}:
+            return False
+        now = dt_util.utcnow().isoformat()
+        provenance = normalize_run_provenance(
+            last_run.get("provenance")
+            if isinstance(last_run.get("provenance"), str)
+            else None
+        )
+        last_run.update(
+            {
+                "outcome": "stopped_docked",
+                "reason_code": "stopped_docked",
+                "terminal_activity": "docked",
+                "docked_at": now,
+                "provenance": provenance,
+            }
+        )
+        await self._async_save_and_notify(serial_number)
+        self.hass.bus.async_fire(
+            EVENT_PLAN_DOCKED,
+            {
+                **({"entity_id": entity_id} if entity_id else {}),
+                "run_id": run_id,
+                "plan_id": last_run.get("plan_id"),
+                "outcome": "stopped_docked",
+                "reason_code": "stopped_docked",
+                "terminal_activity": "docked",
+                "docked_at": now,
+                "provenance": provenance,
+            },
+            context=context,
+        )
         return True
 
     async def async_mark_started(
@@ -1590,6 +1701,27 @@ class CleaningPlanManager:
         elif "last_run" not in robot:
             robot["last_run"] = None
             changed = True
+        elif isinstance(last_run, dict):
+            last_run_value = cast(dict[str, Any], last_run)
+            outcome = last_run_value.get("outcome")
+            if isinstance(outcome, str) and outcome != "running":
+                normalized_outcome = normalize_run_outcome(outcome)
+                if outcome != normalized_outcome:
+                    last_run_value["outcome"] = normalized_outcome
+                    changed = True
+            raw_provenance = last_run_value.get("provenance") or last_run_value.get(
+                "trigger"
+            )
+            safe_provenance = normalize_run_provenance(
+                raw_provenance if isinstance(raw_provenance, str) else None
+            )
+            if (
+                last_run_value.get("trigger") != safe_provenance
+                or last_run_value.get("provenance") != safe_provenance
+            ):
+                last_run_value["trigger"] = safe_provenance
+                last_run_value["provenance"] = safe_provenance
+                changed = True
         pending = robot.get("pending_native_reconciliation")
         if pending is not None and _validated_native_reconciliation(pending) is None:
             robot.pop("pending_native_reconciliation", None)
@@ -2124,6 +2256,7 @@ def _saved_order_rotation_details(
             "last_result": None,
             "last_opportunity": None,
             "last_opportunity_source": None,
+            "last_completion": None,
             "selection_reason": "saved_order",
         }
         for rank, room in enumerate(rooms, start=1)
