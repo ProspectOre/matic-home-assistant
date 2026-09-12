@@ -507,6 +507,138 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         )
 
 
+@pytest.mark.parametrize("terminal", ["stop", "interrupted", "failed"])
+async def test_multi_room_exit_closes_earlier_room_history(hass, terminal) -> None:
+    """An ended leg cannot leave its previously visited rooms marked running."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    rooms = [_room("Kitchen", "room-kitchen"), _room("Study", "room-study")]
+    older_room = _room("Storage", "room-storage")
+    for plan_id in ("away", "earlier-plan"):
+        await manager.async_mark_started(
+            "serial", plan_id, older_room, run_id="earlier-run"
+        )
+    manager._robot("serial")["active_plan"] = None
+    events = []
+    for event in ("room_started", "room_ended_unverified", "plan_finished"):
+        hass.bus.async_listen(f"{DOMAIN}_{event}", events.append)
+    observations = 0
+
+    async def native_outcome(*args, **kwargs):
+        nonlocal observations
+        observations += 1
+        if observations == 1:
+            return RoomRunOutcome.ROOM_CHANGED, rooms[1]
+        if terminal == "stop":
+            manager.cancel("serial")
+            raise PlanCancelledError
+        if terminal == "interrupted":
+            raise RoomInterruptedError("synthetic interruption")
+        raise MaticError("synthetic failure")
+
+    with (
+        nullcontext() if terminal == "stop" else pytest.raises(ServiceValidationError),
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_owned_start",
+            AsyncMock(return_value="cleaning"),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_leg_outcome",
+            side_effect=native_outcome,
+        ),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            session_history=AsyncMock(return_value=()),
+        )
+    await hass.async_block_till_done()
+    snapshot = manager.snapshot("serial")
+    records = snapshot["plan_history"]["away"]["rooms"]
+    assert records[rooms[0].room_id]["last_result"] == "ended_unverified"
+    assert records[rooms[0].room_id]["unverified_runs"] == 1
+    assert records[older_room.room_id]["last_result"] == "running"
+    assert (
+        snapshot["plan_history"]["earlier-plan"]["rooms"][older_room.room_id][
+            "last_result"
+        ]
+        == "running"
+    )
+    assert (
+        records[rooms[1].room_id]["last_result"]
+        == {"stop": "cancelled", "interrupted": "interrupted", "failed": "failed"}[
+            terminal
+        ]
+    )
+    assert snapshot["completed_runs"] == 0
+    assert snapshot["active_plan"] is None
+    assert snapshot["last_run"]["completed_room_count"] == 0
+    unverified = [
+        e for e in events if e.event_type == f"{DOMAIN}_room_ended_unverified"
+    ]
+    assert len(unverified) == 1
+    assert unverified[0].data["entity_id"] == "vacuum.matic"
+    assert unverified[0].data["room_id"] == rooms[0].room_id
+    assert unverified[0].data["run_id"] == snapshot["last_run"]["run_id"]
+    assert unverified[0].data["cleaning_mode"] == rooms[0].cleaning_mode
+    assert unverified[0].data["coverage_setting"] == rooms[0].coverage_setting
+    assert unverified[0].data["reason_code"] == "unverified_completion"
+    assert unverified[0].data["cause"] == "unknown"
+
+
+@pytest.mark.parametrize("old_result", ["running", "suspended", "verifying"])
+async def test_restart_closes_orphaned_room_status_without_new_credit(
+    hass, old_result
+) -> None:
+    """Legacy room status can recover without guessing its physical end time."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    completed_at = (dt_util.utcnow() - timedelta(hours=2)).isoformat()
+    await manager.async_mark_completed(
+        "serial", "away", room, completed_at=completed_at, duration_seconds=31
+    )
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_resumed("serial", "away", room)
+    robot = manager._robot("serial")
+    robot["active_plan"] = None
+    robot["rotations"]["away"]["rooms"][room.room_id]["last_result"] = old_result
+    robot["rotations"]["away"]["rooms"]["malformed"] = {"last_result": []}
+    global_before = deepcopy(robot["rooms"])
+    events = []
+    hass.bus.async_listen(f"{DOMAIN}_room_ended_unverified", events.append)
+    recovered = CleaningPlanManager(hass)
+    recovered._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=deepcopy(manager._data)),
+        async_save=AsyncMock(),
+    )
+
+    await recovered.async_load()
+    record = recovered.snapshot("serial")["plan_history"]["away"]["rooms"][room.room_id]
+    assert record["last_result"] == "ended_unverified"
+    assert record["last_result_before_recovery"] == old_result
+    assert dt_util.parse_datetime(record["recovered_at"]) is not None
+    assert "last_ended_unverified" not in record
+    assert record["unverified_runs"] == 1
+    assert record["completed_runs"] == 1
+    assert record["last_completed"] == completed_at
+    assert record["last_duration_seconds"] == 31
+    assert recovered._robot("serial")["rooms"] == global_before
+    await hass.async_block_till_done()
+    assert events == []
+    after_recovery = deepcopy(recovered._data)
+    recovered._store.async_load.return_value = deepcopy(after_recovery)
+    recovered._store.async_save.reset_mock()
+    await recovered.async_load()
+    assert recovered._data == after_recovery
+
+
 def test_leg_groups_split_only_on_settings_changes() -> None:
     quick_a = _room("Living Room", "room-a")
     quick_b = _room("Dining Room", "room-b")
