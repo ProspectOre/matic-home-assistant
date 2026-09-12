@@ -55,4 +55,9 @@ serials, maps, and personal account identifiers.
 After an abrupt Home Assistant restart, the persisted run becomes `interrupted`
 with `reason_code: home_assistant_restart`. `recovered_at` records when recovery
 observed it; `ended_at` remains unknown. Recovery does not reconstruct a missing
-terminal event or award room credit.
+terminal event or award room credit. Verified counts are saved with room history,
+so recovery retains work already verified before the interruption.
+
+Late native reconciliation carries the originating `run_id`. The terminal plan
+record continues to describe the evidence available when its runner exited;
+`room_reconciled` identifies any additional completion verified afterward.

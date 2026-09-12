@@ -150,6 +150,7 @@ class _NativeReconciliation:
     room: str
     dispatched_at: datetime
     cleaning_mode: str | None = None
+    run_id: str | None = None
 
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
@@ -1322,7 +1323,7 @@ async def _async_run_room(
                 dispatch_attempted,
             )
             reconciliation = _build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started
+                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
             )
             async with _managed_reconciliation_guard(
                 manager, serial_number, motion_token
@@ -1393,7 +1394,7 @@ async def _async_run_room(
             None
             if isinstance(err, RoomStoppedInPlaceError)
             else _build_native_reconciliation(
-                call.data["plan_id"], room, dispatched_at, room_started
+                call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
             )
         )
         async with _managed_reconciliation_guard(
@@ -1454,7 +1455,7 @@ async def _async_run_room(
         else:
             failure_reason = str(err).strip() or "The managed room failed"
         reconciliation = _build_native_reconciliation(
-            call.data["plan_id"], room, dispatched_at, room_started
+            call.data["plan_id"], room, dispatched_at, room_started, run_id=run_id
         )
         async with _managed_reconciliation_guard(
             manager, serial_number, motion_token
@@ -2586,12 +2587,14 @@ def _build_native_reconciliation(
     room: CleaningRoom,
     dispatched_at: datetime | None,
     room_started: bool,
+    *,
+    run_id: str | None = None,
 ) -> _NativeReconciliation | None:
     """Build a late-native marker only after the robot visibly started the room."""
     if not room_started or dispatched_at is None:
         return None
     return _NativeReconciliation(
-        plan_id, room.room_id, room.name, dispatched_at, room.cleaning_mode
+        plan_id, room.room_id, room.name, dispatched_at, room.cleaning_mode, run_id
     )
 
 
@@ -2607,6 +2610,7 @@ def _native_reconciliation_data(
         "room": value.room,
         "dispatched_at": value.dispatched_at.isoformat(),
         **({"cleaning_mode": value.cleaning_mode} if value.cleaning_mode else {}),
+        **({"run_id": value.run_id} if value.run_id else {}),
     }
 
 
@@ -2731,6 +2735,11 @@ async def _async_reconcile_native_stop(
                         "native_stop_reconciled": True,
                         "reason_code": "native_reconciled_completion",
                         "cause": "late_native_history",
+                        **(
+                            {"run_id": reconciliation.run_id}
+                            if reconciliation.run_id
+                            else {}
+                        ),
                     },
                     context=context,
                 )
@@ -3426,6 +3435,20 @@ async def _async_execute_rooms(
                 run_reason_code = "stopped_in_place"
                 run_cause = "unknown"
                 return
+            leaf_error = (
+                err.__cause__
+                if isinstance(err, ServiceValidationError) and err.__cause__ is not None
+                else err
+            )
+            if isinstance(leaf_error, RoomInterruptedError | RoomTakenOverError):
+                run_outcome = "interrupted"
+                run_reason_code = (
+                    "native_task_taken_over"
+                    if isinstance(leaf_error, RoomTakenOverError)
+                    else _interruption_reason_code(leaf_error)
+                )
+                run_cause = "unknown"
+                raise
             run_outcome = "failed"
             run_reason_code = _failure_reason_code(err)
             run_cause = (
@@ -3490,55 +3513,59 @@ async def _async_execute_rooms(
                         )
             raise
         finally:
-            manager.end_managed_motion(serial_number, motion_token)
-            manager.unregister_run_task(serial_number)
-            if run_started:
-                finished_at = dt_util.utcnow().isoformat()
-                states = getattr(hass, "states", None)
-                state_getter = getattr(states, "get", None)
-                current_state = (
-                    state_getter(entity_id) if callable(state_getter) else None
-                )
-                terminal_activity = (
-                    str(getattr(current_state, "state", "unknown"))
-                    if current_state is not None
-                    else "unknown"
-                )
-                finish_run = getattr(manager, "async_finish_run", None)
-                if callable(finish_run):
-                    await finish_run(
-                        serial_number,
-                        run_id,
-                        run_outcome,
-                        run_reason_code,
-                        len(completed_room_names),
-                        terminal_activity=terminal_activity,
-                        cause=run_cause,
+            try:
+                if run_started:
+                    finished_at = dt_util.utcnow().isoformat()
+                    states = getattr(hass, "states", None)
+                    state_getter = getattr(states, "get", None)
+                    current_state = (
+                        state_getter(entity_id) if callable(state_getter) else None
                     )
-                bus = getattr(hass, "bus", None)
-                fire = getattr(bus, "async_fire", None)
-                if callable(fire):
-                    fire(
-                        EVENT_PLAN_FINISHED,
-                        {
-                            ATTR_ENTITY_ID: entity_id,
-                            "plan_id": call.data["plan_id"],
-                            "run_id": run_id,
-                            "trigger": "service_call",
-                            "service": str(call.service),
-                            "started_at": run_started_at,
-                            "ended_at": finished_at,
-                            "outcome": run_outcome,
-                            "reason_code": run_reason_code,
-                            "cause": run_cause,
-                            "terminal_activity": terminal_activity,
-                            "room_count": len(chosen),
-                            "completed_room_count": len(completed_room_names),
-                        },
-                        context=call.context,
+                    terminal_activity = (
+                        str(getattr(current_state, "state", "unknown"))
+                        if current_state is not None
+                        else "unknown"
                     )
-            if set_activity_run_id is not None:
-                set_activity_run_id(None)
+                    try:
+                        finish_run = getattr(manager, "async_finish_run", None)
+                        if callable(finish_run):
+                            await finish_run(
+                                serial_number,
+                                run_id,
+                                run_outcome,
+                                run_reason_code,
+                                len(completed_room_names),
+                                terminal_activity=terminal_activity,
+                                cause=run_cause,
+                            )
+                    finally:
+                        bus = getattr(hass, "bus", None)
+                        fire = getattr(bus, "async_fire", None)
+                        if callable(fire):
+                            fire(
+                                EVENT_PLAN_FINISHED,
+                                {
+                                    ATTR_ENTITY_ID: entity_id,
+                                    "plan_id": call.data["plan_id"],
+                                    "run_id": run_id,
+                                    "trigger": "service_call",
+                                    "service": str(call.service),
+                                    "started_at": run_started_at,
+                                    "ended_at": finished_at,
+                                    "outcome": run_outcome,
+                                    "reason_code": run_reason_code,
+                                    "cause": run_cause,
+                                    "terminal_activity": terminal_activity,
+                                    "room_count": len(chosen),
+                                    "completed_room_count": len(completed_room_names),
+                                },
+                                context=call.context,
+                            )
+            finally:
+                manager.end_managed_motion(serial_number, motion_token)
+                manager.unregister_run_task(serial_number)
+                if set_activity_run_id is not None:
+                    set_activity_run_id(None)
 
 
 async def _ensure_stop_settled(

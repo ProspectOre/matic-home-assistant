@@ -1112,7 +1112,20 @@ class CleaningPlanManager:
         if duration is not None and duration > 0:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
-        self._robot(serial_number)["active_plan"] = None
+        robot = self._robot(serial_number)
+        last_run = robot.get("last_run")
+        if (
+            isinstance(last_run, dict)
+            and last_run.get("outcome") == "running"
+            and last_run.get("plan_id") == plan_id
+        ):
+            # Checkpoint verified credit with room history, so a crash before
+            # the plan finalizer cannot lose work already verified and saved.
+            last_run["completed_room_count"] = min(
+                _stored_count(last_run, "completed_room_count") + 1,
+                _stored_count(last_run, "room_count"),
+            )
+        robot["active_plan"] = None
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_ended_unverified(
@@ -1691,6 +1704,7 @@ def _validated_native_reconciliation(
     if parsed_expiry is None or parsed_expiry.tzinfo is None:
         return None
     cleaning_mode = value.get("cleaning_mode")
+    run_id = value.get("run_id")
     return {
         "plan_id": plan_id,
         "room_id": room_id,
@@ -1701,6 +1715,11 @@ def _validated_native_reconciliation(
             {"cleaning_mode": cleaning_mode}
             if isinstance(cleaning_mode, str)
             and cleaning_mode in ("vacuum", "mop", "vacuum_and_mop")
+            else {}
+        ),
+        **(
+            {"run_id": run_id}
+            if isinstance(run_id, str) and 0 < len(run_id) <= 64
             else {}
         ),
     }

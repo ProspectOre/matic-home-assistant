@@ -1,6 +1,7 @@
 """Durable intelligent cleaning behavior."""
 
 import asyncio
+from contextlib import nullcontext
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, timedelta
@@ -250,7 +251,10 @@ async def test_plan_failure_keeps_the_room_reason_after_translation(
 
 
 @pytest.mark.parametrize("active_room", [False, True])
-async def test_restart_retires_persisted_running_outcome(hass, active_room) -> None:
+@pytest.mark.parametrize("verified_room", [False, True])
+async def test_restart_retires_persisted_running_outcome(
+    hass, active_room, verified_room
+) -> None:
     """A crash between rooms must not leave a nonexistent run marked running."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -262,9 +266,16 @@ async def test_restart_retires_persisted_running_outcome(hass, active_room) -> N
         trigger="service_call",
         service="run_selected_plan",
     )
-    if active_room:
+    if verified_room:
         await manager.async_mark_started(
             "serial", "away", _room("Study", "room-study"), run_id="synthetic-run"
+        )
+        await manager.async_mark_completed(
+            "serial", "away", _room("Study", "room-study"), duration_seconds=30
+        )
+    if active_room:
+        await manager.async_mark_started(
+            "serial", "away", _room("Den", "room-den"), run_id="synthetic-run"
         )
     recovering = CleaningPlanManager(hass)
     recovering._store = SimpleNamespace(
@@ -279,11 +290,63 @@ async def test_restart_retires_persisted_running_outcome(hass, active_room) -> N
     assert last_run["cause"] == "home_assistant"
     assert last_run["ended_at"] is None
     assert dt_util.parse_datetime(last_run["recovered_at"]) is not None
-    assert last_run["completed_room_count"] == 0
+    assert last_run["completed_room_count"] == int(verified_room)
     assert recovering.snapshot("serial")["active_plan"] is None
     recovering._store.async_load.return_value = deepcopy(recovering._data)
     await recovering.async_load()
     assert recovering.snapshot("serial")["last_run"] == last_run
+
+
+@pytest.mark.parametrize("save_fails", [False, True])
+async def test_unload_waits_for_terminal_save_and_always_clears_run_scope(
+    hass, save_fails
+) -> None:
+    """Slow or failed terminal storage cannot outlive entry teardown silently."""
+    manager = CleaningPlanManager(hass)
+    saving = asyncio.Event()
+    release = asyncio.Event()
+    set_run_id = MagicMock()
+    events = []
+    hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
+
+    async def save(data):
+        if data["robots"]["serial"]["last_run"]["outcome"] != "running":
+            saving.set()
+            await release.wait()
+            if save_fails:
+                raise OSError("synthetic storage failure")
+
+    manager._store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(return_value=False),
+    ):
+        run = asyncio.create_task(
+            _async_execute_rooms(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                [_room("Study", "room-study")],
+                intelligent=False,
+                set_activity_run_id=set_run_id,
+            )
+        )
+        await asyncio.wait_for(saving.wait(), 1)
+        unload = asyncio.create_task(manager.async_cancel_and_wait("serial"))
+        await asyncio.sleep(0)
+        waited_for_save = not unload.done()
+        release.set()
+        result, _ = await asyncio.gather(run, unload, return_exceptions=True)
+    await hass.async_block_till_done()
+    assert waited_for_save
+    assert isinstance(result, OSError) if save_fails else result is None
+    assert set_run_id.call_args.args == (None,)
+    assert manager.lock("serial").locked() is False
+    assert "serial" not in manager._run_tasks
+    assert len(events) == 1
+    assert events[0].data["run_id"] == set_run_id.call_args_list[0].args[0]
 
 
 @pytest.mark.parametrize(
@@ -295,6 +358,8 @@ async def test_restart_retires_persisted_running_outcome(hass, active_room) -> N
         ("stop", "stopped", "managed_stop", "room_cancelled", 0),
         ("replacement", "stopped", "managed_replaced", "room_cancelled", 0),
         ("unload", "interrupted", "config_entry_unload", "room_interrupted", 0),
+        ("interrupted", "interrupted", "interrupted", "room_interrupted", 0),
+        ("takeover", "interrupted", "native_task_taken_over", "room_interrupted", 0),
     ],
 )
 async def test_managed_terminal_matrix_uses_real_room_history_and_events(
@@ -346,10 +411,17 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         if scenario == "native_stop":
             hass.states.async_set("vacuum.matic", "idle")
             return RoomRunOutcome.STOPPED_IN_PLACE
+        if scenario == "interrupted":
+            return RoomRunOutcome.INTERRUPTED
+        if scenario == "takeover":
+            raise RoomTakenOverError("synthetic native ownership change")
         hass.states.async_set("vacuum.matic", "returning")
         return RoomRunOutcome.HANDOFF_CANDIDATE
 
     with (
+        pytest.raises(ServiceValidationError)
+        if scenario in {"interrupted", "takeover"}
+        else nullcontext(),
         patch(
             "custom_components.matic_robot.services._async_wait_for_owned_start",
             AsyncMock(return_value="cleaning"),
@@ -394,6 +466,11 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
     assert events[-1].data["completed_room_count"] == credit
     assert saved[-1]["robots"]["serial"]["last_run"] == last_run
     assert manager.lock("serial").locked() is False
+    if scenario in {"interrupted", "unload"}:
+        assert (
+            manager.pending_native_reconciliation("serial")["run_id"]
+            == (last_run["run_id"])
+        )
 
 
 def test_leg_groups_split_only_on_settings_changes() -> None:
