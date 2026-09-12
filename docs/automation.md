@@ -96,11 +96,12 @@ before automating the switch.
 | Event | Meaning |
 | --- | --- |
 | `matic_robot_room_started` | A managed room started; emitted once per room in a mission |
-| `matic_robot_room_completed` | Verified managed completion; updates last-cleaned and duration statistics |
-| `matic_robot_room_failed` | A managed room failed |
-| `matic_robot_room_cancelled` | A managed room was cancelled |
-| `matic_robot_room_interrupted` | A managed task was stopped or replaced |
-| `matic_robot_room_ended_unverified` | The task ended without sufficient completion evidence |
+| `matic_robot_room_completed` | Verified managed completion; updates last-cleaned and duration statistics (`reason_code: verified_completion`) |
+| `matic_robot_room_failed` | A managed room failed; `reason_code` distinguishes start timeout, completion timeout, robot error, or managed failure |
+| `matic_robot_room_cancelled` | A managed room was cancelled; the event includes a machine-readable `reason_code` and cause |
+| `matic_robot_room_interrupted` | A managed task was stopped or replaced; `reason_code` identifies the observed path while `cause: unknown` remains when the source is unproven |
+| `matic_robot_room_ended_unverified` | The task ended without sufficient completion evidence (`reason_code: unverified_completion`) |
+| `matic_robot_plan_finished` | One managed plan run ended; includes `run_id`, `outcome`, `reason_code`, `cause`, safe trigger/service labels, terminal activity, and verified room counts |
 | `matic_robot_cleaning_finished` | A newly ended native session, with times, duration, room results, and robot identifiers |
 | `matic_robot_firmware_changed` | A new firmware/protocol pair, with previous values and robot identifiers |
 | `matic_robot_firmware_analyzed` | Endpoint comparison counts and new wire paths |

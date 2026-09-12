@@ -2151,15 +2151,23 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_type"),
+    ("error", "expected_type", "expected_reason_code"),
     [
-        (MaticError("robot rejected the command"), ServiceValidationError),
-        (ServiceValidationError("translated failure"), ServiceValidationError),
-        (HomeAssistantError("call failed"), HomeAssistantError),
+        (
+            MaticError("robot rejected the command"),
+            ServiceValidationError,
+            "robot_error",
+        ),
+        (
+            ServiceValidationError("translated failure"),
+            ServiceValidationError,
+            "managed_failure",
+        ),
+        (HomeAssistantError("call failed"), HomeAssistantError, "managed_failure"),
     ],
 )
 async def test_room_failures_translate_client_errors_at_boundary(
-    error, expected_type
+    error, expected_type, expected_reason_code
 ) -> None:
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
@@ -2190,14 +2198,22 @@ async def test_room_failures_translate_client_errors_at_boundary(
     manager.async_mark_failed.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
+    event_data = bus.async_fire.call_args_list[-1].args[1]
+    assert event_data["reason_code"] == expected_reason_code
+    assert event_data["cause"] == "unknown"
 
 
-async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None:
+@pytest.mark.parametrize("run_id", [None, "synthetic-run"])
+async def test_oem_stop_reconciliation_credits_late_native_session(
+    hass, run_id
+) -> None:
     """The ten-minute OEM stop can finish a room after the runner saw an error."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     now = dt_util.utcnow()
+    events = []
+    hass.bus.async_listen("matic_robot_room_reconciled", events.append)
     await manager.async_mark_started("serial", "away", room)
     await manager.async_mark_failed(
         "serial",
@@ -2209,8 +2225,10 @@ async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None
             "room_id": room.room_id,
             "room": room.name,
             "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+            "run_id": run_id,
         },
     )
+    assert manager.pending_native_reconciliation("serial").get("run_id") == run_id
     session = CleaningSession(
         (now - timedelta(seconds=10)).isoformat(),
         (now - timedelta(seconds=1)).isoformat(),
@@ -2224,7 +2242,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None
     hass.states.async_set("vacuum.test", "docked")
     confirmed = MagicMock()
     reconciliation = _NativeReconciliation(
-        "away", room.room_id, room.name, now - timedelta(seconds=5)
+        "away", room.room_id, room.name, now - timedelta(seconds=5), run_id=run_id
     )
     with patch(
         "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_POLL_SECONDS",
@@ -2249,6 +2267,8 @@ async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None
     assert record["last_duration_seconds"] == 9
     assert manager.snapshot("serial")["native_reconciliation_pending"] is False
     confirmed.assert_called_once_with(room.name)
+    await hass.async_block_till_done()
+    assert events[0].data.get("run_id") == run_id
 
 
 async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None:

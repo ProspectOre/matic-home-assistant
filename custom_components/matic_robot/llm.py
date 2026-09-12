@@ -24,6 +24,7 @@ from .const import (
     EVENT_CUES,
     EVENT_FIRMWARE_ANALYZED,
     EVENT_FIRMWARE_CHANGED,
+    EVENT_PLAN_FINISHED,
 )
 from .plans import CleaningPlanManager, leg_groups
 
@@ -41,6 +42,7 @@ _ACTIVITY_FIELDS = (
     "kind",
     "source",
     "command_id",
+    "run_id",
     "command",
     "channel",
     "outcome",
@@ -51,6 +53,7 @@ _ADMIN_ERROR = "Administrator access is required for Matic operational tools"
 _MATIC_EVENT_TYPES = (
     EVENT_ACTIVITY_OBSERVED,
     EVENT_CLEANING_FINISHED,
+    EVENT_PLAN_FINISHED,
     EVENT_CUES,
     EVENT_FIRMWARE_CHANGED,
     EVENT_FIRMWARE_ANALYZED,
@@ -69,6 +72,7 @@ _SAFE_EVENT_FIELDS = (
     "kind",
     "source",
     "command_id",
+    "run_id",
     "command",
     "channel",
     "outcome",
@@ -80,10 +84,14 @@ _SAFE_EVENT_FIELDS = (
     "event_type",
     "intent",
     "plan_id",
+    "trigger",
+    "service",
     "room_id",
     "room",
     "cleaning_mode",
     "coverage_setting",
+    "reason_code",
+    "cause",
     "error",
     "native_stop_reconciled",
     "firmware_version",
@@ -103,6 +111,9 @@ _SAFE_EVENT_FIELDS = (
     "duration_seconds",
     "completed",
     "completion_scope",
+    "room_count",
+    "completed_room_count",
+    "terminal_activity",
     "vacuum_completed_room_count",
     "mop_completed_room_count",
     "combined_completed_room_count",
@@ -114,7 +125,12 @@ class MaticOperationsAPI(llm.API):
 
     def __init__(self, hass: HomeAssistant) -> None:
         super().__init__(hass=hass, id=LLM_API_ID, name=LLM_API_NAME)
+        # Keep the compatibility trail for callers that inspect the API
+        # object directly, while retaining a second low-volume stream for the
+        # read-only tool.  Activity observations can arrive every poll and
+        # must not evict room or terminal events from operational evidence.
         self.recent_events: deque[JsonObjectType] = deque(maxlen=MAX_RECENT_EVENTS)
+        self.operational_events: deque[JsonObjectType] = deque(maxlen=MAX_RECENT_EVENTS)
         self._event_unsubscribers: list[Callable[[], None]] = []
 
     @callback
@@ -152,13 +168,14 @@ class MaticOperationsAPI(llm.API):
                 data["completed_room_count"] = len(completed_rooms)
             if isinstance(room_durations, dict):
                 data["room_duration_count"] = len(room_durations)
-        self.recent_events.append(
-            {
-                "event_type": str(event.event_type),
-                "time_fired": event.time_fired.isoformat(),
-                "data": data,
-            }
-        )
+        captured: JsonObjectType = {
+            "event_type": str(event.event_type),
+            "time_fired": event.time_fired.isoformat(),
+            "data": data,
+        }
+        self.recent_events.append(captured)
+        if event.event_type != EVENT_ACTIVITY_OBSERVED:
+            self.operational_events.append(captured)
 
     @override
     async def async_get_api_instance(
@@ -279,6 +296,24 @@ class MaticGetPlanTool(_MaticTool):
             if intelligent
             else rooms
         )
+        if intelligent:
+            rotation_value = runtime.cleaning_plans.rotation_details(
+                serial_number, plan["id"], rooms
+            )
+            rotation = rotation_value if isinstance(rotation_value, list) else []
+        else:
+            rotation = [
+                {
+                    "rank": rank,
+                    "room_id": room.room_id,
+                    "room": room.name,
+                    "last_result": None,
+                    "last_opportunity": None,
+                    "last_opportunity_source": None,
+                    "selection_reason": "saved_order",
+                }
+                for rank, room in enumerate(rooms, start=1)
+            ]
         groups = leg_groups(chosen)
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
@@ -303,6 +338,7 @@ class MaticGetPlanTool(_MaticTool):
                     "run_behavior": plan.get("run_behavior", "intelligent"),
                     "return_to_base": bool(plan.get("return_to_base", True)),
                 },
+                "rotation": rotation,
                 "settings_boundary_count": max(0, len(groups) - 1),
                 "legs": [
                     {
@@ -506,15 +542,17 @@ class MaticGetRecentEventsTool(_MaticTool):
 
     name = "MaticGetRecentEvents"
     description = (
-        "Inspect recent allowlisted Matic command, raw-state, room, cleaning, Cues, "
-        "and firmware events "
-        "retained during the current Home Assistant process."
+        "Inspect recent allowlisted Matic room, cleaning, Cues, firmware, and command "
+        "events retained during the current Home Assistant process. Activity "
+        "observations are excluded by default so high-frequency polling cannot hide "
+        "operational events; use include_activity or MaticGetActivity for raw activity."
     )
     parameters = vol.Schema(
         {
             vol.Optional("limit", default=20): vol.All(
                 vol.Coerce(int), vol.Range(min=1, max=MAX_RECENT_EVENTS)
-            )
+            ),
+            vol.Optional("include_activity", default=False): cv.boolean,
         }
     )
 
@@ -527,15 +565,26 @@ class MaticGetRecentEventsTool(_MaticTool):
     ) -> JsonObjectType:
         """Return newest events first without querying recorder storage."""
         args = self.parameters(tool_input.tool_args)
-        events = list(self.api.recent_events)[-args["limit"] :]
+        source = (
+            self.api.recent_events
+            if args["include_activity"]
+            else self.api.operational_events
+        )
+        events = list(source)[-args["limit"] :]
         events.reverse()
         return cast(
             JsonObjectType,
             {
                 "read_only": True,
                 "retention": (
-                    f"current Home Assistant process, last {MAX_RECENT_EVENTS} events"
+                    f"current Home Assistant process, last {MAX_RECENT_EVENTS} "
+                    + (
+                        "events including activity"
+                        if args["include_activity"]
+                        else "operational events"
+                    )
                 ),
+                "activity_included": args["include_activity"],
                 "events": events,
             },
         )
@@ -759,6 +808,7 @@ def _robot_summary(entry: ConfigEntry[Any]) -> JsonObjectType:
                 "lock_held": manager.lock(serial_number).locked(),
                 "stop_settle_pending": manager.stop_pending(serial_number),
                 "active_plan": snapshot.get("active_plan"),
+                "last_run": snapshot.get("last_run"),
             },
             "selected_plan": {
                 "id": snapshot.get("selected_plan"),

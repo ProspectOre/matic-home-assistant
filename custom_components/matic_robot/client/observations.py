@@ -29,6 +29,7 @@ class ActivityJournal:
         self._callback = callback
         self._session = uuid4().hex
         self._sequence = 0
+        self._run_id: str | None = None
         self._events: deque[dict[str, Any]] = deque(maxlen=MAX_OBSERVATIONS)
         self._states: dict[str, tuple[tuple[int, ...], tuple[int, ...]]] = {}
         self.record("started")
@@ -37,6 +38,10 @@ class ActivityJournal:
     def snapshot(self) -> list[dict[str, Any]]:
         """Return detached records, oldest first; older evidence is evicted."""
         return deepcopy(list(self._events))
+
+    def set_run_id(self, run_id: str | None) -> None:
+        """Associate subsequent integration observations with one managed run."""
+        self._run_id = run_id if isinstance(run_id, str) and run_id else None
 
     def record(self, kind: str, **fields: Any) -> int:
         """Record only fields constructed by the client's observation sites."""
@@ -48,6 +53,8 @@ class ActivityJournal:
             "kind": kind,
             **fields,
         }
+        if self._run_id is not None:
+            event["run_id"] = self._run_id
         self._events.append(event)
         if self._callback is not None:
             try:

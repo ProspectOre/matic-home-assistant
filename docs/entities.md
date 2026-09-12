@@ -77,5 +77,7 @@ IDs where possible; subsequent user-assigned names are preserved.
 Administrator-only MCP tools provide live runner status, plan order/settings,
 recent native history, and recent events: `MaticGetOperations`, `MaticGetPlan`,
 `MaticGetNativeHistory`, `MaticGetRecentEvents`, and `MaticGetActivity`.
-Recent events include the [command and raw-state observation trail](activity-diagnostics.md).
+Recent events keep low-volume room and terminal evidence separate from the
+[command and raw-state observation trail](activity-diagnostics.md), which can be
+queried independently when needed.
 Dust-bag observations are currently available through `MaticGetOperations` only.

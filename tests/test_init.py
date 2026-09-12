@@ -647,6 +647,8 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
 
 
 async def test_restart_recovery_credits_late_native_completion(hass) -> None:
+    events = []
+    hass.bus.async_listen("matic_robot_room_reconciled", events.append)
     now = datetime(2026, 8, 13, 12, tzinfo=UTC)
     room = Room(
         "room-kitchen",
@@ -664,6 +666,7 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
         "room": room.name,
         "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
         "expires_at": (now + timedelta(seconds=10)).isoformat(),
+        "run_id": "synthetic-restart-run",
     }
     pending = manager.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
@@ -704,6 +707,10 @@ async def test_restart_recovery_credits_late_native_completion(hass) -> None:
     ][room.id]
     assert room_history["last_result"] == "completed"
     assert room_history["last_duration_seconds"] == 3
+    await hass.async_block_till_done()
+    assert len(events) == 1
+    assert events[0].data["run_id"] == "synthetic-restart-run"
+    assert events[0].data["reason_code"] == "native_reconciled_completion"
 
 
 async def test_restart_recovery_expires_marker_after_transport_error(hass) -> None:
