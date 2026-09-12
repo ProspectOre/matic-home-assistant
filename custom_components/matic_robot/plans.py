@@ -1733,6 +1733,11 @@ def _close_unfinished_room_records(
                     "plan_id": record_plan_id,
                     "room_id": room_id,
                     "room": str(record.get("name", room_id)),
+                    **{
+                        key: record[key]
+                        for key in ("cleaning_mode", "coverage_setting")
+                        if isinstance(record.get(key), str)
+                    },
                 }
             )
     return closed
