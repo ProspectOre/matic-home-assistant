@@ -96,17 +96,21 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
     on_docked.assert_awaited_once()
 
 
-async def test_final_dock_does_not_close_run_without_docked_state(hass) -> None:
+async def test_final_dock_does_not_close_run_without_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """An accepted DOCK command alone does not create dock evidence."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0.001)
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
     on_docked = AsyncMock()
+    refresh = AsyncMock()
 
     assert (
         await async_dock_when_stop_settles(
             hass,
             client=client,
-            refresh=AsyncMock(),
+            refresh=refresh,
             manager=_manager(),
             serial_number="serial",
             entity_id=ENTITY,
@@ -115,6 +119,7 @@ async def test_final_dock_does_not_close_run_without_docked_state(hass) -> None:
         is True
     )
     on_docked.assert_not_awaited()
+    assert refresh.await_count >= 2
 
 
 @pytest.mark.parametrize("state", ["docked", "returning"])
