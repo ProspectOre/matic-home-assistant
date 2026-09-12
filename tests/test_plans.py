@@ -27,7 +27,7 @@ from custom_components.matic_robot.client.models import (
     FloorPlan,
     Room,
 )
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DOMAIN, EVENT_PLAN_FINISHED
 from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     OEM_STOP_RECONCILIATION_SECONDS,
@@ -112,6 +112,57 @@ def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
             "completion_timeout": 21600,
             "return_to_base": return_to_base,
         },
+    )
+
+
+async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
+    """A managed run emits one bounded terminal record without user identity."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    events = []
+    hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
+    set_run_id = MagicMock()
+    confirmed = MagicMock()
+
+    async def fake_leg(*args, **kwargs):
+        args[11](args[5][0].name)
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [room],
+            intelligent=False,
+            confirm_room_completed=confirmed,
+            set_activity_run_id=set_run_id,
+        )
+
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["outcome"] == "completed"
+    assert last_run["reason_code"] == "all_rooms_verified"
+    assert last_run["room_count"] == 1
+    assert last_run["completed_room_count"] == 1
+    confirmed.assert_called_once_with("Kitchen")
+    assert last_run["trigger"] == "service_call"
+    assert last_run["service"] == "intelligent_clean"
+    assert len(events) == 1
+    event = events[0].data
+    assert event["run_id"] == last_run["run_id"]
+    assert event["outcome"] == "completed"
+    assert event["terminal_activity"] == "unknown"
+    assert "@" not in str(event)
+    assert set_run_id.call_args_list[0].args[0] == last_run["run_id"]
+    assert set_run_id.call_args_list[-1].args[0] is None
+    assert (
+        await manager.async_finish_run("serial", "wrong-run", "failed", "x", 9) is False
     )
 
 
@@ -670,7 +721,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager._store.version == 1
-    assert manager._store.minor_version == 4
+    assert manager._store.minor_version == 5
     assert manager._store._private is True
     stored = {
         "robots": {
@@ -739,7 +790,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager._store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 5, stored)
+        await manager._store._async_migrate_func(1, 6, stored)
 
 
 async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> None:
@@ -1079,6 +1130,7 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
                         "rotation_resets": {"away": 7},
                         "selected_plan": ["not", "hashable"],
                         "active_plan": {"plan_id": 7},
+                        "last_run": "not-a-run",
                     },
                 }
             }
@@ -1102,6 +1154,7 @@ async def test_load_repairs_malformed_plan_storage_without_inventing_history(
         "selected_plan": "valid",
         "selected_area": None,
         "active_plan": None,
+        "last_run": None,
     }
     manager._store.async_save.assert_awaited_once_with(manager._data)
 
@@ -2163,6 +2216,14 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
     preview = manager.preview("serial", room_map)
     assert [room["name"] for room in preview["rooms"]] == ["Kitchen", "Study"]
     assert preview["rotation_basis"] == "least_recent_opportunity"
+    assert [item["room"] for item in preview["rotation"]] == [
+        "Kitchen",
+        "Study",
+    ]
+    assert all(
+        item["selection_reason"] == "no_prior_opportunity"
+        for item in preview["rotation"]
+    )
 
     await manager.async_save_plan(
         "serial",
@@ -2186,6 +2247,43 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
         "serial", "whole_home", _room("Kitchen", "room-kitchen")
     )
     assert manager.preview("serial", room_map)["rooms"][0]["name"] == "Study"
+    rotation = manager.preview("serial", room_map)["rotation"]
+    assert rotation[0]["room"] == "Study"
+    assert rotation[0]["selection_reason"] == "no_prior_opportunity"
+    assert rotation[1]["room"] == "Kitchen"
+    assert rotation[1]["last_result"] == "completed"
+    assert rotation[1]["last_opportunity_source"] == "plan"
+
+    same_opportunity = (dt_util.utcnow() - timedelta(hours=1)).isoformat()
+    robot = manager._robot("serial")
+    robot["rotations"]["whole_home"]["rooms"]["room-kitchen"]["last_opportunity"] = (
+        same_opportunity
+    )
+    robot["rotations"]["whole_home"]["rooms"]["room-kitchen"]["last_completed"] = (
+        same_opportunity
+    )
+    robot["rotations"]["whole_home"]["rooms"]["room-study"] = {
+        "room_id": "room-study",
+        "name": "Study",
+        "cleaning_mode": "vacuum_and_mop",
+        "coverage_setting": "standard",
+        "last_opportunity": same_opportunity,
+    }
+    robot["rooms"]["room-kitchen"]["last_opportunity"] = same_opportunity
+    robot["rooms"]["room-kitchen"]["last_completed"] = same_opportunity
+    robot["rooms"]["room-study"] = {
+        "name": "Study",
+        "last_opportunity": same_opportunity,
+    }
+    tied_rotation = manager.rotation_details(
+        "serial",
+        "whole_home",
+        [
+            _room("Kitchen", "room-kitchen"),
+            _room("Study", "room-study"),
+        ],
+    )
+    assert tied_rotation[1]["selection_reason"] == "saved_order_tiebreak"
     manager._robot("serial")["plans"]["whole_home"]["run_behavior"] = "ordered"
     ordered_preview = manager.preview("serial", room_map)
     assert ordered_preview["rotation_basis"] == "saved_order"
@@ -4132,6 +4230,9 @@ async def test_unknown_active_session_interrupts_without_room_credit(
     assert interrupted.value.translation_key == "room_interrupted"
     sender.assert_awaited_once_with(10, UserCommand.STOP)
     manager.async_mark_completed.assert_not_awaited()
+    interrupted_event = bus.async_fire.call_args_list[-1].args[1]
+    assert interrupted_event["reason_code"] == "interrupted"
+    assert interrupted_event["cause"] == "unknown"
 
 
 async def test_room_starting_paused_is_suspended_until_resume() -> None:

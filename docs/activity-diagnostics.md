@@ -7,7 +7,10 @@ plan, download the integration diagnostics soon afterward. `activity_observation
 contains the last 512 command and state observations from the current integration
 load. Older observations are evicted; reloading or restarting clears this buffer.
 The administrator-only `MaticGetActivity` tool reads this journal directly;
-`MaticGetRecentEvents` mixes recent observations into its last 64 operational events.
+`MaticGetRecentEvents` returns the last 64 low-volume operational events by
+default, so polling observations cannot evict room and terminal evidence. Pass
+`include_activity: true` when a combined current-process trail is needed; use
+`MaticGetActivity` for the paginated raw journal.
 
 The integration emits `matic_robot_activity_observed` events locally. Home
 Assistant Recorder can retain these across restarts according to its event
@@ -17,6 +20,8 @@ exclusions and retention settings. No debug logging needs to be enabled.
 
 - `observation_session` identifies one integration load. `sequence` orders its
   observations, and `observed_at` is the Home Assistant receipt time in UTC.
+- `run_id` links integration commands and raw state observations to one managed
+  plan run. It is a random local token, not a user or account identifier.
 - `command_requested` identifies the integration's intended command, including
   internal cleanup. Later records refer to its sequence as `command_id`.
 - `command_sending` means transmission began. A subsequent failure or cancellation
@@ -62,6 +67,19 @@ every room finished. An ended-in-place interruption records missing managed
 completion evidence; it does not identify who stopped the robot or prove a fault.
 Native firmware can also report a stopped room as completed, so history alone
 does not override that guard or retrospectively award managed completion credit.
+
+Managed room events include a stable `reason_code` for machine handling. Codes
+such as `verified_completion`, `unverified_completion`, `stopped_in_place`,
+`native_task_taken_over`, `start_timeout`, `completion_timeout`, and
+`robot_error` describe the observed terminal path. A `cause` of `unknown` is
+intentional when the integration cannot prove whether an OEM app, physical
+control, or robot decision caused the transition; it must not be replaced with
+an inferred user or account identity.
+
+The `matic_robot_plan_finished` event is the managed-run boundary. Match its
+`run_id` to room events, `MaticGetActivity`, and the `last_run` plan snapshot.
+Its verified room count and outcome describe the plan runner; native history
+remains a separate robot-side evidence source.
 
 For a controlled reproduction, supervise one plan with presence automation
 temporarily disabled and avoid OEM-app or physical-control input. Note any

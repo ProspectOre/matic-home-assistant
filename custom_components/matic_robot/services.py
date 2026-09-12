@@ -13,6 +13,7 @@ from enum import StrEnum
 from functools import partial, wraps
 from time import monotonic
 from typing import Any
+from uuid import uuid4
 
 import voluptuous as vol
 from homeassistant.auth.permissions.const import POLICY_CONTROL
@@ -58,6 +59,7 @@ from .const import (
     DATA_FIRMWARE_TRACKER,
     DATA_PLAN_MANAGER,
     DOMAIN,
+    EVENT_PLAN_FINISHED,
 )
 from .firmware import (
     FirmwareTracker,
@@ -517,6 +519,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             mapped_room_names=tuple(room_map.values()),
             floor_is_current=floor_is_current,
             floor_token=execution_floor_token,
+            set_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "set_run_id",
+                None,
+            ),
         )
 
     async def async_clean_room_sequence(call: ServiceCall) -> None:
@@ -601,6 +608,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             mapped_room_names=tuple(room_map.values()),
             floor_is_current=floor_is_current,
             floor_token=execution_floor_token,
+            set_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "set_run_id",
+                None,
+            ),
         )
 
     hass.services.async_register(
@@ -1095,6 +1107,7 @@ async def _async_run_room(
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
+    run_id: str | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1110,8 +1123,11 @@ async def _async_run_room(
         "room": room.name,
         "cleaning_mode": room.cleaning_mode,
         "coverage_setting": room.coverage_setting,
+        "run_id": run_id,
     }
-    await manager.async_mark_started(serial_number, call.data["plan_id"], room)
+    await manager.async_mark_started(
+        serial_number, call.data["plan_id"], room, run_id=run_id
+    )
     hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
     completion_verified = False
     dispatch_attempted = False
@@ -1293,7 +1309,9 @@ async def _async_run_room(
     except ManagedMotionReplacedError as err:
         await manager.async_mark_cancelled(serial_number, call.data["plan_id"], room)
         hass.bus.async_fire(
-            f"{DOMAIN}_room_cancelled", event_data, context=call.context
+            f"{DOMAIN}_room_cancelled",
+            {**event_data, "reason_code": "managed_cancelled", "cause": "replacement"},
+            context=call.context,
         )
         raise PlanCancelledError from err
     except PlanCancelledError:
@@ -1319,14 +1337,26 @@ async def _async_run_room(
                     ),
                 )
             hass.bus.async_fire(
-                f"{DOMAIN}_room_interrupted", event_data, context=call.context
+                f"{DOMAIN}_room_interrupted",
+                {
+                    **event_data,
+                    "reason_code": "config_entry_unload",
+                    "cause": "home_assistant",
+                },
+                context=call.context,
             )
         else:
             await manager.async_mark_cancelled(
                 serial_number, call.data["plan_id"], room
             )
             hass.bus.async_fire(
-                f"{DOMAIN}_room_cancelled", event_data, context=call.context
+                f"{DOMAIN}_room_cancelled",
+                {
+                    **event_data,
+                    "reason_code": "managed_cancelled",
+                    "cause": "managed_cancellation",
+                },
+                context=call.context,
             )
         raise
     except RoomTakenOverError as err:
@@ -1335,7 +1365,12 @@ async def _async_run_room(
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
-            {**event_data, "error": str(err)},
+            {
+                **event_data,
+                "error": str(err),
+                "reason_code": "native_task_taken_over",
+                "cause": "unknown",
+            },
             context=call.context,
         )
         raise _validation_error(
@@ -1388,7 +1423,12 @@ async def _async_run_room(
             )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
-            {**event_data, "error": str(err)},
+            {
+                **event_data,
+                "error": str(err),
+                "reason_code": _interruption_reason_code(err),
+                "cause": "unknown",
+            },
             context=call.context,
         )
         raise _validation_error(
@@ -1443,7 +1483,12 @@ async def _async_run_room(
             )
         hass.bus.async_fire(
             f"{DOMAIN}_room_failed",
-            {**event_data, "error": failure_reason},
+            {
+                **event_data,
+                "error": failure_reason,
+                "reason_code": _failure_reason_code(err),
+                "cause": "unknown",
+            },
             context=call.context,
         )
         if isinstance(err, ServiceValidationError):
@@ -1474,14 +1519,22 @@ async def _async_run_room(
         if confirm_room_completed is not None:
             confirm_room_completed(room.name)
         hass.bus.async_fire(
-            f"{DOMAIN}_room_completed", event_data, context=call.context
+            f"{DOMAIN}_room_completed",
+            {**event_data, "reason_code": "verified_completion"},
+            context=call.context,
         )
     else:
         await manager.async_mark_ended_unverified(
             serial_number, call.data["plan_id"], room
         )
         hass.bus.async_fire(
-            f"{DOMAIN}_room_ended_unverified", event_data, context=call.context
+            f"{DOMAIN}_room_ended_unverified",
+            {
+                **event_data,
+                "reason_code": "unverified_completion",
+                "cause": "unknown",
+            },
+            context=call.context,
         )
     if completion_verified and prefetch_next is not None:
         await prefetch_next()
@@ -1511,6 +1564,7 @@ async def _async_run_leg(
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
+    run_id: str | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1542,6 +1596,7 @@ async def _async_run_leg(
             floor_token=floor_token,
             session_identity=session_identity,
             on_native_identity=on_native_identity,
+            run_id=run_id,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1558,11 +1613,14 @@ async def _async_run_leg(
             "room": room.name,
             "cleaning_mode": room.cleaning_mode,
             "coverage_setting": room.coverage_setting,
+            "run_id": run_id,
         }
 
     active_room = leg[0]
     observed_ids = {active_room.room_id}
-    await manager.async_mark_started(serial_number, call.data["plan_id"], active_room)
+    await manager.async_mark_started(
+        serial_number, call.data["plan_id"], active_room, run_id=run_id
+    )
     hass.bus.async_fire(
         f"{DOMAIN}_room_started", event_data(active_room), context=call.context
     )
@@ -1683,7 +1741,10 @@ async def _async_run_leg(
                         first_observation = active_room.room_id not in observed_ids
                         observed_ids.add(active_room.room_id)
                         await manager.async_mark_started(
-                            serial_number, call.data["plan_id"], active_room
+                            serial_number,
+                            call.data["plan_id"],
+                            active_room,
+                            run_id=run_id,
                         )
                         if first_observation:
                             hass.bus.async_fire(
@@ -1768,7 +1829,13 @@ async def _async_run_leg(
             serial_number, call.data["plan_id"], active_room
         )
         hass.bus.async_fire(
-            f"{DOMAIN}_room_cancelled", event_data(active_room), context=call.context
+            f"{DOMAIN}_room_cancelled",
+            {
+                **event_data(active_room),
+                "reason_code": "managed_cancelled",
+                "cause": "replacement",
+            },
+            context=call.context,
         )
         raise PlanCancelledError from err
     except PlanCancelledError:
@@ -1786,7 +1853,11 @@ async def _async_run_leg(
             )
             hass.bus.async_fire(
                 f"{DOMAIN}_room_interrupted",
-                event_data(active_room),
+                {
+                    **event_data(active_room),
+                    "reason_code": "config_entry_unload",
+                    "cause": "home_assistant",
+                },
                 context=call.context,
             )
         else:
@@ -1795,7 +1866,11 @@ async def _async_run_leg(
             )
             hass.bus.async_fire(
                 f"{DOMAIN}_room_cancelled",
-                event_data(active_room),
+                {
+                    **event_data(active_room),
+                    "reason_code": "managed_cancelled",
+                    "cause": "managed_cancellation",
+                },
                 context=call.context,
             )
         raise
@@ -1810,7 +1885,12 @@ async def _async_run_leg(
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
-            {**event_data(active_room), "error": str(err)},
+            {
+                **event_data(active_room),
+                "error": str(err),
+                "reason_code": _interruption_reason_code(err),
+                "cause": "unknown",
+            },
             context=call.context,
         )
         raise _validation_error(
@@ -1822,7 +1902,12 @@ async def _async_run_leg(
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_interrupted",
-            {**event_data(active_room), "error": str(err)},
+            {
+                **event_data(active_room),
+                "error": str(err),
+                "reason_code": "native_task_taken_over",
+                "cause": "unknown",
+            },
             context=call.context,
         )
         raise _validation_error(
@@ -1849,7 +1934,12 @@ async def _async_run_leg(
         )
         hass.bus.async_fire(
             f"{DOMAIN}_room_failed",
-            {**event_data(active_room), "error": failure_reason},
+            {
+                **event_data(active_room),
+                "error": failure_reason,
+                "reason_code": _failure_reason_code(err),
+                "cause": "unknown",
+            },
             context=call.context,
         )
         if isinstance(err, ServiceValidationError):
@@ -1889,14 +1979,22 @@ async def _async_run_leg(
             if confirm_room_completed is not None:
                 confirm_room_completed(room.name)
             hass.bus.async_fire(
-                f"{DOMAIN}_room_completed", event_data(room), context=call.context
+                f"{DOMAIN}_room_completed",
+                {**event_data(room), "reason_code": "verified_completion"},
+                context=call.context,
             )
         elif stop_sent and room.room_id not in observed_ids:
             await manager.async_mark_cancelled(
                 serial_number, call.data["plan_id"], room
             )
             hass.bus.async_fire(
-                f"{DOMAIN}_room_cancelled", event_data(room), context=call.context
+                f"{DOMAIN}_room_cancelled",
+                {
+                    **event_data(room),
+                    "reason_code": "managed_cancelled",
+                    "cause": "finish_current_room_or_stop",
+                },
+                context=call.context,
             )
         else:
             await manager.async_mark_ended_unverified(
@@ -1904,7 +2002,11 @@ async def _async_run_leg(
             )
             hass.bus.async_fire(
                 f"{DOMAIN}_room_ended_unverified",
-                event_data(room),
+                {
+                    **event_data(room),
+                    "reason_code": "unverified_completion",
+                    "cause": "unknown",
+                },
                 context=call.context,
             )
     all_verified = all(room.room_id in credited for room in leg)
@@ -2617,6 +2719,8 @@ async def _async_reconcile_native_stop(
                         "room_id": room.room_id,
                         "room": room.name,
                         "native_stop_reconciled": True,
+                        "reason_code": "native_reconciled_completion",
+                        "cause": "late_native_history",
                     },
                     context=context,
                 )
@@ -3033,6 +3137,24 @@ class RoomStoppedInPlaceError(RoomInterruptedError):
     """
 
 
+def _failure_reason_code(error: BaseException) -> str:
+    """Map an internal failure to a stable, non-sensitive event code."""
+    if isinstance(error, RoomStartTimeoutError):
+        return "start_timeout"
+    if isinstance(error, TimeoutError):
+        return "completion_timeout"
+    if isinstance(error, MaticError):
+        return "robot_error"
+    return "managed_failure"
+
+
+def _interruption_reason_code(error: RoomInterruptedError) -> str:
+    """Map an unverified room terminal state without guessing its cause."""
+    if isinstance(error, RoomStoppedInPlaceError):
+        return "stopped_in_place"
+    return "interrupted"
+
+
 class RoomTakenOverError(HomeAssistantError):
     """The native task ended, changed, or could no longer be identified."""
 
@@ -3056,6 +3178,7 @@ async def _async_execute_rooms(
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
+    set_activity_run_id: Callable[[str | None], None] | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3069,6 +3192,14 @@ async def _async_execute_rooms(
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
         native_identity: bytes | None = None
+        run_id = uuid4().hex
+        run_started_at = dt_util.utcnow().isoformat()
+        run_started = False
+        run_outcome = "failed"
+        run_reason_code = "run_not_finished"
+        run_cause = "unknown"
+        completed_room_names: set[str] = set()
+        chosen: list[CleaningRoom] = []
 
         def bind_native_identity(identity: bytes | None) -> None:
             nonlocal native_identity
@@ -3082,6 +3213,14 @@ async def _async_execute_rooms(
             lambda: native_identity,
             allow_ended_dock=True,
         )
+        if set_activity_run_id is not None:
+            set_activity_run_id(run_id)
+
+        def record_room_completion(room_name: str) -> None:
+            completed_room_names.add(room_name)
+            if confirm_room_completed is not None:
+                confirm_room_completed(room_name)
+
         try:
             # Publish ownership before the first suspending check. Otherwise
             # Stop can observe no run while this start waits for an old stop
@@ -3094,6 +3233,17 @@ async def _async_execute_rooms(
                 else rooms
             )
             legs = leg_groups(chosen)
+            begin_run = getattr(manager, "async_begin_run", None)
+            if isinstance(manager, CleaningPlanManager) and callable(begin_run):
+                await begin_run(
+                    serial_number,
+                    call.data["plan_id"],
+                    run_id,
+                    len(chosen),
+                    trigger="service_call",
+                    service=str(call.service),
+                )
+                run_started = True
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
                 if cancel_event.is_set() or not manager.managed_motion_is_current(
@@ -3153,7 +3303,7 @@ async def _async_execute_rooms(
                     motion_token,
                     active_session,
                     session_history,
-                    confirm_room_completed,
+                    record_room_completion,
                     managed_user_command,
                     room_name_is_unique=(
                         not mapped_room_names
@@ -3173,6 +3323,7 @@ async def _async_execute_rooms(
                     floor_token=floor_token,
                     session_identity=session_identity,
                     on_native_identity=bind_native_identity,
+                    run_id=run_id,
                 )
                 if not completion_verified:
                     break
@@ -3189,6 +3340,19 @@ async def _async_execute_rooms(
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
+            completed_room_count = len(completed_room_names)
+            if finish_room_event.is_set() and completed_room_count < len(chosen):
+                run_outcome = "stopped"
+                run_reason_code = "managed_stop"
+                run_cause = "managed_cancellation"
+            elif completed_room_count == len(chosen):
+                run_outcome = "completed"
+                run_reason_code = "all_rooms_verified"
+                run_cause = "verified_completion"
+            else:
+                run_outcome = "partial"
+                run_reason_code = "partial_native_result"
+                run_cause = "native_result"
             if cancel_event.is_set() or not manager.managed_motion_is_current(
                 serial_number, motion_token
             ):
@@ -3211,8 +3375,25 @@ async def _async_execute_rooms(
                         "robot_command_failed",
                     ) from err
         except PlanCancelledError:
+            cancellation_reason_reader = getattr(manager, "cancellation_reason", None)
+            cancellation_reason = (
+                cancellation_reason_reader(serial_number)
+                if callable(cancellation_reason_reader)
+                else None
+            )
+            if cancellation_reason == "config_entry_unload":
+                run_outcome = "interrupted"
+                run_reason_code = "config_entry_unload"
+                run_cause = "home_assistant"
+            else:
+                run_outcome = "stopped"
+                run_reason_code = "managed_stop"
+                run_cause = "managed_cancellation"
             return
         except (Exception, asyncio.CancelledError) as err:
+            run_outcome = "failed"
+            run_reason_code = _failure_reason_code(err)
+            run_cause = "internal"
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
             active = manager.snapshot(serial_number)["active_plan"]
@@ -3240,7 +3421,10 @@ async def _async_execute_rooms(
                             "room_id": room.room_id,
                             "cleaning_mode": room.cleaning_mode,
                             "coverage_setting": room.coverage_setting,
+                            "run_id": run_id,
                             "error": reason,
+                            "reason_code": "unexpected_exception",
+                            "cause": "internal",
                         },
                         context=call.context,
                     )
@@ -3269,6 +3453,52 @@ async def _async_execute_rooms(
         finally:
             manager.end_managed_motion(serial_number, motion_token)
             manager.unregister_run_task(serial_number)
+            if run_started:
+                finished_at = dt_util.utcnow().isoformat()
+                states = getattr(hass, "states", None)
+                state_getter = getattr(states, "get", None)
+                current_state = (
+                    state_getter(entity_id) if callable(state_getter) else None
+                )
+                terminal_activity = (
+                    str(getattr(current_state, "state", "unknown"))
+                    if current_state is not None
+                    else "unknown"
+                )
+                finish_run = getattr(manager, "async_finish_run", None)
+                if callable(finish_run):
+                    await finish_run(
+                        serial_number,
+                        run_id,
+                        run_outcome,
+                        run_reason_code,
+                        len(completed_room_names),
+                        terminal_activity=terminal_activity,
+                    )
+                bus = getattr(hass, "bus", None)
+                fire = getattr(bus, "async_fire", None)
+                if callable(fire):
+                    fire(
+                        EVENT_PLAN_FINISHED,
+                        {
+                            ATTR_ENTITY_ID: entity_id,
+                            "plan_id": call.data["plan_id"],
+                            "run_id": run_id,
+                            "trigger": "service_call",
+                            "service": str(call.service),
+                            "started_at": run_started_at,
+                            "ended_at": finished_at,
+                            "outcome": run_outcome,
+                            "reason_code": run_reason_code,
+                            "cause": run_cause,
+                            "terminal_activity": terminal_activity,
+                            "room_count": len(chosen),
+                            "completed_room_count": len(completed_room_names),
+                        },
+                        context=call.context,
+                    )
+            if set_activity_run_id is not None:
+                set_activity_run_id(None)
 
 
 async def _ensure_stop_settled(

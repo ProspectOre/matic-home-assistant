@@ -157,7 +157,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticOperationsAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 12
+    assert hass.bus.async_listen.call_count == 13
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -166,6 +166,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
             {
                 "entry_id": "x" * 300,
                 "native_stop_reconciled": True,
+                "reason_code": "robot_error",
+                "cause": "unknown",
                 "error": 7,
                 "coverage_setting": 1.5,
                 "device_id": None,
@@ -178,6 +180,8 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     assert event["event_type"] == "matic_robot_room_failed"
     assert len(event["data"]["entry_id"]) == 256
     assert event["data"]["native_stop_reconciled"] is True
+    assert event["data"]["reason_code"] == "robot_error"
+    assert event["data"]["cause"] == "unknown"
     assert event["data"]["error"] == 7
     assert event["data"]["coverage_setting"] == 1.5
     assert event["data"]["device_id"] is None
@@ -304,7 +308,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)
     register.assert_called_once_with(hass, registered)
-    assert hass.bus.async_listen.call_count == 24
+    assert hass.bus.async_listen.call_count == 26
 
 
 async def test_operations_and_robot_resolution() -> None:
@@ -617,6 +621,39 @@ async def test_recent_events_returns_newest_first_and_honors_limit() -> None:
     assert "current Home Assistant process" in result["retention"]
 
 
+async def test_recent_events_keep_operational_evidence_out_of_activity_churn() -> None:
+    api = MaticOperationsAPI(_hass(_entry()))
+    api._async_capture_event(
+        Event(
+            "matic_robot_room_started",
+            {"room": "Hallway"},
+            time_fired_timestamp=0,
+        )
+    )
+    for index in range(MAX_RECENT_EVENTS + 10):
+        api._async_capture_event(
+            Event(
+                "matic_robot_activity_observed",
+                {"sequence": index, "kind": "state"},
+                time_fired_timestamp=index + 1,
+            )
+        )
+
+    operational = await MaticGetRecentEventsTool(api).async_call(
+        api.hass, llm.ToolInput("MaticGetRecentEvents", {"limit": 1}), _context()
+    )
+    combined = await MaticGetRecentEventsTool(api).async_call(
+        api.hass,
+        llm.ToolInput("MaticGetRecentEvents", {"limit": 1, "include_activity": True}),
+        _context(),
+    )
+    assert len(api.operational_events) == 1
+    assert operational["activity_included"] is False
+    assert operational["events"][0]["event_type"] == "matic_robot_room_started"
+    assert combined["activity_included"] is True
+    assert combined["events"][0]["event_type"] == "matic_robot_activity_observed"
+
+
 async def test_native_history_scopes_completion_to_the_requested_mode() -> None:
     entry = _entry()
     entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
@@ -724,6 +761,16 @@ async def test_activity_journal_pagination_filtering_and_restart_guards() -> Non
         with pytest.raises(vol.Invalid):
             await read(**invalid)
     entry.runtime_data.client.async_get_cleaning_session_records.assert_not_called()
+
+
+def test_activity_journal_run_id_is_bounded_and_clearable() -> None:
+    journal = ActivityJournal()
+    journal.set_run_id("a" * 32)
+    journal.record("command_requested", command="DOCK")
+    assert journal.snapshot[-1]["run_id"] == "a" * 32
+    journal.set_run_id(None)
+    journal.record("state", activity="ready")
+    assert "run_id" not in journal.snapshot[-1]
 
 
 async def test_activity_journal_eviction_and_output_privacy() -> None:

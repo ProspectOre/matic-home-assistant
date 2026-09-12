@@ -28,7 +28,7 @@ For pause, resume, stop, and dock, use Home Assistant's standard vacuum actions.
 | Action | Fields and behavior |
 | --- | --- |
 | `list_plans` | Return saved plans. |
-| `preview_plan` | Return optional `plan`'s next room order and settings without running it. |
+| `preview_plan` | Return optional `plan`'s next room order, settings, and rotation rationale without running it. |
 | `save_plan` | Create or update a plan with `name` and `rooms`; pass `plan_id` to update. |
 | `select_plan` | Set required `plan` as the default. |
 | `delete_plan` | Delete required `plan`. |

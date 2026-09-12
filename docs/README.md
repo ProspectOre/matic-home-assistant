@@ -11,6 +11,7 @@
 | Build an automation | [Actions, events, and examples](automation.md) |
 | Understand cleaning history | [Cleaning results](native-cleaning-results.md) |
 | Investigate unexpected docking or stopping | [Activity diagnostics](activity-diagnostics.md) |
+| Verify the managed cleaning contract | [End-to-end contract](e2e-contract.md) |
 | Check my setup | [Compatibility](acceptance-0.4.md) |
 | Understand stored data | [Privacy](privacy.md) |
 

@@ -2151,15 +2151,23 @@ async def test_app_stop_after_partial_room_never_credits_or_advances(hass) -> No
 
 
 @pytest.mark.parametrize(
-    ("error", "expected_type"),
+    ("error", "expected_type", "expected_reason_code"),
     [
-        (MaticError("robot rejected the command"), ServiceValidationError),
-        (ServiceValidationError("translated failure"), ServiceValidationError),
-        (HomeAssistantError("call failed"), HomeAssistantError),
+        (
+            MaticError("robot rejected the command"),
+            ServiceValidationError,
+            "robot_error",
+        ),
+        (
+            ServiceValidationError("translated failure"),
+            ServiceValidationError,
+            "managed_failure",
+        ),
+        (HomeAssistantError("call failed"), HomeAssistantError, "managed_failure"),
     ],
 )
 async def test_room_failures_translate_client_errors_at_boundary(
-    error, expected_type
+    error, expected_type, expected_reason_code
 ) -> None:
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
@@ -2190,6 +2198,9 @@ async def test_room_failures_translate_client_errors_at_boundary(
     manager.async_mark_failed.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
+    event_data = bus.async_fire.call_args_list[-1].args[1]
+    assert event_data["reason_code"] == expected_reason_code
+    assert event_data["cause"] == "unknown"
 
 
 async def test_oem_stop_reconciliation_credits_late_native_session(hass) -> None:
