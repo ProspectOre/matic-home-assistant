@@ -226,6 +226,8 @@ class CleaningPlanManager:
         self._managed_motion: dict[str, int] = {}
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._native_history_saves: dict[str, set[asyncio.Event]] = {}
+        self._reconciliation_removal_pending: set[str] = set()
         self._cancellation_reasons: dict[str, str] = {}
         self._stop_fences: dict[str, float] = {}
 
@@ -409,7 +411,9 @@ class CleaningPlanManager:
         reconciliation_removed = (
             self._robot(serial_number).pop("pending_native_reconciliation", None)
             is not None
-        )
+        ) or bool(self._native_history_saves.get(serial_number))
+        if reconciliation_removed:
+            self._reconciliation_removal_pending.add(serial_number)
         self._motion_generations[serial_number] = (
             self._motion_generations.get(serial_number, 0) + 1
         )
@@ -636,7 +640,6 @@ class CleaningPlanManager:
             return False
         robot = self._robot(serial_number)
         before = deepcopy(robot)
-        generation = self.motion_generation(serial_number)
         records = tuple(records)
         changed = _import_native_room_activity(robot, floor_plan, records)
         reconciled: list[dict[str, str]] = []
@@ -648,16 +651,7 @@ class CleaningPlanManager:
         )
         if not changed:
             return False
-        applied = deepcopy(robot)
-        try:
-            await self._store.async_save(self._data)
-        except Exception, asyncio.CancelledError:
-            if self.motion_generation(serial_number) != generation:
-                # A replacement owns marker removal even when this save fails.
-                before.pop("pending_native_reconciliation", None)
-                applied.pop("pending_native_reconciliation", None)
-            _restore_unsaved_changes(robot, before, applied)
-            raise
+        await self._async_save_native_history(serial_number, before)
         for marker in reconciled:
             entity_id = er.async_get(self.hass).async_get_entity_id(
                 "vacuum", DOMAIN, f"{serial_number}_vacuum"
@@ -675,8 +669,7 @@ class CleaningPlanManager:
                     "cause": "late_native_history",
                 },
             )
-        for listener in tuple(self._listeners.get(serial_number, ())):
-            listener()
+        self._notify_listeners(serial_number)
         return True
 
     def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
@@ -1223,6 +1216,7 @@ class CleaningPlanManager:
         therefore safe against later or superseding native sessions.
         """
         robot = self._robot(serial_number)
+        before = deepcopy(robot)
         pending = _validated_native_reconciliation(
             robot.get("pending_native_reconciliation")
         )
@@ -1230,7 +1224,8 @@ class CleaningPlanManager:
             return False
         if _native_reconciliation_expired(pending):
             robot.pop("pending_native_reconciliation", None)
-            await self._async_save_and_notify(serial_number)
+            await self._async_save_native_history(serial_number, before)
+            self._notify_listeners(serial_number)
             return False
         if (
             pending["plan_id"] != plan_id
@@ -1241,7 +1236,8 @@ class CleaningPlanManager:
         record = self._room(serial_number, plan_id, room)
         if record.get("last_result") == "completed":
             robot.pop("pending_native_reconciliation", None)
-            await self._async_save_and_notify(serial_number)
+            await self._async_save_native_history(serial_number, before)
+            self._notify_listeners(serial_number)
             return False
         completed_value = (
             completed_at
@@ -1275,7 +1271,8 @@ class CleaningPlanManager:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
         robot.pop("pending_native_reconciliation", None)
-        await self._async_save_and_notify(serial_number)
+        await self._async_save_native_history(serial_number, before)
+        self._notify_listeners(serial_number)
         return True
 
     async def async_clear_native_reconciliation(
@@ -1622,15 +1619,51 @@ class CleaningPlanManager:
 
     async def _async_save_and_notify(self, serial_number: str) -> None:
         await self._store.async_save(self._data)
+        self._notify_listeners(serial_number)
+
+    def _notify_listeners(self, serial_number: str) -> None:
         for listener in tuple(self._listeners.get(serial_number, ())):
             listener()
+
+    async def _async_save_native_history(
+        self, serial_number: str, before: dict[str, Any]
+    ) -> None:
+        """Retain retryable evidence and fence replacement behind this save."""
+        robot = self._robot(serial_number)
+        applied = deepcopy(robot)
+        generation = self.motion_generation(serial_number)
+        done = asyncio.Event()
+        saves = self._native_history_saves.setdefault(serial_number, set())
+        saves.add(done)
+        try:
+            await self._store.async_save(self._data)
+        except Exception, asyncio.CancelledError:
+            if self.motion_generation(serial_number) != generation:
+                # Replacement must persist removal after this rollback finishes.
+                if before.get("pending_native_reconciliation") is not None:
+                    self._reconciliation_removal_pending.add(serial_number)
+                before.pop("pending_native_reconciliation", None)
+                applied.pop("pending_native_reconciliation", None)
+            _restore_unsaved_changes(robot, before, applied)
+            raise
+        finally:
+            saves.discard(done)
+            if not saves:
+                self._native_history_saves.pop(serial_number, None)
+            done.set()
 
     async def _async_persist_reconciliation_removal(
         self, serial_number: str, removed: bool
     ) -> None:
         """Save a durable-marker removal before replacement motion dispatches."""
-        if removed:
+        pending_saves = tuple(self._native_history_saves.get(serial_number, ()))
+        if removed or pending_saves:
+            self._reconciliation_removal_pending.add(serial_number)
+        if serial_number in self._reconciliation_removal_pending:
+            for done in pending_saves:
+                await done.wait()
             await self._async_save_and_notify(serial_number)
+            self._reconciliation_removal_pending.discard(serial_number)
 
 
 def _restore_unsaved_changes(

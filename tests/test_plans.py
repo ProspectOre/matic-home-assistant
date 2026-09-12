@@ -1672,6 +1672,138 @@ async def test_replacement_motion_persists_reconciliation_removal_before_yield(
         assert "pending_native_reconciliation" not in manager._robot("serial")
         manager._store.async_save.assert_awaited_once()
 
+    await add_marker()
+    manager._store.async_save.side_effect = OSError("synthetic removal save")
+    with pytest.raises(OSError, match="synthetic removal save"):
+        async with manager.external_motion("serial"):
+            pytest.fail("Replacement dispatched before marker removal was durable")
+    assert manager._reconciliation_removal_pending == {"serial"}
+    manager._store.async_save.side_effect = None
+    manager._store.async_save.reset_mock()
+    async with manager.external_motion("serial"):
+        manager._store.async_save.assert_awaited_once()
+        assert manager._reconciliation_removal_pending == set()
+
+
+@pytest.mark.parametrize("replacement", ["direct", "external", "managed"])
+@pytest.mark.parametrize("live_reconciliation", [False, True])
+@pytest.mark.parametrize("save_fails", [False, True])
+@pytest.mark.parametrize("hold_command_lock", [False, True])
+async def test_replacement_waits_for_reconciliation_persistence(
+    hass, replacement, live_reconciliation, save_fails, hold_command_lock
+) -> None:
+    """A restart cannot recover a marker already superseded by new motion."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    now = dt_util.utcnow()
+    dispatched_at = now - timedelta(seconds=5)
+    ended_at = (now - timedelta(seconds=1)).isoformat()
+    await manager.async_mark_started("serial", "away", room)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "synthetic stop",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dispatched_at.isoformat(),
+        },
+    )
+    persisted = deepcopy(manager._data)
+    entered = asyncio.Event()
+    finish = asyncio.Event()
+    dispatched = []
+    first_save = True
+
+    async def save(data):
+        nonlocal persisted, first_save
+        if first_save:
+            first_save = False
+            entered.set()
+            await finish.wait()
+            if save_fails:
+                raise OSError("synthetic save failure")
+        persisted = deepcopy(data)
+
+    manager._store.async_save.side_effect = save
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (Room(room.room_id, room.name, "protocol-kitchen", b"kitchen", ()),),
+    )
+    records = [
+        CleaningSessionRecord(
+            b"synthetic-session",
+            CleaningSession(
+                (now - timedelta(seconds=10)).isoformat(),
+                ended_at,
+                9,
+                (room.name,),
+                ((room.name, 9),),
+                True,
+                (room.name,),
+            ),
+        )
+    ]
+    reconciliation = asyncio.create_task(
+        manager.async_mark_native_completed(
+            "serial",
+            "away",
+            room,
+            dispatched_at=dispatched_at,
+            completed_at=ended_at,
+            duration_seconds=9,
+        )
+        if live_reconciliation
+        else manager.async_import_native_history("serial", floor_plan, records)
+    )
+    await entered.wait()
+
+    async def replace():
+        if replacement == "direct":
+            await manager.async_replace_managed_motion("serial")
+            dispatched.append(True)
+        elif replacement == "external":
+            async with manager.external_motion("serial"):
+                dispatched.append(True)
+        else:
+            token = manager.begin_managed_motion("serial")
+            async with manager.managed_command("serial", token):
+                dispatched.append(True)
+
+    if hold_command_lock:
+        await manager.command_lock("serial").acquire()
+    next_motion = asyncio.create_task(replace())
+    await asyncio.sleep(0)
+    try:
+        assert not next_motion.done()
+        assert dispatched == []
+    finally:
+        finish.set()
+        if hold_command_lock:
+            await asyncio.gather(reconciliation, return_exceptions=True)
+            manager.command_lock("serial").release()
+        results = await asyncio.gather(
+            reconciliation, next_motion, return_exceptions=True
+        )
+    assert isinstance(results[0], OSError) if save_fails else results[0] is True
+    assert results[1] is None
+    assert dispatched == [True]
+    assert manager._native_history_saves == {}
+    assert manager._reconciliation_removal_pending == set()
+    recovered = CleaningPlanManager(hass)
+    recovered._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=persisted), async_save=AsyncMock()
+    )
+    await recovered.async_load()
+    assert recovered.pending_native_reconciliation("serial") is None
+    await recovered.async_import_native_history("serial", floor_plan, records)
+    assert recovered.snapshot("serial")["completed_runs"] == int(not save_fails)
+
 
 @pytest.mark.parametrize(
     ("terminal_error", "translation_key", "last_result"),
