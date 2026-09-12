@@ -635,6 +635,8 @@ class CleaningPlanManager:
         if floor_plan is None:
             return False
         robot = self._robot(serial_number)
+        before = deepcopy(robot)
+        generation = self.motion_generation(serial_number)
         records = tuple(records)
         changed = _import_native_room_activity(robot, floor_plan, records)
         reconciled: list[dict[str, str]] = []
@@ -646,28 +648,35 @@ class CleaningPlanManager:
         )
         if not changed:
             return False
+        applied = deepcopy(robot)
         try:
-            await self._async_save_and_notify(serial_number)
-        finally:
-            for marker in reconciled:
-                entity_id = er.async_get(self.hass).async_get_entity_id(
-                    "vacuum", DOMAIN, f"{serial_number}_vacuum"
-                )
-                self.hass.bus.async_fire(
-                    f"{DOMAIN}_room_reconciled",
-                    {
-                        **({"entity_id": entity_id} if entity_id else {}),
-                        "plan_id": marker["plan_id"],
-                        "room_id": marker["room_id"],
-                        "room": marker["room"],
-                        **(
-                            {"run_id": marker["run_id"]} if marker.get("run_id") else {}
-                        ),
-                        "native_stop_reconciled": True,
-                        "reason_code": "native_reconciled_completion",
-                        "cause": "late_native_history",
-                    },
-                )
+            await self._store.async_save(self._data)
+        except Exception, asyncio.CancelledError:
+            if self.motion_generation(serial_number) != generation:
+                # A replacement owns marker removal even when this save fails.
+                before.pop("pending_native_reconciliation", None)
+                applied.pop("pending_native_reconciliation", None)
+            _restore_unsaved_changes(robot, before, applied)
+            raise
+        for marker in reconciled:
+            entity_id = er.async_get(self.hass).async_get_entity_id(
+                "vacuum", DOMAIN, f"{serial_number}_vacuum"
+            )
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_room_reconciled",
+                {
+                    **({"entity_id": entity_id} if entity_id else {}),
+                    "plan_id": marker["plan_id"],
+                    "room_id": marker["room_id"],
+                    "room": marker["room"],
+                    **({"run_id": marker["run_id"]} if marker.get("run_id") else {}),
+                    "native_stop_reconciled": True,
+                    "reason_code": "native_reconciled_completion",
+                    "cause": "late_native_history",
+                },
+            )
+        for listener in tuple(self._listeners.get(serial_number, ())):
+            listener()
         return True
 
     def areas(self, serial_number: str) -> dict[str, dict[str, Any]]:
@@ -1622,6 +1631,26 @@ class CleaningPlanManager:
         """Save a durable-marker removal before replacement motion dispatches."""
         if removed:
             await self._async_save_and_notify(serial_number)
+
+
+def _restore_unsaved_changes(
+    current: dict[str, Any], before: dict[str, Any], applied: dict[str, Any]
+) -> None:
+    """Undo a failed import without overwriting changes made during its save."""
+    missing = object()
+    for key, value in applied.items():
+        previous = before.get(key, missing)
+        present = current.get(key, missing)
+        if all(isinstance(item, dict) for item in (previous, value, present)):
+            _restore_unsaved_changes(present, previous, value)
+        elif present == value:
+            if previous is missing:
+                current.pop(key)
+            else:
+                current[key] = previous
+    for key in before.keys() - applied.keys():
+        if key not in current:
+            current[key] = before[key]
 
 
 def _elapsed_seconds(started: object, now: datetime) -> int | None:

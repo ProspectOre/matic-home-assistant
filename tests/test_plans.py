@@ -1765,9 +1765,13 @@ async def test_suspended_and_interrupted_rooms_never_advance_history(hass) -> No
     assert snapshot["last_interrupted_plan"]["room"] == "Kitchen"
 
 
+@pytest.mark.parametrize(
+    "save_failure", [None, "io", "cancelled", "concurrent_edit", "replacement"]
+)
 async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     hass,
     entity_registry,
+    save_failure,
 ) -> None:
     """A native session that finishes after STOP still credits the managed room."""
     manager = CleaningPlanManager(hass)
@@ -1822,6 +1826,34 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
         ),
     )
 
+    if save_failure is not None:
+        before = deepcopy(manager._data)
+        error_type = asyncio.CancelledError if save_failure == "cancelled" else OSError
+
+        async def fail_save(data):
+            if save_failure == "concurrent_edit":
+                manager._robot("serial")["selected_plan"] = "new-selection"
+            elif save_failure == "replacement":
+                manager.replace_managed_motion("serial")
+            raise error_type("synthetic reconciliation save")
+
+        manager._store.async_save.side_effect = fail_save
+        with pytest.raises(error_type, match="synthetic reconciliation save"):
+            await manager.async_import_native_history("serial", floor_plan, [record])
+        await hass.async_block_till_done()
+        assert events == []
+        if save_failure == "concurrent_edit":
+            before["robots"]["serial"]["selected_plan"] = "new-selection"
+        elif save_failure == "replacement":
+            before["robots"]["serial"].pop("pending_native_reconciliation")
+        assert manager._data == before
+        manager._store.async_save.side_effect = None
+    if save_failure == "replacement":
+        await manager.async_import_native_history("serial", floor_plan, [record])
+        await hass.async_block_till_done()
+        assert manager.snapshot("serial")["completed_runs"] == 0
+        assert events == []
+        return
     assert await manager.async_import_native_history("serial", floor_plan, [record])
     snapshot = manager.snapshot("serial")
     room_record = snapshot["plan_history"]["away"]["rooms"][room.room_id]
