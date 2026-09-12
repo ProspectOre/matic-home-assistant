@@ -41,7 +41,7 @@ plan completed or that a person caused a stop.
 | Scenario | Required evidence | Room-credit rule |
 | --- | --- | --- |
 | All selected rooms verify | `plan_finished: completed`, matching `run_id`, all room events | Credit verified rooms only |
-| Native session ends early | `plan_finished: partial`, `partial_native_result` or `unverified_completion` | Leave unverified rooms due |
+| Native session ends early | `plan_finished: partial`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms due; a known in-place stop is a controlled partial result, not a generic service fault |
 | Managed stop | `plan_finished: stopped`, `managed_stop`, stop command/activity when available | Do not credit the unfinished room |
 | Home Assistant unload | `plan_finished: interrupted`, `config_entry_unload` | No completion credit |
 | Timeout or robot error | `plan_finished: failed`, stable failure code, room failure event | No completion credit |

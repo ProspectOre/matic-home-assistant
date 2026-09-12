@@ -3391,6 +3391,20 @@ async def _async_execute_rooms(
                 run_cause = "managed_cancellation"
             return
         except (Exception, asyncio.CancelledError) as err:
+            # A native task that ends in place is positive evidence that the
+            # room was stopped, but it does not identify who or what stopped
+            # it.  Keep the no-credit guard from the room handler while
+            # treating this expected partial plan outcome as a controlled
+            # result, so a presence automation does not turn a valid stop into
+            # a generic service error.
+            stopped_in_place = isinstance(err, RoomStoppedInPlaceError) or isinstance(
+                getattr(err, "__cause__", None), RoomStoppedInPlaceError
+            )
+            if stopped_in_place:
+                run_outcome = "partial"
+                run_reason_code = "stopped_in_place"
+                run_cause = "unknown"
+                return
             run_outcome = "failed"
             run_reason_code = _failure_reason_code(err)
             run_cause = "internal"

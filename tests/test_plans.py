@@ -58,6 +58,7 @@ from custom_components.matic_robot.services import (
     PlanCancelledError,
     RoomInterruptedError,
     RoomRunOutcome,
+    RoomStoppedInPlaceError,
     RoomTakenOverError,
     _async_active_session_state,
     _async_dispatch_leg_command,
@@ -164,6 +165,39 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert (
         await manager.async_finish_run("serial", "wrong-run", "failed", "x", 9) is False
     )
+
+
+async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
+    """A stopped native task never credits a room or fails the automation."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    events = []
+    hass.bus.async_listen(EVENT_PLAN_FINISHED, events.append)
+
+    async def stopped_leg(*_args, **_kwargs):
+        cause = RoomStoppedInPlaceError("Kitchen ended in place")
+        raise ServiceValidationError("room interrupted") from cause
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=stopped_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+        )
+
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["outcome"] == "partial"
+    assert last_run["reason_code"] == "stopped_in_place"
+    assert last_run["completed_room_count"] == 0
+    assert events[0].data["cause"] == "unknown"
+    assert events[0].data["completed_room_count"] == 0
 
 
 def test_leg_groups_split_only_on_settings_changes() -> None:
