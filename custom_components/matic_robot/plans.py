@@ -22,7 +22,7 @@ from statistics import median
 from time import monotonic
 from typing import Any, Literal, cast, override
 
-from homeassistant.core import HomeAssistant, callback
+from homeassistant.core import Context, HomeAssistant, callback
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.storage import Store
@@ -304,6 +304,10 @@ class CleaningPlanManager:
                 )
                 robot["last_interrupted_plan"] = deepcopy(active)
                 robot["active_plan"] = None
+                recovered = True
+            if _close_unfinished_room_records(
+                robot, recovered_at=dt_util.utcnow().isoformat()
+            ):
                 recovered = True
         if recovered:
             await self._store.async_save(self._data)
@@ -1033,6 +1037,8 @@ class CleaningPlanManager:
         *,
         terminal_activity: str | None = None,
         cause: str = "unknown",
+        entity_id: str | None = None,
+        context: Context | None = None,
     ) -> bool:
         """Persist one terminal managed-run outcome when its ID still matches."""
         robot = self._robot(serial_number)
@@ -1041,9 +1047,16 @@ class CleaningPlanManager:
             return False
         room_count = last_run.get("room_count")
         max_rooms = room_count if isinstance(room_count, int) and room_count >= 0 else 0
+        ended_at = dt_util.utcnow().isoformat()
+        unfinished = _close_unfinished_room_records(
+            robot,
+            plan_id=last_run["plan_id"],
+            run_id=run_id,
+            ended_at=ended_at,
+        )
         last_run.update(
             {
-                "ended_at": dt_util.utcnow().isoformat(),
+                "ended_at": ended_at,
                 "outcome": outcome[:64],
                 "reason_code": reason_code[:64],
                 "cause": cause[:64],
@@ -1053,6 +1066,18 @@ class CleaningPlanManager:
         if terminal_activity is not None:
             last_run["terminal_activity"] = terminal_activity[:64]
         await self._async_save_and_notify(serial_number)
+        for room in unfinished:
+            self.hass.bus.async_fire(
+                f"{DOMAIN}_room_ended_unverified",
+                {
+                    **({"entity_id": entity_id} if entity_id else {}),
+                    **room,
+                    "run_id": run_id,
+                    "reason_code": "run_ended_without_room_evidence",
+                    "cause": "run_ended",
+                },
+                context=context,
+            )
         return True
 
     async def async_mark_started(
@@ -1068,6 +1093,10 @@ class CleaningPlanManager:
         record = self._room(serial_number, plan_id, room)
         record["last_started"] = now
         record["last_result"] = "running"
+        if run_id is not None:
+            record["run_id"] = run_id
+        else:
+            record.pop("run_id", None)
         robot = self._robot(serial_number)
         robot.pop("pending_native_reconciliation", None)
         robot["active_plan"] = {
@@ -1669,6 +1698,44 @@ class CleaningPlanManager:
             self._robot(serial_number).pop("pending_native_reconciliation", None)
             await self._async_save_and_notify(serial_number)
             self._reconciliation_removal_pending.discard(serial_number)
+
+
+def _close_unfinished_room_records(
+    robot: dict[str, Any],
+    *,
+    plan_id: str | None = None,
+    run_id: str | None = None,
+    ended_at: str | None = None,
+    recovered_at: str | None = None,
+) -> list[dict[str, str]]:
+    """Close attempts lacking terminal evidence without inventing completion."""
+    closed = []
+    for record_plan_id, rotation in robot["rotations"].items():
+        if plan_id is not None and record_plan_id != plan_id:
+            continue
+        for room_id, record in rotation["rooms"].items():
+            previous = record.get("last_result")
+            if (
+                not isinstance(previous, str)
+                or previous not in {"running", "suspended", "verifying"}
+                or (run_id is not None and record.get("run_id") != run_id)
+            ):
+                continue
+            record["last_result"] = "ended_unverified"
+            record["unverified_runs"] = _stored_count(record, "unverified_runs") + 1
+            if ended_at is not None:
+                record["last_ended_unverified"] = ended_at
+            if recovered_at is not None:
+                record["recovered_at"] = recovered_at
+                record["last_result_before_recovery"] = previous
+            closed.append(
+                {
+                    "plan_id": record_plan_id,
+                    "room_id": room_id,
+                    "room": str(record.get("name", room_id)),
+                }
+            )
+    return closed
 
 
 def _restore_unsaved_changes(

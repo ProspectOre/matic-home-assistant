@@ -3537,6 +3537,8 @@ async def _async_execute_rooms(
                                 len(completed_room_names),
                                 terminal_activity=terminal_activity,
                                 cause=run_cause,
+                                entity_id=entity_id,
+                                context=call.context,
                             )
                     finally:
                         bus = getattr(hass, "bus", None)

@@ -61,3 +61,10 @@ so recovery retains work already verified before the interruption.
 Late native reconciliation carries the originating `run_id`. The terminal plan
 record continues to describe the evidence available when its runner exited;
 `room_reconciled` identifies any additional completion verified afterward.
+
+When a multi-room run exits, earlier rooms from that run that still lack a
+terminal result become `ended_unverified` and emit a matching room event.
+Their rotation opportunity remains recorded; completion credit still requires
+native evidence. Startup also closes stored nonterminal room records, preserving
+the previous result and recording the recovery time. It does not reconstruct
+missing room events or invent a physical room-end timestamp.
