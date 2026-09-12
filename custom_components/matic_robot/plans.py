@@ -621,6 +621,7 @@ class CleaningPlanManager:
         plan = robot["plans"].get(active["plan_id"], {})
         if not plan.get("finish_current_room", False):
             self.cancel(serial_number)
+            self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
 
         try:
@@ -1111,16 +1112,19 @@ class CleaningPlanManager:
             run_id=run_id,
             ended_at=ended_at,
         )
+        docked = last_run.get("outcome") == "stopped_docked"
         last_run.update(
             {
                 "ended_at": ended_at,
-                "outcome": normalize_run_outcome(outcome),
-                "reason_code": reason_code[:64],
-                "cause": cause[:64],
+                "outcome": (
+                    "stopped_docked" if docked else normalize_run_outcome(outcome)
+                ),
+                "reason_code": "stopped_docked" if docked else reason_code[:64],
+                "cause": "managed_stop" if docked else cause[:64],
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
             }
         )
-        if terminal_activity is not None:
+        if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
         await self._async_save_and_notify(serial_number)
         for room in unfinished:
@@ -1159,7 +1163,7 @@ class CleaningPlanManager:
         last_run = robot.get("last_run")
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
             return False
-        if last_run.get("outcome") not in {"cancelled", "unverified"}:
+        if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
             return False
         now = dt_util.utcnow().isoformat()
         provenance = normalize_run_provenance(

@@ -1355,7 +1355,8 @@ async def _async_run_room(
             context=call.context,
         )
         raise PlanCancelledError from err
-    except PlanCancelledError:
+    except PlanCancelledError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
                 managed_user_command,
@@ -1885,7 +1886,8 @@ async def _async_run_leg(
             context=call.context,
         )
         raise PlanCancelledError from err
-    except PlanCancelledError:
+    except PlanCancelledError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
                 managed_user_command,
@@ -3178,6 +3180,10 @@ async def _async_wait_for_vacuum_state(
 class PlanCancelledError(HomeAssistantError):
     """An operator cancelled a managed cleaning plan."""
 
+    def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
+        super().__init__(*args)
+        self.suspend_reason = suspend_reason
+
 
 class RoomStartTimeoutError(TimeoutError):
     """The commanded room did not become active before its start deadline."""
@@ -3218,6 +3224,22 @@ def _interruption_reason_code(error: RoomInterruptedError) -> str:
     if isinstance(error, RoomStoppedInPlaceError):
         return "stopped_in_place"
     return "interrupted"
+
+
+def _suspended_run_reason(
+    manager: CleaningPlanManager, serial_number: str
+) -> str | None:
+    """Capture a low-charge suspension before room cleanup clears its marker."""
+    snapshot = getattr(manager, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    active = snapshot(serial_number).get("active_plan")
+    if isinstance(active, dict) and (
+        active.get("status") == "suspended"
+        and active.get("suspend_reason") == "low_charge"
+    ):
+        return "low_charge"
+    return None
 
 
 class RoomTakenOverError(HomeAssistantError):
@@ -3526,8 +3548,11 @@ async def _async_execute_rooms(
                 if callable(snapshot_reader)
                 else None
             )
-            recharge_suspended = isinstance(active_snapshot, dict) and (
-                active_snapshot.get("status") == "suspended"
+            recharge_suspended = getattr(
+                err, "suspend_reason", None
+            ) == "low_charge" or (
+                isinstance(active_snapshot, dict)
+                and active_snapshot.get("status") == "suspended"
                 and active_snapshot.get("suspend_reason") == "low_charge"
             )
             if cancellation_reason == "config_entry_unload":

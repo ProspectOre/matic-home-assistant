@@ -249,6 +249,44 @@ async def test_docked_stop_upgrades_only_after_correlated_final_command(hass) ->
     assert not await manager.async_mark_run_docked("serial", "run-1")
 
 
+async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
+    """A dock observation received before final cleanup remains durable."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+
+    assert await manager.async_mark_run_docked("serial", "run-1")
+    assert await manager.async_finish_run(
+        "serial", "run-1", "cancelled", "managed_stop", 0, terminal_activity="idle"
+    )
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["outcome"] == "stopped_docked"
+    assert last_run["reason_code"] == "stopped_docked"
+    assert last_run["terminal_activity"] == "docked"
+
+
+async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
+    """The default stop policy is distinguishable from motion replacement."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["active_plan"] = {"plan_id": "away"}
+    await manager.lock("serial").acquire()
+    try:
+        decision = manager.request_stop("serial")
+        assert decision.behavior == "immediate"
+        assert manager.cancellation_reason("serial") == "managed_stop"
+    finally:
+        manager.lock("serial").release()
+
+
 async def test_recharge_suspension_has_its_own_run_outcome(hass) -> None:
     """A low-charge pause is distinguishable from a user cancellation."""
     manager = CleaningPlanManager(hass)

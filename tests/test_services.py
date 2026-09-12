@@ -2058,6 +2058,41 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
 
 
+async def test_room_cancellation_preserves_low_charge_reason() -> None:
+    """Room cleanup carries suspension evidence to the plan finalizer."""
+    services = SimpleNamespace(async_call=AsyncMock())
+    bus = SimpleNamespace(async_fire=MagicMock())
+    hass = SimpleNamespace(services=services, bus=bus)
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_ended_unverified=AsyncMock(),
+        async_mark_verifying=AsyncMock(),
+        async_mark_cancelled=AsyncMock(),
+        cancellation_reason=MagicMock(return_value=None),
+        snapshot=MagicMock(
+            return_value={
+                "active_plan": {
+                    "status": "suspended",
+                    "suspend_reason": "low_charge",
+                }
+            }
+        ),
+    )
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            AsyncMock(side_effect=PlanCancelledError),
+        ),
+        pytest.raises(PlanCancelledError) as excinfo,
+    ):
+        await _async_run_room(
+            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
+        )
+    assert excinfo.value.suspend_reason == "low_charge"
+
+
 @pytest.mark.parametrize("changes_during_history", [False, True])
 async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
     changes_during_history: bool,
