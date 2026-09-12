@@ -516,6 +516,8 @@ class CleaningPlanManager:
             await self._async_persist_reconciliation_removal(
                 serial_number, reconciliation_removed
             )
+            if not self.managed_motion_is_current(serial_number, token):
+                raise ManagedMotionReplacedError("managed motion was replaced")
             yield
 
     @asynccontextmanager
@@ -1662,6 +1664,9 @@ class CleaningPlanManager:
         if serial_number in self._reconciliation_removal_pending:
             for done in pending_saves:
                 await done.wait()
+            # A failed same-generation import can restore its marker while
+            # this command waits. Remove it again before persisting ownership.
+            self._robot(serial_number).pop("pending_native_reconciliation", None)
             await self._async_save_and_notify(serial_number)
             self._reconciliation_removal_pending.discard(serial_number)
 

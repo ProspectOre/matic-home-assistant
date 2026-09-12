@@ -1685,7 +1685,35 @@ async def test_replacement_motion_persists_reconciliation_removal_before_yield(
         assert manager._reconciliation_removal_pending == set()
 
 
-@pytest.mark.parametrize("replacement", ["direct", "external", "managed"])
+async def test_managed_command_rechecks_ownership_after_storage(hass) -> None:
+    """A replacement arriving during storage prevents the older dispatch."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        room,
+        "synthetic stop",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": room.room_id,
+            "room": room.name,
+            "dispatched_at": dt_util.utcnow().isoformat(),
+        },
+    )
+    token = manager.begin_managed_motion("serial")
+    manager._store.async_save.side_effect = lambda _: manager.replace_managed_motion(
+        "serial"
+    )
+    with pytest.raises(ManagedMotionReplacedError):
+        async with manager.managed_command("serial", token):
+            pytest.fail("A replacement revoked this command while storage was pending")
+
+
+@pytest.mark.parametrize(
+    "replacement", ["direct", "external", "managed", "managed_early"]
+)
 @pytest.mark.parametrize("live_reconciliation", [False, True])
 @pytest.mark.parametrize("save_fails", [False, True])
 @pytest.mark.parametrize("hold_command_lock", [False, True])
@@ -1749,6 +1777,11 @@ async def test_replacement_waits_for_reconciliation_persistence(
             ),
         )
     ]
+    early_token = (
+        manager.begin_managed_motion("serial")
+        if replacement == "managed_early"
+        else None
+    )
     reconciliation = asyncio.create_task(
         manager.async_mark_native_completed(
             "serial",
@@ -1771,7 +1804,7 @@ async def test_replacement_waits_for_reconciliation_persistence(
             async with manager.external_motion("serial"):
                 dispatched.append(True)
         else:
-            token = manager.begin_managed_motion("serial")
+            token = early_token or manager.begin_managed_motion("serial")
             async with manager.managed_command("serial", token):
                 dispatched.append(True)
 
