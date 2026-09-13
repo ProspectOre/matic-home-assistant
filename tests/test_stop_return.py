@@ -404,20 +404,32 @@ async def test_schedule_confirmation_registers_and_closes_docked_run(hass) -> No
     manager = _manager()
     hass.states.async_set(ENTITY, "charging", {})
     on_docked = AsyncMock()
+    scope: dict[str, str | None] = {"run_id": None}
+    observed_scopes: list[str | None] = []
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    async def refresh() -> None:
+        observed_scopes.append(scope["run_id"])
 
     schedule_dock_confirmation(
         hass,
-        refresh=AsyncMock(),
+        refresh=refresh,
         manager=manager,
         serial_number="serial",
         entity_id=ENTITY,
         run_id="run-1",
         on_docked=on_docked,
+        set_run_id=set_run_id,
+        get_run_id=lambda: scope["run_id"],
     )
     await hass.async_block_till_done()
 
     manager.register_reconciliation_task.assert_called_once()
     on_docked.assert_awaited_once()
+    assert observed_scopes == ["run-1"]
+    assert scope["run_id"] is None
 
 
 async def test_confirmation_waits_for_docked_state(
@@ -456,6 +468,65 @@ async def test_confirmation_aborts_after_replacement_motion(hass, state: str) ->
     assert not await async_confirm_docked(
         hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
     )
+    on_docked.assert_not_awaited()
+
+
+async def test_confirmation_refreshes_past_stale_pre_dock_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale pre-command cleaning state gets one bounded transition edge."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 1)
+    hass.states.async_set(ENTITY, "cleaning", {})
+    refresh_count = 0
+
+    async def refresh() -> None:
+        nonlocal refresh_count
+        refresh_count += 1
+        if refresh_count == 2:
+            hass.states.async_set(ENTITY, "returning", {})
+        elif refresh_count == 3:
+            hass.states.async_set(ENTITY, "charging", {})
+
+    on_docked = AsyncMock()
+    assert await async_confirm_docked(
+        hass, refresh=refresh, entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_awaited_once()
+    assert refresh_count == 3
+
+
+async def test_confirmation_aborts_persistent_replacement_motion(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistent cleaning after the transition edge cannot claim the dock."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 0)
+    hass.states.async_set(ENTITY, "cleaning", {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
+async def test_confirmation_does_not_claim_a_newer_run_scope(hass) -> None:
+    """A newer activity scope prevents an obsolete dock watcher from running."""
+    hass.states.async_set(ENTITY, "charging", {})
+    set_run_id = MagicMock()
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass,
+        refresh=AsyncMock(),
+        entity_id=ENTITY,
+        on_docked=on_docked,
+        run_id="run-old",
+        set_run_id=set_run_id,
+        get_run_id=lambda: "run-new",
+    )
+    set_run_id.assert_not_called()
     on_docked.assert_not_awaited()
 
 

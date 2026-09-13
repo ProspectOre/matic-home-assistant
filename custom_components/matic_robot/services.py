@@ -550,6 +550,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 "set_run_id",
                 None,
             ),
+            get_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "current_run_id",
+                None,
+            ),
         )
 
     async def async_clean_room_sequence(call: ServiceCall) -> None:
@@ -661,6 +666,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             set_activity_run_id=getattr(
                 getattr(entry.runtime_data.client, "activity_journal", None),
                 "set_run_id",
+                None,
+            ),
+            get_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "current_run_id",
                 None,
             ),
         )
@@ -3354,6 +3364,7 @@ async def _async_execute_rooms(
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     set_activity_run_id: Callable[[str | None], None] | None = None,
+    get_activity_run_id: Callable[[], str | None] | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3366,6 +3377,7 @@ async def _async_execute_rooms(
         cancel_event = manager.prepare_run(serial_number)
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
+        dock_confirmation_scheduled = False
         native_identity: bytes | None = None
         run_id = uuid4().hex
         run_started_at = dt_util.utcnow().isoformat()
@@ -3547,13 +3559,15 @@ async def _async_execute_rooms(
                     if finish_room_event.is_set() and completed_room_count < len(
                         chosen
                     ):
-                        schedule_dock_confirmation(
+                        dock_confirmation_scheduled = schedule_dock_confirmation(
                             hass,
                             refresh=refresh or (lambda: asyncio.sleep(0)),
                             manager=manager,
                             serial_number=serial_number,
                             entity_id=entity_id,
                             run_id=run_id,
+                            set_run_id=set_activity_run_id,
+                            get_run_id=get_activity_run_id,
                             on_docked=partial(
                                 _async_mark_run_docked,
                                 manager,
@@ -3813,7 +3827,7 @@ async def _async_execute_rooms(
             finally:
                 manager.end_managed_motion(serial_number, motion_token)
                 manager.unregister_run_task(serial_number)
-                if set_activity_run_id is not None:
+                if set_activity_run_id is not None and not dock_confirmation_scheduled:
                     set_activity_run_id(None)
 
 

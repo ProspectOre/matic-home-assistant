@@ -36,6 +36,7 @@ DOCK_CONFIRM_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
 # that stale edge from abandoning the settlement watcher, but stop waiting if
 # cleaning or pause persists long enough to be replacement work.
 DOCK_SETTLE_TRANSITION_GRACE_SECONDS = 60
+DOCK_CONFIRM_TRANSITION_GRACE_SECONDS = DOCK_SETTLE_TRANSITION_GRACE_SECONDS
 
 SETTLED_STATE = "idle"
 HOMEWARD_STATES = frozenset({"docked", "returning"})
@@ -228,21 +229,52 @@ async def async_confirm_docked(
     refresh: Callable[[], Awaitable[None]],
     entity_id: str,
     on_docked: Callable[[], Awaitable[None]],
+    run_id: str | None = None,
+    set_run_id: Callable[[str | None], None] | None = None,
+    get_run_id: Callable[[], str | None] | None = None,
 ) -> bool:
     """Wait for a DOCK command to produce an observed docked state."""
     deadline = monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
-    while True:
-        state = hass.states.get(entity_id)
-        if state is not None and state.state in REPLACEMENT_STATES:
-            _LOGGER.debug("Matic DOCK confirmation abandoned after replacement motion")
+    run_scope_claimed = False
+    if set_run_id is not None and run_id is not None:
+        current_run_id = get_run_id() if get_run_id is not None else None
+        if get_run_id is not None and current_run_id not in {None, run_id}:
             return False
-        if state is not None and state.state in DOCKED_STATES:
-            await on_docked()
-            return True
-        if monotonic() >= deadline:
-            return False
-        await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+        set_run_id(run_id)
+        run_scope_claimed = True
+    replacement_deadline: float | None = None
+    try:
+        # The command sender has usually refreshed once, but that read can be
+        # the pre-command cleaning state. Refresh before interpreting the
+        # first confirmation state, then allow a bounded transition edge.
         await refresh()
+        while True:
+            state = hass.states.get(entity_id)
+            now = monotonic()
+            if state is not None and state.state in DOCKED_STATES:
+                await on_docked()
+                return True
+            if state is not None and state.state in REPLACEMENT_STATES:
+                if replacement_deadline is None:
+                    replacement_deadline = now + DOCK_CONFIRM_TRANSITION_GRACE_SECONDS
+                if now >= replacement_deadline:
+                    _LOGGER.debug(
+                        "Matic DOCK confirmation abandoned after replacement motion"
+                    )
+                    return False
+            else:
+                replacement_deadline = None
+            if now >= deadline:
+                return False
+            await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+            await refresh()
+    finally:
+        if (
+            run_scope_claimed
+            and set_run_id is not None
+            and (get_run_id is None or get_run_id() == run_id)
+        ):
+            set_run_id(None)
 
 
 def schedule_dock_confirmation(
@@ -254,20 +286,26 @@ def schedule_dock_confirmation(
     entity_id: str,
     run_id: str,
     on_docked: Callable[[], Awaitable[None]],
-) -> None:
+    set_run_id: Callable[[str | None], None] | None = None,
+    get_run_id: Callable[[], str | None] | None = None,
+) -> bool:
     """Start a lifecycle-bound watcher for an already-sent DOCK command."""
     create_background_task = getattr(hass, "async_create_background_task", None)
     if not callable(create_background_task):
-        return
+        return False
     task = create_background_task(
         async_confirm_docked(
             hass,
             refresh=refresh,
             entity_id=entity_id,
             on_docked=on_docked,
+            run_id=run_id,
+            set_run_id=set_run_id,
+            get_run_id=get_run_id,
         ),
         f"{DOMAIN} confirm managed dock {run_id}",
     )
     register_task = getattr(manager, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
         register_task(serial_number, task)
+    return isinstance(task, asyncio.Task)
