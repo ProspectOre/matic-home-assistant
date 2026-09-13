@@ -99,6 +99,16 @@ stamp_status_for_sha() {
   if (( evidence_only_mode )); then
     return 0
   fi
+  if [[ "${AUDIT_MODE:-false}" == true && "$context" == "$REVIEW_GATE_CONTEXT" ]]; then
+    case "$description" in
+      "Review state changed; evaluating the regular review"|"Classifying dependency-only changes on "*|"Evaluating the regular review on "*) return 0 ;;
+    esac
+    if [[ "$state" == success ]]; then
+      current_status="$(gh api "repos/$REPO/commits/$target_sha/statuses?per_page=100" --paginate --slurp \
+        | jq -c --arg context "$context" '[.[][] | select(.context == $context)][0] // null')"
+      if jq -e --arg description "$description" '.state == "success" and .description == $description' <<< "$current_status" >/dev/null; then return 0; fi
+    fi
+  fi
   gh api "repos/$REPO/statuses/$target_sha" --silent \
     -f state="$state" \
     -f context="$context" \
@@ -657,7 +667,7 @@ if dependency_digest="$(classify_dependencies)"; then
   stamp_review_gate success "Dependencies exempt for $head_prefix; diff ${dependency_digest:0:16}"
   trap 'stamp_review_gate pending "Dependency state could not be revalidated after publication"; exit 1' ERR
   require_no_security_findings
-  if [[ "$(read_pr_snapshot)" != "$final_pr_snapshot" ]] || base_change_marker_exists || rollout_marker_exists; then
+  if [[ "$(read_pr_snapshot)" != "$final_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]] || base_change_marker_exists || rollout_marker_exists; then
     stamp_review_gate pending "Dependency state changed while publishing success"
     gate_pending
   fi
@@ -759,7 +769,7 @@ stamp_review_gate success "Clean regular review for $head_prefix; evidence $evid
 trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
 post_success_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$post_success_snapshot"
-if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$(read_pr_snapshot)" != "$last_pr_snapshot" ]]; then
+if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$(read_pr_snapshot)" != "$last_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]]; then
   stamp_review_gate pending "Review state changed while publishing success"
   gate_pending
 fi

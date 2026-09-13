@@ -54,6 +54,21 @@ JSON_FIELDS = {
 SHA = re.compile(r"^[0-9a-f]{40}$")
 
 
+def toml_loader():
+    try:
+        import tomllib
+
+        return tomllib.loads
+    except ImportError:
+        for module in ("tomli", "pip._vendor.tomli"):
+            try:
+                imported = __import__(module, fromlist=["loads"])
+                return imported.loads
+            except ImportError:
+                pass
+    return None
+
+
 def only_fields(before, after, fields):
     """At least one dependency field changes and every other field is identical."""
     if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
@@ -79,7 +94,7 @@ def changed_lines(patch):
     return old, new
 
 
-def replacements(patch, pattern, preserve_structure=False):
+def replacements(patch, pattern, preserve_structure=False, immutable_refs=False):
     if not patch:
         return False
     # Pair only adjacent replacement blocks. Aggregating across hunks would
@@ -101,6 +116,12 @@ def replacements(patch, pattern, preserve_structure=False):
         for left, right in zip(old, new, strict=True):
             a, b = re.fullmatch(pattern, left), re.fullmatch(pattern, right)
             if not a or not b:
+                return False
+            if (
+                immutable_refs
+                and SHA.fullmatch(a.group("dependency"))
+                and not SHA.fullmatch(b.group("dependency"))
+            ):
                 return False
             if preserve_structure:
                 if a.group("prefix") != b.group("prefix") or a.group(
@@ -134,6 +155,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 r"(?P<suffix>[ \t]*)(?:#.*)?"
             ),
             True,
+            immutable_refs=True,
         )
     if name.startswith("Dockerfile"):
         return replacements(
@@ -315,15 +337,38 @@ def dependency_file(path, before, after, patch, status="modified"):
         if name == "libs.versions.toml" or (
             name.endswith(".versions.toml") and "/gradle/" in "/" + path
         ):
-            import tomllib
-
-            old, new = tomllib.loads(before), tomllib.loads(after)
+            loads = toml_loader()
+            if loads is None:
+                return False
+            old, new = loads(before), loads(after)
             allowed = {"versions", "libraries", "plugins", "bundles"}
-            return set(old) <= allowed and set(new) <= allowed and old != new
-        if name in ("pyproject.toml", "Cargo.toml", "Pipfile"):
-            import tomllib
 
-            old, new = tomllib.loads(before), tomllib.loads(after)
+            def stable(value):
+                if isinstance(value, dict):
+                    return all(stable(item) for item in value.values())
+                if isinstance(value, list):
+                    return all(stable(item) for item in value)
+                if isinstance(value, str):
+                    return not (
+                        re.search(
+                            r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot)",
+                            value,
+                            re.I,
+                        )
+                    )
+                return False
+
+            return (
+                set(old) <= allowed
+                and set(new) <= allowed
+                and stable(new)
+                and old != new
+            )
+        if name in ("pyproject.toml", "Cargo.toml", "Pipfile"):
+            loads = toml_loader()
+            if loads is None:
+                return False
+            old, new = loads(before), loads(after)
             original = old != new
             paths = {
                 "pyproject.toml": [
@@ -424,9 +469,7 @@ def classify(repo, number, head, base):
         raise ValueError("Missing immutable merge base")
     records = []
     base_response = gh(f"repos/{repo}/git/trees/{ancestor}?recursive=1")
-    head_response = gh(
-        f"repos/{pr['head']['repo']['full_name']}/git/trees/{head}?recursive=1"
-    )
+    head_response = gh(f"repos/{repo}/git/trees/{head}?recursive=1")
     if base_response.get("truncated") or head_response.get("truncated"):
         return None
     base_tree = {x["path"]: x for x in base_response["tree"]}
@@ -464,7 +507,7 @@ def classify(repo, number, head, base):
         )
         if structured and status == "modified":
             before = content(repo, path, ancestor)
-            after = content(pr["head"]["repo"]["full_name"], path, head)
+            after = content(repo, path, head)
         if not structured and name not in LOCKS and name != "verification-metadata.xml":
             lines = changed_lines(file.get("patch"))
             if (
