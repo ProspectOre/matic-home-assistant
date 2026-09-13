@@ -933,7 +933,15 @@ class CleaningPlanManager:
             "rotation": (
                 self.rotation_details(serial_number, plan["id"], rooms)
                 if intelligent
-                else _saved_order_rotation_details(rooms)
+                else _saved_order_rotation_details(
+                    rooms,
+                    {
+                        candidate.room.room_id: candidate
+                        for candidate in self._rotation_candidates(
+                            serial_number, plan["id"], rooms
+                        )
+                    },
+                )
             ),
             "room_count": len(chosen),
             "return_to_base": bool(plan.get("return_to_base", True)),
@@ -2274,17 +2282,26 @@ def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]
 
 def _saved_order_rotation_details(
     rooms: Sequence[CleaningRoom],
+    history: Mapping[str, _RotationCandidate] | None = None,
 ) -> list[dict[str, Any]]:
-    """Describe an ordered plan without implying intelligent history."""
+    """Describe an ordered plan while preserving its saved room order."""
     return [
         {
             "rank": rank,
             "room_id": room.room_id,
             "room": room.name,
-            "last_result": None,
-            "last_opportunity": None,
-            "last_opportunity_source": None,
-            "last_completion": None,
+            "last_result": history[room.room_id].last_result
+            if history and room.room_id in history
+            else None,
+            "last_opportunity": history[room.room_id].effective_value
+            if history and room.room_id in history
+            else None,
+            "last_opportunity_source": history[room.room_id].source
+            if history and room.room_id in history
+            else None,
+            "last_completion": history[room.room_id].last_completion
+            if history and room.room_id in history
+            else None,
             "selection_reason": "saved_order",
         }
         for rank, room in enumerate(rooms, start=1)

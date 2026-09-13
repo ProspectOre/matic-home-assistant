@@ -240,7 +240,7 @@ async def test_final_dock_confirmation_aborts_when_stop_fence_clears(hass) -> No
     on_docked.assert_not_awaited()
 
 
-@pytest.mark.parametrize("state", ["docked", "returning"])
+@pytest.mark.parametrize("state", ["docked", "charging", "returning"])
 async def test_skips_when_the_robot_is_already_home_or_heading_there(
     hass, state: str
 ) -> None:
@@ -251,9 +251,10 @@ async def test_skips_when_the_robot_is_already_home_or_heading_there(
     client.async_send_user_command.assert_not_awaited()
 
 
-async def test_already_docked_stop_closes_the_correlated_run(hass) -> None:
+@pytest.mark.parametrize("state", ["docked", "charging"])
+async def test_already_docked_stop_closes_the_correlated_run(hass, state: str) -> None:
     """An OEM stop that already reached the dock still records dock evidence."""
-    hass.states.async_set(ENTITY, "docked", {})
+    hass.states.async_set(ENTITY, state, {})
     on_docked = AsyncMock()
 
     assert await async_dock_when_stop_settles(

@@ -136,6 +136,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
 
     async def fake_leg(*args, **kwargs):
         args[11](args[5][0].name)
+        kwargs["record_room_completed"](args[5][0])
         return True
 
     with patch(
@@ -449,6 +450,27 @@ async def test_room_outcomes_ignore_prior_run_terminal_state(hass) -> None:
     )
     assert outcomes == [
         {"room_id": "room-kitchen", "room": "Kitchen", "outcome": "unattempted"}
+    ]
+
+
+async def test_room_outcomes_use_room_ids_for_duplicate_names(hass) -> None:
+    """One completed duplicate-name room cannot credit its sibling."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [_room("Hall", "room-hall-a"), _room("Hall", "room-hall-b")]
+
+    outcomes = _room_outcomes(
+        manager,
+        "serial",
+        "away",
+        "run-1",
+        rooms,
+        {"room-hall-a"},
+    )
+
+    assert outcomes == [
+        {"room_id": "room-hall-a", "room": "Hall", "outcome": "completed"},
+        {"room_id": "room-hall-b", "room": "Hall", "outcome": "unattempted"},
     ]
 
 
@@ -3280,6 +3302,7 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
     ordered_preview = manager.preview("serial", room_map)
     assert ordered_preview["rotation_basis"] == "saved_order"
     assert ordered_preview["rooms"][0]["name"] == "Kitchen"
+    assert ordered_preview["rotation"][0]["last_completion"] is not None
     manager._robot("serial")["plans"]["whole_home"]["run_behavior"] = "intelligent"
     await manager.async_reset_history("serial", "whole_home")
     assert manager.snapshot("serial")["completed_runs"] == 0

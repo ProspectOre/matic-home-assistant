@@ -39,7 +39,7 @@ DOCK_SETTLE_TRANSITION_GRACE_SECONDS = 60
 DOCK_CONFIRM_TRANSITION_GRACE_SECONDS = DOCK_SETTLE_TRANSITION_GRACE_SECONDS
 
 SETTLED_STATE = "idle"
-HOMEWARD_STATES = frozenset({"docked", "returning"})
+HOMEWARD_STATES = frozenset({"docked", "returning", "charging"})
 DOCKED_STATES = frozenset({"docked", "charging"})
 REPLACEMENT_STATES = frozenset({"cleaning", "paused"})
 

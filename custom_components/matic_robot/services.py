@@ -1169,6 +1169,7 @@ async def _async_run_room(
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
+    record_room_completed: Callable[[CleaningRoom], None] | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1590,6 +1591,8 @@ async def _async_run_room(
 
     if completion_verified:
         await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
+        if record_room_completed is not None:
+            record_room_completed(room)
         if confirm_room_completed is not None:
             confirm_room_completed(room.name)
         hass.bus.async_fire(
@@ -1639,6 +1642,7 @@ async def _async_run_leg(
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
+    record_room_completed: Callable[[CleaningRoom], None] | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1672,6 +1676,7 @@ async def _async_run_leg(
             session_identity=session_identity,
             on_native_identity=on_native_identity,
             run_id=run_id,
+            record_room_completed=record_room_completed,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -2066,6 +2071,8 @@ async def _async_run_leg(
             )
             if confirm_room_completed is not None:
                 confirm_room_completed(room.name)
+            if record_room_completed is not None:
+                record_room_completed(room)
             hass.bus.async_fire(
                 f"{DOMAIN}_room_completed",
                 {**event_data(room), "reason_code": "verified_completion"},
@@ -3338,7 +3345,7 @@ def _room_outcomes(
     plan_id: str,
     run_id: str,
     chosen: Sequence[CleaningRoom],
-    completed_names: set[str],
+    completed_room_ids: set[str],
 ) -> list[dict[str, str]]:
     """Return the bounded room outcome vocabulary for one terminal run."""
     history = manager.snapshot(serial_number).get("plan_history", {})
@@ -3366,7 +3373,11 @@ def _room_outcomes(
                 "room": room.name,
                 "outcome": (
                     "completed"
-                    if room.name in completed_names
+                    if room.room_id in completed_room_ids
+                    or (
+                        record.get("run_id") == run_id
+                        and record.get("last_result") == "completed"
+                    )
                     else "partial"
                     if attempted
                     else "unattempted"
@@ -3418,7 +3429,7 @@ async def _async_execute_rooms(
         run_reason_code = "run_not_finished"
         run_cause = "unknown"
         run_provenance = _run_provenance(call)
-        completed_room_names: set[str] = set()
+        completed_room_ids: set[str] = set()
         chosen: list[CleaningRoom] = []
 
         def bind_native_identity(identity: bytes | None) -> None:
@@ -3436,10 +3447,8 @@ async def _async_execute_rooms(
         if set_activity_run_id is not None:
             set_activity_run_id(run_id)
 
-        def record_room_completion(room_name: str) -> None:
-            completed_room_names.add(room_name)
-            if confirm_room_completed is not None:
-                confirm_room_completed(room_name)
+        def record_room_completion(room: CleaningRoom) -> None:
+            completed_room_ids.add(room.room_id)
 
         try:
             # Publish ownership before the first suspending check. Otherwise
@@ -3524,7 +3533,7 @@ async def _async_execute_rooms(
                     motion_token,
                     active_session,
                     session_history,
-                    record_room_completion,
+                    confirm_room_completed,
                     managed_user_command,
                     room_name_is_unique=(
                         not mapped_room_names
@@ -3545,6 +3554,7 @@ async def _async_execute_rooms(
                     session_identity=session_identity,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
+                    record_room_completed=record_room_completion,
                 )
                 if not completion_verified:
                     break
@@ -3561,7 +3571,7 @@ async def _async_execute_rooms(
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
-            completed_room_count = len(completed_room_names)
+            completed_room_count = len(completed_room_ids)
             if finish_room_event.is_set() and completed_room_count < len(chosen):
                 run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
@@ -3781,7 +3791,7 @@ async def _async_execute_rooms(
                     event_reason_code = run_reason_code
                     event_cause = run_cause
                     event_terminal_activity = terminal_activity
-                    event_completed_room_count = len(completed_room_names)
+                    event_completed_room_count = len(completed_room_ids)
                     try:
                         finish_run = getattr(manager, "async_finish_run", None)
                         if callable(finish_run):
@@ -3790,7 +3800,7 @@ async def _async_execute_rooms(
                                 run_id,
                                 run_outcome,
                                 run_reason_code,
-                                len(completed_room_names),
+                                len(completed_room_ids),
                                 terminal_activity=terminal_activity,
                                 cause=run_cause,
                                 entity_id=entity_id,
@@ -3831,7 +3841,7 @@ async def _async_execute_rooms(
                             call.data["plan_id"],
                             run_id,
                             chosen,
-                            completed_room_names,
+                            completed_room_ids,
                         )
                     finally:
                         # Room terminal events are queued by the HA bus. Yield

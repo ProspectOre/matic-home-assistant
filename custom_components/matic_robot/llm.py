@@ -317,15 +317,33 @@ class MaticGetPlanTool(_MaticTool):
             )
             rotation = rotation_value if isinstance(rotation_value, list) else []
         else:
+            history_value = runtime.cleaning_plans.rotation_details(
+                serial_number, plan["id"], rooms
+            )
+            history = (
+                {
+                    item["room_id"]: item
+                    for item in history_value
+                    if isinstance(item, dict) and isinstance(item.get("room_id"), str)
+                }
+                if isinstance(history_value, list)
+                else {}
+            )
             rotation = [
                 {
                     "rank": rank,
                     "room_id": room.room_id,
                     "room": room.name,
-                    "last_result": None,
-                    "last_opportunity": None,
-                    "last_opportunity_source": None,
-                    "last_completion": None,
+                    "last_result": history.get(room.room_id, {}).get("last_result"),
+                    "last_opportunity": history.get(room.room_id, {}).get(
+                        "last_opportunity"
+                    ),
+                    "last_opportunity_source": history.get(room.room_id, {}).get(
+                        "last_opportunity_source"
+                    ),
+                    "last_completion": history.get(room.room_id, {}).get(
+                        "last_completion"
+                    ),
                     "selection_reason": "saved_order",
                 }
                 for rank, room in enumerate(rooms, start=1)

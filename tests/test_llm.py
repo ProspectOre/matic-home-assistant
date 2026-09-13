@@ -453,6 +453,15 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
         {"id": "saved", "run_behavior": "saved_order", "return_to_base": False},
         rooms[:1],
     )
+    manager.rotation_details.return_value = [
+        {
+            "room_id": "kitchen",
+            "last_result": "completed",
+            "last_opportunity": "2026-09-12T20:00:00+00:00",
+            "last_opportunity_source": "plan",
+            "last_completion": "2026-09-12T20:00:00+00:00",
+        }
+    ]
     manager.snapshot.return_value = {"active_plan": None}
     ordered = await tool.async_call(
         hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
@@ -460,6 +469,7 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     assert ordered["preview_scope"] == "next_run"
     assert ordered["active_run_for_plan"] is None
     assert ordered["plan"]["name"] == "saved"
+    assert ordered["rotation"][0]["last_completion"] == ("2026-09-12T20:00:00+00:00")
 
     manager.lock.return_value.locked.return_value = False
     idle = await tool.async_call(
