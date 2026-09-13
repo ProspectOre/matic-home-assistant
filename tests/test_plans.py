@@ -216,6 +216,44 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     await asyncio.sleep(0)
 
 
+async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
+    """An older dock watcher cannot pin a newer run's activity scope."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    set_run_id = MagicMock()
+    watcher_release = asyncio.Event()
+
+    async def watcher() -> None:
+        await watcher_release.wait()
+
+    async def fake_leg(*_args, **_kwargs):
+        manager.register_reconciliation_task(
+            "serial", asyncio.create_task(watcher()), dock=True
+        )
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+            set_activity_run_id=set_run_id,
+            get_activity_run_id=lambda: "newer-run",
+        )
+
+    assert set_run_id.call_args_list[-1].args[0] is None
+    watcher_release.set()
+    manager.cancel_reconciliation_tasks("serial")
+    await asyncio.sleep(0)
+
+
 async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
     """A stopped native task never credits a room or fails the automation."""
     manager = CleaningPlanManager(hass)

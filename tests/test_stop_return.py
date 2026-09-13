@@ -219,25 +219,28 @@ async def test_final_dock_confirmation_aborts_replacement_motion(
     on_docked.assert_not_awaited()
 
 
-async def test_final_dock_confirmation_aborts_when_stop_fence_clears(hass) -> None:
-    """A cleared stop fence cannot produce stale dock evidence."""
+async def test_final_dock_confirmation_survives_stop_fence_expiry(hass) -> None:
+    """An accepted DOCK keeps its independent confirmation window."""
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
     manager = _manager()
-    manager.stop_pending.side_effect = [True, True, True, False]
+    manager.stop_pending.side_effect = [True, True, True]
     on_docked = AsyncMock()
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
 
     assert await async_dock_when_stop_settles(
         hass,
         client=client,
-        refresh=AsyncMock(),
+        refresh=refresh,
         manager=manager,
         serial_number="serial",
         entity_id=ENTITY,
         on_docked=on_docked,
     )
     client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
-    on_docked.assert_not_awaited()
+    on_docked.assert_awaited_once()
 
 
 @pytest.mark.parametrize("state", ["docked", "charging", "returning"])

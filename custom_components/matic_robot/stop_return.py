@@ -173,8 +173,6 @@ async def async_dock_when_stop_settles(
                                 )
                                 replacement_deadline: float | None = None
                                 while True:
-                                    if not manager.stop_pending(serial_number):
-                                        break
                                     confirmed = hass.states.get(entity_id)
                                     now = monotonic()
                                     if (

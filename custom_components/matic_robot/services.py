@@ -3882,6 +3882,8 @@ async def _async_execute_rooms(
                 stop_watcher_active = callable(reconciliation_active_reader) and bool(
                     reconciliation_active_reader(serial_number)
                 )
+                if stop_watcher_active and get_activity_run_id is not None:
+                    stop_watcher_active = get_activity_run_id() == run_id
                 if (
                     set_activity_run_id is not None
                     and not dock_confirmation_scheduled
