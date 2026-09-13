@@ -252,6 +252,20 @@ def dependency_file(path, before, after, patch, status="modified"):
             patch,
             r"""(?P<prefix>\s*(?:(?:\w*Implementation|implementation|api|ksp|kapt|classpath|\w*RuntimeOnly|runtimeOnly|compileOnly)\s*\(?["'][\w.+-]+:[\w.+-]+:))(?P<dependency>[\w.+-]+)(?P<suffix>["']\)?\s*(?://.*)?)""",
             True,
+        ) or replacements(
+            patch,
+            r"""(?P<prefix>\s*(?:id|kotlin)\(["'][\w.-]+["']\)\s+version\s+["'])(?P<dependency>[\w.+-]+)(?P<suffix>["'](?:\s+apply\s+false)?)""",
+            True,
+        )
+    if name == "Gemfile":
+        return replacements(
+            patch,
+            (
+                r"(?P<prefix>\s*gem\s+['\"][A-Za-z0-9_.-]+['\"]\s*,\s*['\"])"
+                r"(?P<dependency>[A-Za-z0-9<>=~.,* _+-]+)"
+                r"(?P<suffix>['\"](?:\s*,[^\n]*)?)"
+            ),
+            True,
         )
     if name == "project.pbxproj" and status == "modified":
         # Swift package requirement entries have a stable surrounding form;

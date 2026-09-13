@@ -204,8 +204,8 @@ head_prefix_resolves() {
 base_change_marker_exists() {
   local statuses
   statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
-  printf '%s\n' "$statuses" | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg prefix "Base changed for PR #$pr_number (" '
-    any(.[][]; .context == $context and .state == "pending" and ((.description // "") | startswith($prefix)))' >/dev/null
+  printf '%s\n' "$statuses" | jq -e --arg context "$REVIEW_BASE_CONTEXT" --arg pr "$pr_number" '
+    any(.[][]; .context == $context and .state == "pending" and ((.description // "") | (startswith("Base changed for PR #" + $pr + " (") or startswith("Base changed for PR #" + $pr + " at base "))))' >/dev/null
 }
 
 rollout_marker_exists() {
@@ -222,7 +222,7 @@ latest_regular_issue_comment_at() {
         [.[][]
          | select(.context == $context)
          | select(.state == "pending")
-         | select((.description // "") | startswith("Regular issue-comment invalidated;"))
+         | select((.description // "") | test("^Regular issue-comment invalidated(?: at [^;]+)?;"))
          | .updated_at]
         ' | latest_timestamp
 }
@@ -314,7 +314,6 @@ regular_evidence() {
           [.[]
            | .data.repository.pullRequest.reviews.nodes[]?
            | select((.author.login // "") == $bot and .author.id == "BOT_kgDOC98s_g")
-           | select((.state // "") != "DISMISSED")
            | select((.commit.oid // "") == $head)
            | (.body // "") as $body
            | select($body | regular_heading)
@@ -324,7 +323,7 @@ regular_evidence() {
            | {at: (.updatedAt // .submittedAt),
               id: (.databaseId | tostring),
               source: "review",
-              clean: ($body | stock_clean_envelope)}]'
+              clean: ((.state != "DISMISSED") and ($body | stock_clean_envelope))}]'
   )"
   issue_comment_records="$(
     gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
@@ -415,8 +414,38 @@ write_finding_observation() {
   fi
 }
 
+# Retain withdrawal history even when a failed/fork router could not write it.
+# Compare the last published evidence ID with all currently valid records, not
+# merely the selected verdict: an older clean verdict cannot replace a deletion.
+withdrawn_evidence_at() {
+  local deliveries="$1" statuses prior key prior_at saved at
+  statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
+  prior="$(jq -c --arg context "$REVIEW_GATE_CONTEXT" '
+    [.[][] | select(.context == $context and .state == "success")
+     | select((.description // "") | test("evidence (review:[0-9]+|issue-comment:[0-9]+)"))][0] // null' <<< "$statuses")"
+  [[ "$prior" != null ]] || return 0
+  key="$(jq -r '.description | capture("evidence (?<key>review:[0-9]+|issue-comment:[0-9]+)").key' <<< "$prior")"
+  if jq -e --arg key "$key" 'any(.[]; .clean and
+       (if .source == "review" then "review:" + .id else (.id | sub("^issue-comment-"; "issue-comment:")) end) == $key)' <<< "$deliveries" >/dev/null; then
+    return 0
+  fi
+  saved="$(jq -r --arg context "$REVIEW_REVIEW_CONTEXT" --arg suffix "; withdrawn $key" '
+    [.[][] | select(.context == $context and .state == "pending")
+     | select((.description // "") | endswith($suffix))
+     | .description | capture("^Regular review invalidated at (?<at>[^;]+);").at][0] // ""' <<< "$statuses")"
+  if [[ -n "$saved" ]]; then normalize_timestamp "$saved"; return 0; fi
+  prior_at="$(normalize_timestamp "$(jq -r '.updated_at // .created_at' <<< "$prior")")"
+  # The web adapter persists finding observations outside commit statuses.
+  if (( evidence_only_mode )) && [[ -n "$finding_after" && "$finding_after" > "$prior_at" ]]; then
+    echo "$finding_after"; return 0
+  fi
+  at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $at; withdrawn $key" >/dev/null
+  normalize_timestamp "$at"
+}
+
 read_gate_snapshot() {
-  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count latest_finding_at issue_comment_at review_invalidation_at
+  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count latest_finding_at issue_comment_at review_invalidation_at withdrawal_at
   evidence="$(regular_evidence)"
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
@@ -425,14 +454,16 @@ read_gate_snapshot() {
   verdict_selection="$(
     issue_comment_at="$(latest_regular_issue_comment_at)"
     review_invalidation_at="$(latest_regular_review_invalidation_at)"
-    jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" '
+    withdrawal_at="$(withdrawn_evidence_at "$deliveries")"
+    jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg withdrawal_at "$withdrawal_at" '
       ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
       | (([$deliveries[] | select(.clean | not) | .at]
           + [$reviews[]
              | select(.id as $id | ($finding_ids | index($id)) != null)
              | .at]
           + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
-          + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
+          + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end)
+          + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $latest_finding_at
       | ($deliveries | sort_by(.at) | last) as $latest_delivery
       | {verdict:
@@ -554,6 +585,19 @@ if [[ "${REQUIRE_CURRENT_BASE:-false}" == true ]]; then
   relationship="$(gh api "repos/$REPO/compare/$base_sha...$head_sha" --jq '.status')"
   if [[ "$relationship" != ahead && "$relationship" != identical ]]; then
     stamp_review_gate pending "Current head must include the current default branch"
+    gate_pending
+  fi
+fi
+
+# A base retarget or force-push observed after the head snapshot invalidates
+# dependency exemption too. This check must precede classification because
+# evidence-only runs cannot safely persist a marker on the contributor head.
+if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true && -n "${REVIEW_HEAD_OBSERVED_AT:-}" ]]; then
+  timeline_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
+    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)" || exit 1
+  timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
+  if [[ -n "$timeline_base_at" && "$timeline_base_at" > "$(normalize_timestamp "$REVIEW_HEAD_OBSERVED_AT")" ]]; then
+    stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
     gate_pending
   fi
 fi
