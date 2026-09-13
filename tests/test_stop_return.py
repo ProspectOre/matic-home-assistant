@@ -10,8 +10,10 @@ from custom_components.matic_robot import stop_return
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.stop_return import (
+    async_confirm_docked,
     async_dock_when_stop_settles,
     schedule_dock_after_stop,
+    schedule_dock_confirmation,
 )
 
 ENTITY = "vacuum.matic"
@@ -21,6 +23,7 @@ ENTITY = "vacuum.matic"
 def _fast_poll(monkeypatch: pytest.MonkeyPatch) -> None:
     """Keep the watcher's real control flow but drop its wait between polls."""
     monkeypatch.setattr(stop_return, "DOCK_SETTLE_POLL_SECONDS", 0)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0)
 
 
 def _manager(pending: bool = True) -> SimpleNamespace:
@@ -66,7 +69,181 @@ async def test_docks_once_the_stopped_task_reports_inactive(hass) -> None:
     refresh.assert_awaited_once()
 
 
-@pytest.mark.parametrize("state", ["docked", "returning"])
+async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> None:
+    """The final DOCK observation and callback share the stopped run ID."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    scope: dict[str, str | None] = {"run_id": None}
+    observed_scopes: list[str | None] = []
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    def get_run_id() -> str | None:
+        return scope["run_id"]
+
+    async def refresh() -> None:
+        observed_scopes.append(scope["run_id"])
+        hass.states.async_set(ENTITY, "charging", {})
+
+    on_docked = AsyncMock()
+
+    docked = await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=set_run_id,
+        get_run_id=get_run_id,
+        on_docked=on_docked,
+    )
+
+    assert docked is True
+    assert observed_scopes == ["run-1"]
+    assert scope["run_id"] is None
+    on_docked.assert_awaited_once()
+
+
+async def test_final_dock_does_not_clear_a_newer_run_scope(hass) -> None:
+    """A replacement run keeps ownership of the activity journal."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    async def on_docked() -> None:
+        scope["run_id"] = "run-new"
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=refresh,
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-old",
+            set_run_id=set_run_id,
+            get_run_id=lambda: scope["run_id"],
+            on_docked=on_docked,
+        )
+        is True
+    )
+    assert scope["run_id"] == "run-new"
+
+
+async def test_rejected_dock_clears_its_run_scope(hass) -> None:
+    """A failed final command releases the run scope it claimed."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    client.async_send_user_command = AsyncMock(side_effect=MaticError("rejected"))
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=AsyncMock(),
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-1",
+            set_run_id=set_run_id,
+            get_run_id=lambda: scope["run_id"],
+        )
+        is False
+    )
+    assert scope["run_id"] is None
+
+
+async def test_final_dock_does_not_close_run_without_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An accepted DOCK command alone does not create dock evidence."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0.001)
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    on_docked = AsyncMock()
+    refresh = AsyncMock()
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=refresh,
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            on_docked=on_docked,
+        )
+        is True
+    )
+    on_docked.assert_not_awaited()
+    assert refresh.await_count >= 2
+
+
+async def test_final_dock_confirmation_aborts_replacement_motion(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement task cannot claim an obsolete final DOCK."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 0)
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "cleaning", {})
+
+    on_docked = AsyncMock()
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        on_docked=on_docked,
+    )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    on_docked.assert_not_awaited()
+
+
+async def test_final_dock_confirmation_survives_stop_fence_expiry(hass) -> None:
+    """An accepted DOCK keeps its independent confirmation window."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    manager = _manager()
+    manager.stop_pending.side_effect = [True, True, True]
+    on_docked = AsyncMock()
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        on_docked=on_docked,
+    )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    on_docked.assert_awaited_once()
+
+
+@pytest.mark.parametrize("state", ["docked", "charging", "returning"])
 async def test_skips_when_the_robot_is_already_home_or_heading_there(
     hass, state: str
 ) -> None:
@@ -75,6 +252,49 @@ async def test_skips_when_the_robot_is_already_home_or_heading_there(
 
     assert await _run(hass, client, _manager()) is False
     client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", ["docked", "charging"])
+async def test_already_docked_stop_closes_the_correlated_run(hass, state: str) -> None:
+    """An OEM stop that already reached the dock still records dock evidence."""
+    hass.states.async_set(ENTITY, state, {})
+    on_docked = AsyncMock()
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=_client(session=False),
+        refresh=AsyncMock(),
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=MagicMock(),
+        on_docked=on_docked,
+    )
+    on_docked.assert_awaited_once()
+
+
+async def test_returning_stop_waits_for_correlated_dock(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A returning robot is confirmed at the dock before closing the run."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    hass.states.async_set(ENTITY, "returning", {})
+    refresh = AsyncMock(side_effect=lambda: hass.states.async_set(ENTITY, "docked", {}))
+    on_docked = AsyncMock()
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=_client(session=False),
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=MagicMock(),
+        on_docked=on_docked,
+    )
+    on_docked.assert_awaited_once()
 
 
 @pytest.mark.parametrize("state", ["cleaning", "paused"])
@@ -271,6 +491,136 @@ async def test_schedule_registers_a_lifecycle_bound_task(hass) -> None:
     assert isinstance(
         manager.register_reconciliation_task.call_args.args[1], asyncio.Task
     )
+
+
+async def test_schedule_confirmation_registers_and_closes_docked_run(hass) -> None:
+    manager = _manager()
+    hass.states.async_set(ENTITY, "charging", {})
+    on_docked = AsyncMock()
+    scope: dict[str, str | None] = {"run_id": None}
+    observed_scopes: list[str | None] = []
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    async def refresh() -> None:
+        observed_scopes.append(scope["run_id"])
+
+    schedule_dock_confirmation(
+        hass,
+        refresh=refresh,
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        on_docked=on_docked,
+        set_run_id=set_run_id,
+        get_run_id=lambda: scope["run_id"],
+    )
+    await hass.async_block_till_done()
+
+    manager.register_reconciliation_task.assert_called_once()
+    on_docked.assert_awaited_once()
+    assert observed_scopes == ["run-1"]
+    assert scope["run_id"] is None
+
+
+async def test_confirmation_waits_for_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    hass.states.async_set(ENTITY, "returning", {})
+    refresh = AsyncMock(side_effect=lambda: hass.states.async_set(ENTITY, "docked", {}))
+    on_docked = AsyncMock()
+
+    assert await async_confirm_docked(
+        hass, refresh=refresh, entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_awaited_once()
+
+
+async def test_confirmation_times_out_without_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0)
+    hass.states.async_set(ENTITY, "returning", {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
+@pytest.mark.parametrize("state", ["cleaning", "paused"])
+async def test_confirmation_aborts_after_replacement_motion(hass, state: str) -> None:
+    """A later unrelated task cannot upgrade this run when it docks."""
+    hass.states.async_set(ENTITY, state, {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
+async def test_confirmation_refreshes_past_stale_pre_dock_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A stale pre-command cleaning state gets one bounded transition edge."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 1)
+    hass.states.async_set(ENTITY, "cleaning", {})
+    refresh_count = 0
+
+    async def refresh() -> None:
+        nonlocal refresh_count
+        refresh_count += 1
+        if refresh_count == 2:
+            hass.states.async_set(ENTITY, "returning", {})
+        elif refresh_count == 3:
+            hass.states.async_set(ENTITY, "charging", {})
+
+    on_docked = AsyncMock()
+    assert await async_confirm_docked(
+        hass, refresh=refresh, entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_awaited_once()
+    assert refresh_count == 3
+
+
+async def test_confirmation_aborts_persistent_replacement_motion(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Persistent cleaning after the transition edge cannot claim the dock."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 0)
+    hass.states.async_set(ENTITY, "cleaning", {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
+async def test_confirmation_does_not_claim_a_newer_run_scope(hass) -> None:
+    """A newer activity scope prevents an obsolete dock watcher from running."""
+    hass.states.async_set(ENTITY, "charging", {})
+    set_run_id = MagicMock()
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass,
+        refresh=AsyncMock(),
+        entity_id=ENTITY,
+        on_docked=on_docked,
+        run_id="run-old",
+        set_run_id=set_run_id,
+        get_run_id=lambda: "run-new",
+    )
+    set_run_id.assert_not_called()
+    on_docked.assert_not_awaited()
 
 
 async def test_schedule_is_a_no_op_without_background_task_support() -> None:

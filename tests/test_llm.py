@@ -157,7 +157,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     hass = _hass(_entry())
     api = MaticOperationsAPI(hass)
     api.async_start()
-    assert hass.bus.async_listen.call_count == 13
+    assert hass.bus.async_listen.call_count == 14
 
     event_callback = hass.bus.async_listen.call_args_list[0].args[1]
     event_callback(
@@ -279,6 +279,26 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
         "room_duration_count": 1,
     }
 
+    event_callback(
+        Event(
+            "matic_robot_plan_finished",
+            {
+                "run_id": "run-1",
+                "room_outcomes": [
+                    {"room_id": "room-1", "room": "Kitchen", "outcome": "partial"},
+                    {"room_id": "room-2", "room": "Study", "outcome": "unattempted"},
+                    {"room": "ignored", "outcome": 7},
+                ],
+            },
+            time_fired_timestamp=5,
+        )
+    )
+    assert api.recent_events[-1]["data"]["room_outcomes"] == [
+        {"room_id": "room-1", "room": "Kitchen", "outcome": "partial"},
+        {"room_id": "room-2", "room": "Study", "outcome": "unattempted"},
+        {"room": "ignored"},
+    ]
+
     missing_context = _context(None)
     with pytest.raises(HomeAssistantError, match="Administrator"):
         await api.async_get_api_instance(missing_context)
@@ -308,7 +328,7 @@ async def test_api_registration_event_capture_and_admin_gate() -> None:
     with patch("custom_components.matic_robot.llm.llm.async_register_api") as register:
         registered = async_register_matic_llm_api(hass)
     register.assert_called_once_with(hass, registered)
-    assert hass.bus.async_listen.call_count == 26
+    assert hass.bus.async_listen.call_count == 28
 
 
 async def test_operations_and_robot_resolution() -> None:
@@ -433,6 +453,15 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
         {"id": "saved", "run_behavior": "saved_order", "return_to_base": False},
         rooms[:1],
     )
+    manager.rotation_details.return_value = [
+        {
+            "room_id": "kitchen",
+            "last_result": "completed",
+            "last_opportunity": "2026-09-12T20:00:00+00:00",
+            "last_opportunity_source": "plan",
+            "last_completion": "2026-09-12T20:00:00+00:00",
+        }
+    ]
     manager.snapshot.return_value = {"active_plan": None}
     ordered = await tool.async_call(
         hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
@@ -440,6 +469,7 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     assert ordered["preview_scope"] == "next_run"
     assert ordered["active_run_for_plan"] is None
     assert ordered["plan"]["name"] == "saved"
+    assert ordered["rotation"][0]["last_completion"] == ("2026-09-12T20:00:00+00:00")
 
     manager.lock.return_value.locked.return_value = False
     idle = await tool.async_call(

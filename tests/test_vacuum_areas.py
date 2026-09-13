@@ -625,3 +625,20 @@ def test_dock_after_stop_is_skipped_before_the_entity_is_registered() -> None:
 
     schedule.assert_called_once()
     assert schedule.call_args.kwargs["entity_id"] == "vacuum.test"
+
+
+async def test_dock_after_stop_callback_closes_the_correlated_run() -> None:
+    entity = _vacuum()
+    entity.entity_id = "vacuum.test"
+    entity._plans.async_mark_run_docked = AsyncMock()
+    entity.coordinator.client = MagicMock()
+    entity.coordinator.async_request_refresh = AsyncMock()
+    with patch(
+        "custom_components.matic_robot.vacuum.schedule_dock_after_stop"
+    ) as schedule:
+        entity._schedule_dock_after_stop("serial", run_id="run-1")
+
+    await schedule.call_args.kwargs["on_docked"]()
+    entity._plans.async_mark_run_docked.assert_awaited_once_with(
+        "serial", "run-1", entity_id="vacuum.test"
+    )

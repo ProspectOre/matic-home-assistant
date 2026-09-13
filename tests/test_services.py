@@ -60,6 +60,7 @@ from custom_components.matic_robot.services import (
     _async_dispatch_leg_command,
     _async_execute_rooms,
     _async_expire_native_reconciliation,
+    _async_mark_run_docked,
     _async_reconcile_native_stop,
     _async_run_room,
     _async_wait_for_vacuum_state,
@@ -71,10 +72,83 @@ from custom_components.matic_robot.services import (
     _require_matic_control,
     _resolve_loaded_matic_vacuums,
     _resolve_room_id,
+    _run_provenance,
     _saved_plan_context,
     _schedule_native_reconciliation,
     async_register_services,
 )
+
+
+async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
+    """Automation/user context maps to labels and never stores identity."""
+    automation = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {},
+        context=Context(parent_id="parent", user_id="private-user"),
+    )
+    user = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {},
+        context=Context(user_id="private-user"),
+    )
+    unknown = ServiceCall(hass, DOMAIN, "run_selected_plan", {}, context=Context())
+    assert _run_provenance(automation) == "automation"
+    assert _run_provenance(user) == "user"
+    assert _run_provenance(unknown) == "external_unknown"
+
+    manager = SimpleNamespace(async_mark_run_docked=AsyncMock())
+    await _async_mark_run_docked(
+        manager, "serial", None, "vacuum.matic", automation.context
+    )
+    manager.async_mark_run_docked.assert_not_awaited()
+    await _async_mark_run_docked(
+        manager, "serial", "run-1", "vacuum.matic", automation.context
+    )
+    manager.async_mark_run_docked.assert_awaited_once_with(
+        "serial", "run-1", entity_id="vacuum.matic", context=automation.context
+    )
+
+
+@pytest.mark.parametrize("finish_requested", [False, True])
+async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
+    hass, finish_requested: bool
+) -> None:
+    """Only a managed stop may upgrade a still-running run at the dock."""
+    finish_event = asyncio.Event()
+    if finish_requested:
+        finish_event.set()
+    manager = SimpleNamespace(
+        snapshot=MagicMock(
+            return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+        ),
+        cancellation_reason=MagicMock(return_value=None),
+        finish_room_event=MagicMock(return_value=finish_event),
+        async_mark_run_docked=AsyncMock(),
+    )
+
+    await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
+
+    manager.async_mark_run_docked.assert_not_awaited()
+
+
+async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
+    """The managed STOP reason authorizes the early dock upgrade."""
+    manager = SimpleNamespace(
+        snapshot=MagicMock(
+            return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+        ),
+        cancellation_reason=MagicMock(return_value="managed_stop"),
+        finish_room_event=MagicMock(return_value=asyncio.Event()),
+        async_mark_run_docked=AsyncMock(),
+    )
+
+    await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
+
+    manager.async_mark_run_docked.assert_awaited_once()
 
 
 def _registered_handler(services, service: str):
@@ -2022,6 +2096,41 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_cancelled"
 
 
+async def test_room_cancellation_preserves_low_charge_reason() -> None:
+    """Room cleanup carries suspension evidence to the plan finalizer."""
+    services = SimpleNamespace(async_call=AsyncMock())
+    bus = SimpleNamespace(async_fire=MagicMock())
+    hass = SimpleNamespace(services=services, bus=bus)
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(),
+        async_mark_completed=AsyncMock(),
+        async_mark_ended_unverified=AsyncMock(),
+        async_mark_verifying=AsyncMock(),
+        async_mark_cancelled=AsyncMock(),
+        cancellation_reason=MagicMock(return_value=None),
+        snapshot=MagicMock(
+            return_value={
+                "active_plan": {
+                    "status": "suspended",
+                    "suspend_reason": "low_charge",
+                }
+            }
+        ),
+    )
+    room = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            AsyncMock(side_effect=PlanCancelledError),
+        ),
+        pytest.raises(PlanCancelledError) as excinfo,
+    ):
+        await _async_run_room(
+            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
+        )
+    assert excinfo.value.suspend_reason == "low_charge"
+
+
 @pytest.mark.parametrize("changes_during_history", [False, True])
 async def test_room_dispatch_rechecks_exact_floor_before_robot_command(
     changes_during_history: bool,
@@ -2179,6 +2288,8 @@ async def test_room_failures_translate_client_errors_at_boundary(
         async_mark_verifying=AsyncMock(),
         async_mark_failed=AsyncMock(),
     )
+    finish_room_event = asyncio.Event()
+    finish_room_event.set()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
         patch(
@@ -2188,7 +2299,13 @@ async def test_room_failures_translate_client_errors_at_boundary(
         pytest.raises(expected_type) as excinfo,
     ):
         await _async_run_room(
-            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
+            hass,
+            _execution_call(hass),
+            manager,
+            "vacuum.test",
+            "serial",
+            room,
+            finish_room_event=finish_room_event,
         )
     if isinstance(error, MaticError):
         assert excinfo.value.translation_key == "robot_command_failed"
@@ -2196,6 +2313,7 @@ async def test_room_failures_translate_client_errors_at_boundary(
     else:
         assert excinfo.value is error
     manager.async_mark_failed.assert_awaited_once()
+    assert not finish_room_event.is_set()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
     event_data = bus.async_fire.call_args_list[-1].args[1]

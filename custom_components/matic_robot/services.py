@@ -75,11 +75,12 @@ from .plans import (
     ManagedMotionReplacedError,
     SavedPlanLimitError,
     leg_groups,
+    normalize_run_provenance,
     plan_floor_token,
     resolve_room_reference,
     resolve_rooms,
 )
-from .stop_return import schedule_dock_after_stop
+from .stop_return import schedule_dock_after_stop, schedule_dock_confirmation
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
@@ -480,6 +481,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
+            stop_run_id = (
+                manager.active_run_id(serial_number)
+                if command is UserCommand.STOP
+                else None
+            )
             async with manager.managed_command(serial_number, token):
                 await entry.runtime_data.client.async_send_user_command(command)
                 if command is UserCommand.STOP:
@@ -493,6 +499,25 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager=manager,
                     serial_number=serial_number,
                     entity_id=entity_id,
+                    run_id=stop_run_id,
+                    set_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "set_run_id",
+                        None,
+                    ),
+                    get_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "current_run_id",
+                        None,
+                    ),
+                    on_docked=partial(
+                        _async_mark_run_docked,
+                        manager,
+                        serial_number,
+                        stop_run_id,
+                        entity_id,
+                        call.context,
+                    ),
                 )
 
         await _async_execute_rooms(
@@ -523,6 +548,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             set_activity_run_id=getattr(
                 getattr(entry.runtime_data.client, "activity_journal", None),
                 "set_run_id",
+                None,
+            ),
+            get_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "current_run_id",
                 None,
             ),
         )
@@ -569,6 +599,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
+            stop_run_id = (
+                manager.active_run_id(serial_number)
+                if command is UserCommand.STOP
+                else None
+            )
             async with manager.managed_command(serial_number, token):
                 await entry.runtime_data.client.async_send_user_command(command)
                 if command is UserCommand.STOP:
@@ -582,6 +617,25 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager=manager,
                     serial_number=serial_number,
                     entity_id=entity_id,
+                    run_id=stop_run_id,
+                    set_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "set_run_id",
+                        None,
+                    ),
+                    get_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "current_run_id",
+                        None,
+                    ),
+                    on_docked=partial(
+                        _async_mark_run_docked,
+                        manager,
+                        serial_number,
+                        stop_run_id,
+                        entity_id,
+                        call.context,
+                    ),
                 )
 
         await _async_execute_rooms(
@@ -612,6 +666,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
             set_activity_run_id=getattr(
                 getattr(entry.runtime_data.client, "activity_journal", None),
                 "set_run_id",
+                None,
+            ),
+            get_activity_run_id=getattr(
+                getattr(entry.runtime_data.client, "activity_journal", None),
+                "current_run_id",
                 None,
             ),
         )
@@ -1104,11 +1163,13 @@ async def _async_run_room(
     room_name_is_unique: bool = True,
     prepared_dispatch: _PreparedRoomDispatch | None = None,
     prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
+    finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
+    record_room_completed: Callable[[CleaningRoom], None] | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1125,6 +1186,7 @@ async def _async_run_room(
         "cleaning_mode": room.cleaning_mode,
         "coverage_setting": room.coverage_setting,
         "run_id": run_id,
+        "provenance": _run_provenance(call),
     }
     await manager.async_mark_started(
         serial_number, call.data["plan_id"], room, run_id=run_id
@@ -1315,7 +1377,8 @@ async def _async_run_room(
             context=call.context,
         )
         raise PlanCancelledError from err
-    except PlanCancelledError:
+    except PlanCancelledError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
                 managed_user_command,
@@ -1366,6 +1429,7 @@ async def _async_run_room(
             )
         raise
     except RoomTakenOverError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], room, str(err)
         )
@@ -1441,6 +1505,11 @@ async def _async_run_room(
             str(err), "room_interrupted", {"room": room.name}
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        # A graceful finish request can race a room failure.  Clear that
+        # intent before sending the failure STOP so its dock watcher cannot
+        # upgrade the still-running record and mask the durable failure.
+        if finish_room_event is not None:
+            finish_room_event.clear()
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
@@ -1522,6 +1591,8 @@ async def _async_run_room(
 
     if completion_verified:
         await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
+        if record_room_completed is not None:
+            record_room_completed(room)
         if confirm_room_completed is not None:
             confirm_room_completed(room.name)
         hass.bus.async_fire(
@@ -1571,6 +1642,7 @@ async def _async_run_leg(
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
+    record_room_completed: Callable[[CleaningRoom], None] | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1598,11 +1670,13 @@ async def _async_run_leg(
             room_name_is_unique=room_name_is_unique,
             prepared_dispatch=prepared_dispatch,
             prefetch_next=prefetch_next,
+            finish_room_event=finish_room_event,
             floor_is_current=floor_is_current,
             floor_token=floor_token,
             session_identity=session_identity,
             on_native_identity=on_native_identity,
             run_id=run_id,
+            record_room_completed=record_room_completed,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1620,6 +1694,7 @@ async def _async_run_leg(
             "cleaning_mode": room.cleaning_mode,
             "coverage_setting": room.coverage_setting,
             "run_id": run_id,
+            "provenance": _run_provenance(call),
         }
 
     active_room = leg[0]
@@ -1844,7 +1919,8 @@ async def _async_run_leg(
             context=call.context,
         )
         raise PlanCancelledError from err
-    except PlanCancelledError:
+    except PlanCancelledError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
                 managed_user_command,
@@ -1908,6 +1984,7 @@ async def _async_run_leg(
             str(err), "room_interrupted", {"room": active_room.name}
         ) from err
     except RoomTakenOverError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], active_room, str(err)
         )
@@ -1927,6 +2004,11 @@ async def _async_run_leg(
             {"room": active_room.name},
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        # A graceful finish request can race a room failure.  Clear that
+        # intent before sending the failure STOP so its dock watcher cannot
+        # upgrade the still-running record and mask the durable failure.
+        if finish_room_event is not None:
+            finish_room_event.clear()
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
@@ -1989,6 +2071,8 @@ async def _async_run_leg(
             )
             if confirm_room_completed is not None:
                 confirm_room_completed(room.name)
+            if record_room_completed is not None:
+                record_room_completed(room)
             hass.bus.async_fire(
                 f"{DOMAIN}_room_completed",
                 {**event_data(room), "reason_code": "verified_completion"},
@@ -3137,6 +3221,10 @@ async def _async_wait_for_vacuum_state(
 class PlanCancelledError(HomeAssistantError):
     """An operator cancelled a managed cleaning plan."""
 
+    def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
+        super().__init__(*args)
+        self.suspend_reason = suspend_reason
+
 
 class RoomStartTimeoutError(TimeoutError):
     """The commanded room did not become active before its start deadline."""
@@ -3179,8 +3267,120 @@ def _interruption_reason_code(error: RoomInterruptedError) -> str:
     return "interrupted"
 
 
+def _suspended_run_reason(
+    manager: CleaningPlanManager, serial_number: str
+) -> str | None:
+    """Capture a low-charge suspension before room cleanup clears its marker."""
+    snapshot = getattr(manager, "snapshot", None)
+    if not callable(snapshot):
+        return None
+    active = snapshot(serial_number).get("active_plan")
+    if isinstance(active, dict) and (
+        active.get("status") == "suspended"
+        and active.get("suspend_reason") == "low_charge"
+    ):
+        return "low_charge"
+    return None
+
+
 class RoomTakenOverError(HomeAssistantError):
     """The native task ended, changed, or could no longer be identified."""
+
+    def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
+        super().__init__(*args)
+        self.suspend_reason = suspend_reason
+
+
+def _run_provenance(call: ServiceCall) -> str:
+    """Return bounded trigger provenance without retaining account identity."""
+    context = call.context
+    if getattr(context, "parent_id", None):
+        return "automation"
+    if getattr(context, "user_id", None):
+        return "user"
+    return normalize_run_provenance(None)
+
+
+async def _async_mark_run_docked(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    run_id: str | None,
+    entity_id: str,
+    context: Context,
+) -> None:
+    """Bridge the stop watcher to durable run closure for service calls."""
+    if run_id is None:
+        return
+    snapshot_reader = getattr(manager, "snapshot", None)
+    if callable(snapshot_reader):
+        snapshot = snapshot_reader(serial_number)
+        last_run = snapshot.get("last_run") if isinstance(snapshot, dict) else None
+        if isinstance(last_run, dict) and (
+            last_run.get("run_id") == run_id and last_run.get("outcome") == "running"
+        ):
+            cancellation_reader = getattr(manager, "cancellation_reason", None)
+            cancellation_reason = (
+                cancellation_reader(serial_number)
+                if callable(cancellation_reader)
+                else None
+            )
+            if cancellation_reason != "managed_stop":
+                return
+    await manager.async_mark_run_docked(
+        serial_number,
+        run_id,
+        entity_id=entity_id,
+        context=context,
+    )
+
+
+def _room_outcomes(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    plan_id: str,
+    run_id: str,
+    chosen: Sequence[CleaningRoom],
+    completed_room_ids: set[str],
+) -> list[dict[str, str]]:
+    """Return the bounded room outcome vocabulary for one terminal run."""
+    history = manager.snapshot(serial_number).get("plan_history", {})
+    plan_history = history.get(plan_id, {}) if isinstance(history, dict) else {}
+    records = plan_history.get("rooms", {}) if isinstance(plan_history, dict) else {}
+    result: list[dict[str, str]] = []
+    for room in chosen:
+        record = records.get(room.room_id, {}) if isinstance(records, dict) else {}
+        attempted = isinstance(record, dict) and (
+            record.get("run_id") == run_id
+            and record.get("last_result")
+            in {
+                "running",
+                "suspended",
+                "verifying",
+                "ended_unverified",
+                "cancelled",
+                "interrupted",
+                "failed",
+            }
+        )
+        result.append(
+            {
+                "room_id": room.room_id,
+                "room": room.name,
+                "outcome": (
+                    "completed"
+                    if room.room_id in completed_room_ids
+                    or (
+                        isinstance(record, dict)
+                        and record.get("run_id") == run_id
+                        and record.get("last_result") == "completed"
+                    )
+                    else "partial"
+                    if attempted
+                    else "unattempted"
+                ),
+            }
+        )
+    return result
 
 
 async def _async_execute_rooms(
@@ -3203,6 +3403,7 @@ async def _async_execute_rooms(
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     set_activity_run_id: Callable[[str | None], None] | None = None,
+    get_activity_run_id: Callable[[], str | None] | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3215,6 +3416,7 @@ async def _async_execute_rooms(
         cancel_event = manager.prepare_run(serial_number)
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
+        dock_confirmation_scheduled = False
         native_identity: bytes | None = None
         run_id = uuid4().hex
         run_started_at = dt_util.utcnow().isoformat()
@@ -3222,7 +3424,8 @@ async def _async_execute_rooms(
         run_outcome = "failed"
         run_reason_code = "run_not_finished"
         run_cause = "unknown"
-        completed_room_names: set[str] = set()
+        run_provenance = _run_provenance(call)
+        completed_room_ids: set[str] = set()
         chosen: list[CleaningRoom] = []
 
         def bind_native_identity(identity: bytes | None) -> None:
@@ -3240,10 +3443,8 @@ async def _async_execute_rooms(
         if set_activity_run_id is not None:
             set_activity_run_id(run_id)
 
-        def record_room_completion(room_name: str) -> None:
-            completed_room_names.add(room_name)
-            if confirm_room_completed is not None:
-                confirm_room_completed(room_name)
+        def record_room_completion(room: CleaningRoom) -> None:
+            completed_room_ids.add(room.room_id)
 
         try:
             # Publish ownership before the first suspending check. Otherwise
@@ -3265,8 +3466,9 @@ async def _async_execute_rooms(
                     call.data["plan_id"],
                     run_id,
                     len(chosen),
-                    trigger="service_call",
+                    trigger=run_provenance,
                     service=str(call.service),
+                    provenance=run_provenance,
                 )
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
@@ -3327,7 +3529,7 @@ async def _async_execute_rooms(
                     motion_token,
                     active_session,
                     session_history,
-                    record_room_completion,
+                    confirm_room_completed,
                     managed_user_command,
                     room_name_is_unique=(
                         not mapped_room_names
@@ -3348,6 +3550,7 @@ async def _async_execute_rooms(
                     session_identity=session_identity,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
+                    record_room_completed=record_room_completion,
                 )
                 if not completion_verified:
                     break
@@ -3364,33 +3567,63 @@ async def _async_execute_rooms(
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
-            completed_room_count = len(completed_room_names)
+            completed_room_count = len(completed_room_ids)
             if finish_room_event.is_set() and completed_room_count < len(chosen):
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
                 run_cause = "managed_cancellation"
+                mark_managed_stop = getattr(manager, "mark_managed_stop", None)
+                if callable(mark_managed_stop):
+                    mark_managed_stop(serial_number)
             elif completed_room_count == len(chosen):
                 run_outcome = "completed"
                 run_reason_code = "all_rooms_verified"
                 run_cause = "verified_completion"
             else:
-                run_outcome = "partial"
+                run_outcome = "unverified"
                 run_reason_code = "partial_native_result"
                 run_cause = "native_result"
             if cancel_event.is_set() or not manager.managed_motion_is_current(
                 serial_number, motion_token
             ):
                 raise PlanCancelledError
+            current = hass.states.get(entity_id)
+            needs_dock_confirmation = finish_room_event.is_set() and (
+                completed_room_count < len(chosen)
+            )
             if (
                 (call.data["return_to_base"] or finish_room_event.is_set())
-                and (current := hass.states.get(entity_id)) is not None
-                and current.state not in {"docked", "returning"}
+                and current is not None
                 and outer_command is not None
                 and not cleanup_stop_sent
                 and not _stop_is_pending(manager, serial_number)
+                and (
+                    current.state not in {"docked", "returning"}
+                    or needs_dock_confirmation
+                )
             ):
                 try:
-                    await outer_command(motion_token, UserCommand.DOCK)
+                    if current.state not in {"docked", "returning"}:
+                        await outer_command(motion_token, UserCommand.DOCK)
+                    if needs_dock_confirmation:
+                        dock_confirmation_scheduled = schedule_dock_confirmation(
+                            hass,
+                            refresh=refresh or (lambda: asyncio.sleep(0)),
+                            manager=manager,
+                            serial_number=serial_number,
+                            entity_id=entity_id,
+                            run_id=run_id,
+                            set_run_id=set_activity_run_id,
+                            get_run_id=get_activity_run_id,
+                            on_docked=partial(
+                                _async_mark_run_docked,
+                                manager,
+                                serial_number,
+                                run_id,
+                                entity_id,
+                                call.context,
+                            ),
+                        )
                 except ManagedMotionReplacedError as err:
                     raise PlanCancelledError from err
                 except MaticError as err:
@@ -3405,18 +3638,39 @@ async def _async_execute_rooms(
                 if callable(cancellation_reason_reader)
                 else None
             )
+            snapshot_reader = getattr(manager, "snapshot", None)
+            active_snapshot = (
+                snapshot_reader(serial_number).get("active_plan")
+                if callable(snapshot_reader)
+                else None
+            )
+            recharge_suspended = getattr(
+                err, "suspend_reason", None
+            ) == "low_charge" or (
+                isinstance(active_snapshot, dict)
+                and active_snapshot.get("status") == "suspended"
+                and active_snapshot.get("suspend_reason") == "low_charge"
+            )
             if cancellation_reason == "config_entry_unload":
-                run_outcome = "interrupted"
+                run_outcome = "unverified"
                 run_reason_code = "config_entry_unload"
                 run_cause = "home_assistant"
             elif cancellation_reason == "motion_replaced" or isinstance(
                 err.__cause__, ManagedMotionReplacedError
             ):
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_replaced"
                 run_cause = "replacement"
+            elif cancellation_reason == "managed_stop":
+                run_outcome = "cancelled"
+                run_reason_code = "managed_stop"
+                run_cause = "managed_cancellation"
+            elif recharge_suspended:
+                run_outcome = "recharge_suspended"
+                run_reason_code = "low_charge"
+                run_cause = "robot"
             else:
-                run_outcome = "stopped"
+                run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
                 run_cause = "managed_cancellation"
             return
@@ -3431,7 +3685,7 @@ async def _async_execute_rooms(
                 getattr(err, "__cause__", None), RoomStoppedInPlaceError
             )
             if stopped_in_place:
-                run_outcome = "partial"
+                run_outcome = "unverified"
                 run_reason_code = "stopped_in_place"
                 run_cause = "unknown"
                 return
@@ -3440,8 +3694,13 @@ async def _async_execute_rooms(
                 if isinstance(err, ServiceValidationError) and err.__cause__ is not None
                 else err
             )
+            if getattr(leaf_error, "suspend_reason", None) == "low_charge":
+                run_outcome = "recharge_suspended"
+                run_reason_code = "low_charge"
+                run_cause = "robot"
+                raise
             if isinstance(leaf_error, RoomInterruptedError | RoomTakenOverError):
-                run_outcome = "interrupted"
+                run_outcome = "unverified"
                 run_reason_code = (
                     "native_task_taken_over"
                     if isinstance(leaf_error, RoomTakenOverError)
@@ -3456,6 +3715,12 @@ async def _async_execute_rooms(
                 if isinstance(err, HomeAssistantError | MaticError | TimeoutError)
                 else "internal"
             )
+            finish_event_reader = getattr(manager, "finish_room_event", None)
+            if callable(finish_event_reader):
+                # A graceful stop request can race an unexpected exception.
+                # Retire that intent before failure cleanup so a dock watcher
+                # cannot authorize an in-flight failure upgrade.
+                finish_event_reader(serial_number).clear()
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
             active = manager.snapshot(serial_number)["active_plan"]
@@ -3526,6 +3791,12 @@ async def _async_execute_rooms(
                         if current_state is not None
                         else "unknown"
                     )
+                    room_outcomes: list[dict[str, str]] = []
+                    event_outcome = run_outcome
+                    event_reason_code = run_reason_code
+                    event_cause = run_cause
+                    event_terminal_activity = terminal_activity
+                    event_completed_room_count = len(completed_room_ids)
                     try:
                         finish_run = getattr(manager, "async_finish_run", None)
                         if callable(finish_run):
@@ -3534,13 +3805,54 @@ async def _async_execute_rooms(
                                 run_id,
                                 run_outcome,
                                 run_reason_code,
-                                len(completed_room_names),
+                                len(completed_room_ids),
                                 terminal_activity=terminal_activity,
                                 cause=run_cause,
                                 entity_id=entity_id,
                                 context=call.context,
                             )
+                        snapshot_reader = getattr(manager, "snapshot", None)
+                        final_snapshot = (
+                            snapshot_reader(serial_number)
+                            if callable(snapshot_reader)
+                            else None
+                        )
+                        final_last_run = (
+                            final_snapshot.get("last_run")
+                            if isinstance(final_snapshot, dict)
+                            else None
+                        )
+                        if isinstance(final_last_run, dict) and (
+                            final_last_run.get("run_id") == run_id
+                        ):
+                            event_outcome = str(
+                                final_last_run.get("outcome", event_outcome)
+                            )
+                            event_reason_code = str(
+                                final_last_run.get("reason_code", event_reason_code)
+                            )
+                            event_cause = str(final_last_run.get("cause", event_cause))
+                            event_terminal_activity = str(
+                                final_last_run.get(
+                                    "terminal_activity", event_terminal_activity
+                                )
+                            )
+                            completed = final_last_run.get("completed_room_count")
+                            if isinstance(completed, int):
+                                event_completed_room_count = completed
+                        room_outcomes = _room_outcomes(
+                            manager,
+                            serial_number,
+                            call.data["plan_id"],
+                            run_id,
+                            chosen,
+                            completed_room_ids,
+                        )
                     finally:
+                        # Room terminal events are queued by the HA bus. Yield
+                        # once so the plan terminal event is observed after the
+                        # room boundary it summarizes.
+                        await asyncio.sleep(0)
                         bus = getattr(hass, "bus", None)
                         fire = getattr(bus, "async_fire", None)
                         if callable(fire):
@@ -3550,23 +3862,37 @@ async def _async_execute_rooms(
                                     ATTR_ENTITY_ID: entity_id,
                                     "plan_id": call.data["plan_id"],
                                     "run_id": run_id,
-                                    "trigger": "service_call",
+                                    "trigger": run_provenance,
+                                    "provenance": run_provenance,
                                     "service": str(call.service),
                                     "started_at": run_started_at,
                                     "ended_at": finished_at,
-                                    "outcome": run_outcome,
-                                    "reason_code": run_reason_code,
-                                    "cause": run_cause,
-                                    "terminal_activity": terminal_activity,
+                                    "outcome": event_outcome,
+                                    "reason_code": event_reason_code,
+                                    "cause": event_cause,
+                                    "terminal_activity": event_terminal_activity,
                                     "room_count": len(chosen),
-                                    "completed_room_count": len(completed_room_names),
+                                    "completed_room_count": event_completed_room_count,
+                                    "room_outcomes": room_outcomes,
                                 },
                                 context=call.context,
                             )
             finally:
                 manager.end_managed_motion(serial_number, motion_token)
                 manager.unregister_run_task(serial_number)
-                if set_activity_run_id is not None:
+                reconciliation_active_reader = getattr(
+                    manager, "dock_reconciliation_active", None
+                )
+                stop_watcher_active = callable(reconciliation_active_reader) and bool(
+                    reconciliation_active_reader(serial_number)
+                )
+                if stop_watcher_active and get_activity_run_id is not None:
+                    stop_watcher_active = get_activity_run_id() == run_id
+                if (
+                    set_activity_run_id is not None
+                    and not dock_confirmation_scheduled
+                    and not stop_watcher_active
+                ):
                     set_activity_run_id(None)
 
 

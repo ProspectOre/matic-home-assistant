@@ -27,6 +27,11 @@ from tests.test_api_paths import _OpenMethod, _Stream
 def test_raw_transitions_are_bounded_detached_and_payload_free() -> None:
     delivered = []
     journal = ActivityJournal(delivered.append)
+    assert journal.current_run_id() is None
+    journal.set_run_id("run-1")
+    assert journal.current_run_id() == "run-1"
+    journal.set_run_id(None)
+    assert journal.current_run_id() is None
     state = RobotOperationalState(
         80,
         (101, 119),

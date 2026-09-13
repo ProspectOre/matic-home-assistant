@@ -43,6 +43,10 @@ class ActivityJournal:
         """Associate subsequent integration observations with one managed run."""
         self._run_id = run_id if isinstance(run_id, str) and run_id else None
 
+    def current_run_id(self) -> str | None:
+        """Return the run scope for race-safe cleanup of a watcher."""
+        return self._run_id
+
     def record(self, kind: str, **fields: Any) -> int:
         """Record only fields constructed by the client's observation sites."""
         self._sequence += 1

@@ -24,6 +24,7 @@ from .const import (
     EVENT_CUES,
     EVENT_FIRMWARE_ANALYZED,
     EVENT_FIRMWARE_CHANGED,
+    EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
 )
 from .plans import CleaningPlanManager, leg_groups
@@ -53,6 +54,7 @@ _ADMIN_ERROR = "Administrator access is required for Matic operational tools"
 _MATIC_EVENT_TYPES = (
     EVENT_ACTIVITY_OBSERVED,
     EVENT_CLEANING_FINISHED,
+    EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
     EVENT_CUES,
     EVENT_FIRMWARE_CHANGED,
@@ -85,6 +87,7 @@ _SAFE_EVENT_FIELDS = (
     "intent",
     "plan_id",
     "trigger",
+    "provenance",
     "service",
     "room_id",
     "room",
@@ -168,6 +171,18 @@ class MaticOperationsAPI(llm.API):
                 data["completed_room_count"] = len(completed_rooms)
             if isinstance(room_durations, dict):
                 data["room_duration_count"] = len(room_durations)
+        if event.event_type == EVENT_PLAN_FINISHED:
+            room_outcomes = event.data.get("room_outcomes")
+            if isinstance(room_outcomes, list):
+                data["room_outcomes"] = [
+                    {
+                        key: value[:256]
+                        for key in ("room_id", "room", "outcome")
+                        if isinstance(value := item.get(key), str)
+                    }
+                    for item in room_outcomes[:64]
+                    if isinstance(item, dict)
+                ]
         captured: JsonObjectType = {
             "event_type": str(event.event_type),
             "time_fired": event.time_fired.isoformat(),
@@ -302,14 +317,33 @@ class MaticGetPlanTool(_MaticTool):
             )
             rotation = rotation_value if isinstance(rotation_value, list) else []
         else:
+            history_value = runtime.cleaning_plans.rotation_details(
+                serial_number, plan["id"], rooms
+            )
+            history = (
+                {
+                    item["room_id"]: item
+                    for item in history_value
+                    if isinstance(item, dict) and isinstance(item.get("room_id"), str)
+                }
+                if isinstance(history_value, list)
+                else {}
+            )
             rotation = [
                 {
                     "rank": rank,
                     "room_id": room.room_id,
                     "room": room.name,
-                    "last_result": None,
-                    "last_opportunity": None,
-                    "last_opportunity_source": None,
+                    "last_result": history.get(room.room_id, {}).get("last_result"),
+                    "last_opportunity": history.get(room.room_id, {}).get(
+                        "last_opportunity"
+                    ),
+                    "last_opportunity_source": history.get(room.room_id, {}).get(
+                        "last_opportunity_source"
+                    ),
+                    "last_completion": history.get(room.room_id, {}).get(
+                        "last_completion"
+                    ),
                     "selection_reason": "saved_order",
                 }
                 for rank, room in enumerate(rooms, start=1)

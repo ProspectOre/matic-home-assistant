@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
@@ -134,6 +135,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     ) -> None:
         """Serialize a user command and immediately refresh state."""
         serial_number = self.coordinator.data.info.serial_number
+        active_run_id = getattr(self._plans, "active_run_id", None)
+        run_id = (
+            active_run_id(serial_number)
+            if command is UserCommand.STOP and callable(active_run_id)
+            else None
+        )
         generation = self._plans.motion_generation(serial_number)
         if command is not UserCommand.STOP:
             await self._async_ensure_stop_settled(serial_number)
@@ -152,7 +159,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 await self._plans.async_mark_stop_pending(serial_number)
             await self.coordinator.async_request_refresh()
         if command is UserCommand.STOP:
-            self._schedule_dock_after_stop(serial_number)
+            self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
     async def _async_ensure_stop_settled(self, serial_number: str) -> None:
         """Reject new motion while the firmware's graceful STOP is counting down."""
@@ -250,6 +257,8 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_return_to_base(self, **kwargs: object) -> None:
         """Send the robot to its dock and end any task driving it."""
         serial_number = self.coordinator.data.info.serial_number
+        active_run_id = getattr(self._plans, "active_run_id", None)
+        run_id = active_run_id(serial_number) if callable(active_run_id) else None
         operational = self.coordinator.data.operational
         stop_before_dock = self._plans.has_managed_task(
             serial_number
@@ -279,12 +288,25 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 await self.coordinator.async_request_refresh()
                 stopped = False
         if stopped:
-            self._schedule_dock_after_stop(serial_number)
+            self._schedule_dock_after_stop(serial_number, run_id=run_id)
 
-    def _schedule_dock_after_stop(self, serial_number: str) -> None:
+    def _schedule_dock_after_stop(
+        self, serial_number: str, *, run_id: str | None = None
+    ) -> None:
         """Dock the robot as soon as its accepted stop settles."""
         if self.entity_id is None:
             return
+        on_docked: Callable[[], Awaitable[None]] | None = None
+        if run_id is not None:
+
+            async def mark_docked() -> None:
+                await self._plans.async_mark_run_docked(
+                    serial_number,
+                    run_id,
+                    entity_id=self.entity_id,
+                )
+
+            on_docked = mark_docked
         schedule_dock_after_stop(
             self.hass,
             client=self.coordinator.client,
@@ -292,6 +314,18 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             manager=self._plans,
             serial_number=serial_number,
             entity_id=self.entity_id,
+            run_id=run_id,
+            set_run_id=getattr(
+                getattr(self.coordinator.client, "activity_journal", None),
+                "set_run_id",
+                None,
+            ),
+            get_run_id=getattr(
+                getattr(self.coordinator.client, "activity_journal", None),
+                "current_run_id",
+                None,
+            ),
+            on_docked=on_docked,
         )
 
     async def async_get_segments(self) -> list[Segment]:
