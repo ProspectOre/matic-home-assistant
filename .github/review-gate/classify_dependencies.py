@@ -14,6 +14,7 @@ from pathlib import PurePosixPath
 import re
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from urllib.parse import quote
 
 LOCKS = {'package-lock.json', 'npm-shrinkwrap.json', 'yarn.lock', 'pnpm-lock.yaml',
@@ -53,16 +54,37 @@ def changed_lines(patch):
     return old, new
 
 
-def replacements(patch, pattern, same_group=False):
-    lines = changed_lines(patch)
-    if lines is None:
+def replacements(patch, pattern, preserve_structure=False):
+    if not patch:
         return False
-    old, new = lines
-    # Do not treat arbitrary step or build-block additions as version updates.
-    if not old or len(old) != len(new):
+    # Pair only adjacent replacement blocks. Aggregating across hunks would
+    # allow an action or dependency declaration to move to another job/scope.
+    blocks, old, new = [], [], []
+    for line in patch.splitlines() + ['']:
+        if line.startswith('-') and not line.startswith('---'):
+            old.append(line[1:])
+        elif line.startswith('+') and not line.startswith('+++'):
+            new.append(line[1:])
+        elif old or new:
+            blocks.append((old, new))
+            old, new = [], []
+    if not blocks:
         return False
-    pairs = [(re.fullmatch(pattern, a), re.fullmatch(pattern, b)) for a, b in zip(old, new)]
-    return all(a and b and (not same_group or a.group(1) == b.group(1)) for a, b in pairs)
+    for old, new in blocks:
+        if not old or len(old) != len(new):
+            return False
+        for left, right in zip(old, new):
+            a, b = re.fullmatch(pattern, left), re.fullmatch(pattern, right)
+            if not a or not b:
+                return False
+            if preserve_structure:
+                if a.group('prefix') != b.group('prefix') or a.group('suffix') != b.group('suffix'):
+                    return False
+                if a.group('dependency') == b.group('dependency'):
+                    return False
+            elif left.split('//', 1)[0].strip() == right.split('//', 1)[0].strip():
+                return False
+    return True
 
 
 def dependency_file(path, before, after, patch, status='modified'):
@@ -70,12 +92,95 @@ def dependency_file(path, before, after, patch, status='modified'):
     name = PurePosixPath(path).name
     if status not in ('modified', 'added', 'removed') or path.startswith('/') or '..' in PurePosixPath(path).parts:
         return False
-    if name in LOCKS or (name == 'verification-metadata.xml' and '/gradle/' in '/' + path):
+    if name in LOCKS:
         return True
     if path.startswith('.github/workflows/') and name.endswith(('.yml', '.yaml')):
-        return replacements(patch, r'\s*(?:-\s+)?uses:\s*([\w.-]+/[\w./-]+)@[^\s#]+\s*(?:#.*)?', True)
+        return replacements(patch, r'(?P<prefix>[ \t]*(?:-[ \t]+)?uses:[ \t]*[\w.-]+/[\w./-]+@)(?P<dependency>[^\s#]+)(?P<suffix>[ \t]*)(?:#.*)?', True)
     if name.startswith('Dockerfile'):
-        return replacements(patch, r'\s*FROM\s+(?:--platform=[^\s]+\s+)?([^\s]+)(?:\s+[Aa][Ss]\s+\w+)?\s*(?:#.*)?')
+        return replacements(patch, r'(?P<prefix>[ \t]*FROM[ \t]+(?:--platform=[^\s]+[ \t]+)?)(?P<dependency>[^\s#]+)(?P<suffix>(?:[ \t]+[Aa][Ss][ \t]+\w+)?[ \t]*)(?:#.*)?', True)
+    if name == 'verification-metadata.xml' and '/gradle/' in '/' + path:
+        # Component checksum records are dependency data; global verification
+        # policy, trusted keys and the metadata file itself cannot be removed.
+        if status != 'modified' or before is None or after is None:
+            return False
+        if any(token in text.upper() for text in (before, after) for token in ('<!DOCTYPE', '<!ENTITY')):
+            return False
+        try:
+            old, new = ET.fromstring(before), ET.fromstring(after)
+            def local(tag):
+                return tag.rsplit('}', 1)[-1]
+            def scrub(root):
+                # Security configuration and trusted keys must remain bytewise
+                # equivalent; only component/artifact checksum records may vary.
+                for child in list(root):
+                    if local(child.tag) == 'components':
+                        root.remove(child)
+                    else:
+                        child.tail = None
+                return ET.tostring(root, encoding='unicode')
+            if scrub(copy.deepcopy(old)) != scrub(copy.deepcopy(new)):
+                return False
+            def valid_components(root):
+                if local(root.tag) != 'verification-metadata':
+                    return False
+                groups = [node for node in root if local(node.tag) == 'components']
+                if len(groups) != 1 or groups[0].attrib:
+                    return False
+                rules = {'components': ({'component'}, set(), set()),
+                         'component': ({'artifact'}, {'group', 'name', 'version'}, {'group', 'name', 'version'}),
+                         'artifact': ({'sha1', 'sha256', 'sha512'}, {'name'}, {'name'}),
+                         'sha1': (set(), {'value', 'origin', 'reason'}, {'value'}),
+                         'sha256': (set(), {'value', 'origin', 'reason'}, {'value'}),
+                         'sha512': (set(), {'value', 'origin', 'reason'}, {'value'})}
+                for node in groups[0].iter():
+                    tag = local(node.tag)
+                    if tag not in rules:
+                        return False
+                    children, attributes, required = rules[tag]
+                    if set(node.attrib) - attributes or not required <= set(node.attrib):
+                        return False
+                    if any(local(child.tag) not in children for child in node) or (node.text or '').strip():
+                        return False
+                    if tag.startswith('sha') and not re.fullmatch(r'[0-9a-fA-F]{' + str({'sha1':40,'sha256':64,'sha512':128}[tag]) + '}', node.attrib['value']):
+                        return False
+                return True
+            return before != after and valid_components(old) and valid_components(new)
+        except ET.ParseError:
+            return False
+    if re.fullmatch(r'(?:requirements|constraints)(?:[._-][\w.-]+)?\.(?:txt|in)', name):
+        lines = changed_lines(patch)
+        if status != 'modified' or lines is None:
+            return False
+        semantic = lambda values: [line.split('#', 1)[0].strip() for line in values if line.split('#', 1)[0].strip()]
+        return semantic(lines[0]) != semantic(lines[1]) and all(
+            not line.strip() or line.lstrip().startswith('#') or re.fullmatch(
+                r'\s*[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?\s*(?:(?:===|==|~=|!=|<=|>=|<|>)[^;#\n]+)?(?:\s*;[^#\n]+)?(?:\s*#.*)?', line)
+            for line in lines[0] + lines[1])
+    if name in ('build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'):
+        # Keep this deliberately bounded: interpolation/executable Gradle
+        # expressions are never dependency-only version changes.
+        return replacements(patch,
+            r'''\s*(?:(?:\w*Implementation|implementation|api|ksp|kapt|classpath|\w*RuntimeOnly|runtimeOnly|compileOnly)\s*\(?["'][\w.+-]+:[\w.+-]+:[\w.+-]+["']\)?|id\(["'][\w.-]+["']\)\s+version\s+["'][\w.+-]+["'](?:\s+apply\s+false)?)\s*(?://.*)?''')
+    if name == 'project.pbxproj' and status == 'modified':
+        # Swift package requirement entries have a stable surrounding form;
+        # only the quoted version token may change.
+        if before is None or after is None:
+            return False
+        # Xcode stores these as XCRemoteSwiftPackageReference dictionaries.
+        # Permit only minimumVersion token changes inside those sections.
+        def normalize(text):
+            out, section = [], False
+            for line in text.splitlines():
+                if line == '/* Begin XCRemoteSwiftPackageReference section */':
+                    section = True
+                if section:
+                    line = re.sub(r'^([ \t]*(?:minimumVersion|maximumVersion|version) = )\"?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?\"?(;[ \t]*)$', r'\1<VERSION>\2', line)
+                out.append(line)
+                if line == '/* End XCRemoteSwiftPackageReference section */':
+                    section = False
+            return out
+        old, new = normalize(before), normalize(after)
+        return before != after and old == new and bool(re.search(r'\b(?:minimumVersion|version) = ', '\n'.join(before.splitlines())))
     if status != 'modified' or before is None or after is None:
         return False
     try:
@@ -121,18 +226,6 @@ def dependency_file(path, before, after, patch, status='modified'):
                     data.get('options', {}).pop(key, None)
                 data.pop('options.extras_require', None)
             return changed and old == new
-        if re.fullmatch(r'(?:requirements|constraints)(?:[._-][\w.-]+)?\.(?:txt|in)', name):
-            lines = changed_lines(patch)
-            if lines is None:
-                return False
-            # Requirements are declarative package/source constraints, not Python.
-            return bool(lines[0] or lines[1]) and all(
-                not line.strip() or line.lstrip().startswith('#') or re.fullmatch(
-                    r'\s*[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?\s*(?:(?:===|==|~=|!=|<=|>=|<|>)[^;#\n]+)?(?:\s*;[^#\n]+)?(?:\s*#.*)?', line)
-                for line in lines[0] + lines[1])
-        if name in ('build.gradle', 'build.gradle.kts', 'settings.gradle', 'settings.gradle.kts'):
-            return replacements(patch,
-                r'''\s*(?:(?:\w*Implementation|implementation|api|ksp|kapt|classpath|\w*RuntimeOnly|runtimeOnly|compileOnly)\s*\(?["'][\w.+-]+:[\w.+-]+:[^"'\s]+["']\)?|id\(["'][\w.-]+["']\)\s+version\s+["'][\w.+-]+["'](?:\s+apply\s+false)?)\s*(?://.*)?''')
     except (ValueError, TypeError, configparser.Error):
         return False
     return False
@@ -177,7 +270,7 @@ def classify(repo, number, head, base):
         name = PurePosixPath(path).name
         before = after = None
         # Content validation is necessary for manifests with non-dependency keys.
-        structured = name in JSON_FIELDS or name in ('pyproject.toml', 'Cargo.toml', 'Pipfile', 'setup.cfg') or name.endswith('.versions.toml')
+        structured = name in JSON_FIELDS or name in ('pyproject.toml', 'Cargo.toml', 'Pipfile', 'setup.cfg', 'project.pbxproj') or name.endswith('.versions.toml') or (name == 'verification-metadata.xml' and '/gradle/' in '/' + path)
         if structured and status == 'modified':
             before = content(repo, path, ancestor)
             after = content(pr['head']['repo']['full_name'], path, head)

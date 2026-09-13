@@ -38,6 +38,11 @@ if [[ -n "$expected_base_sha" && ! "$expected_base_sha" =~ ^[0-9a-f]{40}$ ]]; th
   echo "EXPECTED_BASE_SHA must be a full lowercase commit SHA." >&2
   exit 1
 fi
+normalize_timestamp() {
+  python3 -c 'import datetime, sys; value=sys.argv[1]; print(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat(timespec="microseconds").replace("+00:00", "Z") if value else "")' "$1"
+}
+finding_after="$(normalize_timestamp "$finding_after")"
+head_observed_at="$(normalize_timestamp "$head_observed_at")"
 evidence_after="$finding_after"
 if [[ -n "$head_observed_at" && "$head_observed_at" > "$evidence_after" ]]; then
   evidence_after="$head_observed_at"
@@ -488,7 +493,7 @@ require_clean_regular_snapshot() {
     echo "No affirmative regular review verdict covers the exact head."
     gate_pending
   fi
-  verdict_at="$(jq -r '.at // empty' <<< "$verdict")"
+  verdict_at="$(normalize_timestamp "$(jq -r '.at // empty' <<< "$verdict")")"
   if [[ -n "$evidence_after" ]] && { [[ -z "$verdict_at" ]] || [[ "$verdict_at" < "$evidence_after" ]] || [[ "$verdict_at" == "$evidence_after" ]]; }; then
     stamp_review_gate pending "Waiting for clean evidence strictly after $evidence_after on $head_prefix"
     echo "Clean regular-review evidence must be newer than the supplied watermark."
@@ -498,6 +503,15 @@ require_clean_regular_snapshot() {
     stamp_review_gate pending "Regular review reported findings on $head_prefix"
     echo "The regular review reported $finding_count active finding(s) on the exact head."
     echo "Fix them, push a new head, and request the regular review again."
+    gate_pending
+  fi
+}
+
+require_no_security_findings() {
+  local count
+  count="$(active_security_finding_count)"
+  if [[ "$count" -gt 0 ]]; then
+    stamp_review_gate pending "Codex Security reported findings on $head_prefix"
     gate_pending
   fi
 }
@@ -553,6 +567,11 @@ classify_dependencies() {
 dependency_digest=""
 if dependency_digest="$(classify_dependencies)"; then
   [[ "$dependency_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
+  require_no_security_findings
+  if base_change_marker_exists || rollout_marker_exists; then
+    stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
+    gate_pending
+  fi
   final_pr_snapshot="$(read_pr_snapshot)"
   IFS=$'\t' read -r final_head_sha final_base_sha final_base_ref final_is_draft final_pr_node_id final_auto_merge_enabled final_pr_state final_pr_author_login final_head_repo <<< "$final_pr_snapshot"
   if [[ "$final_head_sha" != "$head_sha" || "$final_base_sha" != "$base_sha" || "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" || "$final_pr_state" != "OPEN" || "$final_pr_author_login" != "$pr_author_login" || "$final_head_repo" != "$head_repo" ]]; then
@@ -567,9 +586,20 @@ if dependency_digest="$(classify_dependencies)"; then
     stamp_review_gate pending "Current head is shared by multiple open pull requests"
     gate_pending
   fi
+  require_no_security_findings
+  if base_change_marker_exists || rollout_marker_exists; then
+    stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
+    gate_pending
+  fi
   # Close the final classifier/listing window before publishing the exact SHA.
   [[ "$(read_pr_snapshot)" == "$final_pr_snapshot" ]] || gate_pending
   stamp_review_gate success "Dependencies exempt for $head_prefix; diff ${dependency_digest:0:16}"
+  trap 'stamp_review_gate pending "Dependency state could not be revalidated after publication"; exit 1' ERR
+  require_no_security_findings
+  if [[ "$(read_pr_snapshot)" != "$final_pr_snapshot" ]] || base_change_marker_exists || rollout_marker_exists; then
+    stamp_review_gate pending "Dependency state changed while publishing success"
+    gate_pending
+  fi
   echo "Dependency-only PR exempt from Codex review; CI and security checks remain required."
   exit 0
 else
@@ -588,6 +618,7 @@ fi
 if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_watermark="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
     | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | contains("@codex review")))) | (.updated_at // .created_at)] | max // empty')"
+  timeline_watermark="$(normalize_timestamp "$timeline_watermark")"
   if [[ "$timeline_watermark" > "$evidence_after" ]]; then evidence_after="$timeline_watermark"; fi
 fi
 gate_snapshot="$(read_gate_snapshot)"
@@ -664,6 +695,13 @@ case "$evidence_source" in
     ;;
 esac
 stamp_review_gate success "Clean regular review for $head_prefix; evidence $evidence_marker"
+trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
+post_success_snapshot="$(read_gate_snapshot)"
+require_clean_regular_snapshot "$post_success_snapshot"
+if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$(read_pr_snapshot)" != "$last_pr_snapshot" ]]; then
+  stamp_review_gate pending "Review state changed while publishing success"
+  gate_pending
+fi
 echo "The exact pull request head has an affirmative clean regular review."
 echo "Security findings are independently blocking and never qualify as regular-review evidence."
 echo "This workflow never enables or performs a merge."

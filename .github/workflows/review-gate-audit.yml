@@ -67,8 +67,8 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '7d468a76809e575a27096a8f376de5209176fe07106e24308f239fa28936b9a8'
-          EXPECTED_DEPENDENCY_SHA256: 'd7a72d5574d6cdbe4efc11bb91dfe0a26eff18836ac716cba1624cd8fe7e13db'
+          EXPECTED_SHA256: '93dd474b5ad4a9d5dea295da169d6c388f81309c3b8dd87c70a6f31c71041794'
+          EXPECTED_DEPENDENCY_SHA256: 'be7b5839979563c0162e857da7fd79853207155f717406826f83f3ed9dbbab91'
         shell: bash
         run: |
           set -euo pipefail
