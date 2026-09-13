@@ -84,7 +84,7 @@ jobs:
 
   disarm-open-prs:
     name: disarm-open-prs (${{ matrix.pr_number }})
-    needs: discover
+    needs: [discover, cancel-legacy-auto-merge-runs]
     if: needs.discover.outputs.count != '0'
     strategy:
       fail-fast: false
