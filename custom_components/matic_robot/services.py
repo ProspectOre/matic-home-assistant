@@ -3375,7 +3375,8 @@ def _room_outcomes(
                     "completed"
                     if room.room_id in completed_room_ids
                     or (
-                        record.get("run_id") == run_id
+                        isinstance(record, dict)
+                        and record.get("run_id") == run_id
                         and record.get("last_result") == "completed"
                     )
                     else "partial"

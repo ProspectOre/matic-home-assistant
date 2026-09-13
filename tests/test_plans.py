@@ -4123,6 +4123,7 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
         return (_leg_record(("Kitchen", "Office"), ("Kitchen", "Office")),)
 
     confirmed: list[str] = []
+    recorded: list[str] = []
     prepared = _PreparedRoomDispatch(
         tuple(rooms), frozenset(), dt_util.utcnow() - timedelta(seconds=1)
     )
@@ -4135,10 +4136,12 @@ async def test_leg_uses_matching_prepared_dispatch_and_rejects_mismatch(hass) ->
         rooms,
         session_history=history,
         confirm_room_completed=confirmed.append,
+        record_room_completed=lambda room: recorded.append(room.room_id),
         prepared_dispatch=prepared,
     )
     assert completed is True
     assert confirmed == ["Kitchen", "Office"]
+    assert recorded == ["room-kitchen", "room-office"]
 
     with pytest.raises(ValueError):
         await _async_run_leg(
