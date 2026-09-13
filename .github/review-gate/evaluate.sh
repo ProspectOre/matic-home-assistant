@@ -369,6 +369,7 @@ regular_evidence() {
            | {at: (.updated_at // .created_at),
               id: ("issue-comment-" + (.id | tostring)),
               source: "issue_comment",
+              body: $body,
               clean: ($body | stock_clean_issue_comment_envelope)}]'
   )"
   jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
@@ -657,10 +658,22 @@ if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]
        (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
        test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)") and
        (test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security[[:space:]-]+review") | not)))' "$GITHUB_EVENT_PATH" >/dev/null; then
-  withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
-  withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-  stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; withdrawn comment" >/dev/null
-  evidence_after="$(normalize_timestamp "$withdrawal_at")"
+  edited_clean=false
+  if [[ "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == edited ]]; then
+    edited_evidence="$(regular_evidence)"
+    if jq -e --slurpfile event "$GITHUB_EVENT_PATH" '
+      any(.deliveries[]; .source == "issue_comment" and .clean and
+          .id == ("issue-comment-" + ($event[0].comment.id | tostring)) and .body == $event[0].comment.body)
+    ' <<< "$edited_evidence" >/dev/null; then
+      edited_clean=true
+    fi
+  fi
+  if [[ "$edited_clean" != true ]]; then
+    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
+    withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; withdrawn comment" >/dev/null
+    evidence_after="$(normalize_timestamp "$withdrawal_at")"
+  fi
 fi
 
 # Classify the whole diff for every author. A dependency title, branch, label,

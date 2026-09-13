@@ -90,7 +90,7 @@ def package_constraints(before, after, fields):
             return False
         for name in set(old_values) | set(new_values):
             old, new = old_values.get(name), new_values.get(name)
-            if old == new:
+            if old == new or name not in new_values:
                 continue
             if old is None and isinstance(new, str):
                 old = new
