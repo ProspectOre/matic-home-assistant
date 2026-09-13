@@ -1,0 +1,7 @@
+{
+  "source": "ProspectOre/dev-workspace",
+  "path": "scripts/review-gate/evaluate.sh",
+  "sha256": "7d468a76809e575a27096a8f376de5209176fe07106e24308f239fa28936b9a8",
+  "dependencyClassifierSha256": "d7a72d5574d6cdbe4efc11bb91dfe0a26eff18836ac716cba1624cd8fe7e13db",
+  "generated": true
+}
