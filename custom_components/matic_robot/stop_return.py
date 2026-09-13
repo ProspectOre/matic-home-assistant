@@ -230,7 +230,7 @@ def schedule_dock_after_stop(
     )
     register_task = getattr(manager, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
-        register_task(serial_number, task)
+        register_task(serial_number, task, dock=True)
 
 
 async def async_confirm_docked(
@@ -317,5 +317,5 @@ def schedule_dock_confirmation(
     )
     register_task = getattr(manager, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
-        register_task(serial_number, task)
+        register_task(serial_number, task, dock=True)
     return isinstance(task, asyncio.Task)
