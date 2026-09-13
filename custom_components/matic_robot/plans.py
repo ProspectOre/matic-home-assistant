@@ -510,6 +510,11 @@ class CleaningPlanManager:
         task.add_done_callback(_discard)
 
     @callback
+    def reconciliation_tasks_active(self, serial_number: str) -> bool:
+        """Return whether a late native or dock watcher owns this robot."""
+        return bool(self._reconciliation_tasks.get(serial_number))
+
+    @callback
     def cancel_reconciliation_tasks(self, serial_number: str) -> None:
         """Cancel obsolete late-completion watchers without blocking."""
         for task in tuple(self._reconciliation_tasks.pop(serial_number, set())):

@@ -3833,7 +3833,17 @@ async def _async_execute_rooms(
             finally:
                 manager.end_managed_motion(serial_number, motion_token)
                 manager.unregister_run_task(serial_number)
-                if set_activity_run_id is not None and not dock_confirmation_scheduled:
+                reconciliation_active_reader = getattr(
+                    manager, "reconciliation_tasks_active", None
+                )
+                stop_watcher_active = callable(reconciliation_active_reader) and bool(
+                    reconciliation_active_reader(serial_number)
+                )
+                if (
+                    set_activity_run_id is not None
+                    and not dock_confirmation_scheduled
+                    and not stop_watcher_active
+                ):
                     set_activity_run_id(None)
 
 

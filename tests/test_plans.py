@@ -176,6 +176,43 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     )
 
 
+async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
+    """A registered STOP watcher owns the journal until dock confirmation ends."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    set_run_id = MagicMock()
+    watcher_release = asyncio.Event()
+
+    async def watcher() -> None:
+        await watcher_release.wait()
+
+    async def fake_leg(*_args, **_kwargs):
+        manager.register_reconciliation_task("serial", asyncio.create_task(watcher()))
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+            set_activity_run_id=set_run_id,
+        )
+
+    assert set_run_id.call_count == 1
+    assert set_run_id.call_args.args[0]
+    assert manager.reconciliation_tasks_active("serial") is True
+    watcher_release.set()
+    manager.cancel_reconciliation_tasks("serial")
+    await asyncio.sleep(0)
+
+
 async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
     """A stopped native task never credits a room or fails the automation."""
     manager = CleaningPlanManager(hass)
@@ -6119,15 +6156,18 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
 
     task = asyncio.create_task(reconcile())
     manager.register_reconciliation_task("serial", task)
+    assert manager.reconciliation_tasks_active("serial") is True
     await started.wait()
     await manager.async_cancel_and_wait("serial")
     assert task.cancelled()
+    assert manager.reconciliation_tasks_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
 
     finished = asyncio.create_task(asyncio.sleep(0))
     manager.register_reconciliation_task("serial", finished)
     await finished
     await asyncio.sleep(0)
+    assert manager.reconciliation_tasks_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
 
 
