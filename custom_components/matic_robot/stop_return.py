@@ -109,6 +109,16 @@ async def async_dock_when_stop_settles(
         state = hass.states.get(entity_id)
         if state is not None:
             if state.state in HOMEWARD_STATES:
+                if on_docked is not None:
+                    return await async_confirm_docked(
+                        hass,
+                        refresh=refresh,
+                        entity_id=entity_id,
+                        on_docked=on_docked,
+                        run_id=run_id,
+                        set_run_id=set_run_id,
+                        get_run_id=get_run_id,
+                    )
                 return False
             if state.state in REPLACEMENT_STATES:
                 # The first state read commonly still reflects the task that

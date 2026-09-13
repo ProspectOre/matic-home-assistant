@@ -204,6 +204,48 @@ async def test_skips_when_the_robot_is_already_home_or_heading_there(
     client.async_send_user_command.assert_not_awaited()
 
 
+async def test_already_docked_stop_closes_the_correlated_run(hass) -> None:
+    """An OEM stop that already reached the dock still records dock evidence."""
+    hass.states.async_set(ENTITY, "docked", {})
+    on_docked = AsyncMock()
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=_client(session=False),
+        refresh=AsyncMock(),
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=MagicMock(),
+        on_docked=on_docked,
+    )
+    on_docked.assert_awaited_once()
+
+
+async def test_returning_stop_waits_for_correlated_dock(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A returning robot is confirmed at the dock before closing the run."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    hass.states.async_set(ENTITY, "returning", {})
+    refresh = AsyncMock(side_effect=lambda: hass.states.async_set(ENTITY, "docked", {}))
+    on_docked = AsyncMock()
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=_client(session=False),
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=MagicMock(),
+        on_docked=on_docked,
+    )
+    on_docked.assert_awaited_once()
+
+
 @pytest.mark.parametrize("state", ["cleaning", "paused"])
 async def test_skips_when_new_work_replaced_the_stop(
     hass, state: str, monkeypatch: pytest.MonkeyPatch

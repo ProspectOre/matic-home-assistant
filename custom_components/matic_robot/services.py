@@ -3546,19 +3546,25 @@ async def _async_execute_rooms(
                 serial_number, motion_token
             ):
                 raise PlanCancelledError
+            current = hass.states.get(entity_id)
+            needs_dock_confirmation = finish_room_event.is_set() and (
+                completed_room_count < len(chosen)
+            )
             if (
                 (call.data["return_to_base"] or finish_room_event.is_set())
-                and (current := hass.states.get(entity_id)) is not None
-                and current.state not in {"docked", "returning"}
+                and current is not None
                 and outer_command is not None
                 and not cleanup_stop_sent
                 and not _stop_is_pending(manager, serial_number)
+                and (
+                    current.state not in {"docked", "returning"}
+                    or needs_dock_confirmation
+                )
             ):
                 try:
-                    await outer_command(motion_token, UserCommand.DOCK)
-                    if finish_room_event.is_set() and completed_room_count < len(
-                        chosen
-                    ):
+                    if current.state not in {"docked", "returning"}:
+                        await outer_command(motion_token, UserCommand.DOCK)
+                    if needs_dock_confirmation:
                         dock_confirmation_scheduled = schedule_dock_confirmation(
                             hass,
                             refresh=refresh or (lambda: asyncio.sleep(0)),
