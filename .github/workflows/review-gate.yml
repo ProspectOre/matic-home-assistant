@@ -7,7 +7,7 @@ on:
   pull_request_target:
     # Repository-level auto-merge is disabled; this event is defense in depth
     # if that administrative policy ever drifts.
-    types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]
+    types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled, edited]
   workflow_dispatch:
     inputs:
       pull_request:
@@ -45,8 +45,8 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '81fdab255265fbc2ef982740aa2f437a15c510eff7ddaae48a03f7a77587606c'
-          EXPECTED_DEPENDENCY_SHA256: 'be7b5839979563c0162e857da7fd79853207155f717406826f83f3ed9dbbab91'
+          EXPECTED_SHA256: '37432df1966e26a131f75e8e2bf5a6eb76b5a9ebffaa1a83251710f453d2ed1f'
+          EXPECTED_DEPENDENCY_SHA256: 'a28afaff8d525bceea4fd6d003b09bf86aaa7ab478ff87ff4c76b842f1dd05c3'
         shell: bash
         run: |
           set -euo pipefail

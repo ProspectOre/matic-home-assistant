@@ -51,10 +51,13 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
 
 CODEX_REVIEW_BOT = "REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]"
 
+
 def test_review_gate_uses_only_regular_review_evidence() -> None:
     """Keep manual shipping independent from security-review availability."""
     policy = (ROOT / ".github" / "review-gate" / "evaluate.sh").read_text()
-    review_gate = (ROOT / ".github" / "workflows" / "review-gate.yml").read_text() + "\n" + policy
+    review_gate = (
+        (ROOT / ".github" / "workflows" / "review-gate.yml").read_text() + "\n" + policy
+    )
     regular_review = (
         ROOT / ".github" / "workflows" / "review-regular-review.yml"
     ).read_text()
@@ -71,12 +74,17 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     base_advance = (
         ROOT / ".github" / "workflows" / "review-base-advance.yml"
     ).read_text()
-    audit = (ROOT / ".github" / "workflows" / "review-gate-audit.yml").read_text() + "\n" + policy
+    audit = (
+        (ROOT / ".github" / "workflows" / "review-gate-audit.yml").read_text()
+        + "\n"
+        + policy
+    )
 
     assert "cancel-in-progress: true" in review_gate
     assert "group: review-gate-" in review_gate
     assert (
-        "types: [opened, reopened, synchronize, ready_for_review, auto_merge_enabled]"
+        "types: [opened, reopened, synchronize, ready_for_review, "
+        "auto_merge_enabled, edited]"
         in review_gate
     )
     assert "baseRefName" in review_gate

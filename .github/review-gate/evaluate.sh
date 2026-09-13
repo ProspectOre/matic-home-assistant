@@ -41,6 +41,12 @@ fi
 normalize_timestamp() {
   python3 -c 'import datetime, sys; value=sys.argv[1]; print(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat(timespec="microseconds").replace("+00:00", "Z") if value else "")' "$1"
 }
+latest_timestamp() {
+  python3 -c 'import datetime,json,sys; values=json.load(sys.stdin); print(max((datetime.datetime.fromisoformat(v.replace("Z","+00:00")).isoformat(timespec="microseconds").replace("+00:00","Z") for v in values if v), default=""))'
+}
+normalize_delivery_timestamps() {
+  python3 -c 'import datetime,json,sys; data=json.load(sys.stdin); [(item.update(at=datetime.datetime.fromisoformat(item["at"].replace("Z","+00:00")).isoformat(timespec="microseconds").replace("+00:00","Z"))) for item in data["deliveries"]]; print(json.dumps(data))'
+}
 finding_after="$(normalize_timestamp "$finding_after")"
 head_observed_at="$(normalize_timestamp "$head_observed_at")"
 evidence_after="$finding_after"
@@ -212,18 +218,18 @@ rollout_marker_exists() {
 
 latest_regular_issue_comment_at() {
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-    | jq -r --arg context "$REVIEW_COMMENT_CONTEXT" '
+    | jq -c --arg context "$REVIEW_COMMENT_CONTEXT" '
         [.[][]
          | select(.context == $context)
          | select(.state == "pending")
          | select((.description // "") | startswith("Regular issue-comment invalidated;"))
          | .updated_at]
-        | max // empty'
+        ' | latest_timestamp
 }
 
 latest_regular_review_invalidation_at() {
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-    | jq -r --arg context "$REVIEW_REVIEW_CONTEXT" '
+    | jq -c --arg context "$REVIEW_REVIEW_CONTEXT" '
         [.[][]
          | select(.context == $context)
          | select(.state == "pending")
@@ -233,7 +239,7 @@ latest_regular_review_invalidation_at() {
            then ($description | capture("^Regular review invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
            else .updated_at
            end]
-        | max // empty'
+        ' | latest_timestamp
 }
 
 active_security_finding_count() {
@@ -353,7 +359,7 @@ regular_evidence() {
   )"
   jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
     {deliveries: ($reviews + $issue_comments),
-     review_ids: [$reviews[].id]}'
+     review_ids: [$reviews[].id]}' | normalize_delivery_timestamps
 }
 
 regular_review_thread_summary() {
@@ -552,6 +558,17 @@ if [[ "${REQUIRE_CURRENT_BASE:-false}" == true ]]; then
   fi
 fi
 
+# A retarget event carries persistent base invalidation even when the head did
+# not change. Ignore stale deliveries for other heads or unrelated title edits.
+if [[ "${GITHUB_EVENT_NAME:-}" == pull_request_target && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+  if jq -e --arg head "$head_sha" --argjson number "$pr_number" \
+    '.changes.base != null and .pull_request.number == $number and .pull_request.head.sha == $head' "$GITHUB_EVENT_PATH" >/dev/null; then
+    stamp_base_change_marker
+    stamp_review_gate pending "Base changed; push a fresh head before evaluation"
+    gate_pending
+  fi
+fi
+
 # Classify the whole diff for every author. A dependency title, branch, label,
 # or bot login alone never exempts unrelated application/workflow changes.
 stamp_review_gate pending "Classifying dependency-only changes on $head_prefix"
@@ -617,7 +634,7 @@ if ! head_prefix_resolves; then
 fi
 if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_watermark="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | ascii_downcase | contains("@codex review")))) | (.updated_at // .created_at)] | max // empty')"
+    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | ascii_downcase | contains("@codex review")))) | (.updated_at // .created_at)]' | latest_timestamp)"
   timeline_watermark="$(normalize_timestamp "$timeline_watermark")"
   if [[ "$timeline_watermark" > "$evidence_after" ]]; then evidence_after="$timeline_watermark"; fi
 fi
