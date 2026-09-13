@@ -130,7 +130,8 @@ def dependency_file(path, before, after, patch, status="modified"):
             patch,
             (
                 r"(?P<prefix>[ \t]*(?:-[ \t]+)?uses:[ \t]*[\w.-]+/"
-                r"[\w./-]+@)(?P<dependency>[^\s#]+)(?P<suffix>[ \t]*)(?:#.*)?"
+                r"[\w./-]+@)(?P<dependency>(?:[0-9a-fA-F]{40}|v?[0-9]+(?:\.[0-9]+){0,2}))"
+                r"(?P<suffix>[ \t]*)(?:#.*)?"
             ),
             True,
         )
@@ -350,7 +351,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                     data.get("options", {}).pop(key, None)
                 data.pop("options.extras_require", None)
             return changed and old == new
-    except ValueError, TypeError, configparser.Error:
+    except (ValueError, TypeError, configparser.Error):  # fmt: skip
         return False
     return False
 

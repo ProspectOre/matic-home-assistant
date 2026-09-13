@@ -46,7 +46,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: '37432df1966e26a131f75e8e2bf5a6eb76b5a9ebffaa1a83251710f453d2ed1f'
-          EXPECTED_DEPENDENCY_SHA256: 'a28afaff8d525bceea4fd6d003b09bf86aaa7ab478ff87ff4c76b842f1dd05c3'
+          EXPECTED_DEPENDENCY_SHA256: '7aac00bde1d0324fa72dd54568d809745027808746aaa88b7b6f4a3608b60dc8'
         shell: bash
         run: |
           set -euo pipefail
