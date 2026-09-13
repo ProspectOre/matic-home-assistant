@@ -505,6 +505,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                         "set_run_id",
                         None,
                     ),
+                    get_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "current_run_id",
+                        None,
+                    ),
                     on_docked=partial(
                         _async_mark_run_docked,
                         manager,
@@ -611,6 +616,11 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     set_run_id=getattr(
                         getattr(entry.runtime_data.client, "activity_journal", None),
                         "set_run_id",
+                        None,
+                    ),
+                    get_run_id=getattr(
+                        getattr(entry.runtime_data.client, "activity_journal", None),
+                        "current_run_id",
                         None,
                     ),
                     on_docked=partial(

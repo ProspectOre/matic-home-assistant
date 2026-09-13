@@ -320,6 +320,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "set_run_id",
                 None,
             ),
+            get_run_id=getattr(
+                getattr(self.coordinator.client, "activity_journal", None),
+                "current_run_id",
+                None,
+            ),
             on_docked=on_docked,
         )
 

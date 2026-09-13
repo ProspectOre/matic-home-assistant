@@ -73,11 +73,19 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
     """The final DOCK observation and callback share the stopped run ID."""
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
+    scope: dict[str, str | None] = {"run_id": None}
+    observed_scopes: list[str | None] = []
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    def get_run_id() -> str | None:
+        return scope["run_id"]
 
     async def refresh() -> None:
+        observed_scopes.append(scope["run_id"])
         hass.states.async_set(ENTITY, "charging", {})
 
-    set_run_id = MagicMock()
     on_docked = AsyncMock()
 
     docked = await async_dock_when_stop_settles(
@@ -89,13 +97,74 @@ async def test_final_dock_preserves_run_correlation_and_closes_stop(hass) -> Non
         entity_id=ENTITY,
         run_id="run-1",
         set_run_id=set_run_id,
+        get_run_id=get_run_id,
         on_docked=on_docked,
     )
 
     assert docked is True
-    assert set_run_id.call_args_list[0].args == ("run-1",)
-    assert set_run_id.call_args_list[-1].args == (None,)
+    assert observed_scopes == ["run-1"]
+    assert scope["run_id"] is None
     on_docked.assert_awaited_once()
+
+
+async def test_final_dock_does_not_clear_a_newer_run_scope(hass) -> None:
+    """A replacement run keeps ownership of the activity journal."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    async def on_docked() -> None:
+        scope["run_id"] = "run-new"
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "charging", {})
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=refresh,
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-old",
+            set_run_id=set_run_id,
+            get_run_id=lambda: scope["run_id"],
+            on_docked=on_docked,
+        )
+        is True
+    )
+    assert scope["run_id"] == "run-new"
+
+
+async def test_rejected_dock_clears_its_run_scope(hass) -> None:
+    """A failed final command releases the run scope it claimed."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    client.async_send_user_command = AsyncMock(side_effect=MaticError("rejected"))
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    assert (
+        await async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=AsyncMock(),
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-1",
+            set_run_id=set_run_id,
+            get_run_id=lambda: scope["run_id"],
+        )
+        is False
+    )
+    assert scope["run_id"] is None
 
 
 async def test_final_dock_does_not_close_run_without_docked_state(

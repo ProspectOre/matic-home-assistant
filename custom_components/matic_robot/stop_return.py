@@ -84,6 +84,7 @@ async def async_dock_when_stop_settles(
     entity_id: str,
     run_id: str | None = None,
     set_run_id: Callable[[str | None], None] | None = None,
+    get_run_id: Callable[[], str | None] | None = None,
     on_docked: Callable[[], Awaitable[None]] | None = None,
 ) -> bool:
     """Dock once the stopped task ends and report whether DOCK was sent."""
@@ -93,6 +94,12 @@ async def async_dock_when_stop_settles(
         deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
     )
     settled_state_observed = False
+
+    def clear_run_scope() -> None:
+        """Release this watcher without clearing a newer managed run."""
+        if set_run_id is not None and (get_run_id is None or get_run_id() == run_id):
+            set_run_id(None)
+
     while True:
         if not manager.stop_pending(serial_number):
             return False
@@ -136,7 +143,7 @@ async def async_dock_when_stop_settles(
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
                         try:
-                            if set_run_id is not None:
+                            if set_run_id is not None and run_id is not None:
                                 set_run_id(run_id)
                             await client.async_send_user_command(UserCommand.DOCK)
                         except MaticError as err:
@@ -144,31 +151,32 @@ async def async_dock_when_stop_settles(
                                 "Unable to dock Matic after its stop settled (%s)",
                                 type(err).__name__,
                             )
+                            clear_run_scope()
                             return False
+                        try:
+                            await refresh()
+                            if on_docked is not None:
+                                confirm_deadline = (
+                                    monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
+                                )
+                                while True:
+                                    confirmed = hass.states.get(entity_id)
+                                    if (
+                                        confirmed is not None
+                                        and confirmed.state in DOCKED_STATES
+                                    ):
+                                        await on_docked()
+                                        break
+                                    if monotonic() >= confirm_deadline:
+                                        _LOGGER.debug(
+                                            "Matic DOCK accepted but docked state was "
+                                            "not observed"
+                                        )
+                                        break
+                                    await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+                                    await refresh()
                         finally:
-                            if set_run_id is not None:
-                                set_run_id(None)
-                        await refresh()
-                        if on_docked is not None:
-                            confirm_deadline = (
-                                monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
-                            )
-                            while True:
-                                confirmed = hass.states.get(entity_id)
-                                if (
-                                    confirmed is not None
-                                    and confirmed.state in DOCKED_STATES
-                                ):
-                                    await on_docked()
-                                    break
-                                if monotonic() >= confirm_deadline:
-                                    _LOGGER.debug(
-                                        "Matic DOCK accepted but docked state was "
-                                        "not observed"
-                                    )
-                                    break
-                                await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
-                                await refresh()
+                            clear_run_scope()
                         return True
         if now >= deadline:
             return False
@@ -187,6 +195,7 @@ def schedule_dock_after_stop(
     entity_id: str,
     run_id: str | None = None,
     set_run_id: Callable[[str | None], None] | None = None,
+    get_run_id: Callable[[], str | None] | None = None,
     on_docked: Callable[[], Awaitable[None]] | None = None,
 ) -> None:
     """Start a lifecycle-bound watcher that docks a settled stop."""
@@ -203,6 +212,7 @@ def schedule_dock_after_stop(
             entity_id=entity_id,
             run_id=run_id,
             set_run_id=set_run_id,
+            get_run_id=get_run_id,
             on_docked=on_docked,
         ),
         f"{DOMAIN} dock after stop",
