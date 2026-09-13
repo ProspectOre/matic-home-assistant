@@ -617,7 +617,7 @@ if ! head_prefix_resolves; then
 fi
 if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_watermark="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | contains("@codex review")))) | (.updated_at // .created_at)] | max // empty')"
+    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | ascii_downcase | contains("@codex review")))) | (.updated_at // .created_at)] | max // empty')"
   timeline_watermark="$(normalize_timestamp "$timeline_watermark")"
   if [[ "$timeline_watermark" > "$evidence_after" ]]; then evidence_after="$timeline_watermark"; fi
 fi

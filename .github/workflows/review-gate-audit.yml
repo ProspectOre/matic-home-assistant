@@ -67,7 +67,7 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '93dd474b5ad4a9d5dea295da169d6c388f81309c3b8dd87c70a6f31c71041794'
+          EXPECTED_SHA256: '81fdab255265fbc2ef982740aa2f437a15c510eff7ddaae48a03f7a77587606c'
           EXPECTED_DEPENDENCY_SHA256: 'be7b5839979563c0162e857da7fd79853207155f717406826f83f3ed9dbbab91'
         shell: bash
         run: |
