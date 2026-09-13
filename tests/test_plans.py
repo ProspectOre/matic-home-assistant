@@ -4289,6 +4289,8 @@ async def test_leg_suspension_mid_leg_resumes(hass) -> None:
 
 async def test_leg_completion_timeout_fails(hass) -> None:
     manager = _leg_manager()
+    finish_room_event = asyncio.Event()
+    finish_room_event.set()
 
     async def send_command(_call) -> None:
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
@@ -4303,10 +4305,12 @@ async def test_leg_completion_timeout_fails(hass) -> None:
             "vacuum.matic",
             "serial",
             _leg_rooms(),
+            finish_room_event=finish_room_event,
         )
 
     manager.async_mark_failed.assert_awaited_once()
     assert "completion timeout" in manager.async_mark_failed.await_args.args[3]
+    assert not finish_room_event.is_set()
 
 
 async def test_leg_matic_error_dispatch_fails(hass) -> None:

@@ -2291,6 +2291,8 @@ async def test_room_failures_translate_client_errors_at_boundary(
         async_mark_verifying=AsyncMock(),
         async_mark_failed=AsyncMock(),
     )
+    finish_room_event = asyncio.Event()
+    finish_room_event.set()
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
         patch(
@@ -2300,7 +2302,13 @@ async def test_room_failures_translate_client_errors_at_boundary(
         pytest.raises(expected_type) as excinfo,
     ):
         await _async_run_room(
-            hass, _execution_call(hass), manager, "vacuum.test", "serial", room
+            hass,
+            _execution_call(hass),
+            manager,
+            "vacuum.test",
+            "serial",
+            room,
+            finish_room_event=finish_room_event,
         )
     if isinstance(error, MaticError):
         assert excinfo.value.translation_key == "robot_command_failed"
@@ -2308,6 +2316,7 @@ async def test_room_failures_translate_client_errors_at_boundary(
     else:
         assert excinfo.value is error
     manager.async_mark_failed.assert_awaited_once()
+    assert not finish_room_event.is_set()
     manager.async_mark_completed.assert_not_awaited()
     assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_failed"
     event_data = bus.async_fire.call_args_list[-1].args[1]

@@ -1163,6 +1163,7 @@ async def _async_run_room(
     room_name_is_unique: bool = True,
     prepared_dispatch: _PreparedRoomDispatch | None = None,
     prefetch_next: Callable[[], Awaitable[_PreparedRoomDispatch | None]] | None = None,
+    finish_room_event: asyncio.Event | None = None,
     floor_is_current: Callable[[], bool] | None = None,
     floor_token: str | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
@@ -1503,6 +1504,11 @@ async def _async_run_room(
             str(err), "room_interrupted", {"room": room.name}
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        # A graceful finish request can race a room failure.  Clear that
+        # intent before sending the failure STOP so its dock watcher cannot
+        # upgrade the still-running record and mask the durable failure.
+        if finish_room_event is not None:
+            finish_room_event.clear()
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
@@ -1660,6 +1666,7 @@ async def _async_run_leg(
             room_name_is_unique=room_name_is_unique,
             prepared_dispatch=prepared_dispatch,
             prefetch_next=prefetch_next,
+            finish_room_event=finish_room_event,
             floor_is_current=floor_is_current,
             floor_token=floor_token,
             session_identity=session_identity,
@@ -1992,6 +1999,11 @@ async def _async_run_leg(
             {"room": active_room.name},
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        # A graceful finish request can race a room failure.  Clear that
+        # intent before sending the failure STOP so its dock watcher cannot
+        # upgrade the still-running record and mask the durable failure.
+        if finish_room_event is not None:
+            finish_room_event.clear()
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
