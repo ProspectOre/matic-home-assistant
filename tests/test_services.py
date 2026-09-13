@@ -132,10 +132,7 @@ async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
 
     await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
 
-    if finish_requested:
-        manager.async_mark_run_docked.assert_awaited_once()
-    else:
-        manager.async_mark_run_docked.assert_not_awaited()
+    manager.async_mark_run_docked.assert_not_awaited()
 
 
 async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:

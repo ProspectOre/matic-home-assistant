@@ -3324,12 +3324,7 @@ async def _async_mark_run_docked(
                 if callable(cancellation_reader)
                 else None
             )
-            finish_event_reader = getattr(manager, "finish_room_event", None)
-            finish_requested = (
-                callable(finish_event_reader)
-                and finish_event_reader(serial_number).is_set()
-            )
-            if cancellation_reason != "managed_stop" and not finish_requested:
+            if cancellation_reason != "managed_stop":
                 return
     await manager.async_mark_run_docked(
         serial_number,
@@ -3577,6 +3572,9 @@ async def _async_execute_rooms(
                 run_outcome = "cancelled"
                 run_reason_code = "managed_stop"
                 run_cause = "managed_cancellation"
+                mark_managed_stop = getattr(manager, "mark_managed_stop", None)
+                if callable(mark_managed_stop):
+                    mark_managed_stop(serial_number)
             elif completed_room_count == len(chosen):
                 run_outcome = "completed"
                 run_reason_code = "all_rooms_verified"
@@ -3717,6 +3715,12 @@ async def _async_execute_rooms(
                 if isinstance(err, HomeAssistantError | MaticError | TimeoutError)
                 else "internal"
             )
+            finish_event_reader = getattr(manager, "finish_room_event", None)
+            if callable(finish_event_reader):
+                # A graceful stop request can race an unexpected exception.
+                # Retire that intent before failure cleanup so a dock watcher
+                # cannot authorize an in-flight failure upgrade.
+                finish_event_reader(serial_number).clear()
             # Leaf handlers retire expected failures. Unexpected failures must
             # also leave a terminal record before ownership is released.
             active = manager.snapshot(serial_number)["active_plan"]

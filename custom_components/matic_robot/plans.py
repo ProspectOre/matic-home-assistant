@@ -534,6 +534,11 @@ class CleaningPlanManager:
         """Return the lifecycle reason attached to the current cancellation."""
         return self._cancellation_reasons.get(serial_number)
 
+    @callback
+    def mark_managed_stop(self, serial_number: str) -> None:
+        """Authorize an in-flight dock upgrade for a graceful managed stop."""
+        self._cancellation_reasons[serial_number] = "managed_stop"
+
     async def async_cancel_and_wait(self, serial_number: str) -> None:
         """Interrupt a managed run and wait before its client can be closed."""
         task = self._run_tasks.get(serial_number)
