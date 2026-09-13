@@ -190,7 +190,7 @@ async def async_dock_when_stop_settles(
                                         if replacement_deadline is None:
                                             replacement_deadline = (
                                                 now
-                                                + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
+                                                + DOCK_CONFIRM_TRANSITION_GRACE_SECONDS
                                             )
                                         elif now >= replacement_deadline:
                                             _LOGGER.debug(

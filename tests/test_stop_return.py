@@ -198,7 +198,7 @@ async def test_final_dock_confirmation_aborts_replacement_motion(
 ) -> None:
     """A replacement task cannot claim an obsolete final DOCK."""
     monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
-    monkeypatch.setattr(stop_return, "DOCK_SETTLE_TRANSITION_GRACE_SECONDS", 0)
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TRANSITION_GRACE_SECONDS", 0)
     hass.states.async_set(ENTITY, "idle", {})
     client = _client(session=False)
 
