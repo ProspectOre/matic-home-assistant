@@ -219,6 +219,27 @@ async def test_final_dock_confirmation_aborts_replacement_motion(
     on_docked.assert_not_awaited()
 
 
+async def test_final_dock_confirmation_aborts_when_stop_fence_clears(hass) -> None:
+    """A cleared stop fence cannot produce stale dock evidence."""
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+    manager = _manager()
+    manager.stop_pending.side_effect = [True, True, True, False]
+    on_docked = AsyncMock()
+
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=AsyncMock(),
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        on_docked=on_docked,
+    )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    on_docked.assert_not_awaited()
+
+
 @pytest.mark.parametrize("state", ["docked", "returning"])
 async def test_skips_when_the_robot_is_already_home_or_heading_there(
     hass, state: str
