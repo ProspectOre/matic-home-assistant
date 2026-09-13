@@ -3292,6 +3292,26 @@ async def _async_mark_run_docked(
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:
         return
+    snapshot_reader = getattr(manager, "snapshot", None)
+    if callable(snapshot_reader):
+        snapshot = snapshot_reader(serial_number)
+        last_run = snapshot.get("last_run") if isinstance(snapshot, dict) else None
+        if isinstance(last_run, dict) and (
+            last_run.get("run_id") == run_id and last_run.get("outcome") == "running"
+        ):
+            cancellation_reader = getattr(manager, "cancellation_reason", None)
+            cancellation_reason = (
+                cancellation_reader(serial_number)
+                if callable(cancellation_reader)
+                else None
+            )
+            finish_event_reader = getattr(manager, "finish_room_event", None)
+            finish_requested = (
+                callable(finish_event_reader)
+                and finish_event_reader(serial_number).is_set()
+            )
+            if cancellation_reason != "managed_stop" and not finish_requested:
+                return
     await manager.async_mark_run_docked(
         serial_number,
         run_id,
@@ -3834,7 +3854,7 @@ async def _async_execute_rooms(
                 manager.end_managed_motion(serial_number, motion_token)
                 manager.unregister_run_task(serial_number)
                 reconciliation_active_reader = getattr(
-                    manager, "reconciliation_tasks_active", None
+                    manager, "dock_reconciliation_active", None
                 )
                 stop_watcher_active = callable(reconciliation_active_reader) and bool(
                     reconciliation_active_reader(serial_number)

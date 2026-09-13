@@ -187,7 +187,9 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
         await watcher_release.wait()
 
     async def fake_leg(*_args, **_kwargs):
-        manager.register_reconciliation_task("serial", asyncio.create_task(watcher()))
+        manager.register_reconciliation_task(
+            "serial", asyncio.create_task(watcher()), dock=True
+        )
         return True
 
     with patch(
@@ -207,7 +209,7 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
 
     assert set_run_id.call_count == 1
     assert set_run_id.call_args.args[0]
-    assert manager.reconciliation_tasks_active("serial") is True
+    assert manager.dock_reconciliation_active("serial") is True
     watcher_release.set()
     manager.cancel_reconciliation_tasks("serial")
     await asyncio.sleep(0)
@@ -6156,18 +6158,18 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
 
     task = asyncio.create_task(reconcile())
     manager.register_reconciliation_task("serial", task)
-    assert manager.reconciliation_tasks_active("serial") is True
+    assert "serial" in manager._reconciliation_tasks
     await started.wait()
     await manager.async_cancel_and_wait("serial")
     assert task.cancelled()
-    assert manager.reconciliation_tasks_active("serial") is False
+    assert manager.dock_reconciliation_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
 
     finished = asyncio.create_task(asyncio.sleep(0))
     manager.register_reconciliation_task("serial", finished)
     await finished
     await asyncio.sleep(0)
-    assert manager.reconciliation_tasks_active("serial") is False
+    assert manager.dock_reconciliation_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
 
 

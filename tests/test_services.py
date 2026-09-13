@@ -113,6 +113,47 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
     )
 
 
+@pytest.mark.parametrize("finish_requested", [False, True])
+async def test_dock_upgrade_does_not_mask_unmanaged_running_failure(
+    hass, finish_requested: bool
+) -> None:
+    """Only a managed stop may upgrade a still-running run at the dock."""
+    finish_event = asyncio.Event()
+    if finish_requested:
+        finish_event.set()
+    manager = SimpleNamespace(
+        snapshot=MagicMock(
+            return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+        ),
+        cancellation_reason=MagicMock(return_value=None),
+        finish_room_event=MagicMock(return_value=finish_event),
+        async_mark_run_docked=AsyncMock(),
+    )
+
+    await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
+
+    if finish_requested:
+        manager.async_mark_run_docked.assert_awaited_once()
+    else:
+        manager.async_mark_run_docked.assert_not_awaited()
+
+
+async def test_dock_upgrade_allows_managed_stop_running_failure(hass) -> None:
+    """The managed STOP reason authorizes the early dock upgrade."""
+    manager = SimpleNamespace(
+        snapshot=MagicMock(
+            return_value={"last_run": {"run_id": "run-1", "outcome": "running"}}
+        ),
+        cancellation_reason=MagicMock(return_value="managed_stop"),
+        finish_room_event=MagicMock(return_value=asyncio.Event()),
+        async_mark_run_docked=AsyncMock(),
+    )
+
+    await _async_mark_run_docked(manager, "serial", "run-1", "vacuum.matic", Context())
+
+    manager.async_mark_run_docked.assert_awaited_once()
+
+
 def _registered_handler(services, service: str):
     return next(
         item.args[2]
