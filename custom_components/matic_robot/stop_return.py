@@ -233,6 +233,9 @@ async def async_confirm_docked(
     deadline = monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
     while True:
         state = hass.states.get(entity_id)
+        if state is not None and state.state in REPLACEMENT_STATES:
+            _LOGGER.debug("Matic DOCK confirmation abandoned after replacement motion")
+            return False
         if state is not None and state.state in DOCKED_STATES:
             await on_docked()
             return True

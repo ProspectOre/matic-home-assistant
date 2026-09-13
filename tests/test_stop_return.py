@@ -447,6 +447,18 @@ async def test_confirmation_times_out_without_docked_state(
     on_docked.assert_not_awaited()
 
 
+@pytest.mark.parametrize("state", ["cleaning", "paused"])
+async def test_confirmation_aborts_after_replacement_motion(hass, state: str) -> None:
+    """A later unrelated task cannot upgrade this run when it docks."""
+    hass.states.async_set(ENTITY, state, {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
 async def test_schedule_is_a_no_op_without_background_task_support() -> None:
     manager = _manager()
     fake_hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock()))
