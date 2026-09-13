@@ -2,9 +2,6 @@
 name: Audit Active Regular Review Findings
 
 on:
-  workflow_run:
-    workflows: [Codex Review Signal]
-    types: [completed]
   schedule:
     - cron: '*/5 * * * *'
   workflow_dispatch:
@@ -23,8 +20,6 @@ permissions:
 
 jobs:
   discover:
-    if: >-
-      github.event_name != 'workflow_run' || (github.event.workflow_run.conclusion == 'success' && startsWith(github.event.workflow_run.display_title, 'Codex review signal #'))
     name: discover-open-prs
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     outputs:
@@ -35,8 +30,6 @@ jobs:
         name: Enumerate open pull requests
         env:
           GH_TOKEN: ${{ github.token }}
-          EVENT_NAME: ${{ github.event_name }}
-          SIGNAL_TITLE: ${{ github.event.workflow_run.display_title }}
           REPO: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -45,15 +38,10 @@ jobs:
             echo "GitHub CLI (gh) is required."
             exit 1
           }
-          if [[ "$EVENT_NAME" == workflow_run ]]; then
-            [[ "$SIGNAL_TITLE" =~ ^Codex\ review\ signal\ \#([1-9][0-9]*)(\ withdrawn)?$ ]] || exit 1
-            matrix="$(jq -cn --argjson pr "${BASH_REMATCH[1]}" '{include: [{pr_number: $pr}]}')"
-          else
-            matrix="$(
-              gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
-                | jq -c '{include: [.[][] | {pr_number: .number}]}'
-            )"
-          fi
+          matrix="$(
+            gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate --slurp \
+              | jq -c '{include: [.[][] | {pr_number: .number}]}'
+          )"
           echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           echo "count=$(jq '.include | length' <<< "$matrix")" >> "$GITHUB_OUTPUT"
 
@@ -80,8 +68,8 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'becc00e00fcb75647acfbb7f2d0e928f8ab8c3232cf29d312e2471579bead4b1'
-          EXPECTED_DEPENDENCY_SHA256: '9f868eafc8dcd85e99950dcd0350966d6204e06112f757aa615e787e589e108e'
+          EXPECTED_SHA256: 'b809c2e59586c339f4cfd947a657d7b08790bd5634e4f7a6c7773b85197fe66c'
+          EXPECTED_DEPENDENCY_SHA256: '00fe1c0493778847904f24829c6847b71b7211caaa940ab99f14d8b965d76673'
         shell: bash
         run: |
           set -euo pipefail
@@ -123,7 +111,6 @@ jobs:
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
-          REVIEW_FINDING_AFTER: ${{ github.event_name == 'workflow_run' && endsWith(github.event.workflow_run.display_title, ' withdrawn') && github.event.workflow_run.created_at || '' }}
           AUDIT_MODE: ${{ github.event_name == 'schedule' }}
           CANONICAL_REVIEW_GATE: ${{ steps.canonical.outputs.path }}
           SECURITY_REVIEW_BOT_LOGIN: chatgpt-codex-connector

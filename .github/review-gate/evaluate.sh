@@ -322,8 +322,8 @@ regular_evidence() {
           # known connector footer; a body-only claim is not a
           # clean verdict.
           def stock_clean_envelope:
-            test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
-            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+            test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>.*</details>[[:space:]]*$")
+            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[]
            | .data.repository.pullRequest.reviews.nodes[]?
@@ -357,7 +357,7 @@ regular_evidence() {
           # An issue comment has no review-thread metadata. A generic
           # suggestions envelope therefore cannot prove a clean verdict.
           def stock_clean_issue_comment_envelope:
-            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[][]
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
@@ -510,6 +510,10 @@ read_gate_snapshot() {
 }
 
 require_no_dependency_findings() {
+  if [[ -n "$finding_after" ]]; then
+    stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
+    gate_pending
+  fi
   local snapshot
   snapshot="$(read_gate_snapshot)"
   if jq -e '.finding_count > 0 or .security_finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
@@ -640,7 +644,7 @@ if [[ "${GITHUB_EVENT_NAME:-}" == pull_request_target && -f "${GITHUB_EVENT_PATH
 fi
 
 # Persist authenticated withdrawal deliveries even when their deleted body no
-# longer exists in the API list. Signal timestamps come from GitHub run metadata.
+# longer exists in the API list. External watermarks are trusted finding history.
 if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; withdrawn delivery" >/dev/null
 fi
@@ -649,8 +653,12 @@ if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]
      (.action == "deleted" or .action == "edited") and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
-     ([.comment.body // "", .changes.body.from // ""] | any(contains("`" + $head + "`") or contains("`" + $prefix + "`")))' "$GITHUB_EVENT_PATH" >/dev/null; then
-  withdrawal_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+     ([.comment.body // "", .changes.body.from // ""] | any(
+       (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
+       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)") and
+       (test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security[[:space:]-]+review") | not)))' "$GITHUB_EVENT_PATH" >/dev/null; then
+  withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
+  withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; withdrawn comment" >/dev/null
   evidence_after="$(normalize_timestamp "$withdrawal_at")"
 fi

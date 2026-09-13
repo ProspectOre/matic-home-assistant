@@ -89,11 +89,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    # This preempts a previous-policy evaluator for this PR. A new evaluator
-    # queues behind the sweep and observes its final pending status.
+    # Isolate rollout cleanup from review delivery and audit cancellation.
+    # The step persists invalidation before explicitly cancelling old evaluators.
     concurrency:
-      group: review-gate-${{ matrix.pr_number }}
-      cancel-in-progress: true
+      group: review-gate-rollout-${{ matrix.pr_number }}
+      cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke the gate and disable automatic merge

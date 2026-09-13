@@ -308,6 +308,13 @@ def dependency_file(path, before, after, patch, status="modified"):
             True,
         )
     if name == "Gemfile":
+        lines = changed_lines(patch)
+        if lines and not lines[0] and lines[1]:
+            declaration = (
+                r"\s*gem\s+['\"][A-Za-z0-9_.-]+['\"]"
+                r"(?:\s*,\s*['\"][0-9<>=~.,* _+-]+['\"])?\s*"
+            )
+            return all(re.fullmatch(declaration, line) for line in lines[1])
         return replacements(
             patch,
             (
@@ -525,6 +532,19 @@ def classify(repo, number, head, base):
         return None
     base_tree = {x["path"]: x for x in base_response["tree"]}
     head_tree = {x["path"]: x for x in head_response["tree"]}
+    base_blobs = {p for p, x in base_tree.items() if x.get("type") != "tree"}
+    head_blobs = {p for p, x in head_tree.items() if x.get("type") != "tree"}
+    listed = {f["filename"] for f in files}
+    changed_paths = (base_blobs ^ head_blobs) | {
+        p
+        for p in base_blobs & head_blobs
+        if any(
+            base_tree[p].get(key) != head_tree[p].get(key)
+            for key in ("sha", "type", "mode")
+        )
+    }
+    if changed_paths != listed:
+        return None
     for file in files:
         path, status = file["filename"], file["status"]
         for tree, present in (
@@ -538,6 +558,18 @@ def classify(repo, number, head, base):
                 or entry.get("mode") != "100644"
             ):
                 return None  # Non-regular changes require ordinary review.
+        expected_status = (
+            "modified"
+            if path in base_tree and path in head_tree
+            else "added"
+            if path in head_tree
+            else "removed"
+        )
+        if status != expected_status:
+            return None
+        expected = head_tree.get(path) if status != "removed" else base_tree.get(path)
+        if not expected or file.get("sha") != expected.get("sha"):
+            return None
     for file in files:
         path, status = file["filename"], file["status"]
         name = PurePosixPath(path).name
