@@ -1407,6 +1407,7 @@ async def _async_run_room(
             )
         raise
     except RoomTakenOverError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], room, str(err)
         )
@@ -1951,6 +1952,7 @@ async def _async_run_leg(
             str(err), "room_interrupted", {"room": active_room.name}
         ) from err
     except RoomTakenOverError as err:
+        err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], active_room, str(err)
         )
@@ -3245,6 +3247,10 @@ def _suspended_run_reason(
 class RoomTakenOverError(HomeAssistantError):
     """The native task ended, changed, or could no longer be identified."""
 
+    def __init__(self, *args: object, suspend_reason: str | None = None) -> None:
+        super().__init__(*args)
+        self.suspend_reason = suspend_reason
+
 
 def _run_provenance(call: ServiceCall) -> str:
     """Return bounded trigger provenance without retaining account identity."""
@@ -3598,6 +3604,11 @@ async def _async_execute_rooms(
                 if isinstance(err, ServiceValidationError) and err.__cause__ is not None
                 else err
             )
+            if getattr(leaf_error, "suspend_reason", None) == "low_charge":
+                run_outcome = "recharge_suspended"
+                run_reason_code = "low_charge"
+                run_cause = "robot"
+                raise
             if isinstance(leaf_error, RoomInterruptedError | RoomTakenOverError):
                 run_outcome = "unverified"
                 run_reason_code = (
@@ -3685,6 +3696,11 @@ async def _async_execute_rooms(
                         else "unknown"
                     )
                     room_outcomes: list[dict[str, str]] = []
+                    event_outcome = run_outcome
+                    event_reason_code = run_reason_code
+                    event_cause = run_cause
+                    event_terminal_activity = terminal_activity
+                    event_completed_room_count = len(completed_room_names)
                     try:
                         finish_run = getattr(manager, "async_finish_run", None)
                         if callable(finish_run):
@@ -3699,6 +3715,35 @@ async def _async_execute_rooms(
                                 entity_id=entity_id,
                                 context=call.context,
                             )
+                        snapshot_reader = getattr(manager, "snapshot", None)
+                        final_snapshot = (
+                            snapshot_reader(serial_number)
+                            if callable(snapshot_reader)
+                            else None
+                        )
+                        final_last_run = (
+                            final_snapshot.get("last_run")
+                            if isinstance(final_snapshot, dict)
+                            else None
+                        )
+                        if isinstance(final_last_run, dict) and (
+                            final_last_run.get("run_id") == run_id
+                        ):
+                            event_outcome = str(
+                                final_last_run.get("outcome", event_outcome)
+                            )
+                            event_reason_code = str(
+                                final_last_run.get("reason_code", event_reason_code)
+                            )
+                            event_cause = str(final_last_run.get("cause", event_cause))
+                            event_terminal_activity = str(
+                                final_last_run.get(
+                                    "terminal_activity", event_terminal_activity
+                                )
+                            )
+                            completed = final_last_run.get("completed_room_count")
+                            if isinstance(completed, int):
+                                event_completed_room_count = completed
                         room_outcomes = _room_outcomes(
                             manager,
                             serial_number,
@@ -3726,12 +3771,12 @@ async def _async_execute_rooms(
                                     "service": str(call.service),
                                     "started_at": run_started_at,
                                     "ended_at": finished_at,
-                                    "outcome": run_outcome,
-                                    "reason_code": run_reason_code,
-                                    "cause": run_cause,
-                                    "terminal_activity": terminal_activity,
+                                    "outcome": event_outcome,
+                                    "reason_code": event_reason_code,
+                                    "cause": event_cause,
+                                    "terminal_activity": event_terminal_activity,
                                     "room_count": len(chosen),
-                                    "completed_room_count": len(completed_room_names),
+                                    "completed_room_count": event_completed_room_count,
                                     "room_outcomes": room_outcomes,
                                 },
                                 context=call.context,
