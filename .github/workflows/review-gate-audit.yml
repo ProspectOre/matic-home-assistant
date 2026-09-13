@@ -80,8 +80,8 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'f5ed0d33322ba8070fcf0eabfde341cadbd45f1275576b976deda59da701f679'
-          EXPECTED_DEPENDENCY_SHA256: 'e86cb1961e9f4eff0b3cd40dba39a08a7a4627a59c7e39a043d4ec068eace18c'
+          EXPECTED_SHA256: 'becc00e00fcb75647acfbb7f2d0e928f8ab8c3232cf29d312e2471579bead4b1'
+          EXPECTED_DEPENDENCY_SHA256: '9f868eafc8dcd85e99950dcd0350966d6204e06112f757aa615e787e589e108e'
         shell: bash
         run: |
           set -euo pipefail
@@ -119,6 +119,7 @@ jobs:
           REVIEW_BOT_LOGIN: chatgpt-codex-connector
           REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
           REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_ROLLOUT_CONTEXT: review-gate-rollout
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review

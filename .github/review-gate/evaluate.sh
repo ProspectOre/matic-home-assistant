@@ -232,8 +232,12 @@ latest_regular_issue_comment_at() {
         [.[][]
          | select(.context == $context)
          | select(.state == "pending")
-         | select((.description // "") | test("^Regular issue-comment invalidated(?: at [^;]+)?;"))
-         | .updated_at]
+         | (.description // "") as $description
+         | select($description | test("^Regular issue-comment invalidated(?: at [^;]+)?;"))
+         | if ($description | test("^Regular issue-comment invalidated at [^;]+;"))
+           then ($description | capture("^Regular issue-comment invalidated at (?<at>[^;]+);").at)
+           else .updated_at
+           end]
         ' | latest_timestamp
 }
 

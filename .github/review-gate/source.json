@@ -1,12 +1,13 @@
 {
   "source": "ProspectOre/dev-workspace",
   "path": "scripts/review-gate/evaluate.sh",
-  "sha256": "f5ed0d33322ba8070fcf0eabfde341cadbd45f1275576b976deda59da701f679",
-  "dependencyClassifierSha256": "e86cb1961e9f4eff0b3cd40dba39a08a7a4627a59c7e39a043d4ec068eace18c",
+  "sha256": "becc00e00fcb75647acfbb7f2d0e928f8ab8c3232cf29d312e2471579bead4b1",
+  "dependencyClassifierSha256": "9f868eafc8dcd85e99950dcd0350966d6204e06112f757aa615e787e589e108e",
   "generated": true,
   "managedWorkflows": [
     ".github/workflows/review-canonical-signal.yml",
     ".github/workflows/review-gate-audit.yml",
+    ".github/workflows/review-gate-rollout.yml",
     ".github/workflows/review-gate.yml"
   ]
 }

@@ -79,6 +79,33 @@ def only_fields(before, after, fields):
     return old == new
 
 
+def package_constraints(before, after, fields):
+    if not only_fields(before, after, fields):
+        return False
+    for field in fields:
+        old_values, new_values = before.get(field, {}), after.get(field, {})
+        if old_values == new_values:
+            continue
+        if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+            return False
+        for name in set(old_values) | set(new_values):
+            old, new = old_values.get(name), new_values.get(name)
+            if old == new:
+                continue
+            if old is None and isinstance(new, str):
+                old = new
+            if not isinstance(old, str) or not isinstance(new, str):
+                return False
+            constraint = (
+                r"(?:\*|[~^<>=]*\s*[0-9]+(?:\.[0-9xX*]+){0,2}(?:[-+][0-9A-Za-z.-]+)?)"
+            )
+            if not re.fullmatch(constraint, old.strip()) or not re.fullmatch(
+                constraint, new.strip()
+            ):
+                return False
+    return True
+
+
 def changed_lines(patch):
     if not patch:
         return None
@@ -334,7 +361,8 @@ def dependency_file(path, before, after, patch, status="modified"):
         if name in JSON_FIELDS:
             if name == "manifest.json" and not path.startswith("custom_components/"):
                 return False
-            return only_fields(json.loads(before), json.loads(after), JSON_FIELDS[name])
+            validator = package_constraints if name == "package.json" else only_fields
+            return validator(json.loads(before), json.loads(after), JSON_FIELDS[name])
         if name == "libs.versions.toml" or (
             name.endswith(".versions.toml") and "/gradle/" in "/" + path
         ):
@@ -359,6 +387,16 @@ def dependency_file(path, before, after, patch, status="modified"):
                     )
                 return False
 
+            def stable_changes(before_value, after_value):
+                if before_value == after_value:
+                    return True
+                if isinstance(before_value, dict) and isinstance(after_value, dict):
+                    return all(
+                        stable_changes(before_value.get(key), value)
+                        for key, value in after_value.items()
+                    )
+                return stable(after_value)
+
             def catalog_identity(data):
                 data = copy.deepcopy(data)
                 data["versions"] = dict.fromkeys(data.get("versions", {}))
@@ -373,7 +411,7 @@ def dependency_file(path, before, after, patch, status="modified"):
             return (
                 set(old) <= allowed
                 and set(new) <= allowed
-                and stable(new)
+                and stable_changes(old, new)
                 and old != new
                 and catalog_identity(old) == catalog_identity(new)
             )
