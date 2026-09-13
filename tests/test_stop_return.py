@@ -10,8 +10,10 @@ from custom_components.matic_robot import stop_return
 from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.stop_return import (
+    async_confirm_docked,
     async_dock_when_stop_settles,
     schedule_dock_after_stop,
+    schedule_dock_confirmation,
 )
 
 ENTITY = "vacuum.matic"
@@ -327,6 +329,40 @@ async def test_schedule_registers_a_lifecycle_bound_task(hass) -> None:
     assert isinstance(
         manager.register_reconciliation_task.call_args.args[1], asyncio.Task
     )
+
+
+async def test_schedule_confirmation_registers_and_closes_docked_run(hass) -> None:
+    manager = _manager()
+    hass.states.async_set(ENTITY, "charging", {})
+    on_docked = AsyncMock()
+
+    schedule_dock_confirmation(
+        hass,
+        refresh=AsyncMock(),
+        manager=manager,
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        on_docked=on_docked,
+    )
+    await hass.async_block_till_done()
+
+    manager.register_reconciliation_task.assert_called_once()
+    on_docked.assert_awaited_once()
+
+
+async def test_confirmation_waits_for_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    hass.states.async_set(ENTITY, "returning", {})
+    refresh = AsyncMock(side_effect=lambda: hass.states.async_set(ENTITY, "docked", {}))
+    on_docked = AsyncMock()
+
+    assert await async_confirm_docked(
+        hass, refresh=refresh, entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_awaited_once()
 
 
 async def test_schedule_is_a_no_op_without_background_task_support() -> None:

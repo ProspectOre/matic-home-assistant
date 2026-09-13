@@ -1040,6 +1040,12 @@ class CleaningPlanManager:
                 global_record.get("last_completed"),
                 now=now,
             )
+            if (
+                reset_at is not None
+                and completion_values is not None
+                and completion_values[0] <= reset_at
+            ):
+                completion_values = None
             candidates.append(
                 _RotationCandidate(
                     index=index,

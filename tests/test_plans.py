@@ -3244,7 +3244,9 @@ async def test_room_native_plan_lifecycle_preview_selection_and_reset(hass) -> N
     manager._robot("serial")["plans"]["whole_home"]["run_behavior"] = "intelligent"
     await manager.async_reset_history("serial", "whole_home")
     assert manager.snapshot("serial")["completed_runs"] == 0
-    assert manager.preview("serial", room_map)["rooms"][0]["name"] == "Kitchen"
+    reset_preview = manager.preview("serial", room_map)
+    assert reset_preview["rooms"][0]["name"] == "Kitchen"
+    assert all(item["last_completion"] is None for item in reset_preview["rotation"])
     await manager.async_delete_plan("serial", "whole_home")
     assert manager.snapshot("serial")["selected_plan"] == "upstairs"
     await manager.async_reset_history("serial")

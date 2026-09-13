@@ -80,7 +80,7 @@ from .plans import (
     resolve_room_reference,
     resolve_rooms,
 )
-from .stop_return import schedule_dock_after_stop
+from .stop_return import schedule_dock_after_stop, schedule_dock_confirmation
 
 SERVICE_CLEAN = "clean"
 SERVICE_CLEAN_ROOM_SEQUENCE = "clean_room_sequence"
@@ -3534,6 +3534,25 @@ async def _async_execute_rooms(
             ):
                 try:
                     await outer_command(motion_token, UserCommand.DOCK)
+                    if finish_room_event.is_set() and completed_room_count < len(
+                        chosen
+                    ):
+                        schedule_dock_confirmation(
+                            hass,
+                            refresh=refresh or (lambda: asyncio.sleep(0)),
+                            manager=manager,
+                            serial_number=serial_number,
+                            entity_id=entity_id,
+                            run_id=run_id,
+                            on_docked=partial(
+                                _async_mark_run_docked,
+                                manager,
+                                serial_number,
+                                run_id,
+                                entity_id,
+                                call.context,
+                            ),
+                        )
                 except ManagedMotionReplacedError as err:
                     raise PlanCancelledError from err
                 except MaticError as err:

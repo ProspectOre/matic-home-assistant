@@ -210,3 +210,51 @@ def schedule_dock_after_stop(
     register_task = getattr(manager, "register_reconciliation_task", None)
     if isinstance(task, asyncio.Task) and callable(register_task):
         register_task(serial_number, task)
+
+
+async def async_confirm_docked(
+    hass: HomeAssistant,
+    *,
+    refresh: Callable[[], Awaitable[None]],
+    entity_id: str,
+    on_docked: Callable[[], Awaitable[None]],
+) -> bool:
+    """Wait for a DOCK command to produce an observed docked state."""
+    deadline = monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
+    while True:
+        state = hass.states.get(entity_id)
+        if state is not None and state.state in DOCKED_STATES:
+            await on_docked()
+            return True
+        if monotonic() >= deadline:
+            return False
+        await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+        await refresh()
+
+
+def schedule_dock_confirmation(
+    hass: HomeAssistant,
+    *,
+    refresh: Callable[[], Awaitable[None]],
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    run_id: str,
+    on_docked: Callable[[], Awaitable[None]],
+) -> None:
+    """Start a lifecycle-bound watcher for an already-sent DOCK command."""
+    create_background_task = getattr(hass, "async_create_background_task", None)
+    if not callable(create_background_task):
+        return
+    task = create_background_task(
+        async_confirm_docked(
+            hass,
+            refresh=refresh,
+            entity_id=entity_id,
+            on_docked=on_docked,
+        ),
+        f"{DOMAIN} confirm managed dock {run_id}",
+    )
+    register_task = getattr(manager, "register_reconciliation_task", None)
+    if isinstance(task, asyncio.Task) and callable(register_task):
+        register_task(serial_number, task)
