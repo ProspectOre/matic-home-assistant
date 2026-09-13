@@ -365,6 +365,19 @@ async def test_confirmation_waits_for_docked_state(
     on_docked.assert_awaited_once()
 
 
+async def test_confirmation_times_out_without_docked_state(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 0)
+    hass.states.async_set(ENTITY, "returning", {})
+    on_docked = AsyncMock()
+
+    assert not await async_confirm_docked(
+        hass, refresh=AsyncMock(), entity_id=ENTITY, on_docked=on_docked
+    )
+    on_docked.assert_not_awaited()
+
+
 async def test_schedule_is_a_no_op_without_background_task_support() -> None:
     manager = _manager()
     fake_hass = SimpleNamespace(states=SimpleNamespace(get=MagicMock()))
