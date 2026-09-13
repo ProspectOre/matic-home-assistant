@@ -95,6 +95,7 @@ async def async_dock_when_stop_settles(
         deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
     )
     settled_state_observed = False
+    run_scope_claimed = False
 
     def clear_run_scope() -> None:
         """Release this watcher without clearing a newer managed run."""
@@ -153,18 +154,18 @@ async def async_dock_when_stop_settles(
                         latest_state = hass.states.get(entity_id)
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
+                        if set_run_id is not None and run_id is not None:
+                            set_run_id(run_id)
+                            run_scope_claimed = True
                         try:
-                            if set_run_id is not None and run_id is not None:
-                                set_run_id(run_id)
-                            await client.async_send_user_command(UserCommand.DOCK)
-                        except MaticError as err:
-                            _LOGGER.warning(
-                                "Unable to dock Matic after its stop settled (%s)",
-                                type(err).__name__,
-                            )
-                            clear_run_scope()
-                            return False
-                        try:
+                            try:
+                                await client.async_send_user_command(UserCommand.DOCK)
+                            except MaticError as err:
+                                _LOGGER.warning(
+                                    "Unable to dock Matic after its stop settled (%s)",
+                                    type(err).__name__,
+                                )
+                                return False
                             await refresh()
                             if on_docked is not None:
                                 confirm_deadline = (
@@ -187,7 +188,8 @@ async def async_dock_when_stop_settles(
                                     await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
                                     await refresh()
                         finally:
-                            clear_run_scope()
+                            if run_scope_claimed:
+                                clear_run_scope()
                         return True
         if now >= deadline:
             return False
