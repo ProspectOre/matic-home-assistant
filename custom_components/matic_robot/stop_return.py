@@ -31,7 +31,7 @@ from .plans import OEM_STOP_FENCE_SECONDS, CleaningPlanManager
 
 DOCK_SETTLE_POLL_SECONDS = 3
 DOCK_SETTLE_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
-DOCK_CONFIRM_TIMEOUT_SECONDS = 60
+DOCK_CONFIRM_TIMEOUT_SECONDS = OEM_STOP_FENCE_SECONDS
 # Coordinator state can still show the pre-STOP task for one refresh. Keep
 # that stale edge from abandoning the settlement watcher, but stop waiting if
 # cleaning or pause persists long enough to be replacement work.
@@ -150,9 +150,8 @@ async def async_dock_when_stop_settles(
                                 set_run_id(None)
                         await refresh()
                         if on_docked is not None:
-                            confirm_deadline = min(
-                                deadline,
-                                monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS,
+                            confirm_deadline = (
+                                monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
                             )
                             while True:
                                 confirmed = hass.states.get(entity_id)

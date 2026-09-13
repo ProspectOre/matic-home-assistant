@@ -1120,7 +1120,7 @@ class CleaningPlanManager:
                     "stopped_docked" if docked else normalize_run_outcome(outcome)
                 ),
                 "reason_code": "stopped_docked" if docked else reason_code[:64],
-                "cause": "managed_stop" if docked else cause[:64],
+                "cause": "managed_cancellation" if docked else cause[:64],
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
             }
         )
