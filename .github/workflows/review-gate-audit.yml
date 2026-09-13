@@ -46,7 +46,7 @@ jobs:
             exit 1
           }
           if [[ "$EVENT_NAME" == workflow_run ]]; then
-            [[ "$SIGNAL_TITLE" =~ ^Codex\ review\ signal\ \#([1-9][0-9]*)$ ]] || exit 1
+            [[ "$SIGNAL_TITLE" =~ ^Codex\ review\ signal\ \#([1-9][0-9]*)(\ withdrawn)?$ ]] || exit 1
             matrix="$(jq -cn --argjson pr "${BASH_REMATCH[1]}" '{include: [{pr_number: $pr}]}')"
           else
             matrix="$(
@@ -80,8 +80,8 @@ jobs:
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'd7979b89a303a54e9218d8e1ef779986dcad26fcf00139e9e7b070c6884c743d'
-          EXPECTED_DEPENDENCY_SHA256: '0e091bac2b5e1133c05db80197eebc89dbb53f8f8f6d46c23719556d3df07658'
+          EXPECTED_SHA256: 'f5ed0d33322ba8070fcf0eabfde341cadbd45f1275576b976deda59da701f679'
+          EXPECTED_DEPENDENCY_SHA256: 'e86cb1961e9f4eff0b3cd40dba39a08a7a4627a59c7e39a043d4ec068eace18c'
         shell: bash
         run: |
           set -euo pipefail
@@ -122,6 +122,7 @@ jobs:
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          REVIEW_FINDING_AFTER: ${{ github.event_name == 'workflow_run' && endsWith(github.event.workflow_run.display_title, ' withdrawn') && github.event.workflow_run.created_at || '' }}
           AUDIT_MODE: ${{ github.event_name == 'schedule' }}
           CANONICAL_REVIEW_GATE: ${{ steps.canonical.outputs.path }}
           SECURITY_REVIEW_BOT_LOGIN: chatgpt-codex-connector

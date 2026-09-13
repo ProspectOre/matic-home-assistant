@@ -36,7 +36,6 @@ LOCKS = {
     "packages.lock.json",
     "gradle.lockfile",
     "pubspec.lock",
-    "mix.lock",
 }
 JSON_FIELDS = {
     "package.json": [
@@ -113,14 +112,15 @@ def replacements(patch, pattern, preserve_structure=False, immutable_refs=False)
     for old, new in blocks:
         if not old or len(old) != len(new):
             return False
-        for left, right in zip(old, new, strict=True):
+        for index, left in enumerate(old):
+            right = new[index]
             a, b = re.fullmatch(pattern, left), re.fullmatch(pattern, right)
             if not a or not b:
                 return False
             if (
                 immutable_refs
-                and SHA.fullmatch(a.group("dependency"))
-                and not SHA.fullmatch(b.group("dependency"))
+                and SHA.fullmatch(a.group("dependency").lower())
+                and not SHA.fullmatch(b.group("dependency").lower())
             ):
                 return False
             if preserve_structure:
@@ -161,9 +161,10 @@ def dependency_file(path, before, after, patch, status="modified"):
         return replacements(
             patch,
             (
-                r"(?P<prefix>[ \t]*FROM[ \t]+(?:--platform=[^\s]+[ \t]+)?)"
-                r"(?P<dependency>[^\s#]+)(?P<suffix>(?:[ \t]+[Aa][Ss][ \t]+\w+)?"
-                r"[ \t]*)(?:#.*)?"
+                r"(?P<prefix>[ \t]*FROM[ \t]+(?:--platform=[^\s]+[ \t]+)?"
+                r"[A-Za-z0-9_.-]+(?::[0-9]+)?(?:/[A-Za-z0-9_.-]+)*(?:@sha256:|:))"
+                r"(?P<dependency>[A-Za-z0-9_.-]+)"
+                r"(?P<suffix>(?:[ \t]+[Aa][Ss][ \t]+\w+)?[ \t]*)(?:#.*)?"
             ),
             True,
         )
@@ -283,9 +284,9 @@ def dependency_file(path, before, after, patch, status="modified"):
         return replacements(
             patch,
             (
-                r"(?P<prefix>\s*gem\s+['\"][A-Za-z0-9_.-]+['\"]\s*,\s*['\"])"
-                r"(?P<dependency>[A-Za-z0-9<>=~.,* _+-]+)"
-                r"(?P<suffix>['\"](?:\s*,[^\n]*)?)"
+                r"(?P<prefix>\s*gem\s+['\"][A-Za-z0-9_.-]+['\"])"
+                r"(?:\s*,\s*['\"](?P<dependency>[A-Za-z0-9<>=~.,* _+-]+)['\"])?"
+                r"(?P<suffix>(?:\s*,[^\n]*)?)"
             ),
             True,
         )
@@ -351,18 +352,30 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if isinstance(value, str):
                     return not (
                         re.search(
-                            r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot)",
+                            r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
                             value,
                             re.I,
                         )
                     )
                 return False
 
+            def catalog_identity(data):
+                data = copy.deepcopy(data)
+                data["versions"] = dict.fromkeys(data.get("versions", {}))
+                for section in ("libraries", "plugins"):
+                    for key, value in data.get(section, {}).items():
+                        if isinstance(value, dict):
+                            value.pop("version", None)
+                        elif isinstance(value, str):
+                            data[section][key] = value.rsplit(":", 1)[0]
+                return data
+
             return (
                 set(old) <= allowed
                 and set(new) <= allowed
                 and stable(new)
                 and old != new
+                and catalog_identity(old) == catalog_identity(new)
             )
         if name in ("pyproject.toml", "Cargo.toml", "Pipfile"):
             loads = toml_loader()

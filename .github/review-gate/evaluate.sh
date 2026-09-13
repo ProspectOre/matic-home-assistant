@@ -103,10 +103,10 @@ stamp_status_for_sha() {
     case "$description" in
       "Review state changed; evaluating the regular review"|"Classifying dependency-only changes on "*|"Evaluating the regular review on "*) return 0 ;;
     esac
-    if [[ "$state" == success ]]; then
+    if [[ "$state" == success || "$state" == pending ]]; then
       current_status="$(gh api "repos/$REPO/commits/$target_sha/statuses?per_page=100" --paginate --slurp \
         | jq -c --arg context "$context" '[.[][] | select(.context == $context)][0] // null')"
-      if jq -e --arg description "$description" '.state == "success" and .description == $description' <<< "$current_status" >/dev/null; then return 0; fi
+      if jq -e --arg description "$description" --arg state "$state" '.state == $state and .description == $description' <<< "$current_status" >/dev/null; then return 0; fi
     fi
   fi
   gh api "repos/$REPO/statuses/$target_sha" --silent \
@@ -245,8 +245,8 @@ latest_regular_review_invalidation_at() {
          | select(.state == "pending")
          | (.description // "") as $description
          | select($description | startswith("Regular review invalidated"))
-         | if ($description | test("^Regular review invalidated at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z;"))
-           then ($description | capture("^Regular review invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
+         | if ($description | test("^Regular review invalidated at [^;]+;"))
+           then ($description | capture("^Regular review invalidated at (?<at>[^;]+);").at)
            else .updated_at
            end]
         ' | latest_timestamp
@@ -319,7 +319,7 @@ regular_evidence() {
           # clean verdict.
           def stock_clean_envelope:
             test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>")
-            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[]
            | .data.repository.pullRequest.reviews.nodes[]?
@@ -333,6 +333,7 @@ regular_evidence() {
            | {at: (.updatedAt // .submittedAt),
               id: (.databaseId | tostring),
               source: "review",
+              dismissed: (.state == "DISMISSED"),
               clean: ((.state != "DISMISSED") and ($body | stock_clean_envelope))}]'
   )"
   issue_comment_records="$(
@@ -352,7 +353,7 @@ regular_evidence() {
           # An issue comment has no review-thread metadata. A generic
           # suggestions envelope therefore cannot prove a clean verdict.
           def stock_clean_issue_comment_envelope:
-            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[][]
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
@@ -492,14 +493,25 @@ read_gate_snapshot() {
   finding_count="$(jq '[.[].active_count] | add // 0' <<< "$thread_summary")"
   security_finding_count="$(active_security_finding_count)"
   jq -cn \
+    --argjson deliveries "$deliveries" \
     --argjson verdict "$verdict" \
     --argjson finding_count "$finding_count" \
     --argjson security_finding_count "$security_finding_count" \
     --arg latest_finding_at "$latest_finding_at" \
-    '{verdict: $verdict,
+    '{live_delivery_finding: (([$deliveries[] | select((.clean | not) and .dismissed != true) | .at] | max // "") as $finding | $finding != "" and $finding >= ([$deliveries[] | select(.clean) | .at] | max // "")),
+      verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
       latest_finding_at: $latest_finding_at}'
+}
+
+require_no_dependency_findings() {
+  local snapshot
+  snapshot="$(read_gate_snapshot)"
+  if jq -e '.finding_count > 0 or .security_finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
+    stamp_review_gate pending "Dependency update has active review findings"
+    gate_pending
+  fi
 }
 
 require_clean_regular_snapshot() {
@@ -516,9 +528,9 @@ require_clean_regular_snapshot() {
     echo "Fix them, push a new head, and request review again."
     gate_pending
   fi
-  if [[ "$finding_count" -gt 0 && -n "$latest_finding_at" ]]; then
+  if [[ -n "$latest_finding_at" && "$latest_finding_at" > "$(latest_regular_review_invalidation_at)" ]]; then
     stamp_status "$REVIEW_REVIEW_CONTEXT" pending \
-      "Regular review invalidated at $latest_finding_at; active regular findings require a newer clean normal verdict"
+      "Regular review invalidated at $latest_finding_at; regular evidence changed; require a newer clean normal verdict"
   fi
   if base_change_marker_exists; then
     stamp_review_gate pending "Base changed; push a new head for a fresh regular review"
@@ -623,6 +635,22 @@ if [[ "${GITHUB_EVENT_NAME:-}" == pull_request_target && -f "${GITHUB_EVENT_PATH
   fi
 fi
 
+# Persist authenticated withdrawal deliveries even when their deleted body no
+# longer exists in the API list. Signal timestamps come from GitHub run metadata.
+if [[ -n "$finding_after" ]]; then
+  stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; withdrawn delivery" >/dev/null
+fi
+if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]] &&
+   jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
+     (.action == "deleted" or .action == "edited") and
+     .comment.user.id == 199175422 and .comment.user.type == "Bot" and
+     .comment.user.login == "chatgpt-codex-connector[bot]" and
+     ([.comment.body // "", .changes.body.from // ""] | any(contains("`" + $head + "`") or contains("`" + $prefix + "`")))' "$GITHUB_EVENT_PATH" >/dev/null; then
+  withdrawal_at="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+  stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; withdrawn comment" >/dev/null
+  evidence_after="$(normalize_timestamp "$withdrawal_at")"
+fi
+
 # Classify the whole diff for every author. A dependency title, branch, label,
 # or bot login alone never exempts unrelated application/workflow changes.
 stamp_review_gate pending "Classifying dependency-only changes on $head_prefix"
@@ -638,7 +666,7 @@ classify_dependencies() {
 dependency_digest=""
 if dependency_digest="$(classify_dependencies)"; then
   [[ "$dependency_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-  require_no_security_findings
+  require_no_dependency_findings
   if base_change_marker_exists || rollout_marker_exists; then
     stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
     gate_pending
@@ -657,7 +685,7 @@ if dependency_digest="$(classify_dependencies)"; then
     stamp_review_gate pending "Current head is shared by multiple open pull requests"
     gate_pending
   fi
-  require_no_security_findings
+  require_no_dependency_findings
   if base_change_marker_exists || rollout_marker_exists; then
     stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
     gate_pending
@@ -666,8 +694,16 @@ if dependency_digest="$(classify_dependencies)"; then
   [[ "$(read_pr_snapshot)" == "$final_pr_snapshot" ]] || gate_pending
   stamp_review_gate success "Dependencies exempt for $head_prefix; diff ${dependency_digest:0:16}"
   trap 'stamp_review_gate pending "Dependency state could not be revalidated after publication"; exit 1' ERR
-  require_no_security_findings
-  if [[ "$(read_pr_snapshot)" != "$final_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]] || base_change_marker_exists || rollout_marker_exists; then
+  require_no_dependency_findings
+  post_snapshot="$(read_pr_snapshot)"
+  post_node="$(cut -f5 <<< "$post_snapshot")"
+  post_auto="$(cut -f6 <<< "$post_snapshot")"
+  if [[ "$post_auto" == true ]]; then
+    disable_auto_merge "$post_node"
+    stamp_review_gate pending "Automatic merge was enabled during publication"
+    gate_pending
+  fi
+  if [[ "$post_snapshot" != "$final_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]] || base_change_marker_exists || rollout_marker_exists; then
     stamp_review_gate pending "Dependency state changed while publishing success"
     gate_pending
   fi
@@ -769,7 +805,15 @@ stamp_review_gate success "Clean regular review for $head_prefix; evidence $evid
 trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
 post_success_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$post_success_snapshot"
-if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$(read_pr_snapshot)" != "$last_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]]; then
+post_snapshot="$(read_pr_snapshot)"
+post_node="$(cut -f5 <<< "$post_snapshot")"
+  post_auto="$(cut -f6 <<< "$post_snapshot")"
+if [[ "$post_auto" == true ]]; then
+  disable_auto_merge "$post_node"
+  stamp_review_gate pending "Automatic merge was enabled during publication"
+  gate_pending
+fi
+if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$post_snapshot" != "$last_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]]; then
   stamp_review_gate pending "Review state changed while publishing success"
   gate_pending
 fi
