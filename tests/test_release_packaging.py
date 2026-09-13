@@ -282,7 +282,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '--ref "$WORKFLOW_REF"' in base_advance
     assert "contents: read" in base_advance
     assert "Trusted review-gate evaluator is not installed" in base_advance
-    assert "startswith($prefix)" in review_gate
+    assert "head_prefix_resolves" in review_gate
+    assert '[[ "$resolved" == "$head_sha" ]]' in review_gate
     assert "push:\n  workflow_dispatch:" in base_advance
     assert "github.event.repository.default_branch" in base_advance
     assert "schedule:" in audit
