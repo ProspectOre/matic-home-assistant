@@ -171,15 +171,36 @@ async def async_dock_when_stop_settles(
                                 confirm_deadline = (
                                     monotonic() + DOCK_CONFIRM_TIMEOUT_SECONDS
                                 )
+                                replacement_deadline: float | None = None
                                 while True:
+                                    if not manager.stop_pending(serial_number):
+                                        break
                                     confirmed = hass.states.get(entity_id)
+                                    now = monotonic()
                                     if (
                                         confirmed is not None
                                         and confirmed.state in DOCKED_STATES
                                     ):
                                         await on_docked()
                                         break
-                                    if monotonic() >= confirm_deadline:
+                                    if (
+                                        confirmed is not None
+                                        and confirmed.state in REPLACEMENT_STATES
+                                    ):
+                                        if replacement_deadline is None:
+                                            replacement_deadline = (
+                                                now
+                                                + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
+                                            )
+                                        elif now >= replacement_deadline:
+                                            _LOGGER.debug(
+                                                "Matic DOCK confirmation abandoned "
+                                                "after replacement motion"
+                                            )
+                                            break
+                                    else:
+                                        replacement_deadline = None
+                                    if now >= confirm_deadline:
                                         _LOGGER.debug(
                                             "Matic DOCK accepted but docked state was "
                                             "not observed"

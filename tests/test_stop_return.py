@@ -193,6 +193,32 @@ async def test_final_dock_does_not_close_run_without_docked_state(
     assert refresh.await_count >= 2
 
 
+async def test_final_dock_confirmation_aborts_replacement_motion(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A replacement task cannot claim an obsolete final DOCK."""
+    monkeypatch.setattr(stop_return, "DOCK_CONFIRM_TIMEOUT_SECONDS", 1)
+    monkeypatch.setattr(stop_return, "DOCK_SETTLE_TRANSITION_GRACE_SECONDS", 0)
+    hass.states.async_set(ENTITY, "idle", {})
+    client = _client(session=False)
+
+    async def refresh() -> None:
+        hass.states.async_set(ENTITY, "cleaning", {})
+
+    on_docked = AsyncMock()
+    assert await async_dock_when_stop_settles(
+        hass,
+        client=client,
+        refresh=refresh,
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        on_docked=on_docked,
+    )
+    client.async_send_user_command.assert_awaited_once_with(UserCommand.DOCK)
+    on_docked.assert_not_awaited()
+
+
 @pytest.mark.parametrize("state", ["docked", "returning"])
 async def test_skips_when_the_robot_is_already_home_or_heading_there(
     hass, state: str
