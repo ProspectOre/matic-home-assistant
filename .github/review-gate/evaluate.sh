@@ -539,6 +539,14 @@ require_no_dependency_findings() {
     stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
     gate_pending
   fi
+  if [[ -n "$evidence_after" && "$evidence_after" > "$head_observed_at" ]]; then
+    stamp_review_gate pending "Dependency head has withdrawn review evidence; push a fresh head"
+    gate_pending
+  fi
+  if [[ -n "$(latest_regular_review_invalidation_at)" ]]; then
+    stamp_review_gate pending "Dependency head has withdrawn review evidence; push a fresh head"
+    gate_pending
+  fi
   local snapshot
   snapshot="$(read_gate_snapshot)"
   if jq -e '.finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
