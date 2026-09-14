@@ -69,7 +69,7 @@ jobs:
           PR_NUMBER: ${{ matrix.pr_number }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: 'd689c4f99845392be5bf4be28c1d48494537e0407ba9e80c04c861451fc07c3b'
-          EXPECTED_DEPENDENCY_SHA256: 'd15e7ed85494819a1d10e8a01a73c150ad3acff87b44a12610c838a9ad30009e'
+          EXPECTED_DEPENDENCY_SHA256: '1a8c76e936d0c0684b40f6b558d5edfd9627a872785390af335b74b07ea04ec9'
         shell: bash
         run: |
           set -euo pipefail

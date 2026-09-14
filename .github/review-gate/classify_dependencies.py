@@ -114,7 +114,11 @@ def package_constraints(before, after, fields):
             if field in ("overrides", "resolutions"):
                 if old is None:
                     old = {}
-                if not valid_nested_constraints(old) or not valid_nested_constraints(new):
+                if (
+                    not valid_nested_constraints(old)
+                    or not valid_nested_constraints(new)
+                    or not nested_identity_preserved(old, new)
+                ):
                     return False
             elif field == "peerDependenciesMeta":
                 if old is None:
@@ -153,6 +157,20 @@ def valid_nested_constraints(value):
     if isinstance(value, dict):
         return all(valid_nested_constraints(item) for item in value.values())
     return False
+
+
+def nested_identity_preserved(before, after):
+    if isinstance(before, str) and isinstance(after, str):
+        return True
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    removed, added = set(before) - set(after), set(after) - set(before)
+    if removed and added:
+        return False
+    return all(
+        nested_identity_preserved(before[name], after[name])
+        for name in set(before) & set(after)
+    )
 
 
 def valid_peer_metadata(value):
@@ -520,12 +538,8 @@ def dependency_file(path, before, after, patch, status="modified"):
         if old_names - new_names and new_names - old_names:
             return False
         return old_values != new_values and all(
-            not line.strip()
-            or line.lstrip().startswith("#")
-            or re.fullmatch(
-                r"\s*[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?\s*(?:(?:===|==|~=|!=|<=|>=|<|>)[^;#\n]+)?(?:\s*;[^#\n]+)?(?:\s*#.*)?",
-                line,
-            )
+            not line.split("#", 1)[0].strip()
+            or valid_requirement(line.split("#", 1)[0].strip())
             for line in lines[0] + lines[1]
         )
     if name in (
@@ -866,7 +880,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if isinstance(value, str):
                     return not (
                         re.search(
-                            r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
+                            r"[+*\[\]()${}]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
                             value,
                             re.I,
                         )
@@ -977,6 +991,28 @@ def dependency_file(path, before, after, patch, status="modified"):
                 "options": ("install_requires", "setup_requires", "tests_require"),
                 "options.extras_require": None,
             }
+            all_old_names, all_new_names = set(), set()
+            for section, keys in dependency_sections.items():
+                old_section, new_section = old.get(section, {}), new.get(section, {})
+                if keys is None:
+                    old_values, new_values = old_section, new_section
+                else:
+                    old_values = {key: old_section.get(key, "") for key in keys}
+                    new_values = {key: new_section.get(key, "") for key in keys}
+                for value in old_values.values():
+                    all_old_names |= {
+                        re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower()
+                        for line in value.splitlines()
+                        if isinstance(value, str) and line.strip() and not line.lstrip().startswith("#")
+                    }
+                for value in new_values.values():
+                    all_new_names |= {
+                        re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower()
+                        for line in value.splitlines()
+                        if isinstance(value, str) and line.strip() and not line.lstrip().startswith("#")
+                    }
+            if all_old_names - all_new_names and all_new_names - all_old_names:
+                return False
             for section, keys in dependency_sections.items():
                 old_section, new_section = old.get(section, {}), new.get(section, {})
                 if keys is None:
@@ -989,6 +1025,16 @@ def dependency_file(path, before, after, patch, status="modified"):
                     if value == old_value:
                         continue
                     values = value.splitlines() if isinstance(value, str) else []
+                    all_old_names |= {
+                        re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower()
+                        for line in old_value.splitlines()
+                        if line.strip() and not line.lstrip().startswith("#")
+                    }
+                    all_new_names |= {
+                        re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower()
+                        for line in values
+                        if line.strip() and not line.lstrip().startswith("#")
+                    }
                     if any(not valid_requirement(line.strip()) for line in values if line.strip() and not line.lstrip().startswith("#")):
                         return False
                     old_names = {re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower() for line in old_value.splitlines() if line.strip() and not line.lstrip().startswith("#")}
