@@ -313,7 +313,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "allow_auto_merge" in rollout
     assert "Repository auto-merge must be disabled" in rollout
     assert "disarm-open-prs:" in rollout
-    assert "needs: discover" in rollout
+    assert "needs: [discover, cancel-legacy-auto-merge-runs]" in rollout
     assert "verify-repository-policy:" in rollout
     assert "if: always()" in rollout
     assert "review-fork-regular-review.yml" in rollout
