@@ -170,7 +170,7 @@ def valid_peer_metadata(value):
 
 def stable_version(value):
     return isinstance(value, str) and not re.search(
-        r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
+        r"[+*\[\]()${}]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
         value,
         re.I,
     )
@@ -310,6 +310,25 @@ def toml_dependency_change(before, after, paths):
         else:
             return False
     return changed and old == new
+
+
+def dependency_names(value, kind):
+    if kind == "list" and isinstance(value, list):
+        return {
+            re.split(r"[<>=!~; @]", item, 1)[0].strip().lower()
+            for item in value
+            if isinstance(item, str)
+        }
+    if kind == "map" and isinstance(value, dict):
+        if value and all(isinstance(item, list) for item in value.values()):
+            return {
+                re.split(r"[<>=!~; @]", item, 1)[0].strip().lower()
+                for items in value.values()
+                for item in items
+                if isinstance(item, str)
+            }
+        return {str(name).lower() for name in value}
+    return set()
 
 
 def changed_lines(patch):
@@ -807,6 +826,18 @@ def dependency_file(path, before, after, patch, status="modified"):
             if name == "composer.json":
                 if not only_fields(old_json, new_json, JSON_FIELDS[name]):
                     return False
+                old_all = {
+                    key
+                    for field in ("require", "require-dev")
+                    for key in (old_json.get(field, {}) if isinstance(old_json.get(field, {}), dict) else {})
+                }
+                new_all = {
+                    key
+                    for field in ("require", "require-dev")
+                    for key in (new_json.get(field, {}) if isinstance(new_json.get(field, {}), dict) else {})
+                }
+                if old_all - new_all and new_all - old_all:
+                    return False
                 for field in JSON_FIELDS[name]:
                     old_values, new_values = old_json.get(field, {}), new_json.get(field, {})
                     if not isinstance(old_values, dict) or not isinstance(new_values, dict):
@@ -922,6 +953,16 @@ def dependency_file(path, before, after, patch, status="modified"):
                     (("tool", "poetry", "group", group, "dependencies"), "map")
                     for group in old_groups
                 )
+            old_names, new_names = set(), set()
+            for path, kind in paths:
+                old_value, new_value = old, new
+                for key in path:
+                    old_value = old_value.get(key, {}) if isinstance(old_value, dict) else {}
+                    new_value = new_value.get(key, {}) if isinstance(new_value, dict) else {}
+                old_names |= dependency_names(old_value, kind)
+                new_names |= dependency_names(new_value, kind)
+            if old_names - new_names and new_names - old_names:
+                return False
             return original and toml_dependency_change(old, new, paths)
         if name == "setup.cfg":
 
