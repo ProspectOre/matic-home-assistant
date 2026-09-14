@@ -479,6 +479,25 @@ def gh(*args):
     return json.loads(result.stdout)
 
 
+def resolve_action_updates(files):
+    """Target workflows execute base pins, so resolve accepted candidate pins explicitly."""
+    refs = set()
+    for file in files:
+        path = file["filename"]
+        if not path.startswith(".github/workflows/") or not path.endswith((".yml", ".yaml")):
+            continue
+        for line in changed_lines(file["patch"])[1]:
+            match = re.fullmatch(
+                r"[ \t]*(?:-[ \t]+)?uses:[ \t]*(?P<repo>[\w.-]+/[\w.-]+)"
+                r"(?:/[\w./-]+)?@(?P<ref>[0-9a-fA-F]{40}|v?[0-9]+(?:\.[0-9]+){0,2})[ \t]*(?:#.*)?", line)
+            if match:
+                refs.add((match["repo"], match["ref"]))
+    for repository, ref in sorted(refs):
+        resolved = gh(f"repos/{repository}/commits/{ref}").get("sha", "")
+        if not SHA.fullmatch(resolved) or (SHA.fullmatch(ref.lower()) and resolved != ref.lower()):
+            raise ValueError("Updated action commit did not resolve exactly")
+
+
 def content(repo, path, ref):
     data = gh(f"repos/{repo}/contents/{quote(path, safe='/')}?ref={ref}")
     if (
@@ -611,6 +630,7 @@ def classify(repo, number, head, base):
                 "after": after,
             }
         )
+    resolve_action_updates(files)
     final = snapshot()
     if (
         final["changed_files"] != pr["changed_files"]
