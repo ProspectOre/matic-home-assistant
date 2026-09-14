@@ -374,7 +374,7 @@ regular_evidence() {
   )"
   jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
     {deliveries: ($reviews + $issue_comments),
-     review_ids: [$reviews[].id]}' | normalize_delivery_timestamps
+     review_ids: [$reviews[] | select(.dismissed != true) | .id]}' | normalize_delivery_timestamps
 }
 
 regular_review_thread_summary() {
@@ -430,6 +430,20 @@ write_finding_observation() {
   fi
 }
 
+finding_history_head() {
+  gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+    | jq -r --arg context "review-finding-history" '
+      [.[][] | select(.context == $context and .state == "pending")
+       | (.description // "") | capture("head (?<head>[0-9a-f]{40})").head][0] // ""'
+}
+
+security_history_head() {
+  gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+    | jq -r --arg context "review-security-history" '
+      [.[][] | select(.context == $context and .state == "pending")
+       | (.description // "") | capture("head (?<head>[0-9a-f]{40})").head][0] // ""'
+}
+
 # Retain withdrawal history even when a failed/fork router could not write it.
 # Compare the last published evidence ID with all currently valid records, not
 # merely the selected verdict: an older clean verdict cannot replace a deletion.
@@ -449,6 +463,12 @@ withdrawn_evidence_at() {
     [.[][] | select(.context == $context and .state == "pending")
      | select((.description // "") | endswith($suffix))
      | .description | capture("^Regular review invalidated at (?<at>[^;]+);").at][0] // ""' <<< "$statuses")"
+  if [[ -z "$saved" ]]; then
+    saved="$(jq -r --arg context "$REVIEW_REVIEW_CONTEXT" '
+      [.[][] | select(.context == $context and .state == "pending")
+       | select((.description // "") | endswith("; withdrawn delivery"))
+       | .description | capture("^Regular review invalidated at (?<at>[^;]+);").at][0] // ""' <<< "$statuses")"
+  fi
   if [[ -n "$saved" ]]; then normalize_timestamp "$saved"; return 0; fi
   prior_at="$(normalize_timestamp "$(jq -r '.updated_at // .created_at' <<< "$prior")")"
   # The web adapter persists finding observations outside commit statuses.
@@ -511,6 +531,10 @@ read_gate_snapshot() {
 }
 
 require_no_dependency_findings() {
+  if [[ "$(finding_history_head)" == "$head_sha" || "$(security_history_head)" == "$head_sha" ]]; then
+    stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
+    gate_pending
+  fi
   if [[ -n "$finding_after" ]]; then
     stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
     gate_pending
@@ -530,8 +554,17 @@ require_clean_regular_snapshot() {
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
+  if [[ "$(finding_history_head)" == "$head_sha" ]]; then
+    stamp_review_gate pending "Findings were reported on this head; push a fresh head"
+    gate_pending
+  fi
+  if [[ "$(security_history_head)" == "$head_sha" ]]; then
+    stamp_review_gate pending "Security findings were reported on this head; push a fresh head"
+    gate_pending
+  fi
   write_finding_observation "$latest_finding_at"
   if [[ "$security_finding_count" -gt 0 ]]; then
+    stamp_status "review-security-history" pending "Security findings observed on head $head_sha" >/dev/null
     stamp_review_gate pending "Codex Security reported findings on $head_prefix"
     echo "Codex Security reported $security_finding_count findings-bearing result(s) on the exact head."
     echo "Fix them, push a new head, and request review again."
@@ -568,6 +601,9 @@ require_clean_regular_snapshot() {
     gate_pending
   fi
   if [[ -z "$verdict_at" || "$finding_count" -gt 0 ]]; then
+    if [[ "$finding_count" -gt 0 ]]; then
+      stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
+    fi
     stamp_review_gate pending "Regular review reported findings on $head_prefix"
     echo "The regular review reported $finding_count active finding(s) on the exact head."
     echo "Fix them, push a new head, and request the regular review again."
@@ -649,7 +685,7 @@ fi
 if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; withdrawn delivery" >/dev/null
 fi
-if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]] &&
+  if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]] &&
    jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
      (.action == "deleted" or .action == "edited") and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
@@ -671,7 +707,13 @@ if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]
   if [[ "$edited_clean" != true ]]; then
     withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
     withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-    stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; withdrawn comment" >/dev/null
+    comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
+    if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+      withdrawal_marker="withdrawn issue-comment:$comment_id"
+    else
+      withdrawal_marker="withdrawn delivery"
+    fi
+    stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $withdrawal_at; $withdrawal_marker" >/dev/null
     evidence_after="$(normalize_timestamp "$withdrawal_at")"
   fi
 fi

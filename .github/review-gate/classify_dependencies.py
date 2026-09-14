@@ -88,6 +88,10 @@ def package_constraints(before, after, fields):
             continue
         if not isinstance(old_values, dict) or not isinstance(new_values, dict):
             return False
+        removed_names = set(old_values) - set(new_values)
+        added_names = set(new_values) - set(old_values)
+        if removed_names and added_names:
+            return False
         for name in set(old_values) | set(new_values):
             old, new = old_values.get(name), new_values.get(name)
             if old == new or name not in new_values:
@@ -95,7 +99,14 @@ def package_constraints(before, after, fields):
             if old is None and isinstance(new, str):
                 old = new
             if field in ("overrides", "resolutions"):
+                if old is None:
+                    old = {}
                 if not valid_nested_constraints(old) or not valid_nested_constraints(new):
+                    return False
+            elif field == "peerDependenciesMeta":
+                if old is None:
+                    old = {}
+                if not valid_peer_metadata(old) or not valid_peer_metadata(new):
                     return False
             elif not valid_npm_constraint(old) or not valid_npm_constraint(new):
                 return False
@@ -127,8 +138,165 @@ def valid_nested_constraints(value):
     if isinstance(value, str):
         return valid_npm_constraint(value)
     if isinstance(value, dict):
-        return bool(value) and all(valid_nested_constraints(item) for item in value.values())
+        return all(valid_nested_constraints(item) for item in value.values())
     return False
+
+
+def valid_peer_metadata(value):
+    if not isinstance(value, dict):
+        return False
+    if set(value) <= {"optional"}:
+        return isinstance(value.get("optional", True), bool)
+    return isinstance(value, dict) and all(
+        isinstance(options, dict)
+        and set(options) <= {"optional"}
+        and isinstance(options.get("optional", True), bool)
+        for options in value.values()
+    )
+
+
+def stable_version(value):
+    return isinstance(value, str) and not re.search(
+        r"[+*\[\]()]|latest[.]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|eap|m[0-9])",
+        value,
+        re.I,
+    )
+
+
+def valid_requirement(value):
+    if not isinstance(value, str) or any(token in value.lower() for token in ("://", "git+", "file:", "path:", " @ ")):
+        return False
+    return bool(re.fullmatch(r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?(?:\s*(?:===|==|~=|!=|<=|>=|<|>|\^|~)\s*[0-9xX*][^;#]*)?(?:\s*;[^#]+)?", value.strip()))
+
+
+def dependency_map_constraints(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
+        return False
+    removed, added = set(before) - set(after), set(after) - set(before)
+    if removed and added:
+        return False
+    for name, value in after.items():
+        if name in before and before[name] == value:
+            continue
+        if not valid_requirement(value):
+            return False
+    return True
+
+
+def valid_composer_constraint(value):
+    return isinstance(value, str) and not any(
+        token in value.lower() for token in ("://", "git-", "dev-")
+    ) and bool(re.fullmatch(r"[0-9A-Za-z*+<>=~^|., _-]+", value.strip()))
+
+
+def valid_toml_constraint(value):
+    """Accept registry version constraints while rejecting source redirects."""
+    if not isinstance(value, str):
+        return False
+    lowered = value.strip().lower()
+    if not lowered or any(token in lowered for token in ("://", "git", "path", "file:")):
+        return False
+    return bool(re.fullmatch(r"[0-9A-Za-zxX*.+<>=~^|, _-]+", value.strip()))
+
+
+def dependency_entry_change(before, after):
+    """Validate one TOML dependency value, preserving identity and sources."""
+    if before == after:
+        return True
+    if isinstance(before, str) and isinstance(after, str):
+        return valid_toml_constraint(after)
+    if isinstance(before, dict) and isinstance(after, dict):
+        if set(before) != set(after):
+            return False
+        for key, old_value in before.items():
+            new_value = after[key]
+            if old_value == new_value:
+                continue
+            # Version is the only mutable field. A changed source, feature,
+            # registry, or workspace setting requires ordinary review.
+            if key not in ("version", "version_constraint"):
+                return False
+            if not valid_toml_constraint(new_value):
+                return False
+        return True
+    return False
+
+
+def dependency_map_change(before, after):
+    if not isinstance(before, dict) or not isinstance(after, dict):
+        return False
+    removed, added = set(before) - set(after), set(after) - set(before)
+    if removed and added:
+        return False
+    for name in set(before) & set(after):
+        if not dependency_entry_change(before[name], after[name]):
+            if not (
+                isinstance(before[name], list)
+                and isinstance(after[name], list)
+                and dependency_list_change(before[name], after[name])
+            ):
+                return False
+    for name in set(after) - set(before):
+        value = after[name]
+        if isinstance(value, str) and not valid_toml_constraint(value):
+            return False
+        if isinstance(value, list) and not dependency_list_change([], value):
+            return False
+        if isinstance(value, dict):
+            # New entries must not introduce a source or mutable configuration.
+            if any(key != "version" and key not in ("version_constraint",) for key in value):
+                return False
+            if "version" in value and not valid_toml_constraint(value["version"]):
+                return False
+    return True
+
+
+def dependency_list_change(before, after):
+    if not isinstance(before, list) or not isinstance(after, list):
+        return False
+    old_values = [value for value in before if isinstance(value, str)]
+    new_values = [value for value in after if isinstance(value, str)]
+    if len(old_values) != len(before) or len(new_values) != len(after):
+        return False
+    old_names = {re.split(r"[<>=!~; @]", value, 1)[0].strip().lower() for value in old_values}
+    new_names = {re.split(r"[<>=!~; @]", value, 1)[0].strip().lower() for value in new_values}
+    if old_names - new_names and new_names - old_names:
+        return False
+    return all(valid_requirement(value) for value in new_values)
+
+
+def toml_dependency_change(before, after, paths):
+    """Compare selected TOML dependency paths and leave all other config intact."""
+    if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
+        return False
+    old, new = copy.deepcopy(before), copy.deepcopy(after)
+
+    def take(data, path):
+        target = data
+        for key in path[:-1]:
+            if not isinstance(target, dict):
+                return None
+            target = target.get(key, {})
+        if not isinstance(target, dict):
+            return None
+        return target.pop(path[-1], None)
+
+    changed = False
+    for path, kind in paths:
+        old_value = take(old, path)
+        new_value = take(new, path)
+        if old_value == new_value:
+            continue
+        changed = True
+        if kind == "map":
+            if not dependency_map_change(old_value or {}, new_value or {}):
+                return False
+        elif kind == "list":
+            if not dependency_list_change(old_value or [], new_value or []):
+                return False
+        else:
+            return False
+    return changed and old == new
 
 
 def changed_lines(patch):
@@ -306,7 +474,20 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if line.split("#", 1)[0].strip()
             ]
 
-        return semantic(lines[0]) != semantic(lines[1]) and all(
+        old_values, new_values = semantic(lines[0]), semantic(lines[1])
+        old_names = {
+            re.split(r"[<>=!~; @]", value, 1)[0].strip().lower()
+            for value in old_values
+        }
+        new_names = {
+            re.split(r"[<>=!~; @]", value, 1)[0].strip().lower()
+            for value in new_values
+        }
+        # A pure add or removal is a dependency update; replacing one package
+        # with another must remain under ordinary review.
+        if old_names - new_names and new_names - old_names:
+            return False
+        return old_values != new_values and all(
             not line.strip()
             or line.lstrip().startswith("#")
             or re.fullmatch(
@@ -323,7 +504,7 @@ def dependency_file(path, before, after, patch, status="modified"):
     ):
         # Keep this deliberately bounded: interpolation/executable Gradle
         # expressions are never dependency-only version changes.
-        return replacements(
+        direct = replacements(
             patch,
             r"""(?P<prefix>\s*(?:(?:\w*Implementation|implementation|api|ksp|kapt|classpath|\w*RuntimeOnly|runtimeOnly|compileOnly)\s*\(?["'][\w.+-]+:[\w.+-]+:))(?P<dependency>[\w.+-]+)(?P<suffix>["']\)?\s*(?://.*)?)""",
             True,
@@ -331,6 +512,15 @@ def dependency_file(path, before, after, patch, status="modified"):
             patch,
             r"""(?P<prefix>\s*(?:id|kotlin)\(["'][\w.-]+["']\)\s+version\s+["'])(?P<dependency>[\w.+-]+)(?P<suffix>["'](?:\s+apply\s+false)?)""",
             True,
+        )
+        if not direct:
+            return False
+        changed = changed_lines(patch)
+        return all(
+            stable_version(match.group("dependency"))
+            for line in (changed[1] if changed else [])
+            for match in [re.search(r""":(?P<dependency>[\w.+-]+)["']?\)?\s*(?://.*)?$""", line)]
+            if match
         )
     if name == "Gemfile":
         lines = changed_lines(patch)
@@ -349,6 +539,45 @@ def dependency_file(path, before, after, patch, status="modified"):
             ),
             True,
         )
+    if name == "Package.swift":
+        lines = changed_lines(patch)
+        if status not in ("modified", "added", "removed") or lines is None:
+            return False
+        package_line = re.compile(r"^\s*\.package\s*\((?P<body>[^()]*)\)\s*,?\s*$")
+
+        def parse(values):
+            result = []
+            for line in values:
+                match = package_line.fullmatch(line)
+                if not match:
+                    return None
+                body = match.group("body")
+                if re.search(r"\b(?:path|branch|revision)\s*:", body):
+                    return None
+                identity = re.search(r"\b(?:url|name)\s*:\s*[\"']([^\"']+)[\"']", body)
+                if not identity:
+                    return None
+                normalized = re.sub(
+                    r"\b(?:from|exact|upToNextMajor|upToNextMinor)\s*:\s*[\"']?[0-9A-Za-z.+_-]+[\"']?",
+                    lambda m: re.sub(r"[\"']?[0-9A-Za-z.+_-]+[\"']?$", "<VERSION>", m.group(0)),
+                    body,
+                )
+                result.append((identity.group(1), normalized, body))
+            return result
+
+        old_values, new_values = parse(lines[0]), parse(lines[1])
+        if old_values is None or new_values is None:
+            return False
+        old_ids, new_ids = [item[0] for item in old_values], [item[0] for item in new_values]
+        if set(old_ids) - set(new_ids) and set(new_ids) - set(old_ids):
+            return False
+        if old_ids and new_ids:
+            return (
+                old_ids == new_ids
+                and [item[1] for item in old_values] == [item[1] for item in new_values]
+                and old_values != new_values
+            )
+        return bool(old_ids or new_ids)
     if name == "project.pbxproj" and status == "modified":
         # Swift package requirement entries have a stable surrounding form;
         # only the quoted version token may change.
@@ -364,6 +593,11 @@ def dependency_file(path, before, after, patch, status="modified"):
                     section = True
                 if section:
                     line = re.sub(
+                        r"^([ \t]*kind = )[A-Za-z0-9]+(;[ \t]*)$",
+                        r"\1<KIND>\2",
+                        line,
+                    )
+                    line = re.sub(
                         (
                             r"^([ \t]*(?:minimumVersion|maximumVersion|version) = )"
                             r"\"?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?"
@@ -378,23 +612,112 @@ def dependency_file(path, before, after, patch, status="modified"):
             return out
 
         old, new = normalize(before), normalize(after)
-        return (
-            before != after
-            and old == new
-            and bool(
-                re.search(
-                    r"\b(?:minimumVersion|version) = ", "\n".join(before.splitlines())
-                )
+        if before != after and old == new and re.search(
+            r"\b(?:minimumVersion|version) = ", "\n".join(before.splitlines())
+        ):
+            return True
+
+        def remote_entries(text):
+            match = re.search(
+                r"/\* Begin XCRemoteSwiftPackageReference section \*/(?P<body>.*?)/\* End XCRemoteSwiftPackageReference section \*/",
+                text,
+                re.S,
             )
-        )
+            if not match:
+                return None, None
+            entries = {}
+            current = []
+            for line in match.group("body").splitlines():
+                if re.match(r"\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftPackageReference \"[^\"]+\" \*/ = \{", line):
+                    if current:
+                        return None, None
+                    current = [line]
+                elif current:
+                    current.append(line)
+                    if line.strip() == "};":
+                        block = "\n".join(current)
+                        identity = re.search(r"repositoryURL = \"([^\"]+)\";", block)
+                        if not identity:
+                            return None, None
+                        if re.search(r"\b(?:branch|revision|exactVersion|upToNextMajorVersion|upToNextMinorVersion)\s*=", block) is None and "requirement =" not in block:
+                            return None, None
+                        normalized_block = re.sub(
+                            r"(\bkind = )[A-Za-z0-9]+;", r"\1<KIND>;", block
+                        )
+                        normalized_block = re.sub(
+                            r"(\b(?:minimumVersion|maximumVersion|version) = )\"?[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?\"?;",
+                            r"\1<VERSION>;",
+                            normalized_block,
+                        )
+                        entries[identity.group(1)] = normalized_block
+                        current = []
+                elif line.strip():
+                    return None, None
+            if current:
+                return None, None
+            return entries, match.group(0)
+
+        old_entries, old_section = remote_entries(before)
+        new_entries, new_section = remote_entries(after)
+        if old_entries is None or new_entries is None:
+            return False
+        removed, added = set(old_entries) - set(new_entries), set(new_entries) - set(old_entries)
+        if removed and added:
+            return False
+        for identity in set(old_entries) & set(new_entries):
+            if old_entries[identity] != new_entries[identity]:
+                return False
+        if not (removed or added):
+            return False
+
+        def scrub(text):
+            text = text.replace(
+                old_section if old_section and old_section in text else new_section,
+                "/* XCRemoteSwiftPackageReference section elided */",
+            )
+            # Xcode updates these references alongside the package dictionary.
+            text = re.sub(
+                r"^[ \t]*[^\n]*XCRemoteSwiftPackageReference[^\n]*\n", "", text, flags=re.M
+            )
+            product = re.compile(
+                r"/\* Begin XCSwiftPackageProductDependency section \*/.*?/\* End XCSwiftPackageProductDependency section \*/",
+                re.S,
+            )
+            return product.sub("/* XCSwiftPackageProductDependency section elided */", text)
+
+        return scrub(before) == scrub(after)
     if status != "modified" or before is None or after is None:
         return False
     try:
         if name in JSON_FIELDS:
             if name == "manifest.json" and not path.startswith("custom_components/"):
                 return False
-            validator = package_constraints if name == "package.json" else only_fields
-            return validator(json.loads(before), json.loads(after), JSON_FIELDS[name])
+            old_json, new_json = json.loads(before), json.loads(after)
+            if name == "package.json":
+                return package_constraints(old_json, new_json, JSON_FIELDS[name])
+            if name == "manifest.json":
+                if not only_fields(old_json, new_json, JSON_FIELDS[name]):
+                    return False
+                old_req, new_req = old_json.get("requirements", []), new_json.get("requirements", [])
+                if not isinstance(old_req, list) or not isinstance(new_req, list):
+                    return False
+                old_names = {re.split(r"[<>=!~; @]", item, 1)[0].strip().lower() for item in old_req if isinstance(item, str)}
+                new_names = {re.split(r"[<>=!~; @]", item, 1)[0].strip().lower() for item in new_req if isinstance(item, str)}
+                return not (old_names - new_names and new_names - old_names) and all(valid_requirement(item) for item in new_req)
+            if name == "composer.json":
+                if not only_fields(old_json, new_json, JSON_FIELDS[name]):
+                    return False
+                for field in JSON_FIELDS[name]:
+                    old_values, new_values = old_json.get(field, {}), new_json.get(field, {})
+                    if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+                        return False
+                    removed, added = set(old_values) - set(new_values), set(new_values) - set(old_values)
+                    if removed and added:
+                        return False
+                    if not all(valid_composer_constraint(value) for value in new_values.values()):
+                        return False
+                return True
+            return only_fields(old_json, new_json, JSON_FIELDS[name])
         if name == "libs.versions.toml" or (
             name.endswith(".versions.toml") and "/gradle/" in "/" + path
         ):
@@ -429,15 +752,17 @@ def dependency_file(path, before, after, patch, status="modified"):
                     )
                 return stable(after_value)
 
-            def stable_catalog_references(data):
-                versions = data.get("versions", {})
+            def stable_catalog_references(before_data, after_data):
                 for section in ("libraries", "plugins"):
-                    for value in data.get(section, {}).values():
+                    old_section = before_data.get(section, {})
+                    for key, value in after_data.get(section, {}).items():
+                        if value == old_section.get(key):
+                            continue
                         if not isinstance(value, dict):
                             continue
                         version = value.get("version")
                         if isinstance(version, dict) and "ref" in version:
-                            target = versions.get(version["ref"])
+                            target = after_data.get("versions", {}).get(version["ref"])
                             if not isinstance(target, str) or not stable(target):
                                 return False
                 return True
@@ -457,7 +782,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 set(old) <= allowed
                 and set(new) <= allowed
                 and stable_changes(old, new)
-                and stable_catalog_references(new)
+                and stable_catalog_references(old, new)
                 and old != new
                 and catalog_identity(old) == catalog_identity(new)
             )
@@ -469,30 +794,35 @@ def dependency_file(path, before, after, patch, status="modified"):
             original = old != new
             paths = {
                 "pyproject.toml": [
-                    ("project", "dependencies"),
-                    ("project", "optional-dependencies"),
-                    ("build-system", "requires"),
-                    ("dependency-groups",),
-                    ("tool", "poetry", "dependencies"),
-                    ("tool", "poetry", "dev-dependencies"),
-                    ("tool", "poetry", "group"),
+                    (("project", "dependencies"), "list"),
+                    (("project", "optional-dependencies"), "map"),
+                    (("build-system", "requires"), "list"),
+                    (("dependency-groups",), "map"),
+                    (("tool", "poetry", "dependencies"), "map"),
+                    (("tool", "poetry", "dev-dependencies"), "map"),
                 ],
                 "Cargo.toml": [
-                    ("dependencies",),
-                    ("dev-dependencies",),
-                    ("build-dependencies",),
-                    ("workspace", "dependencies"),
+                    (("dependencies",), "map"),
+                    (("dev-dependencies",), "map"),
+                    (("build-dependencies",), "map"),
+                    (("workspace", "dependencies"), "map"),
                 ],
-                "Pipfile": [("packages",), ("dev-packages",)],
+                "Pipfile": [(("packages",), "map"), (("dev-packages",), "map")],
             }[name]
-            for data in (old, new):
-                for keys in paths:
-                    target = data
-                    for key in keys[:-1]:
-                        target = target.get(key, {}) if isinstance(target, dict) else {}
-                    if isinstance(target, dict):
-                        target.pop(keys[-1], None)
-            return original and old == new
+            # Poetry groups contain one dependency map per named group. Keep
+            # group identity and all non-dependency settings bytewise equal.
+            if name == "pyproject.toml":
+                old_groups = old.get("tool", {}).get("poetry", {}).get("group", {})
+                new_groups = new.get("tool", {}).get("poetry", {}).get("group", {})
+                if not isinstance(old_groups, dict) or not isinstance(new_groups, dict):
+                    return False
+                if set(old_groups) != set(new_groups):
+                    return False
+                paths.extend(
+                    (("tool", "poetry", "group", group, "dependencies"), "map")
+                    for group in old_groups
+                )
+            return original and toml_dependency_change(old, new, paths)
         if name == "setup.cfg":
 
             def config(text):
@@ -502,6 +832,28 @@ def dependency_file(path, before, after, patch, status="modified"):
 
             old, new = config(before), config(after)
             changed = old != new
+            dependency_sections = {
+                "options": ("install_requires", "setup_requires", "tests_require"),
+                "options.extras_require": None,
+            }
+            for section, keys in dependency_sections.items():
+                old_section, new_section = old.get(section, {}), new.get(section, {})
+                if keys is None:
+                    old_values, new_values = old_section, new_section
+                else:
+                    old_values = {key: old_section.get(key, "") for key in keys}
+                    new_values = {key: new_section.get(key, "") for key in keys}
+                for key, value in new_values.items():
+                    old_value = old_values.get(key, "")
+                    if value == old_value:
+                        continue
+                    values = value.splitlines() if isinstance(value, str) else []
+                    if any(not valid_requirement(line.strip()) for line in values if line.strip() and not line.lstrip().startswith("#")):
+                        return False
+                    old_names = {re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower() for line in old_value.splitlines() if line.strip() and not line.lstrip().startswith("#")}
+                    new_names = {re.split(r"[<>=!~; @]", line.strip(), 1)[0].lower() for line in values if line.strip() and not line.lstrip().startswith("#")}
+                    if old_names - new_names and new_names - old_names:
+                        return False
             for data in (old, new):
                 for key in ("install_requires", "setup_requires", "tests_require"):
                     data.get("options", {}).pop(key, None)
