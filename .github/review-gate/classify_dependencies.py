@@ -94,16 +94,41 @@ def package_constraints(before, after, fields):
                 continue
             if old is None and isinstance(new, str):
                 old = new
-            if not isinstance(old, str) or not isinstance(new, str):
-                return False
-            constraint = (
-                r"(?:\*|[~^<>=]*\s*[0-9]+(?:\.[0-9xX*]+){0,2}(?:[-+][0-9A-Za-z.-]+)?)"
-            )
-            if not re.fullmatch(constraint, old.strip()) or not re.fullmatch(
-                constraint, new.strip()
-            ):
+            if field in ("overrides", "resolutions"):
+                if not valid_nested_constraints(old) or not valid_nested_constraints(new):
+                    return False
+            elif not valid_npm_constraint(old) or not valid_npm_constraint(new):
                 return False
     return True
+
+
+NPM_VERSION = r"[0-9]+(?:\.[0-9xX*]+){0,2}(?:[-+][0-9A-Za-z.-]+)?"
+NPM_COMPARATOR = rf"[~^<>=]*\s*{NPM_VERSION}"
+
+
+def valid_npm_constraint(value):
+    if not isinstance(value, str):
+        return False
+    value = value.strip()
+    if value == "*":
+        return True
+    for branch in value.split("||"):
+        branch = branch.strip()
+        if not branch:
+            return False
+        if re.fullmatch(rf"{NPM_VERSION}\s+-\s+{NPM_VERSION}", branch):
+            continue
+        if not re.fullmatch(rf"{NPM_COMPARATOR}(?:\s+{NPM_COMPARATOR})*", branch):
+            return False
+    return True
+
+
+def valid_nested_constraints(value):
+    if isinstance(value, str):
+        return valid_npm_constraint(value)
+    if isinstance(value, dict):
+        return bool(value) and all(valid_nested_constraints(item) for item in value.values())
+    return False
 
 
 def changed_lines(patch):
@@ -404,6 +429,19 @@ def dependency_file(path, before, after, patch, status="modified"):
                     )
                 return stable(after_value)
 
+            def stable_catalog_references(data):
+                versions = data.get("versions", {})
+                for section in ("libraries", "plugins"):
+                    for value in data.get(section, {}).values():
+                        if not isinstance(value, dict):
+                            continue
+                        version = value.get("version")
+                        if isinstance(version, dict) and "ref" in version:
+                            target = versions.get(version["ref"])
+                            if not isinstance(target, str) or not stable(target):
+                                return False
+                return True
+
             def catalog_identity(data):
                 data = copy.deepcopy(data)
                 data["versions"] = dict.fromkeys(data.get("versions", {}))
@@ -419,6 +457,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 set(old) <= allowed
                 and set(new) <= allowed
                 and stable_changes(old, new)
+                and stable_catalog_references(new)
                 and old != new
                 and catalog_identity(old) == catalog_identity(new)
             )
