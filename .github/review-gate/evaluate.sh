@@ -541,6 +541,12 @@ require_no_dependency_findings() {
   fi
   local snapshot
   snapshot="$(read_gate_snapshot)"
+  if jq -e '.finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
+    stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
+  fi
+  if jq -e '.security_finding_count > 0' <<< "$snapshot" >/dev/null; then
+    stamp_status "review-security-history" pending "Security findings observed on head $head_sha" >/dev/null
+  fi
   if jq -e '.finding_count > 0 or .security_finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
     stamp_review_gate pending "Dependency update has active review findings"
     gate_pending

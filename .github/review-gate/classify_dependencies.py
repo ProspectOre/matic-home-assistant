@@ -82,6 +82,19 @@ def only_fields(before, after, fields):
 def package_constraints(before, after, fields):
     if not only_fields(before, after, fields):
         return False
+    direct_fields = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+    old_direct = {
+        name
+        for field in direct_fields
+        for name in (before.get(field, {}) if isinstance(before.get(field, {}), dict) else {})
+    }
+    new_direct = {
+        name
+        for field in direct_fields
+        for name in (after.get(field, {}) if isinstance(after.get(field, {}), dict) else {})
+    }
+    if old_direct - new_direct and new_direct - old_direct:
+        return False
     for field in fields:
         old_values, new_values = before.get(field, {}), after.get(field, {})
         if old_values == new_values:
@@ -504,23 +517,52 @@ def dependency_file(path, before, after, patch, status="modified"):
     ):
         # Keep this deliberately bounded: interpolation/executable Gradle
         # expressions are never dependency-only version changes.
-        direct = replacements(
-            patch,
-            r"""(?P<prefix>\s*(?:(?:\w*Implementation|implementation|api|ksp|kapt|classpath|\w*RuntimeOnly|runtimeOnly|compileOnly)\s*\(?["'][\w.+-]+:[\w.+-]+:))(?P<dependency>[\w.+-]+)(?P<suffix>["']\)?\s*(?://.*)?)""",
-            True,
-        ) or replacements(
-            patch,
-            r"""(?P<prefix>\s*(?:id|kotlin)\(["'][\w.-]+["']\)\s+version\s+["'])(?P<dependency>[\w.+-]+)(?P<suffix>["'](?:\s+apply\s+false)?)""",
-            True,
-        )
-        if not direct:
+        lines = changed_lines(patch)
+        if status != "modified" or lines is None:
             return False
-        changed = changed_lines(patch)
-        return all(
-            stable_version(match.group("dependency"))
-            for line in (changed[1] if changed else [])
-            for match in [re.search(r""":(?P<dependency>[\w.+-]+)["']?\)?\s*(?://.*)?$""", line)]
-            if match
+
+        declaration = re.compile(
+            r"^\s*(?P<configuration>[A-Za-z_][\w]*)\s*(?:\(\s*)?[\"']"
+            r"(?P<group>[\w.+-]+):(?P<artifact>[\w.+-]+):(?P<version>[^\"']+)"
+            r"[\"']\s*\)?\s*(?://.*)?$"
+        )
+        plugin = re.compile(
+            r"^\s*(?:id|kotlin)\(\s*[\"'](?P<id>[\w.-]+)[\"']\s*\)\s+version\s+"
+            r"[\"'](?P<version>[^\"']+)[\"'](?P<apply>\s+apply\s+false)?\s*$"
+        )
+
+        def parse(value):
+            match = declaration.fullmatch(value) or plugin.fullmatch(value)
+            if not match:
+                return None
+            data = match.groupdict()
+            configuration = data.get("configuration")
+            if configuration and not re.fullmatch(
+                r"(?:[A-Za-z0-9_]*(?:Implementation|RuntimeOnly|CompileOnly)|implementation|api|ksp|kapt|classpath|runtimeOnly|compileOnly)",
+                configuration,
+            ):
+                return None
+            return (
+                "plugin" if "id" in data and data.get("id") is not None else "dependency",
+                configuration or data.get("apply"),
+                data.get("group"),
+                data.get("artifact"),
+                data.get("id"),
+                data["version"],
+            )
+
+        old_values = [parse(line) for line in lines[0]]
+        new_values = [parse(line) for line in lines[1]]
+        if any(value is None for value in old_values + new_values):
+            return False
+        if old_values and new_values:
+            if len(old_values) != len(new_values):
+                return False
+            for old_value, new_value in zip(old_values, new_values):
+                if old_value[:-1] != new_value[:-1] or old_value[-1] == new_value[-1]:
+                    return False
+        return bool(old_values or new_values) and all(
+            stable_version(value[-1]) for value in new_values
         )
     if name == "Gemfile":
         lines = changed_lines(patch)
@@ -615,7 +657,17 @@ def dependency_file(path, before, after, patch, status="modified"):
         if before != after and old == new and re.search(
             r"\b(?:minimumVersion|version) = ", "\n".join(before.splitlines())
         ):
-            return True
+            old_kinds = re.findall(r"\bkind = ([A-Za-z0-9]+);", before)
+            new_kinds = re.findall(r"\bkind = ([A-Za-z0-9]+);", after)
+            old_versions = re.findall(
+                r"\b(?:minimumVersion|maximumVersion|version) = \"?([0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
+                before,
+            )
+            new_versions = re.findall(
+                r"\b(?:minimumVersion|maximumVersion|version) = \"?([0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
+                after,
+            )
+            return old_kinds == new_kinds or old_versions != new_versions
 
         def remote_entries(text):
             match = re.search(
@@ -649,7 +701,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                             r"\1<VERSION>;",
                             normalized_block,
                         )
-                        entries[identity.group(1)] = normalized_block
+                        entries[identity.group(1)] = (normalized_block, block)
                         current = []
                 elif line.strip():
                     return None, None
@@ -665,25 +717,73 @@ def dependency_file(path, before, after, patch, status="modified"):
         if removed and added:
             return False
         for identity in set(old_entries) & set(new_entries):
-            if old_entries[identity] != new_entries[identity]:
+            old_normalized, old_raw = old_entries[identity]
+            new_normalized, new_raw = new_entries[identity]
+            if old_normalized != new_normalized:
+                return False
+            old_kind = re.findall(r"\bkind = ([A-Za-z0-9]+);", old_raw)
+            new_kind = re.findall(r"\bkind = ([A-Za-z0-9]+);", new_raw)
+            old_version = re.findall(
+                r"\b(?:minimumVersion|maximumVersion|version) = \"?([0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
+                old_raw,
+            )
+            new_version = re.findall(
+                r"\b(?:minimumVersion|maximumVersion|version) = \"?([0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
+                new_raw,
+            )
+            if old_kind != new_kind and old_version == new_version:
                 return False
         if not (removed or added):
             return False
+
+        package_ids = {}
+        for identity, (_, raw) in old_entries.items():
+            header = re.match(r"\s*([A-Fa-f0-9]+) /\*", raw)
+            if header:
+                package_ids[identity] = header.group(1)
+        for identity, (_, raw) in new_entries.items():
+            header = re.match(r"\s*([A-Fa-f0-9]+) /\*", raw)
+            if header:
+                package_ids[identity] = header.group(1)
+        ignored_package_ids = {
+            package_ids[identity] for identity in removed | added if identity in package_ids
+        }
 
         def scrub(text):
             text = text.replace(
                 old_section if old_section and old_section in text else new_section,
                 "/* XCRemoteSwiftPackageReference section elided */",
             )
+            product_start = "/* Begin XCSwiftPackageProductDependency section */"
+            product_end = "/* End XCSwiftPackageProductDependency section */"
+            start, end = text.find(product_start), text.find(product_end)
+            if start >= 0 and end > start:
+                body = text[start + len(product_start) : end]
+                kept, block = [], []
+                for line in body.splitlines(keepends=True):
+                    if re.match(r"\s*[A-Fa-f0-9]+ /\* .* \*/ = \{", line):
+                        if block:
+                            kept.extend(block)
+                        block = [line]
+                    elif block:
+                        block.append(line)
+                        if line.strip() == "};":
+                            if not any(
+                                re.search(r"\bpackage = ([A-Fa-f0-9]+) /\*", item)
+                                and re.search(r"\bpackage = ([A-Fa-f0-9]+) /\*", item).group(1)
+                                in ignored_package_ids
+                                for item in block
+                            ):
+                                kept.extend(block)
+                            block = []
+                    else:
+                        kept.append(line)
+                kept.extend(block)
+                text = text[: start + len(product_start)] + "".join(kept) + text[end:]
             # Xcode updates these references alongside the package dictionary.
-            text = re.sub(
+            return re.sub(
                 r"^[ \t]*[^\n]*XCRemoteSwiftPackageReference[^\n]*\n", "", text, flags=re.M
             )
-            product = re.compile(
-                r"/\* Begin XCSwiftPackageProductDependency section \*/.*?/\* End XCSwiftPackageProductDependency section \*/",
-                re.S,
-            )
-            return product.sub("/* XCSwiftPackageProductDependency section elided */", text)
 
         return scrub(before) == scrub(after)
     if status != "modified" or before is None or after is None:
