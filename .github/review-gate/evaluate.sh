@@ -256,12 +256,12 @@ latest_regular_review_invalidation_at() {
         ' | latest_timestamp
 }
 
-active_security_finding_count() {
+active_security_findings() {
   local review_findings issue_comment_findings
   review_findings="$(
     # shellcheck disable=SC2016
     gh api graphql --paginate \
-      -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { state body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+      -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
       -F owner="$review_owner" \
       -F name="$review_repo" \
       -F number="$pr_number" \
@@ -275,8 +275,8 @@ active_security_finding_count() {
            | ($body | ascii_downcase) as $lower
            | select($lower | contains("codex security review"))
            | select($lower | contains("[view security finding report]("))
-           | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))]
-          | length'
+           | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
+           | {source: "review", id: (.databaseId // 0 | tostring)}]'
   )"
   issue_comment_findings="$(
     gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
@@ -287,11 +287,10 @@ active_security_finding_count() {
            | ($body | ascii_downcase) as $lower
            | select($lower | contains("codex security review"))
            | select($lower | contains("[view security finding report]("))
-           | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))]
-          | length'
+           | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
+           | {source: "issue-comment", id: (.id // 0 | tostring)}]'
   )"
-  [[ "$review_findings" =~ ^[0-9]+$ && "$issue_comment_findings" =~ ^[0-9]+$ ]] || return 1
-  echo $((review_findings + issue_comment_findings))
+  jq -cn --argjson reviews "$review_findings" --argjson comments "$issue_comment_findings" '$reviews + $comments'
 }
 
 # Exact-head regular PR reviews and explicit clean regular issue
@@ -434,14 +433,53 @@ finding_history_head() {
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
     | jq -r --arg context "review-finding-history" '
       [.[][] | select(.context == $context and .state == "pending")
-       | (.description // "") | capture("head (?<head>[0-9a-f]{40})").head][0] // ""'
+       | (.description // "") | try capture("head (?<head>[0-9a-f]{40})").head catch ""][0] // ""'
 }
 
 security_history_head() {
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
     | jq -r --arg context "review-security-history" '
-      [.[][] | select(.context == $context and .state == "pending")
-       | (.description // "") | capture("head (?<head>[0-9a-f]{40})").head][0] // ""'
+      [.[][] | select(.context == $context)]
+      | sort_by(.created_at) | last
+      | select(.state == "pending")
+      | (.description // "") | try capture("head (?<head>[0-9a-f]{40})").head catch ""'
+}
+
+security_findings_dismissed() {
+  local markers reviews
+  markers="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+    | jq -c --arg head "$head_sha" '
+      [.[][] | select(.context == "review-security-history" and .state == "pending")
+       | select((.description // "") | contains("head " + $head))
+       | ((.description // "") | [capture("; review:(?<id>[1-9][0-9]*)$").id][0])]')" || return 1
+  # A legacy/unknown marker or an issue-comment finding cannot be dismissed
+  # through a different PR review. Every retained origin must match exactly.
+  jq -e 'length > 0 and all(.[]; . != null)' <<< "$markers" >/dev/null || return 1
+  # shellcheck disable=SC2016
+  reviews="$(gh api graphql --paginate \
+    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+    -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
+    | jq -rs '[.[] | .data.repository.pullRequest.reviews.nodes[]?]')" || return 1
+  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --arg head "$head_sha" '
+    all($markers[]; . as $id |
+      any($reviews[];
+        (.databaseId | tostring) == $id
+        and .author.login == "chatgpt-codex-connector"
+        and .author.id == "BOT_kgDOC98s_g"
+        and .commit.oid == $head
+        and .state == "DISMISSED"))' >/dev/null
+}
+
+stamp_security_finding_history() {
+  local findings="$1" key
+  while IFS= read -r key; do
+    if [[ "$key" =~ ^(review|issue-comment):[1-9][0-9]*$ ]]; then
+      stamp_status "review-security-history" pending "Security findings observed on head $head_sha; $key" >/dev/null
+    else
+      # Missing origin metadata is unresolved evidence, never dismissal proof.
+      stamp_status "review-security-history" pending "Security findings observed on head $head_sha" >/dev/null
+    fi
+  done < <(jq -r '.[] | .source + ":" + .id' <<< "$findings")
 }
 
 # Retain withdrawal history even when a failed/fork router could not write it.
@@ -481,7 +519,7 @@ withdrawn_evidence_at() {
 }
 
 read_gate_snapshot() {
-  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count latest_finding_at issue_comment_at review_invalidation_at withdrawal_at
+  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at withdrawal_at
   evidence="$(regular_evidence)"
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
@@ -516,24 +554,35 @@ read_gate_snapshot() {
   verdict="$(jq -c '.verdict' <<< "$verdict_selection")"
   latest_finding_at="$(jq -r '.latest_finding_at' <<< "$verdict_selection")"
   finding_count="$(jq '[.[].active_count] | add // 0' <<< "$thread_summary")"
-  security_finding_count="$(active_security_finding_count)"
+  security_findings="$(active_security_findings)"
+  security_finding_count="$(jq length <<< "$security_findings")"
   jq -cn \
     --argjson deliveries "$deliveries" \
     --argjson verdict "$verdict" \
     --argjson finding_count "$finding_count" \
     --argjson security_finding_count "$security_finding_count" \
+    --argjson security_findings "$security_findings" \
     --arg latest_finding_at "$latest_finding_at" \
     '{live_delivery_finding: (([$deliveries[] | select((.clean | not) and .dismissed != true) | .at] | max // "") as $finding | $finding != "" and $finding >= ([$deliveries[] | select(.clean) | .at] | max // "")),
       verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
+      security_findings: $security_findings,
       latest_finding_at: $latest_finding_at}'
 }
 
 require_no_dependency_findings() {
-  if [[ "$(finding_history_head)" == "$head_sha" || "$(security_history_head)" == "$head_sha" ]]; then
+  if [[ "$(finding_history_head)" == "$head_sha" ]]; then
     stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
     gate_pending
+  fi
+  if [[ "$(security_history_head)" == "$head_sha" ]]; then
+    if security_findings_dismissed; then
+      stamp_status "review-security-history" success "Security findings dismissed for head $head_sha" >/dev/null
+    else
+      stamp_review_gate pending "Dependency head has immutable security finding history; push a fresh head"
+      gate_pending
+    fi
   fi
   if [[ -n "$finding_after" ]]; then
     stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
@@ -553,7 +602,7 @@ require_no_dependency_findings() {
     stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
   fi
   if jq -e '.security_finding_count > 0' <<< "$snapshot" >/dev/null; then
-    stamp_status "review-security-history" pending "Security findings observed on head $head_sha" >/dev/null
+    stamp_security_finding_history "$(jq -c '.security_findings' <<< "$snapshot")"
   fi
   if jq -e '.finding_count > 0 or .security_finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
     stamp_review_gate pending "Dependency update has active review findings"
@@ -572,13 +621,13 @@ require_clean_regular_snapshot() {
     stamp_review_gate pending "Findings were reported on this head; push a fresh head"
     gate_pending
   fi
-  if [[ "$(security_history_head)" == "$head_sha" ]]; then
+  if [[ "$(security_history_head)" == "$head_sha" ]] && ! security_findings_dismissed; then
     stamp_review_gate pending "Security findings were reported on this head; push a fresh head"
     gate_pending
   fi
   write_finding_observation "$latest_finding_at"
   if [[ "$security_finding_count" -gt 0 ]]; then
-    stamp_status "review-security-history" pending "Security findings observed on head $head_sha" >/dev/null
+    stamp_security_finding_history "$(jq -c '.security_findings' <<< "$gate_snapshot")"
     stamp_review_gate pending "Codex Security reported findings on $head_prefix"
     echo "Codex Security reported $security_finding_count findings-bearing result(s) on the exact head."
     echo "Fix them, push a new head, and request review again."
@@ -706,10 +755,28 @@ fi
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] | any(
        (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
-       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)") and
-       (test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security[[:space:]-]+review") | not)))' "$GITHUB_EVENT_PATH" >/dev/null; then
+       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:(?:codex[[:space:]-]+security[[:space:]-]+review)|(?:codex[[:space:]]+review)|review result)(?:[[:space:]]*:|[[:space:]]|$)")))' "$GITHUB_EVENT_PATH" >/dev/null; then
   edited_clean=false
-  if [[ "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == edited ]]; then
+  security_event=false
+  if jq -e '
+    ([.comment.body // "", .changes.body.from // ""] | any(
+      test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+security[[:space:]-]+review)(?:[[:space:]]*:|[[:space:]]|$)")))
+  ' "$GITHUB_EVENT_PATH" >/dev/null; then
+    security_event=true
+  fi
+  if [[ "$security_event" == true ]]; then
+    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
+    withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
+    security_marker="withdrawn delivery"
+    if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+      security_marker="withdrawn issue-comment:$comment_id"
+    fi
+    stamp_status "review-security-history" pending "Security review invalidated at $withdrawal_at; $security_marker on head $head_sha" >/dev/null
+    evidence_after="$(normalize_timestamp "$withdrawal_at")"
+    edited_clean=true
+  fi
+  if [[ "$security_event" != true && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == edited ]]; then
     edited_evidence="$(regular_evidence)"
     if jq -e --slurpfile event "$GITHUB_EVENT_PATH" '
       any(.deliveries[]; .source == "issue_comment" and .clean and
