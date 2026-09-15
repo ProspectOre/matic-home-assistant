@@ -84,8 +84,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "group: review-gate-" in review_gate
     assert (
         "types: [opened, reopened, synchronize, ready_for_review, "
-        "auto_merge_enabled, edited]"
-        in review_gate
+        "auto_merge_enabled, edited]" in review_gate
     )
     assert "baseRefName" in review_gate
     assert "Retarget to the repository default branch before review" in review_gate
