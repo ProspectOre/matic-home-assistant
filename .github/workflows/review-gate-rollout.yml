@@ -1,3 +1,4 @@
+# Generated adapter; edit scripts/review-gate/adapters in ProspectOre/dev-workspace.
 name: Disarm Existing Automatic Merge Requests
 
 on:
@@ -12,6 +13,7 @@ on:
       - .github/workflows/review-base-advance.yml
       - .github/workflows/review-gate-audit.yml
       - .github/workflows/review-gate-rollout.yml
+      - .github/review-gate/**
   workflow_dispatch:
 
 permissions:
@@ -82,16 +84,16 @@ jobs:
 
   disarm-open-prs:
     name: disarm-open-prs (${{ matrix.pr_number }})
-    needs: discover
-    if: needs.discover.outputs.count != '0'
+    needs: [discover, cancel-legacy-auto-merge-runs]
+    if: ${{ always() && needs.discover.outputs.count != '0' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    # This preempts a previous-policy evaluator for this PR. A new evaluator
-    # queues behind the sweep and observes its final pending status.
+    # Isolate rollout cleanup from review delivery and audit cancellation.
+    # The step persists invalidation before explicitly cancelling old evaluators.
     concurrency:
-      group: review-gate-${{ matrix.pr_number }}
-      cancel-in-progress: true
+      group: review-gate-rollout-${{ matrix.pr_number }}
+      cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke the gate and disable automatic merge
@@ -100,6 +102,7 @@ jobs:
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_ROLLOUT_CONTEXT: review-gate-rollout
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -127,6 +130,10 @@ jobs:
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
               -f description="Disarming automatic merge; waiting for the regular review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending -f context="$REVIEW_ROLLOUT_CONTEXT" \
+              -f description="Canonical review-gate rollout is reconciling this PR" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
           # Revoke the gate before waiting for an evaluator to stop. A prior
