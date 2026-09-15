@@ -553,12 +553,12 @@ def gemfile_lock_update(before, after):
             new_version, new_source = new_records[key]
             if old_source != new_source:
                 return False
-            old_platform = re.fullmatch(gem_version, old_version).group(0).split(
-                "-", 1
-            )[1:]  # Preserve native gem platform identity across updates.
-            new_platform = re.fullmatch(gem_version, new_version).group(0).split(
-                "-", 1
-            )[1:]
+            old_platform = (
+                re.fullmatch(gem_version, old_version).group(0).split("-", 1)[1:]
+            )  # Preserve native gem platform identity across updates.
+            new_platform = (
+                re.fullmatch(gem_version, new_version).group(0).split("-", 1)[1:]
+            )
             if old_platform != new_platform:
                 return False
             if old_version == new_version:
