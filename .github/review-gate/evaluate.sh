@@ -274,7 +274,7 @@ active_security_findings() {
            | (.body // "") as $body
            | ($body | ascii_downcase) as $lower
            | select($lower | contains("codex security review"))
-           | select($lower | contains("[view security finding report]("))
+           | select($lower | contains("[view security finding report](") or contains("codex-security-review-finding:v1"))
            | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
            | {source: "review", id: (.databaseId // 0 | tostring)}]'
   )"
@@ -286,7 +286,7 @@ active_security_findings() {
            | (.body // "") as $body
            | ($body | ascii_downcase) as $lower
            | select($lower | contains("codex security review"))
-           | select($lower | contains("[view security finding report]("))
+           | select($lower | contains("[view security finding report](") or contains("codex-security-review-finding:v1"))
            | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
            | {source: "issue-comment", id: (.id // 0 | tostring)}]'
   )"
@@ -437,37 +437,49 @@ finding_history_head() {
 }
 
 security_history_head() {
+  if [[ "${security_withdrawal_unresolved:-false}" == true ]]; then
+    printf '%s\n' "$head_sha"
+    return
+  fi
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-    | jq -r --arg context "review-security-history" '
-      [.[][] | select(.context == $context)]
-      | sort_by(.created_at) | last
-      | select(.state == "pending")
-      | (.description // "") | try capture("head (?<head>[0-9a-f]{40})").head catch ""'
+    | jq -r --arg context "review-security-history" --arg head "$head_sha" '
+      if any(.[][]; .context == $context and .state == "pending"
+             and ((.description // "") | contains("head " + $head)))
+      then $head else "" end'
 }
 
 security_findings_dismissed() {
-  local markers reviews
+  local markers reviews comments
   markers="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
     | jq -c --arg head "$head_sha" '
       [.[][] | select(.context == "review-security-history" and .state == "pending")
        | select((.description // "") | contains("head " + $head))
-       | ((.description // "") | [capture("; review:(?<id>[1-9][0-9]*)$").id][0])]')" || return 1
-  # A legacy/unknown marker or an issue-comment finding cannot be dismissed
-  # through a different PR review. Every retained origin must match exactly.
+       | (.description // "") as $description
+       | if ($description | test("^Security findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*$")) then
+           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)$"))
+         elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* on head " + $head + "$")) then
+           ($description | capture("withdrawn (?<source>issue-comment):(?<id>[1-9][0-9]*) on head"))
+         else null end]')" || return 1
+  # Every retained origin must have explicit dismissal/deletion proof. Unknown
+  # legacy markers cannot be cleared by unrelated reviews or API failures.
   jq -e 'length > 0 and all(.[]; . != null)' <<< "$markers" >/dev/null || return 1
   # shellcheck disable=SC2016
   reviews="$(gh api graphql --paginate \
     -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
     -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
     | jq -rs '[.[] | .data.repository.pullRequest.reviews.nodes[]?]')" || return 1
-  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --arg head "$head_sha" '
-    all($markers[]; . as $id |
-      any($reviews[];
-        (.databaseId | tostring) == $id
+  comments="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+    | jq -c '[.[][] | .id | tostring]')" || return 1
+  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --argjson comments "$comments" --arg head "$head_sha" '
+    all($markers[]; . as $origin |
+      if .source == "issue-comment" then
+        all($comments[]; . != $origin.id)
+      else any($reviews[];
+        (.databaseId | tostring) == $origin.id
         and .author.login == "chatgpt-codex-connector"
         and .author.id == "BOT_kgDOC98s_g"
         and .commit.oid == $head
-        and .state == "DISMISSED"))' >/dev/null
+        and .state == "DISMISSED") end)' >/dev/null
 }
 
 stamp_security_finding_history() {
@@ -758,13 +770,24 @@ fi
        test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:(?:codex[[:space:]-]+security[[:space:]-]+review)|(?:codex[[:space:]]+review)|review result)(?:[[:space:]]*:|[[:space:]]|$)")))' "$GITHUB_EVENT_PATH" >/dev/null; then
   edited_clean=false
   security_event=false
-  if jq -e '
+  if jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
     ([.comment.body // "", .changes.body.from // ""] | any(
+      (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+security[[:space:]-]+review)(?:[[:space:]]*:|[[:space:]]|$)")))
   ' "$GITHUB_EVENT_PATH" >/dev/null; then
     security_event=true
+    # Security notices are never regular-review withdrawals.
+    edited_clean=true
   fi
-  if [[ "$security_event" == true ]]; then
+  security_finding=false
+  if [[ "$security_event" == true ]] && jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
+    ([.comment.body // "", .changes.body.from // ""] | any(
+      (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
+      (ascii_downcase | contains("codex-security-review-finding:v1") or contains("[view security finding report]("))))
+  ' "$GITHUB_EVENT_PATH" >/dev/null; then
+    security_finding=true
+  fi
+  if [[ "$security_finding" == true ]]; then
     withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
     withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
@@ -772,8 +795,10 @@ fi
     if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
       security_marker="withdrawn issue-comment:$comment_id"
     fi
+    if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || "$(jq -r '.action' "$GITHUB_EVENT_PATH")" != deleted ]]; then
+      security_withdrawal_unresolved=true
+    fi
     stamp_status "review-security-history" pending "Security review invalidated at $withdrawal_at; $security_marker on head $head_sha" >/dev/null
-    evidence_after="$(normalize_timestamp "$withdrawal_at")"
     edited_clean=true
   fi
   if [[ "$security_event" != true && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == edited ]]; then

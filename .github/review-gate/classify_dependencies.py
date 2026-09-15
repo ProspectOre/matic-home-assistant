@@ -20,6 +20,8 @@ from pathlib import PurePosixPath
 from urllib.parse import quote, urlparse
 
 INVALID_LOCK = (ValueError, TypeError, KeyError)
+INVALID_JSON = (ValueError, TypeError)
+INVALID_STRUCTURE = (ValueError, TypeError, KeyError, AttributeError)
 
 LOCKS = {
     "package-lock.json",
@@ -54,6 +56,464 @@ JSON_FIELDS = {
     "composer.json": ["require", "require-dev"],
 }
 SHA = re.compile(r"^[0-9a-f]{40}$")
+SHA256 = re.compile(r"^[0-9a-f]{64}$")
+STABLE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
+
+
+def swift_package_resolved_change(
+    before_blob, after_blob, *, allow_origin_hash_change=False
+):
+    """Validate a conservative Package.resolved v3 pin update."""
+    try:
+        before = json.loads(before_blob) if isinstance(before_blob, str) else None
+        after = json.loads(after_blob) if isinstance(after_blob, str) else None
+    except INVALID_JSON:
+        return False
+    if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
+        return False
+    if (
+        set(before) != {"version", "originHash", "pins"}
+        or set(after) != set(before)
+        or before.get("version") != 3
+        or after.get("version") != 3
+        or not isinstance(before.get("originHash"), str)
+        or not isinstance(after.get("originHash"), str)
+        or not SHA256.fullmatch(before.get("originHash", ""))
+        or not SHA256.fullmatch(after.get("originHash", ""))
+        or (
+            before["originHash"] != after["originHash"] and not allow_origin_hash_change
+        )
+    ):
+        return False
+
+    def pin_key(pin):
+        if not isinstance(pin, dict) or set(pin) != {
+            "identity",
+            "kind",
+            "location",
+            "state",
+        }:
+            return None
+        if (
+            not isinstance(pin["identity"], str)
+            or not pin["identity"]
+            or pin["kind"] != "remoteSourceControl"
+            or not isinstance(pin["location"], str)
+        ):
+            return None
+        try:
+            parsed = urlparse(pin["location"])
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme != "https"
+            or not parsed.hostname
+            or parsed.username
+            or parsed.password
+            or port is not None
+            or parsed.query
+            or parsed.fragment
+            or parsed.params
+            or not parsed.path
+        ):
+            return None
+        state = pin["state"]
+        if (
+            not isinstance(state, dict)
+            or set(state) != {"revision", "version"}
+            or not isinstance(state.get("revision"), str)
+            or not isinstance(state.get("version"), str)
+            or not SHA.fullmatch(state.get("revision", ""))
+            or not STABLE_VERSION.fullmatch(state.get("version", ""))
+        ):
+            return None
+        return pin["identity"], pin["kind"], pin["location"]
+
+    old_pins, new_pins = before.get("pins"), after.get("pins")
+    if (
+        not isinstance(old_pins, list)
+        or not isinstance(new_pins, list)
+        or len(old_pins) != len(new_pins)
+    ):
+        return False
+    old = {pin_key(pin): pin for pin in old_pins}
+    new = {pin_key(pin): pin for pin in new_pins}
+    if (
+        None in old
+        or None in new
+        or len(old) != len(old_pins)
+        or len(new) != len(new_pins)
+        or set(old) != set(new)
+        or len({key[0] for key in old if key is not None}) != len(old)
+    ):
+        return False
+    for key in old:
+        old_state, new_state = old[key]["state"], new[key]["state"]
+        if (
+            old_state["version"] == new_state["version"]
+            and old_state["revision"] != new_state["revision"]
+        ):
+            return False
+        if (
+            old_state["version"] != new_state["version"]
+            and old_state["revision"] == new_state["revision"]
+        ):
+            return False
+    return True
+
+
+def swift_lock_matches_manifest(lock_text, manifest_text, manifest_name):
+    """Bind direct registry pins to supported literal Swift/Xcode requirements."""
+    try:
+        pins = json.loads(lock_text)["pins"]
+
+        def location(value):
+            return value.rstrip("/").removesuffix(".git")
+
+        locked = {location(pin["location"]): pin["state"]["version"] for pin in pins}
+        if len(locked) != len(pins):
+            return False
+        requirements = []
+        if manifest_name == "project.pbxproj":
+            section = re.search(
+                r"/\* Begin XCRemoteSwiftPackageReference section \*/(.*?)/"
+                r"\* End XCRemoteSwiftPackageReference section \*/",
+                manifest_text,
+                re.S,
+            )
+            if not section:
+                return False
+            entry = re.compile(
+                r'\s*[0-9A-Fa-f]+ /\* XCRemoteSwiftPackageReference "[^"]+" '
+                r"\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*reposito"
+                r'ryURL = "([^"]+)";\s*requirement = \{([^{}]+)\};\s*\};',
+                re.S,
+            )
+            position = 0
+            while section[1][position:].strip():
+                match = entry.match(section[1], position)
+                if not match:
+                    return False
+                attrs = {}
+                for assignment in match[2].split(";"):
+                    if not assignment.strip():
+                        continue
+                    field = re.fullmatch(
+                        r'\s*(kind|minimumVersion|version)\s*=\s*"?([A-Za-z0-9.]+)"?'
+                        r"\s*",
+                        assignment,
+                    )
+                    if not field or field[1] in attrs:
+                        return False
+                    attrs[field[1]] = field[2]
+                kind = attrs.get("kind")
+                key = "version" if kind == "exactVersion" else "minimumVersion"
+                if kind not in {
+                    "exactVersion",
+                    "upToNextMajorVersion",
+                    "upToNextMinorVersion",
+                } or set(attrs) != {"kind", key}:
+                    return False
+                requirements.append((match[1], kind, attrs[key]))
+                position = match.end()
+        else:
+            pattern = re.compile(
+                r'\.package\(\s*url:\s*"([^"]+)"\s*,\s*(from|exact):\s*"([0-'
+                r'9.]+)"\s*\)',
+                re.S,
+            )
+            matches = list(pattern.finditer(manifest_text))
+            if len(matches) != len(re.findall(r"\.package\s*\(", manifest_text)):
+                return False
+            requirements = [
+                (
+                    m[1],
+                    "exactVersion" if m[2] == "exact" else "upToNextMajorVersion",
+                    m[3],
+                )
+                for m in matches
+            ]
+        if not requirements or len(
+            {location(url) for url, _, _ in requirements}
+        ) != len(requirements):
+            return False
+        for url, kind, minimum in requirements:
+            value = locked.get(location(url))
+            if (
+                not value
+                or not STABLE_VERSION.fullmatch(minimum)
+                or not STABLE_VERSION.fullmatch(value)
+            ):
+                return False
+            actual, lower = (
+                tuple(map(int, value.split("."))),
+                tuple(map(int, minimum.split("."))),
+            )
+            if kind == "exactVersion":
+                if actual != lower:
+                    return False
+            else:
+                upper = (
+                    (lower[0] + 1, 0, 0)
+                    if kind == "upToNextMajorVersion"
+                    else (lower[0], lower[1] + 1, 0)
+                )
+                if not lower <= actual < upper:
+                    return False
+        return True
+    except INVALID_STRUCTURE:
+        return False
+
+
+def gemfile_lock_matches_manifest(lock_text, manifest):
+    """Recognize literal Gemfile declarations without executing Ruby."""
+
+    def constraint(value):
+        terms = []
+        for term in value.split(","):
+            term = term.strip()
+            if not term:
+                continue
+            if re.match(r"[0-9]", term):
+                term = "=" + term
+            terms.append(re.sub(r"\s+", "", term))
+        return sorted(terms)
+
+    try:
+        declarations = {}
+        source = False
+        for line in manifest.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if re.fullmatch(r"source [\'\"]https://rubygems.org/?[\'\"]", line):
+                if source:
+                    return False
+                source = True
+                continue
+            match = re.fullmatch(
+                r"gem [\'\"]([A-Za-z0-9_.-]+)[\'\"](?:,\s*[\'\"]([^\'\"]+)["
+                r"\'\"]|,\s*git:\s*[\'\"]([^\'\"]+)[\'\"],\s*ref:\s*[\'\"](["
+                r"0-9a-f]{40})[\'\"])?",
+                line,
+            )
+            if not match or match[1] in declarations:
+                return False
+            declarations[match[1]] = (constraint(match[2] or ""), match[3], match[4])
+        if not source or not declarations:
+            return False
+        section = re.search(
+            r"^DEPENDENCIES\n(.*?)(?=^[A-Z]|\Z)", lock_text, re.S | re.M
+        )
+        if not section:
+            return False
+        roots = {}
+        for line in section[1].splitlines():
+            if not line.strip():
+                continue
+            match = re.fullmatch(r"  ([A-Za-z0-9_.-]+)(?: \(([^()]+)\))?(!)?", line)
+            if not match or match[1] in roots:
+                return False
+            roots[match[1]] = (constraint(match[2] or ""), bool(match[3]))
+        if set(roots) != set(declarations):
+            return False
+        git_sources = {}
+        for section in re.finditer(r"^GIT\n(.*?)(?=^[A-Z]|\Z)", lock_text, re.S | re.M):
+            remote = re.search(r"^  remote: (\S+)$", section[1], re.M)
+            revision = re.search(r"^  revision: ([0-9a-f]{40})$", section[1], re.M)
+            if not remote or not revision:
+                return False
+            for name in re.findall(r"^    ([A-Za-z0-9_.-]+) \(", section[1], re.M):
+                git_sources[name] = (remote[1], revision[1])
+        for name, (required, url, revision) in declarations.items():
+            if roots[name] != (required, url is not None):
+                return False
+            if url is not None and git_sources.get(name) != (url, revision):
+                return False
+        return True
+    except INVALID_STRUCTURE:
+        return False
+
+
+def gemfile_lock_update(before, after):
+    """Registry version changes with an unchanged source, membership and graph."""
+    numeric = r"[0-9]+(?:\.[0-9]+)*"
+    name = r"[A-Za-z0-9_][A-Za-z0-9_.-]*"
+
+    def version(raw):
+        if not re.fullmatch(numeric, raw):
+            raise ValueError("unsupported gem version")
+        return tuple(map(int, raw.split(".")))
+
+    def compare(a, b):
+        size = max(len(a), len(b))
+        a, b = a + (0,) * (size - len(a)), b + (0,) * (size - len(b))
+        return (a > b) - (a < b)
+
+    def requirements(raw):
+        if not raw:
+            return []
+        found = []
+        for term in raw.split(","):
+            sentinel = re.fullmatch(r"\s*(<|>=)\s*(" + numeric + r")\.a\s*", term)
+            if sentinel:
+                found.append((sentinel[1], version(sentinel[2])))
+                continue
+            match = re.fullmatch(
+                r"\s*(~>|>=|<=|!=|=|>|<)?\s*(" + numeric + r")\s*", term
+            )
+            if not match:
+                raise ValueError("unsupported gem constraint")
+            found.append((match[1] or "=", version(match[2])))
+        return found
+
+    def satisfies(value, constraint):
+        v = version(value)
+        for op, wanted in requirements(constraint):
+            cmp = compare(v, wanted)
+            if op == "~>":
+                prefix = wanted[:-1] if len(wanted) > 1 else wanted
+                upper = (*prefix[:-1], prefix[-1] + 1)
+                if cmp < 0 or compare(v, upper) >= 0:
+                    return False
+            elif not {
+                "=": cmp == 0,
+                "!=": cmp != 0,
+                ">": cmp > 0,
+                "<": cmp < 0,
+                ">=": cmp >= 0,
+                "<=": cmp <= 0,
+            }[op]:
+                return False
+        return True
+
+    def parse(text):
+        if not isinstance(text, str):
+            raise ValueError("invalid lock text")
+        sections = []
+        for line in text.splitlines():
+            if not line:
+                continue
+            if not line.startswith(" "):
+                if line not in {
+                    "GEM",
+                    "GIT",
+                    "PLATFORMS",
+                    "DEPENDENCIES",
+                    "BUNDLED WITH",
+                }:
+                    raise ValueError("unsupported lock section")
+                sections.append((line, []))
+            elif not sections:
+                raise ValueError("missing section")
+            else:
+                sections[-1][1].append(line)
+        for single in ("GEM", "PLATFORMS", "DEPENDENCIES", "BUNDLED WITH"):
+            if sum(kind == single for kind, _ in sections) != 1:
+                raise ValueError("duplicate or missing section")
+        records = {}
+        edges = []
+        registry_lines = set()
+        for kind, lines in sections:
+            if kind not in {"GEM", "GIT"}:
+                continue
+            marker = lines.index("  specs:")
+            fields = {}
+            for line in lines[:marker]:
+                match = re.fullmatch(r"  (remote|revision|ref): (\S+)", line)
+                if not match or match[1] in fields:
+                    raise ValueError("unsupported source metadata")
+                fields[match[1]] = match[2]
+            if kind == "GEM":
+                if fields != {"remote": "https://rubygems.org/"}:
+                    raise ValueError("unsupported gem source")
+            else:
+                if set(fields) not in (
+                    {"remote", "revision"},
+                    {"remote", "revision", "ref"},
+                ):
+                    raise ValueError("unsupported git metadata")
+                parsed = urlparse(fields["remote"])
+                if (
+                    parsed.scheme != "https"
+                    or not parsed.hostname
+                    or parsed.username is not None
+                    or parsed.password is not None
+                    or parsed.port is not None
+                    or not parsed.path
+                    or parsed.query
+                    or parsed.fragment
+                    or parsed.params
+                ):
+                    raise ValueError("unsupported git source")
+                if any(
+                    not re.fullmatch("[0-9a-f]{40}", fields[key])
+                    for key in fields
+                    if key != "remote"
+                ):
+                    raise ValueError("mutable git revision")
+            current = None
+            for line in lines[marker + 1 :]:
+                spec = re.fullmatch(r"    (" + name + r") \((" + numeric + r")\)", line)
+                if spec:
+                    current = spec[1]
+                    if current in records:
+                        raise ValueError("duplicate package")
+                    records[current] = (spec[2], kind)
+                    if kind == "GEM":
+                        registry_lines.add(line)
+                    continue
+                dep = re.fullmatch(r"      (" + name + r")(?: \(([^()]+)\))?", line)
+                if not dep or current is None:
+                    raise ValueError("unsupported gem spec")
+                requirements(dep[2] or "")
+                edges.append((dep[1], dep[2] or ""))
+        for kind, lines in sections:
+            if kind == "PLATFORMS":
+                if not lines or any(
+                    not re.fullmatch(r"  [A-Za-z0-9_.-]+", line) for line in lines
+                ):
+                    raise ValueError("invalid platforms")
+            elif kind == "BUNDLED WITH":
+                if len(lines) != 1 or not lines[0].startswith("  "):
+                    raise ValueError("invalid bundler")
+                bundled = lines[0].strip()
+                version(bundled)
+            elif kind == "DEPENDENCIES":
+                seen = set()
+                for line in lines:
+                    dep = re.fullmatch(r"  (" + name + r")(?: \(([^()]+)\))?(!)?", line)
+                    if not dep or dep[1] in seen or dep[1] not in records:
+                        raise ValueError("invalid direct dependency")
+                    seen.add(dep[1])
+                    requirements(dep[2] or "")
+                    if bool(dep[3]) != (records[dep[1]][1] == "GIT"):
+                        raise ValueError("changed source binding")
+                    edges.append((dep[1], dep[2] or ""))
+        for dep, constraint in edges:
+            target = bundled if dep == "bundler" else records.get(dep, (None, None))[0]
+            if target is None or not satisfies(target, constraint):
+                raise ValueError("unresolved gem requirement")
+        return registry_lines
+
+    try:
+        old_lines, new_lines = before.splitlines(), after.splitlines()
+        if old_lines == new_lines or len(old_lines) != len(new_lines):
+            return False
+        old_specs, new_specs = parse(before), parse(after)
+        changed = False
+        for old, new in zip(old_lines, new_lines, strict=False):
+            if old == new:
+                continue
+            if old not in old_specs or new not in new_specs:
+                return False
+            if old.split(" (", 1)[0] != new.split(" (", 1)[0]:
+                return False
+            changed = True
+        return changed
+    except INVALID_STRUCTURE:
+        return False
 
 
 def toml_loader():
@@ -156,11 +616,13 @@ def package_constraints(before, after, fields):
     return True
 
 
-NPM_VERSION = r"[0-9]+(?:\.[0-9xX*]+){0,2}(?:[-+][0-9A-Za-z.-]+)?"
-NPM_COMPARATOR = rf"[~^<>=]*\s*{NPM_VERSION}"
+NPM_VERSION = r"[0-9]+(?:\.[0-9xX*]+){0,2}"
+NPM_COMPARATOR = rf"(?:~|\^|<=|>=|<|>|=)?\s*{NPM_VERSION}"
 
 
 def valid_npm_constraint(value):
+    if isinstance(value, str) and re.search(r"(?<![0-9A-Za-z])0[0-9]+", value):
+        return False
     if not isinstance(value, str):
         return False
     value = value.strip()
@@ -241,15 +703,26 @@ def valid_requirement(value):
     # review; a dependency-only exemption may only carry stable registry data.
     if re.search(r"(?:\*|alpha|beta|rc|dev|snapshot|canary|preview|eap)", value, re.I):
         return False
-    return bool(
-        re.fullmatch(
-            r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?"
-            r"(?:\s*(?:===\s*[^;#\s][^;#]*|(?:==|~=|"
-            r"!=|<=|>=|<|>|\^|~)\s*[0-9xX*][^;#]*))?"
-            r"(?:\s*;[^#]+)?",
-            value.strip(),
-        )
+    match = re.fullmatch(
+        r"[A-Za-z0-9_.-]+(?:\[[A-Za-z0-9_,.-]+\])?"
+        r"(?:\s*(?:===\s*[^;#\s][^;#]*|(?:==|~=|"
+        r"!=|<=|>=|<|>|\^|~)\s*[0-9xX*][^;#]*))?"
+        r"(?:\s*;[^#]+)?",
+        value.strip(),
     )
+    if not match:
+        return False
+    marker = re.search(r"\s*;\s*(.+)$", value.strip())
+    if marker:
+        # Environment markers must be syntactically valid and immutable. The
+        # exemption permits version changes while preserving install scope.
+        try:
+            from packaging.markers import Marker
+
+            Marker(marker.group(1))
+        except Exception:
+            return False
+    return True
 
 
 def valid_requirement_line(value):
@@ -267,6 +740,29 @@ def valid_requirement_line(value):
     return valid_requirement(stripped)
 
 
+def requirement_marker(value):
+    if not isinstance(value, str) or ";" not in value:
+        return None
+    return value.split(";", 1)[1].strip()
+
+
+def requirement_markers_preserved(before, after):
+    def grouped(values):
+        result = {}
+        for value in values:
+            name = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower()
+            result.setdefault(name, []).append(requirement_marker(value))
+        return result
+
+    old_markers, new_markers = grouped(before), grouped(after)
+    shared = old_markers.keys() & new_markers.keys()
+    return all(
+        sorted(old_markers[name], key=lambda item: item or "")
+        == sorted(new_markers[name], key=lambda item: item or "")
+        for name in shared
+    )
+
+
 def dependency_map_constraints(before, after):
     if not isinstance(before, dict) or not isinstance(after, dict) or before == after:
         return False
@@ -278,6 +774,10 @@ def dependency_map_constraints(before, after):
             continue
         if not valid_requirement(value):
             return False
+        if name in before and requirement_marker(before[name]) != requirement_marker(
+            value
+        ):
+            return False
     return True
 
 
@@ -285,6 +785,12 @@ def valid_composer_constraint(value):
     return (
         isinstance(value, str)
         and not any(token in value.lower() for token in ("://", "git-", "dev-"))
+        and not re.search(
+            r"[+*]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|preview|"
+            r"eap|m[0-9])(?:[-.0-9]|$)",
+            value,
+            re.I,
+        )
         and bool(re.fullmatch(r"[0-9A-Za-z*+<>=~^|., _-]+", value.strip()))
     )
 
@@ -298,7 +804,12 @@ def valid_toml_constraint(value):
         token in lowered for token in ("://", "git", "path", "file:")
     ):
         return False
-    return bool(re.fullmatch(r"[0-9A-Za-zxX*.+<>=~^|, _-]+", value.strip()))
+    return not re.search(
+        r"[xX*+]|(?:^|[-.])(alpha|beta|rc|dev|snapshot|canary|previe"
+        r"w|eap|m[0-9])(?:[-.0-9]|$)",
+        value,
+        re.I,
+    ) and bool(re.fullmatch(r"[0-9A-Za-z.+<>=~^|, _-]+", value.strip()))
 
 
 def dependency_entry_change(before, after):
@@ -372,7 +883,9 @@ def dependency_list_change(before, after):
     }
     if old_names - new_names and new_names - old_names:
         return False
-    return all(valid_requirement(value) for value in new_values)
+    return requirement_markers_preserved(old_values, new_values) and all(
+        valid_requirement(value) for value in new_values
+    )
 
 
 def toml_dependency_change(before, after, paths):
@@ -557,42 +1070,145 @@ def parse_gradle_declaration(value):
     )
 
 
+NPM_RANGE_VERSION = re.compile(
+    r"(?P<major>[0-9]+)"
+    r"(?:\.(?P<minor>[0-9]+|[xX*]))?"
+    r"(?:\.(?P<patch>[0-9]+|[xX*]))?"
+)
+NPM_RANGE_OPERATORS = {"", "=", "<", "<=", ">", ">=", "~", "^"}
+
+
+def npm_range_selector(value):
+    """Return bounds for the stable numeric portion of one npm selector."""
+    match = NPM_RANGE_VERSION.fullmatch(value)
+    if not match:
+        return None
+    parts = match.groupdict()
+    if any(
+        value and value.isdigit() and len(value) > 1 and value.startswith("0")
+        for value in parts.values()
+    ):
+        return None
+    if parts["patch"] in ("x", "X", "*") and parts["minor"] in (None, "x", "X", "*"):
+        return None
+    if parts["minor"] in ("x", "X", "*") and parts["patch"] is not None:
+        return None
+    values = tuple(
+        int(parts[name]) if parts[name] and parts[name].isdigit() else 0
+        for name in ("major", "minor", "patch")
+    )
+    wildcard = next(
+        (
+            index
+            for index, name in enumerate(("major", "minor", "patch"))
+            if parts[name] in ("x", "X", "*")
+        ),
+        None,
+    )
+    precision = (
+        wildcard
+        if wildcard is not None
+        else sum(parts[name] is not None for name in ("major", "minor", "patch"))
+    )
+    exact = wildcard is None and precision == 3
+    if exact:
+        return values, None, True, precision
+    upper_index = precision - 1 if wildcard is None else wildcard - 1
+    upper = list(values)
+    upper[upper_index] += 1
+    for index in range(upper_index + 1, 3):
+        upper[index] = 0
+    return values, tuple(upper), False, precision
+
+
 def npm_version_satisfies(version, constraint):
     """Evaluate the bounded stable-selector grammar; unknown ranges need review."""
     if not isinstance(constraint, str) or not re.fullmatch(
         r"[0-9]+\.[0-9]+\.[0-9]+", version
     ):
         return False
+    if any(len(part) > 1 and part.startswith("0") for part in version.split(".")):
+        return False
     actual = tuple(map(int, version.split(".")))
+    token = re.compile(
+        r"(?P<operator>[~^<>=]*)\s*(?P<version>[0-9]+(?:\.[0-9xX*]+){0,2})"
+    )
+
+    def matches(selector, operator):
+        selected = npm_range_selector(selector)
+        if selected is None or operator not in NPM_RANGE_OPERATORS:
+            return False
+        lower, upper, exact, precision = selected
+        if operator in ("", "="):
+            return actual == lower if exact else lower <= actual < upper
+        if operator == "<":
+            return actual < lower
+        if operator == "<=":
+            return actual <= lower if exact else actual < upper
+        if operator == ">":
+            return actual > lower if exact else actual >= upper
+        if operator == ">=":
+            return actual >= lower
+        if operator == "~":
+            upper_index = 0 if precision == 1 else 1
+            upper_bound = list(lower)
+            upper_bound[upper_index] += 1
+            for index in range(upper_index + 1, 3):
+                upper_bound[index] = 0
+            return lower <= actual < tuple(upper_bound)
+        if operator == "^":
+            if lower[0] or precision == 1:
+                upper_bound = (lower[0] + 1, 0, 0)
+            elif lower[1] or precision == 2:
+                upper_bound = (0, lower[1] + 1, 0)
+            else:
+                upper_bound = (0, 0, lower[2] + 1)
+            return lower <= actual < upper_bound
+        return False
+
     for branch in constraint.split("||"):
         branch = branch.strip()
         if branch == "*":
             return True
-        match = re.fullmatch(r"([~^=]?)([0-9]+)(?:\.([0-9]+))?(?:\.([0-9]+))?", branch)
-        if not match:
-            continue
-        operator, major, minor, patch = match.groups()
-        lower = (int(major), int(minor or 0), int(patch or 0))
-        if operator == "^":
-            if lower[0]:
-                upper = (lower[0] + 1, 0, 0)
-            elif minor is None:
-                upper = (1, 0, 0)
-            elif lower[1]:
-                upper = (0, lower[1] + 1, 0)
-            elif patch is None:
-                upper = (0, 1, 0)
-            else:
-                upper = (0, 0, lower[2] + 1)
-        elif minor is None:
-            upper = (lower[0] + 1, 0, 0)
-        elif operator == "~" or patch is None:
-            upper = (lower[0], lower[1] + 1, 0)
-        else:
-            if actual == lower:
+        hyphen = re.fullmatch(
+            r"([0-9]+(?:\.[0-9xX*]+){0,2})\s+-\s+"
+            r"([0-9]+(?:\.[0-9xX*]+){0,2})",
+            branch,
+        )
+        if hyphen:
+            lower = npm_range_selector(hyphen.group(1))
+            upper = npm_range_selector(hyphen.group(2))
+            if lower is None or upper is None:
+                continue
+            lower_bound = lower[0]
+            upper_bound = upper[0] if upper[2] else upper[1]
+            if lower_bound <= actual and (
+                actual <= upper_bound if upper[2] else actual < upper_bound
+            ):
                 return True
             continue
-        if lower <= actual < upper:
+        position, predicates, valid = 0, [], True
+        while position < len(branch):
+            while position < len(branch) and branch[position].isspace():
+                position += 1
+            match = token.match(branch, position)
+            if not match:
+                valid = False
+                break
+            operator = match.group("operator")
+            if operator not in NPM_RANGE_OPERATORS:
+                valid = False
+                break
+            predicates.append((match.group("version"), operator))
+            position = match.end()
+            if position < len(branch) and not branch[position].isspace():
+                valid = False
+                break
+        if (
+            valid
+            and predicates
+            and all(matches(selector, operator) for selector, operator in predicates)
+        ):
             return True
     return False
 
@@ -611,6 +1227,7 @@ def npm_lock_update(before, after):
         packages = value.get("packages")
         if not isinstance(packages, dict) or "" not in packages:
             raise ValueError("missing package map")
+        bundled_owners = {}
         for path, node in packages.items():
             if not isinstance(node, dict):
                 raise ValueError("invalid package")
@@ -622,7 +1239,8 @@ def npm_lock_update(before, after):
             ):
                 dependencies = node.get(field, {})
                 if not isinstance(dependencies, dict) or not all(
-                    isinstance(key, str) and valid_npm_constraint(version)
+                    isinstance(key, str)
+                    and (version == "*" or valid_npm_constraint(version))
                     for key, version in dependencies.items()
                 ):
                     raise ValueError("non-registry dependency constraint")
@@ -639,9 +1257,31 @@ def npm_lock_update(before, after):
                 raise ValueError("aliased package identity")
             version = node.get("version", "")
             if not isinstance(version, str) or not re.fullmatch(
-                r"[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?", version
+                r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)", version
             ):
                 raise ValueError("non-registry version")
+            if node.get("inBundle") is True:
+                if "resolved" in node or "integrity" in node:
+                    raise ValueError("mixed bundled source representation")
+                owners = []
+                for owner_path, owner in packages.items():
+                    if not owner_path or owner.get("inBundle") is True:
+                        continue
+                    bundles = owner.get("bundleDependencies", [])
+                    if not isinstance(bundles, list) or not all(
+                        isinstance(item, str)
+                        and re.fullmatch(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+", item)
+                        for item in bundles
+                    ):
+                        raise ValueError("unsupported bundled dependency list")
+                    for bundled in bundles:
+                        prefix = f"{owner_path}/node_modules/{bundled}"
+                        if path == prefix or path.startswith(prefix + "/node_modules/"):
+                            owners.append(owner_path)
+                if not owners or "from" in node or "link" in node:
+                    raise ValueError("unbound bundled package")
+                bundled_owners[path] = owners
+                continue
             source = node.get("resolved")
             if not isinstance(source, str):
                 raise ValueError("missing artifact source")
@@ -667,43 +1307,128 @@ def npm_lock_update(before, after):
                 raise ValueError("unsupported integrity")
             if len(base64.b64decode(encoded, validate=True)) != sizes[algorithm]:
                 raise ValueError("invalid integrity digest")
+
+        def resolve_dependency(path, identity):
+            # Resolve npm's nearest ancestor node_modules entry. Peer
+            # dependencies use the same lookup, but missing required peers
+            # must fail closed while optional peers may be absent.
+            candidates = []
+            current = path
+            while current:
+                candidates.append(f"{current}/node_modules/{identity}")
+                current = (
+                    current.rsplit("/node_modules/", 1)[0]
+                    if "/node_modules/" in current
+                    else ""
+                )
+            candidates.append(f"node_modules/{identity}")
+            return next((packages[p] for p in candidates if p in packages), None)
+
+        def resolve_peer(path, identity):
+            # A peer is resolved from the dependent package's parent scope or
+            # an ancestor. A child-only node_modules entry cannot satisfy it.
+            parent = (
+                path.rsplit("/node_modules/", 1)[0] if "/node_modules/" in path else ""
+            )
+            current = parent
+            candidates = []
+            while current:
+                candidates.append(f"{current}/node_modules/{identity}")
+                current = (
+                    current.rsplit("/node_modules/", 1)[0]
+                    if "/node_modules/" in current
+                    else ""
+                )
+            candidates.append(f"node_modules/{identity}")
+            return next((packages[p] for p in candidates if p in packages), None)
+
+        paths_by_node = {id(node): path for path, node in packages.items()}
+        graph = {path: set() for path in packages}
         for path, node in packages.items():
             for field in ("dependencies", "devDependencies", "optionalDependencies"):
                 for identity, constraint in node.get(field, {}).items():
                     # Resolve npm's nearest ancestor node_modules entry.
-                    candidates = []
-                    current = path
-                    while current:
-                        candidates.append(f"{current}/node_modules/{identity}")
-                        current = (
-                            current.rsplit("/node_modules/", 1)[0]
-                            if "/node_modules/" in current
-                            else ""
-                        )
-                    candidates.append(f"node_modules/{identity}")
-                    target = next(
-                        (packages[p] for p in candidates if p in packages), None
-                    )
+                    target = resolve_dependency(path, identity)
                     if target is None:
                         if field == "optionalDependencies":
                             continue
                         raise ValueError("missing graph dependency")
+                    graph[path].add(paths_by_node[id(target)])
                     if not npm_version_satisfies(target["version"], constraint):
                         raise ValueError("unvalidated dependency range")
-        return value
+            peer_meta = node.get("peerDependenciesMeta", {})
+            if not valid_peer_metadata(peer_meta):
+                raise ValueError("invalid peer metadata")
+            for identity, constraint in node.get("peerDependencies", {}).items():
+                target = resolve_peer(path, identity)
+                optional = isinstance(peer_meta.get(identity), dict) and peer_meta[
+                    identity
+                ].get("optional", False)
+                if target is None:
+                    if optional:
+                        continue
+                    raise ValueError("missing required peer dependency")
+                graph[path].add(paths_by_node[id(target)])
+                if not npm_version_satisfies(target["version"], constraint):
+                    raise ValueError("unvalidated peer dependency range")
+        reachable, pending = set(), [""]
+        while pending:
+            path = pending.pop()
+            if path not in reachable:
+                reachable.add(path)
+                pending.extend(graph[path] - reachable)
+        return value, reachable, bundled_owners
 
     try:
-        old, new = parse(before), parse(after)
+        (old, old_reachable, _), (new, new_reachable, bundled_owners) = (
+            parse(before),
+            parse(after),
+        )
         old_packages, new_packages = old.pop("packages"), new.pop("packages")
-        if old != new or old_packages.keys() - new_packages.keys():
-            return False
-        # Root executable metadata must not change with dependency versions.
+        for path, owners in bundled_owners.items():
+            if old_packages.get(path) == new_packages[path]:
+                continue
+            # The enclosing registry tarball is the bundle's integrity proof.
+            # Unchanged bytes cannot justify a new or altered bundled record.
+            if not any(
+                tuple(
+                    old_packages.get(owner, {}).get(field)
+                    for field in ("version", "resolved", "integrity")
+                )
+                != tuple(
+                    new_packages[owner].get(field)
+                    for field in ("version", "resolved", "integrity")
+                )
+                for owner in owners
+            ):
+                return False
+            if path not in old_packages and set(new_packages[path]) - {
+                "version",
+                "inBundle",
+                "dependencies",
+                "optionalDependencies",
+                "peerDependencies",
+                "peerDependenciesMeta",
+                "dev",
+                "optional",
+                "devOptional",
+                "license",
+                "engines",
+                "os",
+                "cpu",
+            }:
+                return False
+
         dependency_fields = {
             "dependencies",
             "devDependencies",
             "optionalDependencies",
             "peerDependencies",
         }
+        removed = old_packages.keys() - new_packages.keys()
+        if old != new or not removed <= old_reachable:
+            return False
+        # Root executable metadata must not change with dependency versions.
         root_old, root_new = dict(old_packages[""]), dict(new_packages[""])
         for root in (root_old, root_new):
             for field in dependency_fields:
@@ -719,23 +1444,20 @@ def npm_lock_update(before, after):
             metadata_old, metadata_new = dict(old_node), dict(new_node)
             for metadata in (metadata_old, metadata_new):
                 for field in ("version", "resolved", "integrity"):
-                    metadata.pop(field)
+                    metadata.pop(field, None)
+            if old_node["version"] != new_node["version"]:
+                for metadata in (metadata_old, metadata_new):
+                    for field in dependency_fields:
+                        metadata.pop(field, None)
             if metadata_old != metadata_new:
                 return False
             if old_node["version"] == new_node["version"] and (
-                old_node["resolved"] != new_node["resolved"]
-                or old_node["integrity"] != new_node["integrity"]
+                old_node.get("resolved") != new_node.get("resolved")
+                or old_node.get("integrity") != new_node.get("integrity")
             ):
                 return False
-        # New transitive graph shapes need review; root package additions are
-        # bound to the companion manifest by classify().
-        new_root = new_packages[""]
-        root_names = set().union(
-            *(set(new_root.get(field, {})) for field in dependency_fields)
-        )
-        for path in new_packages.keys() - old_packages.keys():
-            if path not in {f"node_modules/{name}" for name in root_names}:
-                return False
+        if not (new_packages.keys() - old_packages.keys()) <= new_reachable:
+            return False
         return True
     except INVALID_LOCK:
         return False
@@ -750,6 +1472,14 @@ def dependency_file(path, before, after, patch, status="modified"):
         or ".." in PurePosixPath(path).parts
     ):
         return False
+    if name == "Package.resolved":
+        if status != "modified" or before is None or after is None:
+            return False
+        return swift_package_resolved_change(
+            before, after, allow_origin_hash_change=True
+        )
+    if name == "Gemfile.lock":
+        return status == "modified" and gemfile_lock_update(before, after)
     if name in LOCKS:
         # Unknown lock grammars cannot grant an executable-source exemption.
         if name not in ("package-lock.json", "npm-shrinkwrap.json"):
@@ -799,13 +1529,32 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return tag.rsplit("}", 1)[-1]
 
             def scrub(root):
-                # Security configuration and trusted keys must remain bytewise
-                # equivalent; only component/artifact checksum records may vary.
-                for child in list(root):
-                    if local(child.tag) == "components":
-                        root.remove(child)
-                    else:
-                        child.tail = None
+                # Security configuration, component identities, artifacts, and
+                # checksum algorithms remain equivalent; only digest values may
+                # vary between lockfile updates.
+                for group in root:
+                    if local(group.tag) != "components":
+                        group.tail = None
+                        continue
+                    for component in group:
+                        version = component.attrib.get("version", "")
+                        if version and stable_version(version):
+                            component.attrib["version"] = "<VERSION>"
+                            prefix = component.attrib.get("name", "") + "-" + version
+                            for artifact in component:
+                                artifact_name = artifact.attrib.get("name", "")
+                                if artifact_name.startswith(prefix) and artifact_name[
+                                    len(prefix) :
+                                ].startswith((".", "-")):
+                                    artifact.attrib["name"] = (
+                                        component.attrib["name"]
+                                        + "-<VERSION>"
+                                        + artifact_name[len(prefix) :]
+                                    )
+                    for node in group.iter():
+                        node.tail = None
+                        if local(node.tag).startswith("sha"):
+                            node.attrib["value"] = "<DIGEST>"
                 return ET.tostring(root, encoding="unicode")
 
             if scrub(copy.deepcopy(old)) != scrub(copy.deepcopy(new)):
@@ -884,10 +1633,20 @@ def dependency_file(path, before, after, patch, status="modified"):
             return False
         if not old_names and not new_names:
             return False
-        return old_values != new_values and all(
-            not line.split("#", 1)[0].strip()
-            or valid_requirement_line(line.split("#", 1)[0].strip())
-            for line in lines[0] + lines[1]
+        old_requirements = [
+            value for value in old_values if not value.startswith("--hash=")
+        ]
+        new_requirements = [
+            value for value in new_values if not value.startswith("--hash=")
+        ]
+        return (
+            old_values != new_values
+            and all(
+                not line.split("#", 1)[0].strip()
+                or valid_requirement_line(line.split("#", 1)[0].strip())
+                for line in lines[0] + lines[1]
+            )
+            and requirement_markers_preserved(old_requirements, new_requirements)
         )
     if name in (
         "build.gradle",
@@ -957,6 +1716,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 r"(?P<suffix>(?:\s*,[^\n]*)?)"
             ),
             True,
+            stable_dependency=True,
         )
     if name == "Package.swift":
         lines = changed_lines(patch)
@@ -1060,7 +1820,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                     if not argument:
                         return None
                     match = version_selector.fullmatch(argument)
-                    if not match:
+                    if not match or not stable_version(match.group("version")):
                         return None
                 normalized = version_selector.sub(
                     lambda match: (
@@ -1138,7 +1898,11 @@ def dependency_file(path, before, after, patch, status="modified"):
                 r"[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
                 after,
             )
-            return old_kinds == new_kinds and old_versions != new_versions
+            return (
+                old_kinds == new_kinds
+                and old_versions != new_versions
+                and all(stable_version(value) for value in new_versions)
+            )
 
         def remote_entries(text):
             match = re.search(
@@ -1221,7 +1985,13 @@ def dependency_file(path, before, after, patch, status="modified"):
                 r"[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
                 new_raw,
             )
+            if any(not stable_version(value) for value in new_version):
+                return False
             if old_kind != new_kind and old_version == new_version:
+                return False
+        for identity in added:
+            _, raw = new_entries[identity]
+            if re.search(r"\b(?:branch|revision)\s*=", raw):
                 return False
         if not (removed or added):
             return False
@@ -1389,8 +2159,10 @@ def dependency_file(path, before, after, patch, status="modified"):
                     for item in new_req
                     if isinstance(item, str)
                 }
-                return not (old_names - new_names and new_names - old_names) and all(
-                    valid_requirement(item) for item in new_req
+                return (
+                    not (old_names - new_names and new_names - old_names)
+                    and requirement_markers_preserved(old_req, new_req)
+                    and all(valid_requirement(item) for item in new_req)
                 )
             if name == "composer.json":
                 if not only_fields(old_json, new_json, JSON_FIELDS[name]):
@@ -1474,7 +2246,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if isinstance(value, str):
                     return not (
                         re.search(
-                            r"[+*\[\]()${}]|latest[.]|(?:^|[-.])(alpha|bet"
+                            r"[+*\[\]()${}]|\blatest\b|(?:^|[-.])(alpha|bet"
                             r"a|rc|dev|snapshot|canary|preview|eap|m[0-9])",
                             value,
                             re.I,
@@ -1486,6 +2258,8 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if before_value == after_value:
                     return True
                 if isinstance(before_value, dict) and isinstance(after_value, dict):
+                    if set(before_value) != set(after_value):
+                        return False
                     return all(
                         stable_changes(before_value.get(key), value)
                         for key, value in after_value.items()
@@ -1833,9 +2607,14 @@ def classify(repo, number, head, base):
             or (name == "verification-metadata.xml" and "/gradle/" in "/" + path)
         )
         if structured and status in ("modified", "added"):
-            if status == "modified":
-                before = content(repo, path, ancestor)
-            after = content(repo, path, head)
+            try:
+                if status == "modified":
+                    before = content(repo, path, ancestor)
+                after = content(repo, path, head)
+            except UnicodeDecodeError:
+                # Binary or otherwise non-UTF8 dependency files are valid PR
+                # content, but cannot receive a dependency-only exemption.
+                return None
         if not structured and name not in LOCKS and name != "verification-metadata.xml":
             lines = changed_lines(file.get("patch"))
             if (
@@ -1907,6 +2686,58 @@ def classify(repo, number, head, base):
     for record in records:
         lock = PurePosixPath(record["path"])
         if lock.name not in LOCKS:
+            continue
+        if lock.name == "Package.resolved":
+            candidates = []
+            for parent in lock.parents:
+                if parent.name.endswith(".xcodeproj"):
+                    candidates = [str(parent / "project.pbxproj")]
+                    break
+                candidate = str(parent / "Package.swift")
+                if candidate in base_tree and candidate in head_tree:
+                    candidates = [candidate]
+                    break
+            if not candidates:
+                return None
+            manifest_path = candidates[0]
+            manifests = []
+            for ref, tree, side in (
+                (ancestor, base_tree, "before"),
+                (head, head_tree, "after"),
+            ):
+                entry = tree.get(manifest_path, {})
+                if entry.get("type") != "blob" or entry.get("mode") != "100644":
+                    return None
+                manifest = content(repo, manifest_path, ref)
+                if not swift_lock_matches_manifest(
+                    record[side], manifest, PurePosixPath(manifest_path).name
+                ):
+                    return None
+                manifests.append(manifest)
+            if (
+                manifests[0] == manifests[1]
+                and json.loads(record["before"])["originHash"]
+                != json.loads(record["after"])["originHash"]
+            ):
+                return None
+            continue
+        if lock.name == "Gemfile.lock":
+            # Direct lock requirements are validated, and remain unchanged.
+            # Bind the lock to an unchanged Gemfile; additions and arbitrary
+            # executable Ruby manifest changes require ordinary review.
+            manifest_path = str(lock.parent / "Gemfile")
+            for tree in (base_tree, head_tree):
+                entry = tree.get(manifest_path, {})
+                if entry.get("type") != "blob" or entry.get("mode") != "100644":
+                    return None
+            if base_tree[manifest_path]["sha"] != head_tree[manifest_path]["sha"]:
+                return None
+            manifest = content(repo, manifest_path, head)
+            if not all(
+                gemfile_lock_matches_manifest(record[side], manifest)
+                for side in ("before", "after")
+            ):
+                return None
             continue
         companion = records_by_path.get(str(lock.parent / "package.json"))
         if companion is None:
