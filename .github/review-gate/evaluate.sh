@@ -53,6 +53,8 @@ evidence_after="$finding_after"
 if [[ -n "$head_observed_at" && "$head_observed_at" > "$evidence_after" ]]; then
   evidence_after="$head_observed_at"
 fi
+event_name="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
+event_path="${FORWARDED_EVENT_PATH:-${GITHUB_EVENT_PATH:-}}"
 # Self-hosted runner services cache PATH at launch; export the
 # Homebrew paths so gh/jq resolve instead of failing with 127.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -68,7 +70,7 @@ command -v jq >/dev/null || {
   exit 1
 }
 
-if [[ "${GITHUB_EVENT_NAME:-}" == "workflow_dispatch" ]]; then
+if [[ "$event_name" == "workflow_dispatch" ]]; then
   if [[ ! "${INPUT_PR:-}" =~ ^[1-9][0-9]*$ ]]; then
     echo "Pull request input must be a positive integer."
     exit 1
@@ -257,7 +259,7 @@ latest_regular_review_invalidation_at() {
 }
 
 active_security_findings() {
-  local review_findings issue_comment_findings
+  local review_findings issue_comment_findings inline_findings security_reviews
   review_findings="$(
     # shellcheck disable=SC2016
     gh api graphql --paginate \
@@ -278,6 +280,20 @@ active_security_findings() {
            | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
            | {source: "review", id: (.databaseId // 0 | tostring)}]'
   )"
+  # Inline security deliveries may omit a textual head marker. Bind them to
+  # their authenticated originating review and immutable original commit.
+  # shellcheck disable=SC2016
+  security_reviews="$(gh api graphql --paginate \
+    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+    -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
+    | jq -rs --arg head "$head_sha" '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g" and .commit.oid == $head and .state != "DISMISSED") | .databaseId]')"
+  inline_findings="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate --slurp \
+    | jq -c --argjson reviews "$security_reviews" --arg head "$head_sha" '
+      [.[][] | select(.user.login == "chatgpt-codex-connector[bot]" and .user.id == 199175422 and .user.type == "Bot")
+       | select(.original_commit_id == $head)
+       | select(.pull_request_review_id as $id | $reviews | index($id))
+       | select((.body // "" | ascii_downcase) | contains("codex-security-review-finding:v1") or (contains("codex security review") and contains("[view security finding report](")))
+       | {source:"review", id:(.pull_request_review_id | tostring)}]')"
   issue_comment_findings="$(
     gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
       | jq -r --arg bot "$SECURITY_REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
@@ -290,7 +306,7 @@ active_security_findings() {
            | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
            | {source: "issue-comment", id: (.id // 0 | tostring)}]'
   )"
-  jq -cn --argjson reviews "$review_findings" --argjson comments "$issue_comment_findings" '$reviews + $comments'
+  jq -cn --argjson reviews "$review_findings" --argjson comments "$issue_comment_findings" --argjson inline "$inline_findings" '$reviews + $comments + $inline | unique'
 }
 
 # Exact-head regular PR reviews and explicit clean regular issue
@@ -337,11 +353,11 @@ regular_evidence() {
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              clean: ((.state != "DISMISSED") and ($body | stock_clean_envelope))}]'
+              clean: ((.state == "COMMENTED" or .state == "APPROVED") and ($body | stock_clean_envelope))}]'
   )"
   issue_comment_records="$(
     gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-      | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+      | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" --arg prior_body "${1:-}" --arg prior_id "${2:-}" '
           def regular_heading:
             ascii_downcase
             | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -359,6 +375,7 @@ regular_evidence() {
             test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[][]
+           | if (.id | tostring) == $prior_id then .body = $prior_body else . end
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
            | (.body // "") as $body
            | select($body | regular_heading)
@@ -449,7 +466,7 @@ security_history_head() {
 }
 
 security_findings_dismissed() {
-  local markers reviews comments
+  local markers reviews
   markers="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
     | jq -c --arg head "$head_sha" '
       [.[][] | select(.context == "review-security-history" and .state == "pending")
@@ -460,7 +477,8 @@ security_findings_dismissed() {
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* on head " + $head + "$")) then
            ($description | capture("withdrawn (?<source>issue-comment):(?<id>[1-9][0-9]*) on head"))
          else null end]')" || return 1
-  # Every retained origin must have explicit dismissal/deletion proof. Unknown
+  # Issue-comment deletion is not dismissal. Every review origin needs authenticated
+  # dismissal proof. Unknown
   # legacy markers cannot be cleared by unrelated reviews or API failures.
   jq -e 'length > 0 and all(.[]; . != null)' <<< "$markers" >/dev/null || return 1
   # shellcheck disable=SC2016
@@ -468,12 +486,10 @@ security_findings_dismissed() {
     -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
     -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
     | jq -rs '[.[] | .data.repository.pullRequest.reviews.nodes[]?]')" || return 1
-  comments="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-    | jq -c '[.[][] | .id | tostring]')" || return 1
-  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --argjson comments "$comments" --arg head "$head_sha" '
+  jq -en --argjson markers "$markers" --argjson reviews "$reviews" --arg head "$head_sha" '
     all($markers[]; . as $origin |
       if .source == "issue-comment" then
-        all($comments[]; . != $origin.id)
+        false
       else any($reviews[];
         (.databaseId | tostring) == $origin.id
         and .author.login == "chatgpt-codex-connector"
@@ -584,7 +600,13 @@ read_gate_snapshot() {
 }
 
 require_no_dependency_findings() {
-  if [[ "$(finding_history_head)" == "$head_sha" ]]; then
+  local current_review_request
+  current_review_request="$(read_review_request_at)"
+  if [[ -n "$current_review_request" ]]; then
+    stamp_review_gate pending "Explicit review requested; waiting for fresh regular review"
+    gate_pending
+  fi
+  if [[ "${edited_finding:-false}" == true || "$(finding_history_head)" == "$head_sha" ]]; then
     stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
     gate_pending
   fi
@@ -629,7 +651,10 @@ require_clean_regular_snapshot() {
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
-  if [[ "$(finding_history_head)" == "$head_sha" ]]; then
+  if [[ "$finding_count" -gt 0 ]]; then
+    stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
+  fi
+  if [[ "${edited_finding:-false}" == true || "$(finding_history_head)" == "$head_sha" ]]; then
     stamp_review_gate pending "Findings were reported on this head; push a fresh head"
     gate_pending
   fi
@@ -676,9 +701,6 @@ require_clean_regular_snapshot() {
     gate_pending
   fi
   if [[ -z "$verdict_at" || "$finding_count" -gt 0 ]]; then
-    if [[ "$finding_count" -gt 0 ]]; then
-      stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
-    fi
     stamp_review_gate pending "Regular review reported findings on $head_prefix"
     echo "The regular review reported $finding_count active finding(s) on the exact head."
     echo "Fix them, push a new head, and request the regular review again."
@@ -734,11 +756,17 @@ fi
 # A base retarget or force-push observed after the head snapshot invalidates
 # dependency exemption too. This check must precede classification because
 # evidence-only runs cannot safely persist a marker on the contributor head.
-if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true && -n "${REVIEW_HEAD_OBSERVED_AT:-}" ]]; then
+timeline_requires_review=false
+if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
     | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)" || exit 1
   timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
-  if [[ -n "$timeline_base_at" && "$timeline_base_at" > "$(normalize_timestamp "$REVIEW_HEAD_OBSERVED_AT")" ]]; then
+  if [[ -n "$timeline_base_at" && -z "$head_observed_at" ]]; then
+    # Without an authenticated head-observation watermark, a base event cannot
+    # justify an exemption. A fresh regular review can still recover normally.
+    timeline_requires_review=true
+    if [[ "$timeline_base_at" > "$evidence_after" ]]; then evidence_after="$timeline_base_at"; fi
+  elif [[ -n "$timeline_base_at" && "$timeline_base_at" > "$head_observed_at" ]]; then
     stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
     gate_pending
   fi
@@ -746,13 +774,71 @@ fi
 
 # A retarget event carries persistent base invalidation even when the head did
 # not change. Ignore stale deliveries for other heads or unrelated title edits.
-if [[ "${GITHUB_EVENT_NAME:-}" == pull_request_target && -f "${GITHUB_EVENT_PATH:-}" ]]; then
+if [[ "$event_name" == pull_request_target && -f "$event_path" ]]; then
   if jq -e --arg head "$head_sha" --argjson number "$pr_number" \
-    '.changes.base != null and .pull_request.number == $number and .pull_request.head.sha == $head' "$GITHUB_EVENT_PATH" >/dev/null; then
+    '.changes.base != null and .pull_request.number == $number and .pull_request.head.sha == $head' "$event_path" >/dev/null; then
     stamp_base_change_marker
     stamp_review_gate pending "Base changed; push a fresh head before evaluation"
     gate_pending
   fi
+fi
+
+# A trusted relay may deliver review or inline-review-comment events while the
+# workflow itself is running as workflow_dispatch. Preserve an authenticated
+# security finding from that payload even when the live API record is already
+# missing (for example after a delete or edit race).
+if [[ ("$event_name" == pull_request_review || "$event_name" == pull_request_review_comment) && -f "$event_path" ]] &&
+   jq -e --arg event "$event_name" --arg head "$head_sha" --argjson number "$pr_number" '
+     .pull_request.number == $number and .pull_request.head.sha == $head and
+     (if $event == "pull_request_review" then
+        .review.user.id == 199175422 and .review.user.type == "Bot" and
+        .review.user.login == "chatgpt-codex-connector[bot]" and
+        (.review.id | type == "number" and . > 0) and .review.commit_id == $head
+      else
+        .comment.user.id == 199175422 and .comment.user.type == "Bot" and
+        .comment.user.login == "chatgpt-codex-connector[bot]" and
+        (.comment.id | type == "number" and . > 0) and
+        (.comment.pull_request_review_id | type == "number" and . > 0) and
+        .comment.original_commit_id == $head
+      end)' "$event_path" >/dev/null; then
+  relayed_security_finding=false
+  if jq -e --arg event "$event_name" --arg head "$head_sha" '
+    ([if $event == "pull_request_review" then .review.body else .comment.body end,
+      .changes.body.from // ""] | any(
+        ((ascii_downcase | contains("codex security review")) and
+         (contains("codex-security-review-finding:v1") or contains("[view security finding report](")))
+      ))' "$event_path" >/dev/null; then
+    relayed_security_finding=true
+  fi
+  if [[ "$relayed_security_finding" == true ]]; then
+    if [[ "$event_name" == pull_request_review ]]; then
+      relayed_review_id="$(jq -r '.review.id' "$event_path")"
+    else
+      relayed_review_id="$(jq -r '.comment.pull_request_review_id' "$event_path")"
+    fi
+    stamp_status "review-security-history" pending \
+      "Security findings observed on head $head_sha; review:$relayed_review_id" >/dev/null
+    if [[ "$(jq -r '.action' "$event_path")" != dismissed ]]; then
+      security_withdrawal_unresolved=true
+    fi
+  fi
+fi
+
+# A relayed inline review comment can be edited or deleted after its original
+# delivery was missed. Preserve the authenticated originating review as
+# blocking history even when the mutable comment is no longer available.
+if [[ "$event_name" == pull_request_review_comment && -f "$event_path" ]] &&
+   jq -e --arg head "$head_sha" --argjson number "$pr_number" '
+     .pull_request.number == $number and .pull_request.head.sha == $head and
+     (.action == "edited" or .action == "deleted") and
+     .comment.user.id == 199175422 and .comment.user.type == "Bot" and
+     .comment.user.login == "chatgpt-codex-connector[bot]" and
+     (.comment.pull_request_review_id | type == "number" and . > 0) and
+     .comment.original_commit_id == $head' "$event_path" >/dev/null; then
+  relayed_review_id="$(jq -r '.comment.pull_request_review_id' "$event_path")"
+  stamp_status "review-security-history" pending \
+    "Relayed inline review changed on head $head_sha; review:$relayed_review_id" >/dev/null
+  security_withdrawal_unresolved=true
 fi
 
 # Persist authenticated withdrawal deliveries even when their deleted body no
@@ -760,21 +846,21 @@ fi
 if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; withdrawn delivery" >/dev/null
 fi
-  if [[ "${GITHUB_EVENT_NAME:-}" == issue_comment && -f "${GITHUB_EVENT_PATH:-}" ]] &&
+  if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
    jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
      (.action == "deleted" or .action == "edited") and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] | any(
        (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
-       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:(?:codex[[:space:]-]+security[[:space:]-]+review)|(?:codex[[:space:]]+review)|review result)(?:[[:space:]]*:|[[:space:]]|$)")))' "$GITHUB_EVENT_PATH" >/dev/null; then
+       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:(?:codex[[:space:]-]+security[[:space:]-]+review)|(?:codex[[:space:]]+review)|review result)(?:[[:space:]]*:|[[:space:]]|$)")))' "$event_path" >/dev/null; then
   edited_clean=false
   security_event=false
   if jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
     ([.comment.body // "", .changes.body.from // ""] | any(
       (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
       test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+security[[:space:]-]+review)(?:[[:space:]]*:|[[:space:]]|$)")))
-  ' "$GITHUB_EVENT_PATH" >/dev/null; then
+  ' "$event_path" >/dev/null; then
     security_event=true
     # Security notices are never regular-review withdrawals.
     edited_clean=true
@@ -784,26 +870,40 @@ fi
     ([.comment.body // "", .changes.body.from // ""] | any(
       (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
       (ascii_downcase | contains("codex-security-review-finding:v1") or contains("[view security finding report]("))))
-  ' "$GITHUB_EVENT_PATH" >/dev/null; then
+  ' "$event_path" >/dev/null; then
     security_finding=true
   fi
   if [[ "$security_finding" == true ]]; then
-    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
+    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
     withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-    comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
+    comment_id="$(jq -r '.comment.id // empty' "$event_path")"
     security_marker="withdrawn delivery"
     if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
       security_marker="withdrawn issue-comment:$comment_id"
     fi
-    if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || "$(jq -r '.action' "$GITHUB_EVENT_PATH")" != deleted ]]; then
+    if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || "$(jq -r '.action' "$event_path")" != deleted ]]; then
       security_withdrawal_unresolved=true
     fi
     stamp_status "review-security-history" pending "Security review invalidated at $withdrawal_at; $security_marker on head $head_sha" >/dev/null
     edited_clean=true
   fi
-  if [[ "$security_event" != true && "$(jq -r '.action' "$GITHUB_EVENT_PATH")" == edited ]]; then
+  if [[ "$security_event" != true && "$(jq -r '.action' "$event_path")" == edited ]]; then
+    prior_body="$(jq -r '.changes.body.from // empty' "$event_path")"
+    prior_id="$(jq -r '.comment.id // empty' "$event_path")"
+    if [[ -n "$prior_body" ]] && jq -en --arg body "$prior_body" --arg head "$head_sha" --arg prefix "$head_prefix" '
+      $body | contains("`" + $head + "`") or contains("`" + $prefix + "`")' >/dev/null; then
+      prior_evidence="$(regular_evidence "$prior_body" "$prior_id")"
+      if jq -e --arg id "issue-comment-$prior_id" 'any(.deliveries[]; .id == $id and (.clean | not))' <<< "$prior_evidence" >/dev/null; then
+        stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
+        # A status read immediately after writing can lag. Carry this fact
+        # into both branches in memory as well as the durable history.
+        edited_finding=true
+        finding_after="$(normalize_timestamp "$(jq -r '.comment.updated_at' "$event_path")")"
+        evidence_after="$finding_after"
+      fi
+    fi
     edited_evidence="$(regular_evidence)"
-    if jq -e --slurpfile event "$GITHUB_EVENT_PATH" '
+    if jq -e --slurpfile event "$event_path" '
       any(.deliveries[]; .source == "issue_comment" and .clean and
           .id == ("issue-comment-" + ($event[0].comment.id | tostring)) and .body == $event[0].comment.body)
     ' <<< "$edited_evidence" >/dev/null; then
@@ -811,9 +911,9 @@ fi
     fi
   fi
   if [[ "$edited_clean" != true ]]; then
-    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$GITHUB_EVENT_PATH")"
+    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
     withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-    comment_id="$(jq -r '.comment.id // empty' "$GITHUB_EVENT_PATH")"
+    comment_id="$(jq -r '.comment.id // empty' "$event_path")"
     if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
       withdrawal_marker="withdrawn issue-comment:$comment_id"
     else
@@ -824,6 +924,30 @@ fi
   fi
 fi
 
+# A trusted explicit request opts this PR into regular review, including
+# dependency-only changes. Keep the watermark so a later clean verdict can
+# recover through the regular path instead of becoming permanently pending.
+read_review_request_at() {
+  gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
+  | jq -r '[.[][] | select(.event == "commented" and .actor.type == "User" and
+    ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and
+    ((.body // "") | ascii_downcase | contains("@codex review"))) | (.updated_at // .created_at)]' | latest_timestamp
+}
+refresh_review_timeline_watermark() {
+  local latest_request_at
+  latest_request_at="$(read_review_request_at)"
+  if [[ "$latest_request_at" > "$evidence_after" ]]; then evidence_after="$latest_request_at"; fi
+  if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
+    local latest_base_at
+    latest_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
+      | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)"
+    latest_base_at="$(normalize_timestamp "$latest_base_at")"
+    if [[ "$latest_base_at" > "$evidence_after" ]]; then evidence_after="$latest_base_at"; fi
+  fi
+}
+review_request_at="$(read_review_request_at)"
+if [[ "$review_request_at" > "$evidence_after" ]]; then evidence_after="$review_request_at"; fi
+
 # Classify the whole diff for every author. A dependency title, branch, label,
 # or bot login alone never exempts unrelated application/workflow changes.
 stamp_review_gate pending "Classifying dependency-only changes on $head_prefix"
@@ -833,6 +957,7 @@ classifier="${DEPENDENCY_CLASSIFIER:-${BASH_SOURCE[0]}.dependencies.py}"
 # classification result, so do not translate it through the inherited ERR trap.
 classify_dependencies() {
   trap - ERR
+  [[ -z "$review_request_at" && "$timeline_requires_review" != true ]] || return 3
   REPO="$REPO" PR_NUMBER="$pr_number" HEAD_SHA="$head_sha" BASE_SHA="$base_sha" \
     python3 "$classifier"
 }
@@ -901,6 +1026,7 @@ if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_watermark="$(normalize_timestamp "$timeline_watermark")"
   if [[ "$timeline_watermark" > "$evidence_after" ]]; then evidence_after="$timeline_watermark"; fi
 fi
+refresh_review_timeline_watermark
 gate_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$gate_snapshot"
 
@@ -932,6 +1058,7 @@ if [[ "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || 
   echo "The PR became draft or automatic merge was enabled during evaluation."
   gate_pending
 fi
+refresh_review_timeline_watermark
 final_gate_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$final_gate_snapshot"
 
@@ -976,6 +1103,7 @@ case "$evidence_source" in
 esac
 stamp_review_gate success "Clean regular review for $head_prefix; evidence $evidence_marker"
 trap 'stamp_review_gate pending "Review state could not be revalidated after publication"; exit 1' ERR
+refresh_review_timeline_watermark
 post_success_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$post_success_snapshot"
 post_snapshot="$(read_pr_snapshot)"

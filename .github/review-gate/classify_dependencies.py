@@ -118,6 +118,14 @@ def swift_package_resolved_change(
             or not parsed.path
         ):
             return None
+        # SwiftPM derives source-control identity from the final URL component,
+        # removing the .git suffix and folding case. A differently named pin
+        # does not lock this manifest dependency.
+        expected_identity = (
+            parsed.path.rstrip("/").rsplit("/", 1)[-1].removesuffix(".git").lower()
+        )
+        if not expected_identity or pin["identity"].lower() != expected_identity:
+            return None
         state = pin["state"]
         if (
             not isinstance(state, dict)
@@ -128,14 +136,10 @@ def swift_package_resolved_change(
             or not STABLE_VERSION.fullmatch(state.get("version", ""))
         ):
             return None
-        return pin["identity"], pin["kind"], pin["location"]
+        return pin["identity"].lower()
 
     old_pins, new_pins = before.get("pins"), after.get("pins")
-    if (
-        not isinstance(old_pins, list)
-        or not isinstance(new_pins, list)
-        or len(old_pins) != len(new_pins)
-    ):
+    if not isinstance(old_pins, list) or not isinstance(new_pins, list):
         return False
     old = {pin_key(pin): pin for pin in old_pins}
     new = {pin_key(pin): pin for pin in new_pins}
@@ -144,11 +148,15 @@ def swift_package_resolved_change(
         or None in new
         or len(old) != len(old_pins)
         or len(new) != len(new_pins)
-        or set(old) != set(new)
-        or len({key[0] for key in old if key is not None}) != len(old)
+        or (old.keys() - new.keys() and new.keys() - old.keys())
     ):
         return False
-    for key in old:
+    for key in set(old) & set(new):
+        if (old[key]["kind"], old[key]["location"]) != (
+            new[key]["kind"],
+            new[key]["location"],
+        ):
+            return False
         old_state, new_state = old[key]["state"], new[key]["state"]
         if (
             old_state["version"] == new_state["version"]
@@ -163,7 +171,9 @@ def swift_package_resolved_change(
     return True
 
 
-def swift_lock_matches_manifest(lock_text, manifest_text, manifest_name):
+def swift_lock_matches_manifest(
+    lock_text, manifest_text, manifest_name, include_locations=False
+):
     """Bind direct registry pins to supported literal Swift/Xcode requirements."""
     try:
         pins = json.loads(lock_text)["pins"]
@@ -234,9 +244,11 @@ def swift_lock_matches_manifest(lock_text, manifest_text, manifest_name):
                 )
                 for m in matches
             ]
-        if not requirements or len(
-            {location(url) for url, _, _ in requirements}
-        ) != len(requirements):
+        if not requirements:
+            if pins:
+                return False
+            return set() if include_locations else True
+        if len({location(url) for url, _, _ in requirements}) != len(requirements):
             return False
         for url, kind, minimum in requirements:
             value = locked.get(location(url))
@@ -261,7 +273,9 @@ def swift_lock_matches_manifest(lock_text, manifest_text, manifest_name):
                 )
                 if not lower <= actual < upper:
                     return False
-        return True
+        return (
+            {location(url) for url, _, _ in requirements} if include_locations else True
+        )
     except INVALID_STRUCTURE:
         return False
 
@@ -337,8 +351,14 @@ def gemfile_lock_matches_manifest(lock_text, manifest):
 
 
 def gemfile_lock_update(before, after):
-    """Registry version changes with an unchanged source, membership and graph."""
+    """Registry version changes with validated reachable graph and fixed sources."""
     numeric = r"[0-9]+(?:\.[0-9]+)*"
+    platform = (
+        r"(?:-(?:arm64|aarch64|x86_64|x86|universal|java|jruby|mingw|"
+        r"mswin|ruby|darwin|linux|freebsd|solaris|cygwin|windows)"
+        r"(?:[-_.][A-Za-z0-9]+)*)?"
+    )
+    gem_version = numeric + platform
     name = r"[A-Za-z0-9_][A-Za-z0-9_.-]*"
 
     def version(raw):
@@ -369,7 +389,10 @@ def gemfile_lock_update(before, after):
         return found
 
     def satisfies(value, constraint):
-        v = version(value)
+        match = re.fullmatch(gem_version, value)
+        if not match:
+            raise ValueError("unsupported gem version")
+        v = tuple(map(int, match.group(0).split("-", 1)[0].split(".")))
         for op, wanted in requirements(constraint):
             cmp = compare(v, wanted)
             if op == "~>":
@@ -414,8 +437,12 @@ def gemfile_lock_update(before, after):
                 raise ValueError("duplicate or missing section")
         records = {}
         edges = []
-        registry_lines = set()
+        graph = {}
+        roots = set()
+        metadata = []
         for kind, lines in sections:
+            if kind != "GEM":
+                metadata.append((kind, lines))
             if kind not in {"GEM", "GIT"}:
                 continue
             marker = lines.index("  specs:")
@@ -453,21 +480,27 @@ def gemfile_lock_update(before, after):
                     if key != "remote"
                 ):
                     raise ValueError("mutable git revision")
+            if kind == "GEM":
+                metadata.append((kind, lines[: marker + 1]))
             current = None
             for line in lines[marker + 1 :]:
-                spec = re.fullmatch(r"    (" + name + r") \((" + numeric + r")\)", line)
+                spec = re.fullmatch(
+                    r"    (" + name + r") \((" + gem_version + r")\)", line
+                )
                 if spec:
                     current = spec[1]
                     if current in records:
                         raise ValueError("duplicate package")
                     records[current] = (spec[2], kind)
-                    if kind == "GEM":
-                        registry_lines.add(line)
+                    graph[current] = {}
                     continue
                 dep = re.fullmatch(r"      (" + name + r")(?: \(([^()]+)\))?", line)
                 if not dep or current is None:
                     raise ValueError("unsupported gem spec")
                 requirements(dep[2] or "")
+                if dep[1] in graph[current]:
+                    raise ValueError("duplicate dependency edge")
+                graph[current][dep[1]] = dep[2] or ""
                 edges.append((dep[1], dep[2] or ""))
         for kind, lines in sections:
             if kind == "PLATFORMS":
@@ -487,6 +520,7 @@ def gemfile_lock_update(before, after):
                     if not dep or dep[1] in seen or dep[1] not in records:
                         raise ValueError("invalid direct dependency")
                     seen.add(dep[1])
+                    roots.add(dep[1])
                     requirements(dep[2] or "")
                     if bool(dep[3]) != (records[dep[1]][1] == "GIT"):
                         raise ValueError("changed source binding")
@@ -495,23 +529,48 @@ def gemfile_lock_update(before, after):
             target = bundled if dep == "bundler" else records.get(dep, (None, None))[0]
             if target is None or not satisfies(target, constraint):
                 raise ValueError("unresolved gem requirement")
-        return registry_lines
+        reachable, pending = set(), list(roots)
+        while pending:
+            key = pending.pop()
+            if key in reachable or key == "bundler":
+                continue
+            reachable.add(key)
+            pending.extend(graph[key])
+        if set(records) != reachable:
+            raise ValueError("unreachable gem record")
+        return records, graph, metadata
 
     try:
-        old_lines, new_lines = before.splitlines(), after.splitlines()
-        if old_lines == new_lines or len(old_lines) != len(new_lines):
+        if before == after:
             return False
-        old_specs, new_specs = parse(before), parse(after)
-        changed = False
-        for old, new in zip(old_lines, new_lines, strict=False):
-            if old == new:
-                continue
-            if old not in old_specs or new not in new_specs:
+        old_records, old_graph, old_metadata = parse(before)
+        new_records, new_graph, new_metadata = parse(after)
+        if old_metadata != new_metadata:
+            return False
+        changed_version = False
+        for key in old_records.keys() & new_records.keys():
+            old_version, old_source = old_records[key]
+            new_version, new_source = new_records[key]
+            if old_source != new_source:
                 return False
-            if old.split(" (", 1)[0] != new.split(" (", 1)[0]:
+            old_platform = re.fullmatch(gem_version, old_version).group(0).split(
+                "-", 1
+            )[1:]  # Preserve native gem platform identity across updates.
+            new_platform = re.fullmatch(gem_version, new_version).group(0).split(
+                "-", 1
+            )[1:]
+            if old_platform != new_platform:
                 return False
-            changed = True
-        return changed
+            if old_version == new_version:
+                if old_graph[key] != new_graph[key]:
+                    return False
+            else:
+                if old_source != "GEM":
+                    return False
+                changed_version = True
+        # Graph churn must be justified by a changed registry package; root
+        # requirements and every Git section remain identical above.
+        return changed_version
     except INVALID_STRUCTURE:
         return False
 
@@ -569,6 +628,8 @@ def package_constraints(before, after, fields):
         old_values, new_values = before.get(field, {}), after.get(field, {})
         if old_values == new_values:
             continue
+        if field == "peerDependenciesMeta":
+            return False
         if not isinstance(old_values, dict) or not isinstance(new_values, dict):
             return False
         removed_names = set(old_values) - set(new_values)
@@ -592,7 +653,6 @@ def package_constraints(before, after, fields):
             old, new = old_values.get(name), new_values.get(name)
             if old == new or name not in new_values:
                 continue
-            old_present = name in old_values
             if old is None and isinstance(new, str):
                 old = new
             if field in ("overrides", "resolutions"):
@@ -609,9 +669,14 @@ def package_constraints(before, after, fields):
                     old = {}
                 if not valid_peer_metadata(old) or not valid_peer_metadata(new):
                     return False
-                if old_present and old != new:
+                # Peer optionality is install/validation behavior, not a
+                # version selector. It must remain byte-for-byte stable,
+                # including additions and removals.
+                if old != new:
                     return False
-            elif not valid_npm_constraint(old) or not valid_npm_constraint(new):
+            elif not valid_manifest_npm_constraint(
+                old
+            ) or not valid_manifest_npm_constraint(new):
                 return False
     return True
 
@@ -639,9 +704,18 @@ def valid_npm_constraint(value):
     return True
 
 
+def valid_manifest_npm_constraint(value):
+    """Manifest selectors must not float to an arbitrary registry version."""
+    return (
+        isinstance(value, str) and value.strip() != "*" and valid_npm_constraint(value)
+    )
+
+
 def valid_nested_constraints(value):
     if isinstance(value, str):
-        return valid_npm_constraint(value)
+        # An override/resolution wildcard floats a transitive package to an
+        # arbitrary registry release and cannot receive the exemption.
+        return value.strip() != "*" and valid_npm_constraint(value)
     if isinstance(value, dict):
         return all(valid_nested_constraints(item) for item in value.values())
     return False
@@ -744,6 +818,15 @@ def requirement_marker(value):
     if not isinstance(value, str) or ";" not in value:
         return None
     return value.split(";", 1)[1].strip()
+
+
+def requirement_has_selector(value):
+    return bool(
+        re.search(
+            r"(?:===|==|~=|!=|<=|>=|<|>|\^|~)\s*[^;#\s]",
+            value.split(";", 1)[0],
+        )
+    )
 
 
 def requirement_markers_preserved(before, after):
@@ -883,9 +966,13 @@ def dependency_list_change(before, after):
     }
     if old_names - new_names and new_names - old_names:
         return False
-    return requirement_markers_preserved(old_values, new_values) and all(
-        valid_requirement(value) for value in new_values
-    )
+    if not requirement_markers_preserved(old_values, new_values):
+        return False
+    for value in new_values:
+        name = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower()
+        if name not in old_names and not requirement_has_selector(value):
+            return False
+    return all(valid_requirement(value) for value in new_values)
 
 
 def toml_dependency_change(before, after, paths):
@@ -1216,13 +1303,13 @@ def npm_version_satisfies(version, constraint):
 def npm_lock_update(before, after):
     """Allow registry version updates, binding artifact identity and checksums.
 
-    npm v3 is the supported grammar. Other schemas and newly introduced lock
-    files need review until their source semantics have dedicated validators.
+    npm v2 and v3 are supported when their normalized graph and artifact
+    metadata pass validation; other lock schemas need ordinary review.
     """
 
     def parse(text):
         value = json.loads(text)
-        if not isinstance(value, dict) or value.get("lockfileVersion") != 3:
+        if not isinstance(value, dict) or value.get("lockfileVersion") not in (2, 3):
             raise ValueError("unsupported lock schema")
         packages = value.get("packages")
         if not isinstance(packages, dict) or "" not in packages:
@@ -1350,8 +1437,6 @@ def npm_lock_update(before, after):
                     # Resolve npm's nearest ancestor node_modules entry.
                     target = resolve_dependency(path, identity)
                     if target is None:
-                        if field == "optionalDependencies":
-                            continue
                         raise ValueError("missing graph dependency")
                     graph[path].add(paths_by_node[id(target)])
                     if not npm_version_satisfies(target["version"], constraint):
@@ -1377,6 +1462,84 @@ def npm_lock_update(before, after):
             if path not in reachable:
                 reachable.add(path)
                 pending.extend(graph[path] - reachable)
+        if value.get("lockfileVersion") == 2:
+            legacy = value.get("dependencies")
+            if not isinstance(legacy, dict):
+                raise ValueError("missing legacy dependency tree")
+
+            # npm v2 carries both the normalized packages graph and a legacy
+            # dependency tree. Flatten the latter to package paths and bind
+            # its install-relevant fields to the normalized records.
+            legacy_nodes = {}
+
+            def walk_legacy(tree, parent=""):
+                if not isinstance(tree, dict):
+                    raise ValueError("invalid legacy dependency tree")
+                for name, node in tree.items():
+                    if (
+                        not isinstance(name, str)
+                        or not re.fullmatch(r"(?:@[a-z0-9._-]+/)?[a-z0-9._-]+", name)
+                        or not isinstance(node, dict)
+                    ):
+                        raise ValueError("invalid legacy package")
+                    path = (
+                        f"{parent}/node_modules/{name}"
+                        if parent
+                        else f"node_modules/{name}"
+                    )
+                    if path in legacy_nodes:
+                        raise ValueError("duplicate legacy package")
+                    if set(node) - {
+                        "version",
+                        "resolved",
+                        "integrity",
+                        "dev",
+                        "optional",
+                        "devOptional",
+                        "peer",
+                        "requires",
+                        "dependencies",
+                        "bundled",
+                    }:
+                        raise ValueError("unsupported legacy package metadata")
+                    legacy_nodes[path] = node
+                    nested = node.get("dependencies", {})
+                    if not isinstance(nested, dict):
+                        raise ValueError("invalid nested legacy dependency tree")
+                    walk_legacy(nested, path)
+
+            walk_legacy(legacy)
+            package_paths = set(packages) - {""}
+            if set(legacy_nodes) != package_paths:
+                raise ValueError("legacy/package graph mismatch")
+            # The v2 `requires` map mirrors install dependencies and optional
+            # dependencies; peer metadata is represented in `packages` only.
+            dependency_fields = ("dependencies", "optionalDependencies")
+            for path in package_paths:
+                package = packages[path]
+                legacy_node = legacy_nodes[path]
+                for field in ("version", "resolved", "integrity"):
+                    if package.get(field) != legacy_node.get(field):
+                        raise ValueError("legacy package metadata mismatch")
+                if bool(package.get("inBundle", False)) != bool(
+                    legacy_node.get("bundled", False)
+                ):
+                    raise ValueError("legacy bundle mismatch")
+                for field in ("peer", "optional", "dev", "devOptional"):
+                    if package.get(field) != legacy_node.get(field):
+                        raise ValueError("legacy package flags mismatch")
+                requires = {}
+                for field in dependency_fields:
+                    dependencies = package.get(field, {})
+                    if not isinstance(dependencies, dict):
+                        raise ValueError("invalid package dependency map")
+                    requires.update(dependencies)
+                if legacy_node.get("requires", {}) != requires:
+                    raise ValueError("legacy package requirements mismatch")
+            # The consistency check above authorizes the legacy projection;
+            # remove it before old/new comparison so legitimate version bumps
+            # are compared through the normalized packages graph.
+            value.pop("dependencies")
         return value, reachable, bundled_owners
 
     try:
@@ -1426,7 +1589,11 @@ def npm_lock_update(before, after):
             "peerDependencies",
         }
         removed = old_packages.keys() - new_packages.keys()
-        if old != new or not removed <= old_reachable:
+        if (
+            old != new
+            or not removed <= old_reachable
+            or not (new_packages.keys() - {""}) <= new_reachable
+        ):
             return False
         # Root executable metadata must not change with dependency versions.
         root_old, root_new = dict(old_packages[""]), dict(new_packages[""])
@@ -1488,7 +1655,10 @@ def dependency_file(path, before, after, patch, status="modified"):
             return False
         return npm_lock_update(before, after)
     if path.startswith(".github/workflows/") and name.endswith((".yml", ".yaml")):
-        return replacements(
+        changed = changed_lines(patch)
+        if changed is None:
+            return False
+        valid = replacements(
             patch,
             (
                 r"(?P<prefix>[ \t]*(?:-[ \t]+)?uses:[ \t]*[\w.-]+/"
@@ -1499,6 +1669,17 @@ def dependency_file(path, before, after, patch, status="modified"):
             True,
             immutable_refs=True,
         )
+        if not valid:
+            return False
+        for line in changed[1]:
+            match = re.fullmatch(
+                r"[ \t]*(?:-[ \t]+)?uses:[ \t]*[\w.-]+/[\w./-]+@"
+                r"(?P<ref>[^ \t#]+)[ \t]*(?:#.*)?",
+                line,
+            )
+            if not match or not SHA.fullmatch(match["ref"].lower()):
+                return False
+        return True
     if name.startswith("Dockerfile"):
         return replacements(
             patch,
@@ -1601,7 +1782,41 @@ def dependency_file(path, before, after, patch, status="modified"):
                         return False
                 return True
 
-            return before != after and valid_components(old) and valid_components(new)
+            def component_coordinates(root):
+                groups = [node for node in root if local(node.tag) == "components"]
+                if len(groups) != 1:
+                    return None
+                return sorted(
+                    (
+                        node.attrib.get("group"),
+                        node.attrib.get("name"),
+                        node.attrib.get("version"),
+                    )
+                    for node in groups[0]
+                    if local(node.tag) == "component"
+                )
+
+            if not valid_components(old) or not valid_components(new):
+                return False
+            old_components = next(
+                node for node in old if local(node.tag) == "components"
+            )
+            new_components = next(
+                node for node in new if local(node.tag) == "components"
+            )
+            for previous, current in zip(old_components, new_components, strict=False):
+                if previous.attrib["version"] == current.attrib["version"]:
+                    prior_data = [
+                        (local(node.tag), node.attrib) for node in previous.iter()
+                    ]
+                    current_data = [
+                        (local(node.tag), node.attrib) for node in current.iter()
+                    ]
+                    if prior_data != current_data:
+                        return False
+            return before != after and component_coordinates(
+                old
+            ) != component_coordinates(new)
         except ET.ParseError:
             return False
     if re.fullmatch(r"(?:requirements|constraints)(?:[._-][\w.-]+)?\.(?:txt|in)", name):
@@ -1639,12 +1854,62 @@ def dependency_file(path, before, after, patch, status="modified"):
         new_requirements = [
             value for value in new_values if not value.startswith("--hash=")
         ]
+
+        def hash_records(values):
+            result = {}
+            current = None
+            for value in semantic(values):
+                value = value.removesuffix("\\").strip()
+                if value.startswith("--hash="):
+                    if current is None:
+                        return None
+                    result[current][1].append(value)
+                else:
+                    current = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].lower()
+                    if current in result:
+                        return None
+                    result[current] = (value, [])
+            return result
+
+        # Bind hashes using complete immutable files, not patch context: an
+        # unrelated version bump cannot authorize another package's hash edit.
+        old_records = hash_records(
+            before.splitlines() if before is not None else lines[0]
+        )
+        new_records = hash_records(
+            after.splitlines() if after is not None else lines[1]
+        )
+        if old_records is None or new_records is None:
+            return False
+        if any(hashes for _, hashes in old_records.values()):
+            # Once a requirements file carries artifact hashes, a newly added
+            # package must carry at least one hash as well; otherwise the
+            # dependency-only path could weaken the file's integrity policy.
+            for identity in new_records.keys() - old_records.keys():
+                if not new_records[identity][1]:
+                    return False
+        for identity in old_records.keys() & new_records.keys():
+            old_requirement, old_hashes = old_records[identity]
+            new_requirement, new_hashes = new_records[identity]
+            if len(new_hashes) < len(old_hashes):
+                return False
+            if old_requirement == new_requirement and old_hashes != new_hashes:
+                return False
         return (
             old_values != new_values
+            # Hash-only churn is not a version update and must not be accepted
+            # after the hash lines have been stripped from both projections.
+            and old_requirements != new_requirements
             and all(
                 not line.split("#", 1)[0].strip()
                 or valid_requirement_line(line.split("#", 1)[0].strip())
                 for line in lines[0] + lines[1]
+            )
+            and all(
+                re.search(
+                    r"(?:===|==|~=|!=|<=|>=|<|>|\^|~)\s*[^;#\s]", line.split(";", 1)[0]
+                )
+                for line in new_requirements
             )
             and requirement_markers_preserved(old_requirements, new_requirements)
         )
@@ -1705,9 +1970,24 @@ def dependency_file(path, before, after, patch, status="modified"):
         )
         if lines and (not lines[0] or not lines[1]):
             changed = lines[0] + lines[1]
-            return bool(changed) and all(
+            if not changed or not all(
                 re.fullmatch(declaration, line) for line in changed
-            )
+            ):
+                return False
+            if lines[1]:
+                for line in lines[1]:
+                    constraint = re.fullmatch(
+                        r"\s*gem\s+['\"][A-Za-z0-9_.-]+['\"]\s*,\s*['\"]"
+                        r"(?P<value>[0-9<>=~.,* _+-]+)['\"]\s*",
+                        line,
+                    )
+                    if (
+                        not constraint
+                        or not stable_version(constraint.group("value"))
+                        or not re.search(r"[0-9]", constraint.group("value"))
+                    ):
+                        return False
+            return True
         return replacements(
             patch,
             (
@@ -1801,6 +2081,23 @@ def dependency_file(path, before, after, patch, status="modified"):
                     return None
                 identity = re.search(r"\b(?:url|name)\s*:\s*[\"']([^\"']+)[\"']", body)
                 if not identity:
+                    return None
+                parsed = urlparse(identity.group(1))
+                try:
+                    port = parsed.port
+                except ValueError:
+                    return None
+                if (
+                    parsed.scheme != "https"
+                    or not parsed.hostname
+                    or parsed.username
+                    or parsed.password
+                    or port is not None
+                    or parsed.query
+                    or parsed.fragment
+                    or parsed.params
+                    or not parsed.path
+                ):
                     return None
                 # Package.swift is executable Swift. A version variable or
                 # expression can change the selected dependency without
@@ -1975,11 +2272,6 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
             old_kind = re.findall(r"\bkind = ([A-Za-z0-9]+);", old_raw)
             new_kind = re.findall(r"\bkind = ([A-Za-z0-9]+);", new_raw)
-            old_version = re.findall(
-                r"\b(?:minimumVersion|maximumVersion|version) = \"?("
-                r"[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
-                old_raw,
-            )
             new_version = re.findall(
                 r"\b(?:minimumVersion|maximumVersion|version) = \"?("
                 r"[0-9]+(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
@@ -1987,7 +2279,7 @@ def dependency_file(path, before, after, patch, status="modified"):
             )
             if any(not stable_version(value) for value in new_version):
                 return False
-            if old_kind != new_kind and old_version == new_version:
+            if old_kind != new_kind:
                 return False
         for identity in added:
             _, raw = new_entries[identity]
@@ -2163,6 +2455,14 @@ def dependency_file(path, before, after, patch, status="modified"):
                     not (old_names - new_names and new_names - old_names)
                     and requirement_markers_preserved(old_req, new_req)
                     and all(valid_requirement(item) for item in new_req)
+                    and all(
+                        item in old_req
+                        or re.search(
+                            r"(?:===|==|~=|!=|<=|>=|<|>|\^|~)\s*[^;#\s]",
+                            item.split(";", 1)[0],
+                        )
+                        for item in new_req
+                    )
                 )
             if name == "composer.json":
                 if not only_fields(old_json, new_json, JSON_FIELDS[name]):
@@ -2349,6 +2649,18 @@ def dependency_file(path, before, after, patch, status="modified"):
                     )
                 old_names |= dependency_names(old_value, kind)
                 new_names |= dependency_names(new_value, kind)
+                # Poetry's `python` entry declares the interpreter/runtime,
+                # rather than an installable dependency; runtime-floor edits
+                # must stay under ordinary review.
+                if path[:3] == ("tool", "poetry", "dependencies"):
+                    if not isinstance(old_value, dict) or not isinstance(
+                        new_value, dict
+                    ):
+                        return False
+                    if old_value.get("python") != new_value.get("python"):
+                        return False
+                    old_names.discard("python")
+                    new_names.discard("python")
                 for dependency, scopes in dependency_scopes(
                     old_value, kind, path
                 ).items():
@@ -2442,6 +2754,19 @@ def dependency_file(path, before, after, patch, status="modified"):
                         if line.strip() and not line.lstrip().startswith("#")
                     ):
                         return False
+                    if not requirement_markers_preserved(
+                        [
+                            line.strip()
+                            for line in old_value.splitlines()
+                            if line.strip()
+                        ],
+                        [
+                            line.strip()
+                            for line in values
+                            if line.strip() and not line.lstrip().startswith("#")
+                        ],
+                    ):
+                        return False
                     old_names = {
                         re.split(r"[<>=!~; @]", line.strip(), maxsplit=1)[0].lower()
                         for line in old_value.splitlines()
@@ -2454,6 +2779,16 @@ def dependency_file(path, before, after, patch, status="modified"):
                     }
                     if old_names - new_names and new_names - old_names:
                         return False
+                    for line in values:
+                        if not line.strip() or line.lstrip().startswith("#"):
+                            continue
+                        name = re.split(r"[<>=!~; @]", line.strip(), maxsplit=1)[
+                            0
+                        ].lower()
+                        if name not in old_names and not requirement_has_selector(
+                            line.strip()
+                        ):
+                            return False
             for data in (old, new):
                 for key in ("install_requires", "setup_requires", "tests_require"):
                     data.get("options", {}).pop(key, None)
@@ -2592,8 +2927,14 @@ def classify(repo, number, head, base):
         name = PurePosixPath(path).name
         before = after = None
         # Content validation is necessary for manifests with non-dependency keys.
+        requirement_file = bool(
+            re.fullmatch(
+                r"(?:requirements|constraints)(?:[._-][\w.-]+)?\.(?:txt|in)", name
+            )
+        )
         structured = (
-            name in JSON_FIELDS
+            requirement_file
+            or name in JSON_FIELDS
             or name
             in (
                 "pyproject.toml",
@@ -2615,7 +2956,11 @@ def classify(repo, number, head, base):
                 # Binary or otherwise non-UTF8 dependency files are valid PR
                 # content, but cannot receive a dependency-only exemption.
                 return None
-        if not structured and name not in LOCKS and name != "verification-metadata.xml":
+        if (
+            (not structured or requirement_file)
+            and name not in LOCKS
+            and name != "verification-metadata.xml"
+        ):
             lines = changed_lines(file.get("patch"))
             if (
                 lines is None
@@ -2639,6 +2984,7 @@ def classify(repo, number, head, base):
     # declaration removed in one Gradle file and a different declaration added
     # in another is a replacement, even though each file is individually safe.
     removed_gradle, added_gradle = Counter(), Counter()
+    removed_gradle_paths, added_gradle_paths = {}, {}
     for record in records:
         if not record["path"].endswith((".gradle", ".gradle.kts")):
             continue
@@ -2648,12 +2994,15 @@ def classify(repo, number, head, base):
             declaration = parse_gradle_declaration(line[1:])
             if declaration is None:
                 return None
-            (removed_gradle if line[0] == "-" else added_gradle)[declaration[:-1]] += 1
+            identity = declaration[:-1]
+            (removed_gradle if line[0] == "-" else added_gradle)[identity] += 1
+            path_map = removed_gradle_paths if line[0] == "-" else added_gradle_paths
+            path_map.setdefault(identity, Counter())[record["path"]] += 1
     if removed_gradle - added_gradle and added_gradle - removed_gradle:
         return None
-    # For non-Gradle manifests, the per-file validators intentionally allow a
-    # pure add or removal. Across files that loses section and package scope,
-    # so require ordinary review rather than attempting to infer equivalence.
+    for identity in removed_gradle_paths.keys() & added_gradle_paths.keys():
+        if removed_gradle_paths[identity] != added_gradle_paths[identity]:
+            return None
     non_gradle_manifests = [
         record
         for record in records
@@ -2668,8 +3017,28 @@ def classify(repo, number, head, base):
             "Package.swift",
         )
     ]
+    # Multi-package npm updates are complete when each manifest retains its
+    # dependency identities and section paths. Patch line counts are not proof:
+    # a one-line JSON replacement can conceal a cross-file dependency move.
     if len(non_gradle_manifests) > 1:
-        return None
+
+        def manifest_shape(value):
+            if isinstance(value, dict):
+                return {key: manifest_shape(item) for key, item in value.items()}
+            if isinstance(value, list):
+                return [manifest_shape(item) for item in value]
+            return "<VERSION>" if isinstance(value, str) else value
+
+        for record in non_gradle_manifests:
+            if PurePosixPath(record["path"]).name != "package.json":
+                return None
+            try:
+                if manifest_shape(json.loads(record["before"])) != manifest_shape(
+                    json.loads(record["after"])
+                ):
+                    return None
+            except INVALID_LOCK:
+                return None
     resolve_action_updates(files)
     final = snapshot()
     if (
@@ -2683,6 +3052,17 @@ def classify(repo, number, head, base):
     # in the same PR so the ordinary manifest validator binds the dependency
     # identities; lockfile-only changes stay under regular review.
     records_by_path = {record["path"]: record for record in records}
+    for record in records:
+        if PurePosixPath(record["path"]).name != "package.json":
+            continue
+        lock_candidates = [
+            str(PurePosixPath(record["path"]).parent / name)
+            for name in ("package-lock.json", "npm-shrinkwrap.json")
+        ]
+        for lock_path in lock_candidates:
+            if lock_path in base_tree or lock_path in head_tree:
+                if lock_path not in records_by_path:
+                    return None
     for record in records:
         lock = PurePosixPath(record["path"])
         if lock.name not in LOCKS:
@@ -2701,6 +3081,7 @@ def classify(repo, number, head, base):
                 return None
             manifest_path = candidates[0]
             manifests = []
+            direct_locations = []
             for ref, tree, side in (
                 (ancestor, base_tree, "before"),
                 (head, head_tree, "after"),
@@ -2709,11 +3090,34 @@ def classify(repo, number, head, base):
                 if entry.get("type") != "blob" or entry.get("mode") != "100644":
                     return None
                 manifest = content(repo, manifest_path, ref)
-                if not swift_lock_matches_manifest(
-                    record[side], manifest, PurePosixPath(manifest_path).name
-                ):
+                direct = swift_lock_matches_manifest(
+                    record[side],
+                    manifest,
+                    PurePosixPath(manifest_path).name,
+                    include_locations=True,
+                )
+                if direct is False:
                     return None
+                direct_locations.append(direct)
                 manifests.append(manifest)
+            old_locations = {
+                pin["location"].rstrip("/").removesuffix(".git")
+                for pin in json.loads(record["before"])["pins"]
+            }
+            new_locations = {
+                pin["location"].rstrip("/").removesuffix(".git")
+                for pin in json.loads(record["after"])["pins"]
+            }
+            if (
+                not new_locations - old_locations
+                <= direct_locations[1] - direct_locations[0]
+            ):
+                return None
+            if (
+                not old_locations - new_locations
+                <= direct_locations[0] - direct_locations[1]
+            ):
+                return None
             if (
                 manifests[0] == manifests[1]
                 and json.loads(record["before"])["originHash"]
