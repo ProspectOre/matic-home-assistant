@@ -11,6 +11,8 @@ from homeassistant import config_entries
 from homeassistant.data_entry_flow import FlowResultType
 
 from custom_components.matic_robot.bluetooth_pairing import (
+    BluetoothBondRecoveryRequiredError,
+    BluetoothBondResetFailedError,
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
@@ -47,6 +49,90 @@ ENTRY_DATA = {
     CONF_HERMES_CREDENTIAL: TEST_CREDENTIAL.to_storage(),
 }
 PAIRING_CONFIRMED = {"pairing_mode_enabled": True}
+
+
+@pytest.mark.parametrize("reject_info", [False, True])
+@pytest.mark.parametrize("reset_fails", [False, True])
+async def test_initial_pairing_offers_explicit_bond_recovery_then_retries(
+    hass, monkeypatch, reject_info, reset_fails
+) -> None:
+    flow = _flow(hass)
+    flow._pairing_data = {"host": "192.0.2.1", "port": 16320}
+    identity = PeerIdentity("00" * 32, "robot.invalid", "synthetic", "robot_server")
+    path = "/org/bluez/hci0/dev_AA_BB_CC_DD_EE_FF"
+    candidates = {path: "Synthetic Matic"}
+    exchanges = []
+
+    async def request(*args, **kwargs):
+        exchanges.append(args[2])
+        if len(exchanges) == 1:
+            assert kwargs["reset_bond_path"] is None
+            raise BluetoothBondRecoveryRequiredError(candidates)
+        assert kwargs["reset_bond_path"] == path
+        assert kwargs["reset_bond_paths"] is flow._reset_bond_paths
+        if len(exchanges) == 2:
+            flow._reset_bond_paths.add(path)
+            if reset_fails:
+                raise BluetoothBondResetFailedError("removal failed")
+            raise BluetoothPairingResetError("bond cleared")
+        return TEST_CREDENTIAL
+
+    def client_factory(*args, **kwargs):
+        client = _ClientContext(_info(requires_auth=True))
+        if reject_info and kwargs.get("credential") is None:
+            client._client.async_get_info.side_effect = AuthenticationRequiredError()
+        return client
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_fetch_peer_certificate",
+        AsyncMock(return_value=b"certificate"),
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.validate_certificate",
+        lambda *a, **kw: identity,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.MaticHermesClient", client_factory
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.async_request_bluetooth_credential",
+        request,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.config_flow.PAIRING_RETRY_SECONDS", 0
+    )
+
+    flow._async_start_pairing("matic_robot_wait_for_pairing")
+    await flow._pairing_task
+    result = await flow.async_step_finish()
+    assert result["step_id"] == "reset_bond"
+    assert (
+        flow._pairing_diagnostic
+        == "An existing Bluetooth bond rejected the credential request"
+    )
+    assert not flow._reset_bond_paths
+    assert (await flow.async_step_reset_bond())["step_id"] == "reset_bond"
+    assert (await flow.async_step_reset_bond({"bluetooth_device": "unknown"}))[
+        "step_id"
+    ] == "reset_bond"
+    result = await flow.async_step_reset_bond({"bluetooth_device": path})
+    assert result["type"] is FlowResultType.SHOW_PROGRESS
+    await flow._pairing_task
+    result = await flow.async_step_finish()
+    if reset_fails:
+        assert result["errors"] == {"base": "bond_reset_failed"}
+        assert len(exchanges) == 2
+        return
+    assert result["type"] is FlowResultType.CREATE_ENTRY
+    assert len(exchanges) == 3
+    assert len({id(exchange) for exchange in exchanges}) == 3
+    assert result["data"][CONF_HERMES_CREDENTIAL] == TEST_CREDENTIAL.to_storage()
+
+
+async def test_bond_recovery_requires_a_live_candidate(hass) -> None:
+    flow = _flow(hass)
+    result = await flow.async_step_reset_bond({"bluetooth_device": "unknown"})
+    assert result["reason"] == "pairing_session_expired"
 
 
 def _info(*, requires_auth: bool = False, serial: str = "synthetic") -> RobotInfo:
@@ -252,6 +338,8 @@ async def test_pairing_requests_ble_when_unauthenticated_info_is_rejected(
         flow._pairing_user_id,
         flow._passkey_exchange,
         stage_callback=flow._async_set_pairing_stage,
+        reset_bond_paths=flow._reset_bond_paths,
+        reset_bond_path=None,
     )
 
 
@@ -260,6 +348,7 @@ async def test_pairing_requests_ble_when_unauthenticated_info_is_rejected(
     [
         (BluetoothPairingUnavailableError("adapter"), "bluetooth_unavailable"),
         (BluetoothPairingIncompleteError("interrupted"), "pairing_incomplete"),
+        (BluetoothPairingResetError("bond cleared"), "pairing_incomplete"),
         (PairingModeRequiredError("closed"), "pairing_mode_off"),
     ],
 )
@@ -436,6 +525,7 @@ async def test_invalid_stored_credential_is_rejected_before_network_io(
     [
         (PairingModeRequiredError("closed"), "pairing_mode_off"),
         (BluetoothPairingIncompleteError("interrupted"), "pairing_incomplete"),
+        (BluetoothPairingResetError("bond cleared"), "pairing_incomplete"),
     ],
 )
 async def test_closed_pairing_window_returns_single_recovery_prompt(
