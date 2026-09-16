@@ -2211,6 +2211,7 @@ def dependency_file(path, before, after, patch, status="modified"):
             if not match:
                 return None, None
             entries = {}
+            object_ids = set()
             current = []
             for line in match.group("body").splitlines():
                 if re.match(
@@ -2226,8 +2227,15 @@ def dependency_file(path, before, after, patch, status="modified"):
                     if line.strip() == "};":
                         block = "\n".join(current)
                         identity = re.search(r"repositoryURL = \"([^\"]+)\";", block)
-                        if not identity:
+                        object_id = re.match(r"\s*([A-Fa-f0-9]+) /\*", block)
+                        if (
+                            not identity
+                            or not object_id
+                            or identity.group(1) in entries
+                            or object_id.group(1) in object_ids
+                        ):
                             return None, None
+                        object_ids.add(object_id.group(1))
                         if (
                             re.search(
                                 r"\b(?:branch|revision|exactVersion|upToNe"
@@ -2283,7 +2291,60 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
         for identity in added:
             _, raw = new_entries[identity]
-            if re.search(r"\b(?:branch|revision)\s*=", raw):
+            # Added entries have no trusted preimage. Validate the complete
+            # supported Xcode dictionary rather than merely excluding branch
+            # and revision keys: a local URL or invalid version is not a
+            # bounded registry/source-control dependency update.
+            entry = re.fullmatch(
+                r'\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftPackageReference "[^"\n]+" '
+                r'\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*'
+                r'repositoryURL = "([^"\n]+)";\s*'
+                r'requirement = \{([^{}]*)\};\s*\};',
+                raw,
+                re.S,
+            )
+            if not entry or entry[1] != identity:
+                return False
+            try:
+                source = urlparse(identity)
+                port = source.port
+            except ValueError:
+                return False
+            if (
+                source.scheme != "https"
+                or not source.hostname
+                or source.username is not None
+                or source.password is not None
+                or port is not None
+                or not source.path
+                or source.query
+                or source.fragment
+                or source.params
+            ):
+                return False
+            requirement = {}
+            for assignment in entry[2].split(";"):
+                if not assignment.strip():
+                    continue
+                field = re.fullmatch(
+                    r'\s*(kind|minimumVersion|version)\s*=\s*'
+                    r'(?:(?:"([A-Za-z0-9.]+)")|([A-Za-z0-9.]+))\s*',
+                    assignment,
+                )
+                if not field or field[1] in requirement:
+                    return False
+                requirement[field[1]] = field[2] or field[3]
+            kind = requirement.get("kind")
+            key = "version" if kind == "exactVersion" else "minimumVersion"
+            if (
+                kind not in {
+                    "exactVersion",
+                    "upToNextMajorVersion",
+                    "upToNextMinorVersion",
+                }
+                or set(requirement) != {"kind", key}
+                or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", requirement[key])
+            ):
                 return False
         if not (removed or added):
             return False
