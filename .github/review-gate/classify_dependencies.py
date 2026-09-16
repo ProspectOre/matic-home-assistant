@@ -2297,9 +2297,9 @@ def dependency_file(path, before, after, patch, status="modified"):
             # bounded registry/source-control dependency update.
             entry = re.fullmatch(
                 r'\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftPackageReference "[^"\n]+" '
-                r'\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*'
+                r"\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*"
                 r'repositoryURL = "([^"\n]+)";\s*'
-                r'requirement = \{([^{}]*)\};\s*\};',
+                r"requirement = \{([^{}]*)\};\s*\};",
                 raw,
                 re.S,
             )
@@ -2327,7 +2327,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if not assignment.strip():
                     continue
                 field = re.fullmatch(
-                    r'\s*(kind|minimumVersion|version)\s*=\s*'
+                    r"\s*(kind|minimumVersion|version)\s*=\s*"
                     r'(?:(?:"([A-Za-z0-9.]+)")|([A-Za-z0-9.]+))\s*',
                     assignment,
                 )
@@ -2337,7 +2337,8 @@ def dependency_file(path, before, after, patch, status="modified"):
             kind = requirement.get("kind")
             key = "version" if kind == "exactVersion" else "minimumVersion"
             if (
-                kind not in {
+                kind
+                not in {
                     "exactVersion",
                     "upToNextMajorVersion",
                     "upToNextMinorVersion",
