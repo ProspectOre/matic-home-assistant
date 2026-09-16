@@ -70,8 +70,8 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '0375f9287b08dd6b465edcf67b4c0219d51961ffff0f3fb6cdff5e3e426e40c0'
-          EXPECTED_DEPENDENCY_SHA256: 'bc1d5b2b8cd439f3810dd37cc6e405dd606e845a1d385d1269e9d567abe80f2a'
+          EXPECTED_SHA256: '08c366bbea31cd9cf695e65556ad4701a19f371386676fae27407636f280de07'
+          EXPECTED_DEPENDENCY_SHA256: 'fedb27bc8f19d34a3ea2e9c6d66f5deba9334e8e656583494eff2ff172413dfe'
         shell: bash
         run: |
           set -euo pipefail

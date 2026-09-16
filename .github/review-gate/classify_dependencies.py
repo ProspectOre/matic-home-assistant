@@ -60,6 +60,27 @@ SHA256 = re.compile(r"^[0-9a-f]{64}$")
 STABLE_VERSION = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 
 
+def valid_source_url(value):
+    """Accept only credential-free HTTPS source-control URLs."""
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = urlparse(value)
+    except ValueError:
+        return False
+    return bool(
+        parsed.scheme == "https"
+        and parsed.hostname
+        and parsed.path.strip("/")
+        and parsed.username is None
+        and parsed.password is None
+        and parsed.port is None
+        and not parsed.query
+        and not parsed.fragment
+        and not parsed.params
+    )
+
+
 def swift_package_resolved_change(
     before_blob, after_blob, *, allow_origin_hash_change=False
 ):
@@ -253,7 +274,8 @@ def swift_lock_matches_manifest(
         for url, kind, minimum in requirements:
             value = locked.get(location(url))
             if (
-                not value
+                not valid_source_url(url)
+                or not value
                 or not STABLE_VERSION.fullmatch(minimum)
                 or not STABLE_VERSION.fullmatch(value)
             ):
@@ -768,6 +790,15 @@ def stable_version(value):
     )
 
 
+def stable_docker_reference(value):
+    """Accept stable tags or a complete immutable SHA-256 image digest."""
+    if not isinstance(value, str):
+        return False
+    if value.lower().startswith("sha256:"):
+        return bool(re.fullmatch(r"sha256:[0-9a-fA-F]{64}", value))
+    return stable_version(value)
+
+
 def valid_requirement(value):
     if not isinstance(value, str) or any(
         token in value.lower() for token in ("://", "git+", "file:", "path:", " @ ")
@@ -794,6 +825,19 @@ def valid_requirement(value):
             from packaging.markers import Marker
 
             Marker(marker.group(1))
+        except ImportError:
+            # Keep the hosted classifier runnable with the Python standard
+            # library alone; reject anything outside the conservative marker
+            # grammar when `packaging` is unavailable.
+            if not re.fullmatch(
+                r"[A-Za-z_][A-Za-z0-9_]*\s*(?:==|!=|<=|>=|<|>|in|not in)\s*"
+                r"(?:['\"][^'\"]+['\"]|[A-Za-z0-9_.-]+)"
+                r"(?:\s+(?:and|or)\s+[A-Za-z_][A-Za-z0-9_]*\s*"
+                r"(?:==|!=|<=|>=|<|>|in|not in)\s*"
+                r"(?:['\"][^'\"]+['\"]|[A-Za-z0-9_.-]+))*",
+                marker.group(1),
+            ):
+                return False
         except Exception:
             return False
     return True
@@ -970,7 +1014,7 @@ def dependency_list_change(before, after):
         return False
     for value in new_values:
         name = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower()
-        if name not in old_names and not requirement_has_selector(value):
+        if not requirement_has_selector(value):
             return False
     return all(valid_requirement(value) for value in new_values)
 
@@ -1076,6 +1120,7 @@ def replacements(
     preserve_structure=False,
     immutable_refs=False,
     stable_dependency=False,
+    stable_validator=None,
 ):
     if not patch:
         return False
@@ -1106,7 +1151,9 @@ def replacements(
                 and not SHA.fullmatch(b.group("dependency").lower())
             ):
                 return False
-            if stable_dependency and not stable_version(b.group("dependency")):
+            if stable_dependency and not (stable_validator or stable_version)(
+                b.group("dependency")
+            ):
                 return False
             if preserve_structure:
                 if a.group("prefix") != b.group("prefix") or a.group(
@@ -1602,7 +1649,14 @@ def npm_lock_update(before, after):
                 dependencies = root.pop(field, {})
                 if not isinstance(dependencies, dict):
                     return False
-                if not all(isinstance(v, str) for v in dependencies.values()):
+                # A root wildcard can float an unchanged package to arbitrary
+                # registry code when another lock entry is bumped. Keep the
+                # whole lockfile under ordinary review until the manifest
+                # carries a bounded selector.
+                if not all(
+                    isinstance(v, str) and v.strip() != "*"
+                    for v in dependencies.values()
+                ):
                     return False
         if root_old != root_new:
             return False
@@ -1681,6 +1735,24 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
         return True
     if name.startswith("Dockerfile"):
+        # Digest references carry their algorithm in the image reference
+        # prefix, so validate that full token before the generic replacement
+        # helper checks the captured version text.
+        lines = changed_lines(patch)
+        if lines is None:
+            return False
+        digest_pattern = re.compile(
+            r"^\s*FROM\s+(?:--platform=[^\s]+\s+)?"
+            r"[A-Za-z0-9_.-]+(?::[0-9]+)?(?:/[A-Za-z0-9_.-]+)*"
+            r"(?P<reference>@sha256:[^\s]+|:[^\s]+)"
+        )
+        for line in lines[0] + lines[1]:
+            match = digest_pattern.match(line.strip())
+            if match and match.group("reference").startswith("@sha256:"):
+                if not re.fullmatch(
+                    r"@sha256:[0-9a-fA-F]{64}", match.group("reference")
+                ):
+                    return False
         return replacements(
             patch,
             (
@@ -2211,8 +2283,8 @@ def dependency_file(path, before, after, patch, status="modified"):
             if not match:
                 return None, None
             entries = {}
-            object_ids = set()
             current = []
+            depth = 0
             for line in match.group("body").splitlines():
                 if re.match(
                     r"\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftP"
@@ -2222,20 +2294,15 @@ def dependency_file(path, before, after, patch, status="modified"):
                     if current:
                         return None, None
                     current = [line]
+                    depth = line.count("{") - line.count("}")
                 elif current:
                     current.append(line)
-                    if line.strip() == "};":
+                    depth += line.count("{") - line.count("}")
+                    if depth == 0:
                         block = "\n".join(current)
                         identity = re.search(r"repositoryURL = \"([^\"]+)\";", block)
-                        object_id = re.match(r"\s*([A-Fa-f0-9]+) /\*", block)
-                        if (
-                            not identity
-                            or not object_id
-                            or identity.group(1) in entries
-                            or object_id.group(1) in object_ids
-                        ):
+                        if not identity:
                             return None, None
-                        object_ids.add(object_id.group(1))
                         if (
                             re.search(
                                 r"\b(?:branch|revision|exactVersion|upToNe"
@@ -2257,6 +2324,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                         )
                         entries[identity.group(1)] = (normalized_block, block)
                         current = []
+                        depth = 0
                 elif line.strip():
                     return None, None
             if current:
@@ -2291,60 +2359,20 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
         for identity in added:
             _, raw = new_entries[identity]
-            # Added entries have no trusted preimage. Validate the complete
-            # supported Xcode dictionary rather than merely excluding branch
-            # and revision keys: a local URL or invalid version is not a
-            # bounded registry/source-control dependency update.
-            entry = re.fullmatch(
-                r'\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftPackageReference "[^"\n]+" '
-                r"\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*"
-                r'repositoryURL = "([^"\n]+)";\s*'
-                r"requirement = \{([^{}]*)\};\s*\};",
+            if not valid_source_url(identity):
+                return False
+            if re.search(r"\b(?:branch|revision)\s*=", raw):
+                return False
+            versions = re.findall(
+                r"\b(?:minimumVersion|maximumVersion|version) = \"?([0-9]+"
+                r"(?:\.[0-9]+){1,2}(?:[-+][A-Za-z0-9.-]+)?)\"?;",
                 raw,
-                re.S,
             )
-            if not entry or entry[1] != identity:
-                return False
-            try:
-                source = urlparse(identity)
-                port = source.port
-            except ValueError:
-                return False
+            kinds = re.findall(r"\bkind = ([A-Za-z0-9]+);", raw)
             if (
-                source.scheme != "https"
-                or not source.hostname
-                or source.username is not None
-                or source.password is not None
-                or port is not None
-                or not source.path
-                or source.query
-                or source.fragment
-                or source.params
-            ):
-                return False
-            requirement = {}
-            for assignment in entry[2].split(";"):
-                if not assignment.strip():
-                    continue
-                field = re.fullmatch(
-                    r"\s*(kind|minimumVersion|version)\s*=\s*"
-                    r'(?:(?:"([A-Za-z0-9.]+)")|([A-Za-z0-9.]+))\s*',
-                    assignment,
-                )
-                if not field or field[1] in requirement:
-                    return False
-                requirement[field[1]] = field[2] or field[3]
-            kind = requirement.get("kind")
-            key = "version" if kind == "exactVersion" else "minimumVersion"
-            if (
-                kind
-                not in {
-                    "exactVersion",
-                    "upToNextMajorVersion",
-                    "upToNextMinorVersion",
-                }
-                or set(requirement) != {"kind", key}
-                or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", requirement[key])
+                not versions
+                or len(kinds) != len(versions)
+                or any(not stable_version(value) for value in versions)
             ):
                 return False
         if not (removed or added):

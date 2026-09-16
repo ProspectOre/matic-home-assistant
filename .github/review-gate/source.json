@@ -1,8 +1,8 @@
 {
   "source": "ProspectOre/dev-workspace",
   "path": "scripts/review-gate/evaluate.sh",
-  "sha256": "0375f9287b08dd6b465edcf67b4c0219d51961ffff0f3fb6cdff5e3e426e40c0",
-  "dependencyClassifierSha256": "bc1d5b2b8cd439f3810dd37cc6e405dd606e845a1d385d1269e9d567abe80f2a",
+  "sha256": "08c366bbea31cd9cf695e65556ad4701a19f371386676fae27407636f280de07",
+  "dependencyClassifierSha256": "fedb27bc8f19d34a3ea2e9c6d66f5deba9334e8e656583494eff2ff172413dfe",
   "generated": true,
   "managedWorkflows": [
     ".github/workflows/review-gate-audit.yml",

@@ -525,6 +525,18 @@ withdrawn_evidence_at() {
        (if .source == "review" then "review:" + .id else (.id | sub("^issue-comment-"; "issue-comment:")) end) == $key)' <<< "$deliveries" >/dev/null; then
     return 0
   fi
+  # If the non-clean delivery is still present, its observed timestamp is the
+  # authoritative invalidation watermark. Do not replace it with the current
+  # clock value when a newer clean verdict is already available.
+  local delivery_at
+  delivery_at="$(jq -r --arg key "$key" '
+    [.[] | select(.clean | not)
+      | select((if .source == "review" then "review:" + .id else (.id | sub("^issue-comment-"; "issue-comment:")) end) == $key)
+      | .at] | sort | last // ""' <<< "$deliveries")"
+  if [[ -n "$delivery_at" ]]; then
+    normalize_timestamp "$delivery_at"
+    return 0
+  fi
   saved="$(jq -r --arg context "$REVIEW_REVIEW_CONTEXT" --arg suffix "; withdrawn $key" '
     [.[][] | select(.context == $context and .state == "pending")
      | select((.description // "") | endswith($suffix))
