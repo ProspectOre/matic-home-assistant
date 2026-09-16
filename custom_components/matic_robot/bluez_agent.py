@@ -158,6 +158,7 @@ class BlueZPairingSession:
 
     def __init__(self, bus: MessageBus) -> None:
         self._bus = bus
+        self.reused_existing_bond = False
 
     async def _async_is_paired(self, device_path: str) -> bool:
         """Return BlueZ's current Device1.Paired state for the device."""
@@ -181,36 +182,39 @@ class BlueZPairingSession:
         while not await self._async_is_paired(device_path):  # noqa: ASYNC110
             await asyncio.sleep(_PAIRED_POLL_SECONDS)
 
+    async def async_remove_bond(self, device_path: str) -> None:
+        """Remove only this device; never initiate a replacement bond here."""
+        adapter_path, separator, _device = device_path.rpartition("/dev_")
+        if not separator or not adapter_path:
+            raise BluetoothPairingResetError(
+                "BlueZ returned an invalid Matic device path"
+            )
+        reply = await self._bus.call(
+            Message(
+                destination=defs.BLUEZ_SERVICE,
+                path=adapter_path,
+                interface=_ADAPTER_INTERFACE,
+                member="RemoveDevice",
+                signature="o",
+                body=[device_path],
+            )
+        )
+        assert_reply(reply)
+        _LOGGER.debug("Removed the previous Matic Bluetooth pairing")
+
     async def async_pair(
         self, device_path: str, *, replace_existing: bool = False
     ) -> None:
         """Ask BlueZ to bond while this connection's agent is authoritative."""
+        self.reused_existing_bond = False
         if await self._async_is_paired(device_path):
             if replace_existing:
-                adapter_path, separator, _device = device_path.rpartition("/dev_")
-                if not separator or not adapter_path:
-                    raise BluetoothPairingResetError(
-                        "BlueZ returned an invalid Matic device path"
-                    )
-                reply = await self._bus.call(
-                    Message(
-                        destination=defs.BLUEZ_SERVICE,
-                        path=adapter_path,
-                        interface=_ADAPTER_INTERFACE,
-                        member="RemoveDevice",
-                        signature="o",
-                        body=[device_path],
-                    )
-                )
-                assert_reply(reply)
-                _LOGGER.debug(
-                    "Removed the previous Matic Bluetooth pairing before "
-                    "reauthentication"
-                )
+                await self.async_remove_bond(device_path)
                 raise BluetoothPairingResetError(
                     "Previous Matic Bluetooth pairing was cleared"
                 )
             _LOGGER.debug("Reusing the existing Matic Bluetooth pairing")
+            self.reused_existing_bond = True
             return
         _LOGGER.debug("Requesting the Matic bond through the scoped BlueZ agent")
         reply = await self._bus.call(

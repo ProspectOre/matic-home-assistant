@@ -174,6 +174,10 @@ async def test_pairing_session_reuses_an_existing_pairing() -> None:
     assert message.interface == "org.freedesktop.DBus.Properties"
     assert message.member == "Get"
     assert message.body == ["org.bluez.Device1", "Paired"]
+    assert session.reused_existing_bond
+    bus.call.side_effect = [_paired(False), _method_return()]
+    await session.async_pair(device_path)
+    assert not session.reused_existing_bond
 
 
 async def test_pairing_session_removes_existing_pairing_for_reauth() -> None:

@@ -12,7 +12,7 @@ from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
-from bleak.exc import BleakDBusError
+from bleak.exc import BleakDBusError, BleakGATTProtocolError
 from bleak_retry_connector import (
     BLEAK_RETRY_EXCEPTIONS,
     BleakClientWithServiceCache,
@@ -38,6 +38,10 @@ class BluetoothAdapterUnavailableError(BluetoothPairingUnavailableError):
     """No usable Bluetooth adapter is directly attached to Home Assistant."""
 
 
+class BluetoothBondResetFailedError(BluetoothPairingUnavailableError):
+    """The user's single bond-removal attempt could not complete."""
+
+
 class BluetoothProxyOnlyError(BluetoothPairingUnavailableError):
     """Matic is visible only through a remote Bluetooth proxy."""
 
@@ -51,7 +55,15 @@ class BluetoothPairingIncompleteError(MaticError):
 
 
 class BluetoothPairingResetError(MaticError):
-    """A stale host bond was removed before reauthentication."""
+    """A host bond was removed before a fresh pairing attempt."""
+
+
+class BluetoothBondRecoveryRequiredError(BluetoothPairingIncompleteError):
+    """Let the user select a reused bond after credential-write rejection."""
+
+    def __init__(self, candidates: dict[str, str]) -> None:
+        super().__init__("An existing Bluetooth bond rejected the credential request")
+        self.candidates = candidates
 
 
 HERMES_TOKEN_CHARACTERISTIC = "84b52f26-d3b7-5ebe-ba52-ff38a447788d"
@@ -307,6 +319,8 @@ def _safe_bluetooth_error_summary(err: BaseException) -> str:
     """Describe a Bluetooth failure without device or home identifiers."""
     current: BaseException | None = err
     while current is not None:
+        if isinstance(current, BleakGATTProtocolError):
+            return f"{type(current).__name__}/ATT=0x{current.args[0]:02x}"
         if isinstance(current, BleakDBusError):
             return f"{type(current).__name__}/{current.dbus_error}"
         if isinstance(current, OSError) and current.errno is not None:
@@ -322,6 +336,8 @@ async def async_request_bluetooth_credential(
     stage_callback: Callable[[str], None] | None = None,
     *,
     replace_existing_bond: bool = False,
+    reset_bond_paths: set[str] | None = None,
+    reset_bond_path: str | None = None,
 ) -> HermesCredential:
     """Request one Hermes credential through Matic's private GATT endpoint."""
 
@@ -341,10 +357,17 @@ async def async_request_bluetooth_credential(
         raise PairingModeRequiredError("Matic Bluetooth discovery failed") from err
     if not discoveries:
         raise PairingModeRequiredError("No connectable Matic advertisement found")
+    if reset_bond_path is not None:
+        discoveries = [
+            discovery
+            for discovery in discoveries
+            if _bluez_device_path(discovery) == reset_bond_path
+        ]
 
     request = TokenRequest(user_id=user_id).SerializeToString()
     adapter_access_error: BaseException | None = None
     last_failure = "no credential candidate completed"
+    recovery_candidates: dict[str, str] = {}
     for candidate_number, discovery in enumerate(discoveries, start=1):
         client = None
         failure_stage = "pairing-agent setup"
@@ -370,6 +393,34 @@ async def async_request_bluetooth_credential(
                         assert bluez_session is not None
                         assert bluez_device_path is not None
                         failure_stage = "Bluetooth pairing"
+                        if (
+                            bluez_device_path == reset_bond_path
+                            and reset_bond_paths is not None
+                            and bluez_device_path not in reset_bond_paths
+                        ):
+                            # One explicit removal attempt per device and flow.
+                            # Never fall through to another robot on failure.
+                            reset_bond_paths.add(bluez_device_path)
+                            try:
+                                async with asyncio.timeout(
+                                    BLUETOOTH_DISCONNECT_TIMEOUT_SECONDS
+                                ):
+                                    await client.disconnect()
+                                await bluez_session.async_remove_bond(bluez_device_path)
+                            except (*BLEAK_RETRY_EXCEPTIONS, OSError) as err:
+                                _LOGGER.warning(
+                                    "Matic stale Bluetooth bond recovery failed (%s)",
+                                    _safe_bluetooth_error_summary(err),
+                                )
+                                raise BluetoothBondResetFailedError(
+                                    "Could not reset the selected Bluetooth bond; "
+                                    "start setup again to retry "
+                                    f"({_safe_bluetooth_error_summary(err)})"
+                                ) from err
+                            raise BluetoothPairingResetError(
+                                "Previous Matic Bluetooth pairing was cleared; "
+                                "retrying with a fresh code"
+                            )
                         # Matic initiates security itself once a client connects
                         # (an SMP Security Request). Bond on the open GATT
                         # connection so BlueZ answers that request through the
@@ -422,11 +473,27 @@ async def async_request_bluetooth_credential(
                         sorted(token_properties),
                     )
                     failure_stage = "credential request write"
-                    await client.write_gatt_char(
-                        HERMES_TOKEN_CHARACTERISTIC,
-                        request,
-                        response=("write-without-response" not in token_properties),
-                    )
+                    try:
+                        await client.write_gatt_char(
+                            HERMES_TOKEN_CHARACTERISTIC,
+                            request,
+                            response=("write-without-response" not in token_properties),
+                        )
+                    except BleakGATTProtocolError:
+                        # A protocol error alone does not prove a stale bond.
+                        # Offer an explicit choice after all candidates fail.
+                        if (
+                            bluez_session is not None
+                            and bluez_session.reused_existing_bond
+                            and bluez_device_path is not None
+                            and reset_bond_paths is not None
+                            and bluez_device_path not in reset_bond_paths
+                        ):
+                            recovery_candidates[bluez_device_path] = (
+                                f"{getattr(discovery.device, 'name', None) or 'Matic'} "
+                                f"({discovery.device.address})"
+                            )
+                        raise
                     failure_stage = "credential response read"
                     response = bytes(
                         await client.read_gatt_char(HERMES_TOKEN_CHARACTERISTIC)
@@ -473,6 +540,12 @@ async def async_request_bluetooth_credential(
             "Home Assistant's Bluetooth adapter cannot open a connection "
             f"({_safe_bluetooth_error_summary(adapter_access_error)})"
         ) from adapter_access_error
+    if recovery_candidates:
+        _LOGGER.warning(
+            "Matic credential request write failed after reusing an existing "
+            "Bluetooth bond; setup is waiting for explicit bond recovery"
+        )
+        raise BluetoothBondRecoveryRequiredError(recovery_candidates)
     # A retained local candidate was found above. It may have gone silent before
     # this attempt, so report the actual failing stage without claiming that a
     # live pairing exchange started.
