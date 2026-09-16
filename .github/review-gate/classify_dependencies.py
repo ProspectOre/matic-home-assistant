@@ -81,6 +81,21 @@ def valid_source_url(value):
     )
 
 
+TRUSTED_SWIFT_SOURCE_HOSTS = frozenset(
+    {"github.com", "gitlab.com", "bitbucket.org", "codeberg.org"}
+)
+
+
+def valid_swift_source_url(value):
+    """Allow known source hosts when no resolved pin is changed."""
+    if not valid_source_url(value):
+        return False
+    try:
+        return urlparse(value).hostname.lower() in TRUSTED_SWIFT_SOURCE_HOSTS
+    except (AttributeError, ValueError):
+        return False
+
+
 def swift_package_resolved_change(
     before_blob, after_blob, *, allow_origin_hash_change=False
 ):
@@ -790,13 +805,17 @@ def stable_version(value):
     )
 
 
-def stable_docker_reference(value):
+def stable_docker_reference(value, prefix=""):
     """Accept stable tags or a complete immutable SHA-256 image digest."""
     if not isinstance(value, str):
         return False
+    if prefix.endswith("@sha256:"):
+        return bool(re.fullmatch(r"[0-9a-fA-F]{64}", value))
     if value.lower().startswith("sha256:"):
         return bool(re.fullmatch(r"sha256:[0-9a-fA-F]{64}", value))
-    return stable_version(value)
+    return bool(
+        re.fullmatch(r"[0-9]+(?:\.[0-9]+){0,2}(?:[-+][A-Za-z0-9.-]+)?", value)
+    ) and stable_version(value)
 
 
 def valid_requirement(value):
@@ -1171,10 +1190,14 @@ def replacements(
                 and not SHA.fullmatch(b.group("dependency").lower())
             ):
                 return False
-            if stable_dependency and not (stable_validator or stable_version)(
-                b.group("dependency")
-            ):
-                return False
+            if stable_dependency:
+                validator = stable_validator or stable_version
+                if stable_validator:
+                    valid = validator(b.group("dependency"), b.group("prefix"))
+                else:
+                    valid = validator(b.group("dependency"))
+                if not valid:
+                    return False
             if preserve_structure:
                 if a.group("prefix") != b.group("prefix") or a.group(
                     "suffix"
@@ -1783,6 +1806,7 @@ def dependency_file(path, before, after, patch, status="modified"):
             ),
             True,
             stable_dependency=True,
+            stable_validator=stable_docker_reference,
         )
     if name == "verification-metadata.xml" and "/gradle/" in "/" + path:
         # Component checksum records are dependency data; global verification
@@ -1995,6 +2019,10 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
             if old_requirement == new_requirement and old_hashes != new_hashes:
                 return False
+        old_requirement_by_name = {
+            re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower(): value
+            for value in old_requirements
+        }
         return (
             old_values != new_values
             # Hash-only churn is not a version update and must not be accepted
@@ -2006,10 +2034,11 @@ def dependency_file(path, before, after, patch, status="modified"):
                 for line in lines[0] + lines[1]
             )
             and all(
-                re.search(
-                    r"(?:===|==|~=|!=|<=|>=|<|>|\^|~)\s*[^;#\s]", line.split(";", 1)[0]
+                value == old_requirement_by_name.get(
+                    re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower()
                 )
-                for line in new_requirements
+                or requirement_has_selector(value)
+                for value in new_requirements
             )
             and requirement_markers_preserved(old_requirements, new_requirements)
         )
@@ -2197,6 +2226,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                     or parsed.fragment
                     or parsed.params
                     or not parsed.path
+                    or parsed.hostname.lower() not in TRUSTED_SWIFT_SOURCE_HOSTS
                 ):
                     return None
                 # Package.swift is executable Swift. A version variable or
@@ -2328,8 +2358,54 @@ def dependency_file(path, before, after, patch, status="modified"):
                     depth += line.count("{") - line.count("}")
                     if depth == 0:
                         block = "\n".join(current)
-                        identity = re.search(r"repositoryURL = \"([^\"]+)\";", block)
-                        if not identity:
+                        top_level = []
+                        nested_requirement = []
+                        depth_check = 0
+                        for block_line in current[1:]:
+                            stripped = block_line.strip()
+                            if stripped.endswith("{"):
+                                if depth_check == 0:
+                                    key = stripped.split("=", 1)[0].strip()
+                                    top_level.append(key)
+                                depth_check += 1
+                                continue
+                            if stripped == "};":
+                                depth_check -= 1
+                                continue
+                            assignment = re.match(r"([A-Za-z][A-Za-z0-9_]*)\s*=", stripped)
+                            if not assignment:
+                                continue
+                            if depth_check == 0:
+                                top_level.append(assignment.group(1))
+                            elif depth_check == 1:
+                                nested_requirement.append(assignment.group(1))
+                        if (
+                            top_level.count("isa") != 1
+                            or top_level.count("repositoryURL") != 1
+                            or top_level.count("requirement") != 1
+                            or set(top_level) - {"isa", "repositoryURL", "requirement"}
+                            or nested_requirement.count("kind") != 1
+                            or len(nested_requirement) != len(set(nested_requirement))
+                        ):
+                            return None, None
+                        isa = re.search(r"^\s*isa = ([A-Za-z0-9]+);$", block, re.M)
+                        identity = re.search(r"^\s*repositoryURL = \"([^\"]+)\";$", block, re.M)
+                        requirement_kind = re.search(r"^\s*kind = ([A-Za-z0-9]+);$", block, re.M)
+                        if not isa or not identity or not requirement_kind:
+                            return None, None
+                        if isa.group(1) != "XCRemoteSwiftPackageReference":
+                            return None, None
+                        kind = requirement_kind.group(1)
+                        expected_version = {
+                            "exactVersion": "version",
+                            "upToNextMajorVersion": "minimumVersion",
+                            "upToNextMinorVersion": "minimumVersion",
+                        }.get(kind)
+                        if expected_version is None or nested_requirement.count(expected_version) != 1:
+                            return None, None
+                        if set(nested_requirement) - {"kind", "minimumVersion", "maximumVersion", "version"}:
+                            return None, None
+                        if set(nested_requirement) != {"kind", expected_version}:
                             return None, None
                         if (
                             re.search(
@@ -2387,7 +2463,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 return False
         for identity in added:
             _, raw = new_entries[identity]
-            if not valid_source_url(identity):
+            if not valid_swift_source_url(identity):
                 return False
             if re.search(r"\b(?:branch|revision)\s*=", raw):
                 return False
@@ -3120,6 +3196,32 @@ def classify(repo, number, head, base):
         return None
     for identity in removed_gradle_paths.keys() & added_gradle_paths.keys():
         if removed_gradle_paths[identity] != added_gradle_paths[identity]:
+            return None
+    removed_requirements, added_requirements = Counter(), Counter()
+    removed_requirement_paths, added_requirement_paths = {}, {}
+    for record in records:
+        if not re.fullmatch(
+            r"(?:requirements|constraints)(?:[._-][\w.-]+)?\.(?:txt|in)",
+            PurePosixPath(record["path"]).name,
+        ):
+            continue
+        for line in (record["patch"] or "").splitlines():
+            if len(line) < 2 or line[0] not in "+-" or line.startswith(("+++", "---")):
+                continue
+            requirement, _, valid = split_requirement_hashes(line[1:])
+            if not valid:
+                return None
+            if requirement is None:
+                continue
+            identity = re.split(r"[<>=!~; @]", requirement, maxsplit=1)[0].strip().lower()
+            counter = removed_requirements if line[0] == "-" else added_requirements
+            path_map = removed_requirement_paths if line[0] == "-" else added_requirement_paths
+            counter[identity] += 1
+            path_map.setdefault(identity, Counter())[record["path"]] += 1
+    if removed_requirements - added_requirements and added_requirements - removed_requirements:
+        return None
+    for identity in removed_requirement_paths.keys() & added_requirement_paths.keys():
+        if removed_requirement_paths[identity] != added_requirement_paths[identity]:
             return None
     non_gradle_manifests = [
         record
