@@ -1013,7 +1013,6 @@ def dependency_list_change(before, after):
     if not requirement_markers_preserved(old_values, new_values):
         return False
     for value in new_values:
-        name = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].strip().lower()
         if not requirement_has_selector(value):
             return False
     return all(valid_requirement(value) for value in new_values)
