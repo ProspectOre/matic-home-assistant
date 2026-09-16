@@ -99,6 +99,7 @@ jobs:
       - name: Revoke the gate and disable automatic merge
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_GATE_CONTEXT: review-gate
@@ -183,9 +184,11 @@ jobs:
               -F pullRequestId="$pr_node_id" >/dev/null
             echo "Disabled automatic merge for PR #$PR_NUMBER."
           fi
-          # This is the final write under the per-PR lock. It cannot be
-          # resurrected by a queued evaluator before that evaluator rechecks.
+          # Reevaluate existing evidence with the new pinned policy. Installing
+          # policy does not alter candidate code or require a new model review.
           stamp_pending
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+            -f pull_request="$PR_NUMBER"
 
   verify-repository-policy:
     name: verify-repository-auto-merge-disabled

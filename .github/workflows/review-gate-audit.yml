@@ -70,14 +70,14 @@ jobs:
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '08c366bbea31cd9cf695e65556ad4701a19f371386676fae27407636f280de07'
-          EXPECTED_DEPENDENCY_SHA256: '3b20b93af0a77c3373a966bcfe15dbe223f866ba7fc3fe87e8073bbafd541439'
+          EXPECTED_SHA256: 'd3f5398eb624398984d3ba789ef604705a115fcaf6679bbdff63ee74c9ef73cc'
+          EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/"*"@refs/heads/$DEFAULT_BRANCH" ]]
-          [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/"*"@refs/heads/$DEFAULT_BRANCH" ]] || exit 1
+          [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
           # Revoke prior success before a download failure can strand it green.
           if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent -f state=pending \
@@ -104,7 +104,7 @@ jobs:
           pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
           if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open ]]; then
             head="$(jq -er '.head.sha' <<< "$pr")"
-            [[ "$head" =~ ^[0-9a-f]{40}$ ]]
+            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || exit 1
             gh api "repos/$REPO/statuses/$head" --silent -f state=pending \
               -f context=review-gate -f description='Loading canonical review policy' \
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
@@ -116,9 +116,9 @@ jobs:
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/$REPO/contents/.github/review-gate/classify_dependencies.py?ref=$POLICY_REF" > "$policy.dependencies.py"
           actual="$(shasum -a 256 "$policy")"
-          [[ "${actual%% *}" == "$EXPECTED_SHA256" ]]
+          [[ "${actual%% *}" == "$EXPECTED_SHA256" ]] || exit 1
           actual="$(shasum -a 256 "$policy.dependencies.py")"
-          [[ "${actual%% *}" == "$EXPECTED_DEPENDENCY_SHA256" ]]
+          [[ "${actual%% *}" == "$EXPECTED_DEPENDENCY_SHA256" ]] || exit 1
           chmod 400 "$policy" "$policy.dependencies.py"
           echo "path=$policy" >> "$GITHUB_OUTPUT"
           trap - EXIT

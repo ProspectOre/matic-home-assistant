@@ -58,12 +58,35 @@ event_path="${FORWARDED_EVENT_PATH:-${GITHUB_EVENT_PATH:-}}"
 # Self-hosted runner services cache PATH at launch; export the
 # Homebrew paths so gh/jq resolve instead of failing with 127.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-if [[ -n "${REVIEW_GATE_GH:-}" ]]; then
-  gh() { "$REVIEW_GATE_GH" "$@"; }
-fi
-command -v gh >/dev/null 2>&1 || {
-  echo "GitHub CLI (gh) is required to evaluate review evidence."
-  exit 1
+gh_path="${REVIEW_GATE_GH:-$(command -v gh || true)}"
+[[ -n "$gh_path" ]] || { echo "GitHub CLI (gh) is required." >&2; exit 1; }
+gh() {
+  local cache_key cache_file response argument readonly=false
+  if [[ -n "${REVIEW_READ_CACHE:-}" && "${1:-}" == api ]]; then
+    case "${2:-}" in
+      */statuses\?*|*/comments\?*) readonly=true ;;
+      graphql)
+        for argument in "$@"; do
+          [[ "$argument" == query=query* ]] && readonly=true
+        done ;;
+    esac
+    if [[ "$readonly" == true ]]; then
+      cache_key="$(printf '%s\0' "$@" | shasum -a 256)"
+      cache_file="$REVIEW_READ_CACHE/${cache_key%% *}.json"
+      if [[ -f "$cache_file" ]]; then cat "$cache_file"; return; fi
+      response="$(mktemp "$REVIEW_READ_CACHE/response.XXXXXX")"
+      if "$gh_path" "$@" > "$response"; then
+        mv "$response" "$cache_file"
+        cat "$cache_file"
+        return
+      fi
+      rm -f "$response"
+      return 1
+    fi
+    # A write can alter the same snapshot's status history. Never cache across it.
+    rm -f "$REVIEW_READ_CACHE/"*.json
+  fi
+  "$gh_path" "$@"
 }
 command -v jq >/dev/null || {
   echo "jq is required to evaluate review evidence."
@@ -220,14 +243,6 @@ base_change_marker_exists() {
     any(.[][]; .context == $context and .state == "pending" and ((.description // "") | (startswith("Base changed for PR #" + $pr + " (") or startswith("Base changed for PR #" + $pr + " at base "))))' >/dev/null
 }
 
-rollout_marker_exists() {
-  [[ -n "${REVIEW_ROLLOUT_CONTEXT:-}" ]] || return 1
-  local statuses
-  statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)" || exit 1
-  printf '%s\n' "$statuses" | jq -e --arg context "$REVIEW_ROLLOUT_CONTEXT" \
-    'any(.[][]; .context == $context and .state == "pending")' >/dev/null
-}
-
 latest_regular_issue_comment_at() {
   gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
     | jq -c --arg context "$REVIEW_COMMENT_CONTEXT" '
@@ -263,7 +278,7 @@ active_security_findings() {
   review_findings="$(
     # shellcheck disable=SC2016
     gh api graphql --paginate \
-      -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+      -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
       -F owner="$review_owner" \
       -F name="$review_repo" \
       -F number="$pr_number" \
@@ -284,8 +299,10 @@ active_security_findings() {
   # their authenticated originating review and immutable original commit.
   # shellcheck disable=SC2016
   security_reviews="$(gh api graphql --paginate \
-    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
-    -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
+    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+    -F owner="$review_owner" \
+      -F name="$review_repo" \
+      -F number="$pr_number" \
     | jq -rs --arg head "$head_sha" '[.[] | .data.repository.pullRequest.reviews.nodes[]? | select(.author.login == "chatgpt-codex-connector" and .author.id == "BOT_kgDOC98s_g" and .commit.oid == $head and .state != "DISMISSED") | .databaseId]')"
   inline_findings="$(gh api "repos/$REPO/pulls/$pr_number/comments?per_page=100" --paginate --slurp \
     | jq -c --argjson reviews "$security_reviews" --arg head "$head_sha" '
@@ -338,7 +355,7 @@ regular_evidence() {
           # clean verdict.
           def stock_clean_envelope:
             test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>.*</details>[[:space:]]*$")
-            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
+            or test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.)?[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[]
            | .data.repository.pullRequest.reviews.nodes[]?
@@ -372,7 +389,7 @@ regular_evidence() {
           # An issue comment has no review-thread metadata. A generic
           # suggestions envelope therefore cannot prove a clean verdict.
           def stock_clean_issue_comment_envelope:
-            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
+            test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.)?[ \t]*(?::\\+1:|👍)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
             or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[][]
            | if (.id | tostring) == $prior_id then .body = $prior_body else . end
@@ -418,17 +435,6 @@ regular_review_thread_summary() {
                total_count: length})'
 }
 
-shared_open_head_count() {
-  # Commit statuses are keyed by SHA, not PR number. A shared open
-  # head is therefore fail-closed rather than borrowing another PR's
-  # clean status or review evidence.
-  gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
-    | jq -rs --arg head "$head_sha" '
-        [.[][] | select((.head.sha // "") == $head) | .number]
-        | unique
-        | length'
-}
-
 shared_open_head_owner() {
   gh api "repos/$REPO/pulls?state=open&per_page=100" --paginate \
     | jq -rs --arg head "$head_sha" '
@@ -465,14 +471,17 @@ security_history_head() {
       then $head else "" end'
 }
 
-security_findings_dismissed() {
-  local markers reviews
+security_findings_dismissed() { findings_dismissed "review-security-history" "Security"; }
+regular_findings_dismissed() { findings_dismissed "review-finding-history" "Regular"; }
+
+findings_dismissed() {
+  local context="$1" label="$2" markers reviews
   markers="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-    | jq -c --arg head "$head_sha" '
-      [.[][] | select(.context == "review-security-history" and .state == "pending")
+    | jq -c --arg head "$head_sha" --arg context "$context" --arg label "$label" '
+      [.[][] | select(.context == $context and .state == "pending")
        | select((.description // "") | contains("head " + $head))
        | (.description // "") as $description
-       | if ($description | test("^Security findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*$")) then
+       | if ($description | test("^" + $label + " findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*$")) then
            ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)$"))
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* on head " + $head + "$")) then
            ($description | capture("withdrawn (?<source>issue-comment):(?<id>[1-9][0-9]*) on head"))
@@ -483,8 +492,10 @@ security_findings_dismissed() {
   jq -e 'length > 0 and all(.[]; . != null)' <<< "$markers" >/dev/null || return 1
   # shellcheck disable=SC2016
   reviews="$(gh api graphql --paginate \
-    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
-    -F owner="$review_owner" -F name="$review_repo" -F number="$pr_number" \
+    -f query='query($owner: String!, $name: String!, $number: Int!, $endCursor: String) { repository(owner: $owner, name: $name) { pullRequest(number: $number) { reviews(first: 100, after: $endCursor) { nodes { databaseId state submittedAt updatedAt body author { login ... on Bot { id } } commit { oid } } pageInfo { hasNextPage endCursor } } } } }' \
+    -F owner="$review_owner" \
+      -F name="$review_repo" \
+      -F number="$pr_number" \
     | jq -rs '[.[] | .data.repository.pullRequest.reviews.nodes[]?]')" || return 1
   jq -en --argjson markers "$markers" --argjson reviews "$reviews" --arg head "$head_sha" '
     all($markers[]; . as $origin |
@@ -558,7 +569,10 @@ withdrawn_evidence_at() {
   normalize_timestamp "$at"
 }
 
-read_gate_snapshot() {
+read_gate_snapshot() (
+  REVIEW_READ_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/review-snapshot.XXXXXX")"
+  export REVIEW_READ_CACHE
+  trap 'rm -rf "$REVIEW_READ_CACHE"' EXIT
   local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at withdrawal_at
   evidence="$(regular_evidence)"
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
@@ -598,63 +612,20 @@ read_gate_snapshot() {
   security_finding_count="$(jq length <<< "$security_findings")"
   jq -cn \
     --argjson deliveries "$deliveries" \
+    --argjson thread_summary "$thread_summary" \
     --argjson verdict "$verdict" \
     --argjson finding_count "$finding_count" \
     --argjson security_finding_count "$security_finding_count" \
     --argjson security_findings "$security_findings" \
     --arg latest_finding_at "$latest_finding_at" \
-    '{live_delivery_finding: (([$deliveries[] | select((.clean | not) and .dismissed != true) | .at] | max // "") as $finding | $finding != "" and $finding >= ([$deliveries[] | select(.clean) | .at] | max // "")),
+    '{regular_findings: (([$deliveries[] | select((.clean | not) and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
+      live_delivery_finding: (([$deliveries[] | select((.clean | not) and .dismissed != true) | .at] | max // "") as $finding | $finding != "" and $finding >= ([$deliveries[] | select(.clean) | .at] | max // "")),
       verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
       security_findings: $security_findings,
       latest_finding_at: $latest_finding_at}'
-}
-
-require_no_dependency_findings() {
-  local current_review_request
-  current_review_request="$(read_review_request_at)"
-  if [[ -n "$current_review_request" ]]; then
-    stamp_review_gate pending "Explicit review requested; waiting for fresh regular review"
-    gate_pending
-  fi
-  if [[ "${edited_finding:-false}" == true || "$(finding_history_head)" == "$head_sha" ]]; then
-    stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
-    gate_pending
-  fi
-  if [[ "$(security_history_head)" == "$head_sha" ]]; then
-    if security_findings_dismissed; then
-      stamp_status "review-security-history" success "Security findings dismissed for head $head_sha" >/dev/null
-    else
-      stamp_review_gate pending "Dependency head has immutable security finding history; push a fresh head"
-      gate_pending
-    fi
-  fi
-  if [[ -n "$finding_after" ]]; then
-    stamp_review_gate pending "Dependency head has immutable finding history; push a fresh head"
-    gate_pending
-  fi
-  if [[ -n "$evidence_after" && "$evidence_after" > "$head_observed_at" ]]; then
-    stamp_review_gate pending "Dependency head has withdrawn review evidence; push a fresh head"
-    gate_pending
-  fi
-  if [[ -n "$(latest_regular_review_invalidation_at)" ]]; then
-    stamp_review_gate pending "Dependency head has withdrawn review evidence; push a fresh head"
-    gate_pending
-  fi
-  local snapshot
-  snapshot="$(read_gate_snapshot)"
-  if jq -e '.finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
-    stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
-  fi
-  if jq -e '.security_finding_count > 0' <<< "$snapshot" >/dev/null; then
-    stamp_security_finding_history "$(jq -c '.security_findings' <<< "$snapshot")"
-  fi
-  if jq -e '.finding_count > 0 or .security_finding_count > 0 or .live_delivery_finding' <<< "$snapshot" >/dev/null; then
-    stamp_review_gate pending "Dependency update has active review findings"
-    gate_pending
-  fi
-}
+)
 
 require_clean_regular_snapshot() {
   local gate_snapshot="$1"
@@ -663,11 +634,15 @@ require_clean_regular_snapshot() {
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
-  if [[ "$finding_count" -gt 0 ]]; then
-    stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha" >/dev/null
+  if [[ "$finding_count" -gt 0 ]] || jq -e '.live_delivery_finding' <<< "$gate_snapshot" >/dev/null; then
+    local origin
+    while IFS= read -r origin; do
+      [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
+      stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha; $origin" >/dev/null
+    done < <(jq -r '.regular_findings[] | .source + ":" + .id' <<< "$gate_snapshot")
   fi
-  if [[ "${edited_finding:-false}" == true || "$(finding_history_head)" == "$head_sha" ]]; then
-    stamp_review_gate pending "Findings were reported on this head; push a fresh head"
+  if [[ "${edited_finding:-false}" == true ]] || { [[ "$(finding_history_head)" == "$head_sha" ]] && ! regular_findings_dismissed; }; then
+    stamp_review_gate pending "Unresolved finding history; fix code or record authorized review dismissal"
     gate_pending
   fi
   if [[ "$(security_history_head)" == "$head_sha" ]] && ! security_findings_dismissed; then
@@ -691,11 +666,7 @@ require_clean_regular_snapshot() {
     echo "The base-change marker requires a new PR head and regular review."
     gate_pending
   fi
-  if rollout_marker_exists; then
-    stamp_review_gate pending "Review-gate rollout reset; push a new head for a fresh regular review"
-    echo "The policy rollout marker requires a new PR head and regular review."
-    gate_pending
-  fi
+
   if [[ "$verdict" == "null" ]]; then
     if [[ -n "$latest_finding_at" ]]; then
       stamp_review_gate pending "Waiting for a fresh clean regular review on $head_prefix"
@@ -749,9 +720,8 @@ if [[ "$is_draft" == "true" ]]; then
   stamp_review_gate pending "Waiting for pull request to leave draft"
   gate_pending
 fi
-shared_head_count="$(shared_open_head_count)"
 shared_head_owner="$(shared_open_head_owner)"
-if [[ "$shared_head_count" != "1" || "$shared_head_owner" != "$pr_number" ]]; then
+if [[ "$shared_head_owner" != "$pr_number" ]]; then
   stamp_review_gate pending "Current head is shared by multiple open pull requests"
   echo "Refusing to use regular-review evidence for an ambiguous or mismatched open PR head."
   gate_pending
@@ -765,18 +735,16 @@ if [[ "${REQUIRE_CURRENT_BASE:-false}" == true ]]; then
   fi
 fi
 
-# A base retarget or force-push observed after the head snapshot invalidates
-# dependency exemption too. This check must precede classification because
-# evidence-only runs cannot safely persist a marker on the contributor head.
-timeline_requires_review=false
+# A base retarget or force-push invalidates the reviewed comparison.
+# Evidence-only runs cannot persist a marker on the contributor head, so
+# reconstruct that invalidation from the authenticated timeline.
 if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
   timeline_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
     | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed") | (.updated_at // .created_at)]' | latest_timestamp)" || exit 1
   timeline_base_at="$(normalize_timestamp "$timeline_base_at")"
   if [[ -n "$timeline_base_at" && -z "$head_observed_at" ]]; then
     # Without an authenticated head-observation watermark, a base event cannot
-    # justify an exemption. A fresh regular review can still recover normally.
-    timeline_requires_review=true
+    # reuse an earlier verdict. A fresh regular review can recover normally.
     if [[ "$timeline_base_at" > "$evidence_after" ]]; then evidence_after="$timeline_base_at"; fi
   elif [[ -n "$timeline_base_at" && "$timeline_base_at" > "$head_observed_at" ]]; then
     stamp_review_gate pending "Base changed after head observation; push a fresh head before evaluation"
@@ -936,19 +904,9 @@ fi
   fi
 fi
 
-# A trusted explicit request opts this PR into regular review, including
-# dependency-only changes. Keep the watermark so a later clean verdict can
-# recover through the regular path instead of becoming permanently pending.
-read_review_request_at() {
-  gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-  | jq -r '[.[][] | select(.event == "commented" and .actor.type == "User" and
-    ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and
-    ((.body // "") | ascii_downcase | contains("@codex review"))) | (.updated_at // .created_at)]' | latest_timestamp
-}
+# Requests schedule work; only findings, comparison changes, or withdrawn
+# evidence invalidate a completed review.
 refresh_review_timeline_watermark() {
-  local latest_request_at
-  latest_request_at="$(read_review_request_at)"
-  if [[ "$latest_request_at" > "$evidence_after" ]]; then evidence_after="$latest_request_at"; fi
   if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
     local latest_base_at
     latest_base_at="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
@@ -957,72 +915,6 @@ refresh_review_timeline_watermark() {
     if [[ "$latest_base_at" > "$evidence_after" ]]; then evidence_after="$latest_base_at"; fi
   fi
 }
-review_request_at="$(read_review_request_at)"
-if [[ "$review_request_at" > "$evidence_after" ]]; then evidence_after="$review_request_at"; fi
-
-# Classify the whole diff for every author. A dependency title, branch, label,
-# or bot login alone never exempts unrelated application/workflow changes.
-stamp_review_gate pending "Classifying dependency-only changes on $head_prefix"
-classifier="${DEPENDENCY_CLASSIFIER:-${BASH_SOURCE[0]}.dependencies.py}"
-[[ -f "$classifier" ]] || { echo "Canonical dependency classifier is missing." >&2; exit 1; }
-# This helper is called only in command substitutions. Exit 3 is a normal
-# classification result, so do not translate it through the inherited ERR trap.
-classify_dependencies() {
-  trap - ERR
-  [[ -z "$review_request_at" && "$timeline_requires_review" != true ]] || return 3
-  REPO="$REPO" PR_NUMBER="$pr_number" HEAD_SHA="$head_sha" BASE_SHA="$base_sha" \
-    python3 "$classifier"
-}
-dependency_digest=""
-if dependency_digest="$(classify_dependencies)"; then
-  [[ "$dependency_digest" =~ ^[0-9a-f]{64}$ ]] || exit 1
-  require_no_dependency_findings
-  if base_change_marker_exists || rollout_marker_exists; then
-    stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
-    gate_pending
-  fi
-  final_pr_snapshot="$(read_pr_snapshot)"
-  IFS=$'\t' read -r final_head_sha final_base_sha final_base_ref final_is_draft final_pr_node_id final_auto_merge_enabled final_pr_state final_pr_author_login final_head_repo <<< "$final_pr_snapshot"
-  if [[ "$final_head_sha" != "$head_sha" || "$final_base_sha" != "$base_sha" || "$final_base_ref" != "$DEFAULT_BRANCH" || "$final_is_draft" != "false" || "$final_auto_merge_enabled" != "false" || "$final_pr_state" != "OPEN" || "$final_pr_author_login" != "$pr_author_login" || "$final_head_repo" != "$head_repo" ]]; then
-    echo "Candidate changed during dependency exemption verification."
-    gate_pending
-  fi
-  final_dependency_digest="$(classify_dependencies)" || exit 1
-  [[ "$final_dependency_digest" == "$dependency_digest" ]] || exit 1
-  final_shared_head_count="$(shared_open_head_count)"
-  final_shared_head_owner="$(shared_open_head_owner)"
-  if [[ "$final_shared_head_count" != "1" || "$final_shared_head_owner" != "$pr_number" ]]; then
-    stamp_review_gate pending "Current head is shared by multiple open pull requests"
-    gate_pending
-  fi
-  require_no_dependency_findings
-  if base_change_marker_exists || rollout_marker_exists; then
-    stamp_review_gate pending "Base or policy changed; push a fresh dependency head"
-    gate_pending
-  fi
-  # Close the final classifier/listing window before publishing the exact SHA.
-  [[ "$(read_pr_snapshot)" == "$final_pr_snapshot" ]] || gate_pending
-  stamp_review_gate success "Dependencies exempt for $head_prefix; diff ${dependency_digest:0:16}"
-  trap 'stamp_review_gate pending "Dependency state could not be revalidated after publication"; exit 1' ERR
-  require_no_dependency_findings
-  post_snapshot="$(read_pr_snapshot)"
-  post_node="$(cut -f5 <<< "$post_snapshot")"
-  post_auto="$(cut -f6 <<< "$post_snapshot")"
-  if [[ "$post_auto" == true ]]; then
-    disable_auto_merge "$post_node"
-    stamp_review_gate pending "Automatic merge was enabled during publication"
-    gate_pending
-  fi
-  if [[ "$post_snapshot" != "$final_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]] || base_change_marker_exists || rollout_marker_exists; then
-    stamp_review_gate pending "Dependency state changed while publishing success"
-    gate_pending
-  fi
-  echo "Dependency-only PR exempt from Codex review; CI and security checks remain required."
-  exit 0
-else
-  classification_status=$?
-  [[ "$classification_status" == 3 ]] || exit 1
-fi
 
 # The event head was revoked before its first API read. Revoke the
 # resolved head as well for manual dispatches and stale event payloads.
@@ -1031,12 +923,6 @@ if ! head_prefix_resolves; then
   stamp_review_gate pending "Could not uniquely resolve the abbreviated head on $head_prefix"
   echo "The abbreviated head marker did not resolve uniquely to the exact pull request head."
   gate_pending
-fi
-if [[ "${REQUIRE_TIMELINE_FRESHNESS:-false}" == true ]]; then
-  timeline_watermark="$(gh api "repos/$REPO/issues/$pr_number/timeline?per_page=100" --paginate --slurp \
-    | jq -r '[.[][] | select(.event == "base_ref_changed" or .event == "base_ref_force_pushed" or (.event == "commented" and ((.author_association // "") == "OWNER" or (.author_association // "") == "MEMBER" or (.author_association // "") == "COLLABORATOR") and ((.body // "") | ascii_downcase | contains("@codex review")))) | (.updated_at // .created_at)]' | latest_timestamp)"
-  timeline_watermark="$(normalize_timestamp "$timeline_watermark")"
-  if [[ "$timeline_watermark" > "$evidence_after" ]]; then evidence_after="$timeline_watermark"; fi
 fi
 refresh_review_timeline_watermark
 gate_snapshot="$(read_gate_snapshot)"
@@ -1088,9 +974,8 @@ if [[ "$last_head_sha" != "$head_sha" || "$last_base_sha" != "$base_sha" || "$la
   echo "The PR state changed during final revalidation; it was not marked successful."
   gate_pending
 fi
-final_shared_head_count="$(shared_open_head_count)"
 final_shared_head_owner="$(shared_open_head_owner)"
-if [[ "$final_shared_head_count" != "1" || "$final_shared_head_owner" != "$pr_number" ]]; then
+if [[ "$final_shared_head_owner" != "$pr_number" ]]; then
   stamp_review_gate pending "Current head is shared by multiple open pull requests"
   echo "The current open PR head is ambiguous or no longer belongs to this PR."
   gate_pending
@@ -1126,7 +1011,7 @@ if [[ "$post_auto" == true ]]; then
   stamp_review_gate pending "Automatic merge was enabled during publication"
   gate_pending
 fi
-if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$post_snapshot" != "$last_pr_snapshot" || "$(shared_open_head_count)" != "1" || "$(shared_open_head_owner)" != "$pr_number" ]]; then
+if [[ "$post_success_snapshot" != "$final_gate_snapshot" || "$post_snapshot" != "$last_pr_snapshot" || "$(shared_open_head_owner)" != "$pr_number" ]]; then
   stamp_review_gate pending "Review state changed while publishing success"
   gate_pending
 fi
