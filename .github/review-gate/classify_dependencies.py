@@ -846,16 +846,37 @@ def valid_requirement(value):
 def valid_requirement_line(value):
     if not isinstance(value, str):
         return False
-    stripped = value.strip()
+    requirement, hashes, valid = split_requirement_hashes(value)
+    if not valid:
+        return False
+    if requirement is None:
+        return bool(hashes)
+    return valid_requirement(requirement)
+
+
+def split_requirement_hashes(value):
+    """Separate pip hash options from a requirement without accepting extras."""
+    if not isinstance(value, str):
+        return None, [], False
+    stripped = value.strip().removesuffix("\\").strip()
+    hash_pattern = (
+        r"--hash=(?:sha256:[0-9a-fA-F]{64}|sha384:[0-9a-fA-F]{96}|"
+        r"sha512:[0-9a-fA-F]{128})"
+    )
     if stripped.startswith("--hash="):
-        return bool(
-            re.fullmatch(
-                r"--hash=sha256:[0-9a-fA-F]{64}|--hash=sha384:["
-                r"0-9a-fA-F]{96}|--hash=sha512:[0-9a-fA-F]{128}",
-                stripped,
-            )
+        tokens = stripped.split()
+        return None, tokens, bool(tokens) and all(
+            re.fullmatch(hash_pattern, token) for token in tokens
         )
-    return valid_requirement(stripped)
+    tokens = re.findall(r"(?<!\S)--hash=\S+", stripped)
+    if not tokens:
+        return stripped, [], True
+    requirement = re.sub(r"\s+--hash=\S+", "", stripped).strip()
+    # Any remaining hash-like option was not parsed as a standalone token.
+    valid = "--hash=" not in requirement and all(
+        re.fullmatch(hash_pattern, token) for token in tokens
+    )
+    return requirement, tokens, valid
 
 
 def requirement_marker(value):
@@ -1920,26 +1941,34 @@ def dependency_file(path, before, after, patch, status="modified"):
         if not old_names and not new_names:
             return False
         old_requirements = [
-            value for value in old_values if not value.startswith("--hash=")
+            split_requirement_hashes(value)[0]
+            for value in old_values
+            if split_requirement_hashes(value)[0] is not None
         ]
         new_requirements = [
-            value for value in new_values if not value.startswith("--hash=")
+            split_requirement_hashes(value)[0]
+            for value in new_values
+            if split_requirement_hashes(value)[0] is not None
         ]
 
         def hash_records(values):
             result = {}
             current = None
             for value in semantic(values):
-                value = value.removesuffix("\\").strip()
-                if value.startswith("--hash="):
+                requirement, hashes, valid = split_requirement_hashes(value)
+                if not valid:
+                    return None
+                if requirement is None:
                     if current is None:
                         return None
-                    result[current][1].append(value)
+                    result[current][1].extend(hashes)
                 else:
-                    current = re.split(r"[<>=!~; @]", value, maxsplit=1)[0].lower()
+                    current = re.split(
+                        r"[<>=!~; @]", requirement, maxsplit=1
+                    )[0].lower()
                     if current in result:
                         return None
-                    result[current] = (value, [])
+                    result[current] = (requirement, list(hashes))
             return result
 
         # Bind hashes using complete immutable files, not patch context: an
@@ -2633,7 +2662,7 @@ def dependency_file(path, before, after, patch, status="modified"):
                 if isinstance(value, list):
                     return all(stable(item) for item in value)
                 if isinstance(value, str):
-                    return not (
+                    return bool(value.strip()) and not (
                         re.search(
                             r"[+*\[\]()${}]|\blatest\b|(?:^|[-.])(alpha|bet"
                             r"a|rc|dev|snapshot|canary|preview|eap|m[0-9])",
