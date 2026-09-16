@@ -1,0 +1,146 @@
+# Temporary metadata-only transfer. Removed by the final atomic policy commit.
+name: Canonical Policy Transfer
+on:
+  push:
+    branches: [feature/canonical-dependabot-gate]
+    paths: [.github/workflows/canonical-policy-transfer.yml]
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  transfer:
+    if: github.repository == 'ProspectOre/matic-home-assistant' && github.actor_id == '54486432'
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    timeout-minutes: 5
+    steps:
+      - name: Prepare hash-verified blobs without executing candidate code
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HELPER_HEAD: ${{ github.sha }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import ast, base64, hashlib, json, os, urllib.request
+          repo = 'ProspectOre/matic-home-assistant'
+          number = 138
+          original = 'd32702a68f3b32b0f702b65e99683be5e6abe972'
+          helper = os.environ['HELPER_HEAD']
+          old_digest = '2ca023a2fde325fbbcd555a4dc35686f665666302326f2622ab20e5022dd7d6c'
+          new_digest = 'bc1d5b2b8cd439f3810dd37cc6e405dd606e845a1d385d1269e9d567abe80f2a'
+          expected_blob = '368c0713d86d64b6a90e26fcc68cd370b284569e'
+          def api(path, data=None):
+              request = urllib.request.Request('https://api.github.com/repos/' + repo + '/' + path,
+                  data=None if data is None else json.dumps(data).encode(),
+                  headers={'Authorization': 'Bearer ' + os.environ['GH_TOKEN'],
+                           'Accept': 'application/vnd.github+json', 'Content-Type': 'application/json'},
+                  method='GET' if data is None else 'POST')
+              with urllib.request.urlopen(request, timeout=30) as response:
+                  return json.load(response)
+          pr = api('pulls/' + str(number))
+          assert pr['state'] == 'open' and pr['head']['sha'] == helper
+          assert pr['head']['repo']['full_name'] == repo
+          assert [p['sha'] for p in api('git/commits/' + helper)['parents']] == [original]
+          base_tree = api('git/commits/' + original)['tree']['sha']
+          def read(path):
+              value = api('contents/' + path + '?ref=' + original)
+              assert value['type'] == 'file' and value['encoding'] == 'base64'
+              return base64.b64decode(value['content']).decode('utf-8')
+          path = '.github/review-gate/classify_dependencies.py'
+          text = read(path)
+          assert hashlib.sha256(text.encode()).hexdigest() == old_digest
+          old = '            entries = {}\n            current = []\n            for line in match.group("body").splitlines():'
+          new = '            entries = {}\n            object_ids = set()\n            current = []\n            for line in match.group("body").splitlines():'
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          old = '                        if not identity:\n                            return None, None\n                        if ('
+          new = '                        object_id = re.match(r"\\s*([A-Fa-f0-9]+) /\\*", block)\n                        if (\n                            not identity\n                            or not object_id\n                            or identity.group(1) in entries\n                            or object_id.group(1) in object_ids\n                        ):\n                            return None, None\n                        object_ids.add(object_id.group(1))\n                        if ('
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          old = '        for identity in added:\n            _, raw = new_entries[identity]\n            if re.search(r"\\b(?:branch|revision)\\s*=", raw):\n                return False'
+          new = r'''for identity in added:
+              _, raw = new_entries[identity]
+              # Added entries have no trusted preimage. Validate the complete
+              # supported Xcode dictionary rather than merely excluding branch
+              # and revision keys: a local URL or invalid version is not a
+              # bounded registry/source-control dependency update.
+              entry = re.fullmatch(
+                  r'\s*[A-Fa-f0-9]+ /\* XCRemoteSwiftPackageReference "[^"\n]+" '
+                  r'\*/ = \{\s*isa = XCRemoteSwiftPackageReference;\s*'
+                  r'repositoryURL = "([^"\n]+)";\s*'
+                  r'requirement = \{([^{}]*)\};\s*\};',
+                  raw,
+                  re.S,
+              )
+              if not entry or entry[1] != identity:
+                  return False
+              try:
+                  source = urlparse(identity)
+                  port = source.port
+              except ValueError:
+                  return False
+              if (
+                  source.scheme != "https"
+                  or not source.hostname
+                  or source.username is not None
+                  or source.password is not None
+                  or port is not None
+                  or not source.path
+                  or source.query
+                  or source.fragment
+                  or source.params
+              ):
+                  return False
+              requirement = {}
+              for assignment in entry[2].split(";"):
+                  if not assignment.strip():
+                      continue
+                  field = re.fullmatch(
+                      r'\s*(kind|minimumVersion|version)\s*=\s*'
+                      r'(?:(?:"([A-Za-z0-9.]+)")|([A-Za-z0-9.]+))\s*',
+                      assignment,
+                  )
+                  if not field or field[1] in requirement:
+                      return False
+                  requirement[field[1]] = field[2] or field[3]
+              kind = requirement.get("kind")
+              key = "version" if kind == "exactVersion" else "minimumVersion"
+              if (
+                  kind not in {
+                      "exactVersion",
+                      "upToNextMajorVersion",
+                      "upToNextMinorVersion",
+                  }
+                  or set(requirement) != {"kind", key}
+                  or not re.fullmatch(r"[0-9]+(?:\.[0-9]+){1,2}", requirement[key])
+              ):
+                  return False'''
+          new = '\n'.join('        ' + line for line in new.splitlines())
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+          assert hashlib.sha256(text.encode()).hexdigest() == new_digest, 'Canonical digest mismatch'
+          ast.parse(text)
+          raw = text.encode()
+          assert hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest() == expected_blob
+          changes = {path: text}
+          manifest_path = '.github/review-gate/source.json'
+          manifest_text = read(manifest_path)
+          manifest = json.loads(manifest_text)
+          assert manifest['source'] == 'ProspectOre/dev-workspace' and manifest['generated'] is True
+          assert manifest['dependencyClassifierSha256'] == old_digest
+          assert manifest_text.count(old_digest) == 1
+          changes[manifest_path] = manifest_text.replace(old_digest, new_digest)
+          for workflow_path in manifest['managedWorkflows']:
+              assert workflow_path.startswith('.github/workflows/review') and workflow_path.endswith('.yml') and '..' not in workflow_path
+              workflow = read(workflow_path)
+              if old_digest in workflow:
+                  changes[workflow_path] = workflow.replace(old_digest, new_digest)
+          assert len(changes) >= 3
+          assert api('pulls/' + str(number))['head']['sha'] == helper
+          entries = []
+          for changed_path, content in changes.items():
+              blob = api('git/blobs', {'content': content, 'encoding': 'utf-8'})['sha']
+              entries.append({'path': changed_path, 'mode': '100644', 'type': 'blob', 'sha': blob})
+          print('TRANSFER_RESULT=' + json.dumps({'repo': repo, 'pr': number, 'original_head': original,
+                'helper_head': helper, 'base_tree': base_tree, 'entries': entries}, sort_keys=True))
+          # No checkout, candidate execution, branch update, status write, or merge.
+          PY
