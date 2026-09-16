@@ -6,6 +6,10 @@ trap 'exit 1' ERR
 # One canonical policy, loaded by hash-pinned trusted workflow adapters.
 # Adapters supply repository and status contexts; regular review is Codex-only.
 evidence_only="${EVIDENCE_ONLY:-false}"
+case "${RECORD_EVENT_ONLY:-false}" in
+  true|false) ;;
+  *) echo "RECORD_EVENT_ONLY must be true or false." >&2; exit 1 ;;
+esac
 case "$evidence_only" in
   true) evidence_only_mode=1 ;;
   false|"") evidence_only_mode=0 ;;
@@ -927,6 +931,10 @@ fi
 refresh_review_timeline_watermark
 gate_snapshot="$(read_gate_snapshot)"
 require_clean_regular_snapshot "$gate_snapshot"
+if [[ "${RECORD_EVENT_ONLY:-false}" == true ]]; then
+  echo "Review event history recorded; candidate proof still owns success publication."
+  gate_pending
+fi
 
 # Re-read every merge-relevant input immediately before success. This
 # catches a new result, finding, comment, head, or base change that
