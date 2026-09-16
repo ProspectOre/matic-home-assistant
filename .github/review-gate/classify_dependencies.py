@@ -661,12 +661,22 @@ def package_constraints(before, after, fields):
     removed, added = set(old_flat) - set(new_flat), set(new_flat) - set(old_flat)
     if removed and added:
         return False
+    if before.get("peerDependenciesMeta") != after.get("peerDependenciesMeta") and any(
+        before.get(field) != after.get(field)
+        for field in fields
+        if field != "peerDependenciesMeta"
+    ):
+        return False
     for field in fields:
         old_values, new_values = before.get(field, {}), after.get(field, {})
         if old_values == new_values:
             continue
         if field == "peerDependenciesMeta":
-            return False
+            if not isinstance(old_values, dict) or not isinstance(new_values, dict):
+                return False
+            if not valid_peer_metadata(old_values) or not valid_peer_metadata(new_values):
+                return False
+            continue
         if not isinstance(old_values, dict) or not isinstance(new_values, dict):
             return False
         removed_names = set(old_values) - set(new_values)
@@ -706,11 +716,6 @@ def package_constraints(before, after, fields):
                     old = {}
                 if not valid_peer_metadata(old) or not valid_peer_metadata(new):
                     return False
-                # Peer optionality is install/validation behavior, not a
-                # version selector. It must remain byte-for-byte stable,
-                # including additions and removals.
-                if old != new:
-                    return False
             elif not valid_manifest_npm_constraint(
                 old
             ) or not valid_manifest_npm_constraint(new):
@@ -743,9 +748,20 @@ def valid_npm_constraint(value):
 
 def valid_manifest_npm_constraint(value):
     """Manifest selectors must not float to an arbitrary registry version."""
-    return (
-        isinstance(value, str) and value.strip() != "*" and valid_npm_constraint(value)
-    )
+    if not isinstance(value, str) or value.strip() == "*" or not valid_npm_constraint(value):
+        return False
+    for branch in value.split("||"):
+        branch = branch.strip()
+        if re.fullmatch(rf"{NPM_VERSION}\s+-\s+{NPM_VERSION}", branch):
+            continue
+        if re.search(r"(?:^|\s)<\s*", branch):
+            continue
+        # Exact, caret, and tilde selectors have finite upper bounds. A lone
+        # lower-bound comparator (>= or >) does not.
+        if re.match(r"^(?:\^|~|=)?\s*" + NPM_VERSION + r"$", branch):
+            continue
+        return False
+    return True
 
 
 def valid_nested_constraints(value):
@@ -849,10 +865,10 @@ def valid_requirement(value):
             # library alone; reject anything outside the conservative marker
             # grammar when `packaging` is unavailable.
             if not re.fullmatch(
-                r"[A-Za-z_][A-Za-z0-9_]*\s*(?:==|!=|<=|>=|<|>|in|not in)\s*"
+                r"[A-Za-z_][A-Za-z0-9_]*\s*(?:==|!=|<=|>=|<|>|\b(?:in|not in)\b)\s*"
                 r"(?:['\"][^'\"]+['\"]|[A-Za-z0-9_.-]+)"
                 r"(?:\s+(?:and|or)\s+[A-Za-z_][A-Za-z0-9_]*\s*"
-                r"(?:==|!=|<=|>=|<|>|in|not in)\s*"
+                r"(?:==|!=|<=|>=|<|>|\b(?:in|not in)\b)\s*"
                 r"(?:['\"][^'\"]+['\"]|[A-Za-z0-9_.-]+))*",
                 marker.group(1),
             ):
@@ -2358,54 +2374,18 @@ def dependency_file(path, before, after, patch, status="modified"):
                     depth += line.count("{") - line.count("}")
                     if depth == 0:
                         block = "\n".join(current)
-                        top_level = []
-                        nested_requirement = []
-                        depth_check = 0
-                        for block_line in current[1:]:
-                            stripped = block_line.strip()
-                            if stripped.endswith("{"):
-                                if depth_check == 0:
-                                    key = stripped.split("=", 1)[0].strip()
-                                    top_level.append(key)
-                                depth_check += 1
-                                continue
-                            if stripped == "};":
-                                depth_check -= 1
-                                continue
-                            assignment = re.match(r"([A-Za-z][A-Za-z0-9_]*)\s*=", stripped)
-                            if not assignment:
-                                continue
-                            if depth_check == 0:
-                                top_level.append(assignment.group(1))
-                            elif depth_check == 1:
-                                nested_requirement.append(assignment.group(1))
-                        if (
-                            top_level.count("isa") != 1
-                            or top_level.count("repositoryURL") != 1
-                            or top_level.count("requirement") != 1
-                            or set(top_level) - {"isa", "repositoryURL", "requirement"}
-                            or nested_requirement.count("kind") != 1
-                            or len(nested_requirement) != len(set(nested_requirement))
-                        ):
-                            return None, None
-                        isa = re.search(r"^\s*isa = ([A-Za-z0-9]+);$", block, re.M)
                         identity = re.search(r"^\s*repositoryURL = \"([^\"]+)\";$", block, re.M)
-                        requirement_kind = re.search(r"^\s*kind = ([A-Za-z0-9]+);$", block, re.M)
-                        if not isa or not identity or not requirement_kind:
+                        if not identity:
                             return None, None
-                        if isa.group(1) != "XCRemoteSwiftPackageReference":
-                            return None, None
-                        kind = requirement_kind.group(1)
-                        expected_version = {
-                            "exactVersion": "version",
-                            "upToNextMajorVersion": "minimumVersion",
-                            "upToNextMinorVersion": "minimumVersion",
-                        }.get(kind)
-                        if expected_version is None or nested_requirement.count(expected_version) != 1:
-                            return None, None
-                        if set(nested_requirement) - {"kind", "minimumVersion", "maximumVersion", "version"}:
-                            return None, None
-                        if set(nested_requirement) != {"kind", expected_version}:
+                        if (
+                            re.search(
+                                r"\b(?:branch|revision|exactVersion|upToNe"
+                                r"xtMajorVersion|upToNextMinorVersion)\s*=",
+                                block,
+                            )
+                            is None
+                            and "requirement =" not in block
+                        ):
                             return None, None
                         if (
                             re.search(
@@ -2464,6 +2444,30 @@ def dependency_file(path, before, after, patch, status="modified"):
         for identity in added:
             _, raw = new_entries[identity]
             if not valid_swift_source_url(identity):
+                return False
+            top_keys = re.findall(r"^\s*([A-Za-z][A-Za-z0-9_]*)\s*=", raw, re.M)
+            requirement_body = re.search(r"\brequirement\s*=\s*\{(.*?)\};", raw, re.S)
+            nested_keys = re.findall(
+                r"\b(kind|minimumVersion|maximumVersion|version)\s*=",
+                requirement_body.group(1) if requirement_body else "",
+            )
+            isa = re.findall(r"^\s*isa = ([A-Za-z0-9]+);$", raw, re.M)
+            if (
+                isa != ["XCRemoteSwiftPackageReference"]
+                or top_keys.count("repositoryURL") != 1
+                or top_keys.count("requirement") != 1
+                or set(top_keys) - {"isa", "repositoryURL", "requirement"}
+                or not nested_keys
+                or len(nested_keys) != len(set(nested_keys))
+            ):
+                return False
+            kind = re.findall(r"\bkind = ([A-Za-z0-9]+);", raw)
+            expected_version = {
+                "exactVersion": "version",
+                "upToNextMajorVersion": "minimumVersion",
+                "upToNextMinorVersion": "minimumVersion",
+            }.get(kind[0] if len(kind) == 1 else "")
+            if expected_version is None or set(nested_keys) != {"kind", expected_version}:
                 return False
             if re.search(r"\b(?:branch|revision)\s*=", raw):
                 return False
@@ -2602,15 +2606,6 @@ def dependency_file(path, before, after, patch, status="modified"):
                     text,
                     flags=re.M,
                 )
-            # Xcode updates these references alongside the package dictionary.
-            if ignored_package_ids:
-                ids = "|".join(re.escape(item) for item in sorted(ignored_package_ids))
-                text = re.sub(
-                    rf"^[^\n]*(?:{ids}) /\* XCRemoteSwiftPackageReference[^\n]*\n",
-                    "",
-                    text,
-                    flags=re.M,
-                )
             return text
 
         return scrub(before) == scrub(after)
@@ -2661,6 +2656,9 @@ def dependency_file(path, before, after, patch, status="modified"):
             if name == "composer.json":
                 if not only_fields(old_json, new_json, JSON_FIELDS[name]):
                     return False
+                def platform_requirement(key):
+                    return key == "php" or key == "composer-runtime-api" or key.startswith(("ext-", "lib-"))
+
                 old_all = {
                     key
                     for field in ("require", "require-dev")
@@ -2715,6 +2713,12 @@ def dependency_file(path, before, after, patch, status="modified"):
                         set(new_values) - set(old_values),
                     )
                     if removed and added:
+                        return False
+                    if any(
+                        platform_requirement(key)
+                        and old_values.get(key) != new_values.get(key)
+                        for key in set(old_values) | set(new_values)
+                    ):
                         return False
                     if not all(
                         valid_composer_constraint(value)
