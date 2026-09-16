@@ -623,7 +623,6 @@ read_gate_snapshot() (
     --argjson security_findings "$security_findings" \
     --arg latest_finding_at "$latest_finding_at" \
     '{regular_findings: (([$deliveries[] | select((.clean | not) and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
-      live_delivery_finding: (([$deliveries[] | select((.clean | not) and .dismissed != true) | .at] | max // "") as $finding | $finding != "" and $finding >= ([$deliveries[] | select(.clean) | .at] | max // "")),
       verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
@@ -633,19 +632,22 @@ read_gate_snapshot() (
 
 require_clean_regular_snapshot() {
   local gate_snapshot="$1"
-  local verdict verdict_at finding_count security_finding_count latest_finding_at
+  local verdict verdict_at finding_count regular_finding_count security_finding_count latest_finding_at
   verdict="$(jq -c '.verdict' <<< "$gate_snapshot")"
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
+  regular_finding_count="$(jq '.regular_findings | length' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
-  if [[ "$finding_count" -gt 0 ]] || jq -e '.live_delivery_finding' <<< "$gate_snapshot" >/dev/null; then
+  if [[ "$regular_finding_count" -gt 0 ]]; then
     local origin
     while IFS= read -r origin; do
       [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
       stamp_status "review-finding-history" pending "Regular findings observed on head $head_sha; $origin" >/dev/null
     done < <(jq -r '.regular_findings[] | .source + ":" + .id' <<< "$gate_snapshot")
   fi
-  if [[ "${edited_finding:-false}" == true ]] || { [[ "$(finding_history_head)" == "$head_sha" ]] && ! regular_findings_dismissed; }; then
+  # Block directly from observed origins too: evidence-only consumers cannot
+  # persist statuses, and a resolved thread is not a native review dismissal.
+  if [[ "$regular_finding_count" -gt 0 || "${edited_finding:-false}" == true ]] || { [[ "$(finding_history_head)" == "$head_sha" ]] && ! regular_findings_dismissed; }; then
     stamp_review_gate pending "Unresolved finding history; fix code or record authorized review dismissal"
     gate_pending
   fi
