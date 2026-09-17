@@ -30,12 +30,8 @@ ROOM_SCHEMA = vol.Schema(
     }
 )
 
-_POLYGON_BUCKET_COUNT = 256
-_GEOMETRY_EPSILON = 1e-8
-
-
 class _IndexedPolygon:
-    """Answer exact point-in-polygon queries without rescanning every edge."""
+    """Answer exact point-in-polygon queries with bounded storage."""
 
     def __init__(self, boundary: list[list[float]]) -> None:
         self.boundary = boundary
@@ -45,24 +41,6 @@ class _IndexedPolygon:
         self.maximum_x = max(xs)
         self.minimum_y = min(ys)
         self.maximum_y = max(ys)
-        span = self.maximum_y - self.minimum_y
-        self.bucket_height = max(span / _POLYGON_BUCKET_COUNT, _GEOMETRY_EPSILON)
-        buckets: dict[int, list[tuple[list[float], list[float]]]] = {}
-        previous = boundary[-1]
-        for current in boundary:
-            minimum_y = min(float(previous[1]), float(current[1]))
-            maximum_y = max(float(previous[1]), float(current[1]))
-            first = self._bucket(minimum_y - _GEOMETRY_EPSILON)
-            last = self._bucket(maximum_y + _GEOMETRY_EPSILON)
-            for bucket in range(first, last + 1):
-                buckets.setdefault(bucket, []).append((previous, current))
-            previous = current
-        self.edges_by_bucket = {
-            bucket: tuple(edges) for bucket, edges in buckets.items()
-        }
-
-    def _bucket(self, y: float) -> int:
-        return math.floor((y - self.minimum_y) / self.bucket_height)
 
     def contains(self, x: float, y: float, tolerance: float) -> bool:
         """Return whether a point is inside or tolerably near this polygon."""
@@ -71,34 +49,11 @@ class _IndexedPolygon:
             and self.minimum_y - tolerance <= y <= self.maximum_y + tolerance
         ):
             return False
-        candidates = {
-            (id(start), id(end)): (start, end)
-            for bucket in range(
-                self._bucket(y - tolerance - _GEOMETRY_EPSILON),
-                self._bucket(y + tolerance + _GEOMETRY_EPSILON) + 1,
-            )
-            for start, end in self.edges_by_bucket.get(bucket, ())
-        }.values()
-        edges = tuple(candidates)
-        if any(
-            MaticAreaSelector._point_on_segment(x, y, start, end)
-            for start, end in edges
-        ):
-            return True
-        inside = False
-        for previous, current in edges:
-            current_x, current_y = (float(value) for value in current)
-            previous_x, previous_y = (float(value) for value in previous)
-            if (current_y > y) != (previous_y > y) and x < (
-                (previous_x - current_x) * (y - current_y) / (previous_y - current_y)
-                + current_x
-            ):
-                inside = not inside
-        if inside or not tolerance:
-            return inside
-        return any(
-            MaticAreaSelector._point_near_segment(x, y, start, end, tolerance)
-            for start, end in edges
+        # Robot-provided polygons may contain many edges spanning their full height.
+        # Storing each edge in every vertical bucket amplifies that valid input into
+        # millions of references, so retain only the source boundary and scan it.
+        return MaticAreaSelector._point_in_or_near_polygon(
+            x, y, self.boundary, tolerance
         )
 
 
