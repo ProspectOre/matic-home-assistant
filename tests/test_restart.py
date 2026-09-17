@@ -604,6 +604,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
 
 
 @pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize("handoff_read", [2, 3])
 @pytest.mark.parametrize(
     "state,identity,verified",
     [
@@ -616,7 +617,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     ],
 )
 async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
-    hass, recovery_state, multi, state, identity, verified
+    hass, recovery_state, multi, handoff_read, state, identity, verified
 ):
     manager, entry, checkpoint, room = recovery_state
     rooms = (
@@ -640,9 +641,9 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
     async def native_identity():
         nonlocal reads
         reads += 1
-        if reads <= 2:
-            if reads == 2:
-                hass.states.async_set(checkpoint["entity_id"], state)
+        if reads == handoff_read:
+            hass.states.async_set(checkpoint["entity_id"], state)
+        if reads < handoff_read:
             return b"synthetic-session"
         return identity
 

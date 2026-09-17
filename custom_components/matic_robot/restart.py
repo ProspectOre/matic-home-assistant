@@ -127,10 +127,14 @@ async def async_recover_managed_run(
             cancel.is_set()
             or manager.motion_generation(serial_number) != generation
             or not floor_is_current()
-            or await runtime.client.async_get_cleaning_session_identity() != identity
+            or await runtime.client.async_get_cleaning_session_identity()
+            not in {identity, b""}
         ):
             reason = "restart_recovery_superseded"
             return
+        # The same mission was verified above. An explicit end during the
+        # history read is a terminal handoff, not a takeover; the executor still
+        # requires normal return and native room evidence before crediting it.
         await manager.async_mark_recovery_status(
             serial_number, "running", reason="same_native_mission_verified"
         )
