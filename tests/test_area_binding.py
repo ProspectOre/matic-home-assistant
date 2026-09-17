@@ -110,6 +110,43 @@ def test_dense_floor_area_binding_remains_bounded() -> None:
     assert len(binding["local_occupancy"]) == 512
 
 
+def test_area_binding_rejects_excess_local_segments() -> None:
+    """Robot-controlled local walls cannot make persisted evidence unbounded."""
+    floor_plan = FloorPlan(
+        1,
+        "duplicate-partition",
+        b"duplicate-partition",
+        tuple(
+            _room(str(index), "Duplicate", ((0.0, 0.0), (1.0, 0.0)))
+            for index in range(2)
+        ),
+    )
+
+    with (
+        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1),
+        pytest.raises(ValueError, match="too many local floor-plan segments"),
+    ):
+        binding_for_area(floor_plan, [{"x": 0.5, "y": 0.0, "radius": 0.1}])
+
+
+def test_local_segment_correspondence_enforces_work_limits() -> None:
+    """Dense compatible walls fail closed before building or scanning a graph."""
+    segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))
+    shape = ((500, 0, 100),)
+
+    with patch.object(area_binding_module, "_MAX_SEGMENT_CANDIDATE_CHECKS", 1):
+        assert _local_segment_correspondence(segments, segments, shape) is None
+    with patch.object(area_binding_module, "_MAX_COMPATIBLE_SEGMENT_EDGES", 1):
+        assert _local_segment_correspondence(segments, segments, shape) is None
+    with patch.object(area_binding_module, "_MAX_SEGMENT_MATCHING_WORK", 1):
+        assert _local_segment_correspondence(segments[:1], segments[:1], shape) is None
+
+
+def test_saved_local_segments_have_a_cardinality_limit() -> None:
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1):
+        assert not area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 2)
+
+
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
     return {
         "schema_version": AREA_SCHEMA_VERSION,

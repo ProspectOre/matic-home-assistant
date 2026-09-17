@@ -52,6 +52,12 @@ _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
 _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
+# Keep robot-controlled local evidence and the tolerant bipartite matcher small
+# enough to run synchronously on Home Assistant's event loop.
+_MAX_LOCAL_SEGMENTS = 256
+_MAX_SEGMENT_CANDIDATE_CHECKS = 16_384
+_MAX_COMPATIBLE_SEGMENT_EDGES = 4_096
+_MAX_SEGMENT_MATCHING_WORK = 262_144
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -493,6 +499,8 @@ def _area_geometry_components(
             if second < first:
                 first, second = second, first
             segments.append((*first, *second))
+            if len(segments) > _MAX_LOCAL_SEGMENTS:
+                raise ValueError("too many local floor-plan segments")
 
     occupancy_values = []
     for x, y, radius in ordered_float:
@@ -730,16 +738,20 @@ def _valid_local_occupancy(value: Any) -> bool:
 
 def _valid_local_segments(value: Any) -> bool:
     """Return whether saved millimeter segments have a bounded numeric shape."""
-    return isinstance(value, list) and all(
-        isinstance(segment, list)
-        and len(segment) == 4
+    return (
+        isinstance(value, list)
+        and len(value) <= _MAX_LOCAL_SEGMENTS
         and all(
-            not isinstance(coordinate, bool)
-            and isinstance(coordinate, int)
-            and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
-            for coordinate in segment
+            isinstance(segment, list)
+            and len(segment) == 4
+            and all(
+                not isinstance(coordinate, bool)
+                and isinstance(coordinate, int)
+                and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
+                for coordinate in segment
+            )
+            for segment in value
         )
-        for segment in value
     )
 
 
@@ -782,6 +794,8 @@ def _local_segment_correspondence(
     neighborhood must be covered. Minimum-cost maximum matching avoids a
     first-fit choice consuming the wrong nearby segment.
     """
+    if len(saved) > _MAX_LOCAL_SEGMENTS or len(current) > _MAX_LOCAL_SEGMENTS:
+        return None
     saved_contexts = tuple(_segment_context(segment, shape) for segment in saved)
     current_contexts = tuple(_segment_context(segment, shape) for segment in current)
     saved_local = tuple(bool(context[0]) for context in saved_contexts)
@@ -793,6 +807,7 @@ def _local_segment_correspondence(
 
     compatible: list[tuple[int, int, int]] = []
     maximum_pair_cost = 0
+    candidate_checks = 0
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
@@ -804,6 +819,9 @@ def _local_segment_correspondence(
             for current_index in current_by_cell.get((neighbor_x, neighbor_y), ())
         }
         for current_index in candidates:
+            candidate_checks += 1
+            if candidate_checks > _MAX_SEGMENT_CANDIDATE_CHECKS:
+                return None
             if _local_segment_contexts_match(
                 saved_segment,
                 saved_context,
@@ -813,7 +831,16 @@ def _local_segment_correspondence(
             ):
                 pair_cost = _segment_pair_cost(saved_segment, current[current_index])
                 compatible.append((saved_index, current_index, pair_cost))
+                if len(compatible) > _MAX_COMPATIBLE_SEGMENT_EDGES:
+                    return None
                 maximum_pair_cost = max(maximum_pair_cost, pair_cost)
+
+    # Each augmentation scans the residual graph. Bound that aggregate work,
+    # rather than relying only on the number of materialized compatible edges.
+    maximum_augmentations = min(len(saved), len(current))
+    flow_edge_count = len(compatible) + len(saved) + len(current)
+    if flow_edge_count * maximum_augmentations > _MAX_SEGMENT_MATCHING_WORK:
+        return None
 
     node_count = len(saved) + len(current) + 2
     source = node_count - 2
