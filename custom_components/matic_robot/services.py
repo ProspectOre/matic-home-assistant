@@ -1172,13 +1172,7 @@ async def _async_dispatch_leg_command(
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
-        leg,
-        history_baseline,
-        dispatched_at,
-        identity_baseline,
-        identity,
-        completion_deadline=dispatched_at
-        + timedelta(seconds=call.data.get("completion_timeout", 21600)),
+        leg, history_baseline, dispatched_at, identity_baseline, identity
     )
 
 
@@ -3593,7 +3587,9 @@ async def _async_execute_rooms(
         async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
             checkpoint.update(
                 {
-                    "phase": "accepted",
+                    "phase": "accepted"
+                    if dispatch.completion_deadline is not None
+                    else "starting",
                     "dispatched_at": dispatch.dispatched_at.isoformat(),
                     "completion_deadline": dispatch.completion_deadline.isoformat()
                     if dispatch.completion_deadline is not None

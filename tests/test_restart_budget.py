@@ -44,7 +44,7 @@ async def test_completion_budget_is_persisted_once_and_not_reset():
     saver.assert_not_awaited()
 
 
-async def test_dispatch_has_absolute_budget_before_initial_state_wait(hass):
+async def test_dispatch_does_not_consume_the_separate_completion_budget(hass):
     hass.services.async_register("vacuum", "send_command", AsyncMock())
     dispatch = await _async_dispatch_leg_command(
         hass,
@@ -58,8 +58,12 @@ async def test_dispatch_has_absolute_budget_before_initial_state_wait(hass):
         session_identity=AsyncMock(side_effect=[b"", b"accepted"]),
     )
     assert dispatch.native_identity == b"accepted"
-    assert dispatch.completion_deadline == dispatch.dispatched_at + timedelta(
-        seconds=100
+    assert dispatch.completion_deadline is None
+    delayed = replace(dispatch, dispatched_at=dt_util.utcnow() - timedelta(seconds=55))
+    saver = AsyncMock()
+    assert 99 < await _async_completion_budget(delayed, 100, saver) <= 100
+    assert saver.await_args.args[0].completion_deadline > dt_util.utcnow() + timedelta(
+        seconds=99
     )
 
 

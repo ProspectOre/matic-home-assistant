@@ -26,6 +26,7 @@ from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.services import (
     PlanCancelledError,
     RoomRunOutcome,
+    _async_completion_budget,
     _async_execute_rooms,
     _async_run_leg,
     _async_wait_for_owned_start,
@@ -119,6 +120,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
     "case",
     [
         "dispatching",
+        "starting",
         "no_identity",
         "changed",
         "ended",
@@ -138,8 +140,8 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
 async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
     manager, entry, checkpoint, _ = recovery_state
     client = entry.runtime_data.client
-    if case == "dispatching":
-        checkpoint["phase"] = "dispatching"
+    if case in {"dispatching", "starting"}:
+        checkpoint["phase"] = case
     elif case == "no_identity":
         checkpoint["native_identity_hash"] = None
     elif case in {"changed", "ended", "unknown"}:
@@ -238,6 +240,10 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             native_identity=b"new",
         )
         await kwargs["checkpoint_dispatch"](dispatch)
+        assert (
+            manager.recovery_run("serial")["recovery_checkpoint"]["phase"] == "starting"
+        )
+        await _async_completion_budget(dispatch, 100, kwargs["checkpoint_dispatch"])
         seen.append(manager.recovery_run("serial")["recovery_checkpoint"])
         for target in args[5]:
             kwargs["record_room_completed"](target)
@@ -258,6 +264,9 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             session_identity=AsyncMock(return_value=b"new"),
         )
     assert [value["leg_index"] for value in seen] == [0, 1]
+    assert all(
+        value["phase"] == "accepted" and value["completion_deadline"] for value in seen
+    )
     assert seen[1]["completed_room_ids"] == ["kitchen"]
     assert seen[0]["native_identity_hash"] == hashlib.sha256(b"new").hexdigest()
     assert seen[0]["history_baseline"] == [hashlib.sha256(b"old").hexdigest()]

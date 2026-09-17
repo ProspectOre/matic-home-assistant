@@ -9,7 +9,7 @@ commands, and real failures retain their separate cancellation behavior.
 
 Managed room plans checkpoint their resolved queue, run ID, settings, floor
 binding, current leg, dispatch phase, verified room credits, and stop intent.
-Durable state retains the dispatch-anchored completion deadline, pause/recharge state,
+Durable state retains the confirmed-start completion deadline, pause/recharge state,
 room timing, and bounded trigger provenance; restart does not grant extra time.
 Native session identities and history keys remain opaque in memory; only
 fingerprints are stored locally. Checkpoints are excluded from entity snapshots.
@@ -33,6 +33,9 @@ over recovery; a saved finish-current-room request is not cleared by reconnect.
   its cancellation outcome. Verification cannot dispatch another leg.
 - A crash between native command acceptance and the identity checkpoint is
   ambiguous. Recovery does not guess whether dispatch succeeded or replay it.
+- A checkpoint before confirmed room start and its persisted completion budget
+  is not recoverable. The native mission is left alone; HA does not grant a new
+  cleaning budget or consume cleaning time during the separately bounded start.
 - If the native mission ended or changed while HA was offline, native-history
   import can still credit its explicit room results. The managed run remains
   unverified and its remaining queue is not automatically dispatched: history
