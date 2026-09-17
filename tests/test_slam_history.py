@@ -408,7 +408,20 @@ async def test_history_collector_waits_for_matching_floor_identity(hass) -> None
             history.async_add.assert_not_awaited()
             entry_reads = slam_map.entries.call_count
             assert floor_listener is not None
-            floor_listener()
+            original_floor_plan_eq = FloorPlan.__eq__
+            comparisons = 0
+
+            def count_floor_plan_comparisons(self, other):
+                nonlocal comparisons
+                comparisons += 1
+                return original_floor_plan_eq(self, other)
+
+            current_floor = replace(current_floor)
+            with patch.object(FloorPlan, "__eq__", count_floor_plan_comparisons):
+                floor_listener()
+                assert comparisons == 1
+                floor_listener()
+                assert comparisons == 1
             for _index in range(5):
                 await asyncio.sleep(0)
             assert slam_map.entries.call_count == entry_reads

@@ -210,10 +210,12 @@ async def async_collect_slam_history(
         def _floor_plan_changed() -> None:
             nonlocal observed_floor_plan
             current_floor_plan = floor_plan()
-            if current_floor_plan == observed_floor_plan:
+            if current_floor_plan is observed_floor_plan:
                 return
+            floor_plan_changed = current_floor_plan != observed_floor_plan
             observed_floor_plan = current_floor_plan
-            changed.set()
+            if floor_plan_changed:
+                changed.set()
 
         remove_listeners.append(floor_plan_listener(_floor_plan_changed))
     try:
