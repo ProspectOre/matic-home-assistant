@@ -128,6 +128,8 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
         "bad_time",
         "bad_baseline",
         "stop_intent",
+        "bad_deadline",
+        "naive_deadline",
     ],
 )
 async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
@@ -164,6 +166,10 @@ async def test_ambiguous_recovery_never_dispatches(hass, recovery_state, case):
         checkpoint["history_baseline"] = None
     elif case == "stop_intent":
         checkpoint["stop_intent"] = "immediate"
+    elif case == "bad_deadline":
+        checkpoint["completion_deadline"] = "invalid"
+    elif case == "naive_deadline":
+        checkpoint["completion_deadline"] = "2026-01-01T00:00:00"
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     with (
         patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
@@ -386,15 +392,20 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
         tuple(rooms),
         frozenset(),
         dt_util.utcnow(),
-        native_identity=b"synthetic-session",
+        native_identity=None,
     )
     saver = AsyncMock()
     sender = AsyncMock()
     manager._cancellation_reasons["serial"] = "home_assistant_shutdown"
+
+    async def started(*args, **_kwargs):
+        args[6](b"synthetic-session")
+        return "cleaning"
+
     with (
         patch(
             "custom_components.matic_robot.services._async_wait_for_owned_start",
-            AsyncMock(return_value="cleaning"),
+            AsyncMock(side_effect=started),
         ),
         patch(
             "custom_components.matic_robot.services._async_wait_with_native_identity",
@@ -419,7 +430,9 @@ async def test_reattached_leg_checkpoints_without_redispatch_and_suspends(
         )
     dispatch.assert_not_awaited()
     sender.assert_not_awaited()
-    assert saver.await_count == 2
+    assert saver.await_count == 3
+    assert saver.await_args.args[0].completion_deadline is not None
+    assert saver.await_args.args[0].native_identity == b"synthetic-session"
     assert manager.snapshot("serial")["cancelled_runs"] == 0
     assert manager.snapshot("serial")["interrupted_runs"] == 0
 
@@ -534,12 +547,15 @@ async def test_reloaded_room_retains_elapsed_and_original_timestamps(
 
 
 @pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize("provenance", ["user", "automation"])
 async def test_startup_rejoins_real_executor_to_completion_without_clean_command(
-    hass, recovery_state, multi
+    hass, recovery_state, multi, provenance
 ):
     manager, entry, checkpoint, room = recovery_state
     starts = []
     hass.bus.async_listen("matic_robot_room_started", starts.append)
+    completions = []
+    hass.bus.async_listen("matic_robot_room_completed", completions.append)
     rooms = (
         [room, CleaningRoom("office", "Office", "vacuum", "standard")]
         if multi
@@ -557,6 +573,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         checkpoint["rooms"] = [asdict(value) for value in rooms]
         await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
         await manager.async_mark_started("serial", "plan", rooms[1], run_id="run")
+    manager._robot("serial")["last_run"]["provenance"] = provenance
     with (
         patch(
             "custom_components.matic_robot.services._async_dispatch_leg_command",
@@ -601,6 +618,9 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     assert manager.snapshot("serial")["active_plan"] is None
     await hass.async_block_till_done()
     assert not starts
+    assert len(completions) == len(rooms)
+    assert all(event.data["provenance"] == provenance for event in completions)
+    assert run["provenance"] == provenance
 
 
 @pytest.mark.parametrize("multi", [False, True])

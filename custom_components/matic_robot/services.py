@@ -9,7 +9,7 @@ from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Seque
 from contextlib import asynccontextmanager
 from copy import deepcopy
 from dataclasses import asdict, dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from enum import StrEnum
 from functools import partial, wraps
 from time import monotonic
@@ -155,6 +155,34 @@ class _PreparedRoomDispatch:
     native_identity_baseline: bytes | None = None
     native_identity: bytes | None = None
     recovered: bool = False
+    completion_deadline: datetime | None = None
+
+
+def _remaining_completion_time(dispatch: _PreparedRoomDispatch, timeout: int) -> float:
+    """Keep a recovered mission inside its original wall-clock budget."""
+    if dispatch.completion_deadline is None:
+        return float(timeout)
+    return max(0.0, (dispatch.completion_deadline - dt_util.utcnow()).total_seconds())
+
+
+async def _async_completion_budget(
+    dispatch: _PreparedRoomDispatch,
+    configured_seconds: int,
+    checkpoint: Callable[[_PreparedRoomDispatch], Awaitable[None]] | None,
+) -> float:
+    """Persist the deadline before entering the completion monitor."""
+    if dispatch.completion_deadline is None:
+        dispatch = replace(
+            dispatch,
+            completion_deadline=dt_util.utcnow()
+            + timedelta(seconds=configured_seconds),
+        )
+        if checkpoint is not None:
+            await checkpoint(dispatch)
+    remaining = _remaining_completion_time(dispatch, configured_seconds)
+    if remaining <= 0:
+        raise TimeoutError
+    return remaining
 
 
 @dataclass(frozen=True, slots=True)
@@ -1188,6 +1216,8 @@ async def _async_run_room(
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
     | None = None,
+    provenance: str | None = None,
+    recovered_suspend_reason: str | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1204,7 +1234,7 @@ async def _async_run_room(
         "cleaning_mode": room.cleaning_mode,
         "coverage_setting": room.coverage_setting,
         "run_id": run_id,
-        "provenance": _run_provenance(call),
+        "provenance": provenance if provenance is not None else _run_provenance(call),
     }
     first_start = await manager.async_mark_started(
         serial_number, call.data["plan_id"], room, run_id=run_id
@@ -1277,18 +1307,23 @@ async def _async_run_room(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
+        dispatch = replace(dispatch, native_identity=native_identity)
         if checkpoint_dispatch is not None:
-            await checkpoint_dispatch(
-                replace(dispatch, native_identity=native_identity)
-            )
-        if start_state == "paused":
+            await checkpoint_dispatch(dispatch)
+        if start_state == "paused" or recovered_suspend_reason in {
+            "paused",
+            "low_charge",
+        }:
             await manager.async_mark_suspended(
-                serial_number, call.data["plan_id"], room, "paused"
+                serial_number,
+                call.data["plan_id"],
+                room,
+                recovered_suspend_reason or "paused",
             )
             await _async_wait_for_owned_resume(
                 hass,
                 entity_id,
-                call.data["completion_timeout"],
+                _remaining_completion_time(dispatch, call.data["completion_timeout"]),
                 cancel_event,
                 room,
                 session_identity,
@@ -1296,15 +1331,16 @@ async def _async_run_room(
             )
         await manager.async_mark_resumed(serial_number, call.data["plan_id"], room)
         room_started = True
+        completion_budget = await _async_completion_budget(
+            dispatch, call.data["completion_timeout"], checkpoint_dispatch
+        )
         refresh_task = (
             asyncio.create_task(_async_periodic_refresh(refresh))
             if refresh is not None
             else None
         )
         try:
-            async with asyncio.timeout(
-                call.data["completion_timeout"]
-            ) as mission_timeout:
+            async with asyncio.timeout(completion_budget) as mission_timeout:
                 while True:
                     outcome = await _async_wait_with_native_identity(
                         lambda: _async_wait_for_room_outcome(
@@ -1678,6 +1714,8 @@ async def _async_run_leg(
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
     | None = None,
     recovered_room_id: str | None = None,
+    provenance: str | None = None,
+    recovered_suspend_reason: str | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1713,6 +1751,8 @@ async def _async_run_leg(
             run_id=run_id,
             record_room_completed=record_room_completed,
             checkpoint_dispatch=checkpoint_dispatch,
+            provenance=provenance,
+            recovered_suspend_reason=recovered_suspend_reason,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1730,7 +1770,9 @@ async def _async_run_leg(
             "cleaning_mode": room.cleaning_mode,
             "coverage_setting": room.coverage_setting,
             "run_id": run_id,
-            "provenance": _run_provenance(call),
+            "provenance": provenance
+            if provenance is not None
+            else _run_provenance(call),
         }
 
     active_room = next(
@@ -1807,18 +1849,23 @@ async def _async_run_leg(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
+        dispatch = replace(dispatch, native_identity=native_identity)
         if checkpoint_dispatch is not None:
-            await checkpoint_dispatch(
-                replace(dispatch, native_identity=native_identity)
-            )
-        if start_state == "paused":
+            await checkpoint_dispatch(dispatch)
+        if start_state == "paused" or recovered_suspend_reason in {
+            "paused",
+            "low_charge",
+        }:
             await manager.async_mark_suspended(
-                serial_number, call.data["plan_id"], active_room, "paused"
+                serial_number,
+                call.data["plan_id"],
+                active_room,
+                recovered_suspend_reason or "paused",
             )
             await _async_wait_for_owned_resume(
                 hass,
                 entity_id,
-                call.data["completion_timeout"],
+                _remaining_completion_time(dispatch, call.data["completion_timeout"]),
                 cancel_event,
                 leg,
                 session_identity,
@@ -1827,15 +1874,16 @@ async def _async_run_leg(
         await manager.async_mark_resumed(
             serial_number, call.data["plan_id"], active_room
         )
+        completion_budget = await _async_completion_budget(
+            dispatch, call.data["completion_timeout"], checkpoint_dispatch
+        )
         refresh_task = (
             asyncio.create_task(_async_periodic_refresh(refresh))
             if refresh is not None
             else None
         )
         try:
-            async with asyncio.timeout(
-                call.data["completion_timeout"]
-            ) as mission_timeout:
+            async with asyncio.timeout(completion_budget) as mission_timeout:
                 while True:
                     outcome, changed_room = await _async_wait_with_native_identity(
                         partial(
@@ -3147,7 +3195,7 @@ async def _async_confirm_started_identity(
 async def _async_wait_for_owned_resume(
     hass: HomeAssistant,
     entity_id: str,
-    timeout_seconds: int,
+    timeout_seconds: float,
     cancel_event: asyncio.Event | None,
     rooms: CleaningRoom | Sequence[CleaningRoom],
     reader: Callable[[], Awaitable[bytes | None]] | None,
@@ -3210,7 +3258,7 @@ async def _async_wait_for_vacuum_state(
     hass: HomeAssistant,
     entity_id: str,
     desired: set[str],
-    timeout_seconds: int,
+    timeout_seconds: float,
     cancel_event: asyncio.Event | None = None,
     room: CleaningRoom | Sequence[CleaningRoom] | None = None,
 ) -> str:
@@ -3507,7 +3555,9 @@ async def _async_execute_rooms(
         run_reason_code = "run_not_finished"
         run_cause = "unknown"
         run_provenance = (
-            str(recovery["provenance"]) if recovery else _run_provenance(call)
+            normalize_run_provenance(recovery["provenance"])
+            if recovery
+            else _run_provenance(call)
         )
         checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
         completed_room_ids: set[str] = set(checkpoint.get("completed_room_ids", []))
@@ -3523,6 +3573,9 @@ async def _async_execute_rooms(
                 {
                     "phase": "accepted",
                     "dispatched_at": dispatch.dispatched_at.isoformat(),
+                    "completion_deadline": dispatch.completion_deadline.isoformat()
+                    if dispatch.completion_deadline is not None
+                    else None,
                     "native_identity_hash": hashlib.sha256(
                         dispatch.native_identity
                     ).hexdigest()
@@ -3702,6 +3755,14 @@ async def _async_execute_rooms(
                     run_id=run_id,
                     record_room_completed=record_room_completion,
                     checkpoint_dispatch=save_dispatch if durable else None,
+                    provenance=run_provenance,
+                    recovered_suspend_reason=(
+                        (manager.snapshot(serial_number).get("active_plan") or {}).get(
+                            "suspend_reason"
+                        )
+                        if recovery is not None and index == checkpoint["leg_index"]
+                        else None
+                    ),
                     recovered_room_id=(
                         (manager.snapshot(serial_number).get("active_plan") or {}).get(
                             "room_id"

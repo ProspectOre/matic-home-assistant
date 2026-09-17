@@ -76,6 +76,16 @@ async def async_recover_managed_run(
         dispatched_at = dt_util.parse_datetime(checkpoint["dispatched_at"])
         if dispatched_at is None or dispatched_at.tzinfo is None:
             return
+        deadline_value = checkpoint.get("completion_deadline")
+        completion_deadline = (
+            dt_util.parse_datetime(deadline_value)
+            if isinstance(deadline_value, str)
+            else None
+        )
+        if deadline_value is not None and (
+            completion_deadline is None or completion_deadline.tzinfo is None
+        ):
+            return
         entity_id = er.async_get(hass).async_get_entity_id(
             "vacuum", DOMAIN, f"{serial_number}_vacuum"
         )
@@ -174,6 +184,7 @@ async def async_recover_managed_run(
                 dispatched_at,
                 native_identity=identity,
                 recovered=True,
+                completion_deadline=completion_deadline,
             ),
         )
         reason = (

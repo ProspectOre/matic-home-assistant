@@ -9,6 +9,8 @@ commands, and real failures retain their separate cancellation behavior.
 
 Managed room plans checkpoint their resolved queue, run ID, settings, floor
 binding, current leg, dispatch phase, verified room credits, and stop intent.
+Durable state retains the original completion deadline, pause/recharge state,
+room timing, and bounded trigger provenance; restart does not grant extra time.
 Native session identities and history keys remain opaque in memory; only
 fingerprints are stored locally. Checkpoints are excluded from entity snapshots.
 
