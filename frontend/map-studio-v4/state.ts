@@ -61,6 +61,7 @@ export const normalizeBrush = (value: number): number =>
 export const initialWorkspaceState = (): WorkspaceState => ({
   owner: null,
   draftFloorOrdinal: null,
+  draftMapSessionKey: null,
   generation: 0,
   coherence: "verifying",
   dataMode: "live",
