@@ -62,6 +62,9 @@ async def recovery_state(hass):
         "data": data,
         "native_identity_hash": hashlib.sha256(identity).hexdigest(),
         "dispatched_at": dt_util.utcnow().isoformat(),
+        "completion_deadline": (
+            dt_util.utcnow() + timedelta(seconds=21600)
+        ).isoformat(),
         "history_baseline": [],
         "completed_room_ids": [],
         "started_room_ids": [room.room_id],

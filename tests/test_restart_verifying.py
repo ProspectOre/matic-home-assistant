@@ -211,3 +211,44 @@ async def test_multiroom_verification_deduplicates_prior_credit(
         ["hall"] if proof == "complete" else []
     )
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stop", [None, "after_room"])
+async def test_partial_proof_survives_real_remaining_timeout(
+    hass, recovery_state, stop
+):
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["rooms"].append(
+        asdict(CleaningRoom("hall", "Hall", "vacuum", "standard"))
+    )
+    checkpoint["verification_deadline"] = (
+        dt_util.utcnow() + timedelta(seconds=0.05)
+    ).isoformat()
+    checkpoint["stop_intent"] = stop
+    manager._robot("serial")["last_run"]["room_count"] = 2
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    await async_recover_managed_run(hass, entry, "serial")
+    run = manager.snapshot("serial")["last_run"]
+    assert run["completed_room_count"] == 1
+    assert run["outcome"] == ("cancelled" if stop else "unverified")
+    assert run["reason_code"] == (
+        "managed_stop" if stop else "restart_remaining_queue_unverified"
+    )
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_expired_verification_retains_after_room_stop(hass, recovery_state):
+    manager, entry, checkpoint, _ = recovery_state
+    checkpoint["verification_deadline"] = (
+        dt_util.utcnow() - timedelta(seconds=1)
+    ).isoformat()
+    checkpoint["stop_intent"] = "after_room"
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await async_recover_managed_run(hass, entry, "serial")
+    run = manager.snapshot("serial")["last_run"]
+    assert run["outcome"] == "cancelled"
+    assert run["reason_code"] == "managed_stop"
+    assert run["completed_room_count"] == 0

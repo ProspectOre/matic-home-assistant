@@ -95,7 +95,7 @@ async def async_recover_managed_run(
             if isinstance(deadline_value, str)
             else None
         )
-        if deadline_value is not None and (
+        if not verifying and (
             completion_deadline is None or completion_deadline.tzinfo is None
         ):
             return
@@ -191,16 +191,16 @@ async def async_recover_managed_run(
                     raise HomeAssistantError("Completion recovery was superseded")
                 return records
 
-            async with asyncio.timeout(remaining):
-                evidence = await _async_verify_leg_completion(
-                    read_history,
-                    baseline,
-                    leg,
-                    dispatched_at,
-                    hass=hass,
-                    entity_id=entity_id,
-                    cancel_event=cancel,
-                )
+            evidence = await _async_verify_leg_completion(
+                read_history,
+                baseline,
+                leg,
+                dispatched_at,
+                hass=hass,
+                entity_id=entity_id,
+                cancel_event=cancel,
+                timeout_seconds=remaining,
+            )
             completed_ids = set(checkpoint.get("completed_room_ids", []))
             for room in leg:
                 if (
@@ -300,12 +300,14 @@ async def async_recover_managed_run(
             and not _shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery_run(serial_number) is not None
         ):
-            stopped = manager.cancellation_reason(
-                serial_number
-            ) == "managed_stop" or checkpoint.get("stop_intent") in {
-                "immediate",
-                "not_running",
-            }
+            stopped = (
+                manager.cancellation_reason(serial_number) == "managed_stop"
+                or checkpoint.get("stop_intent") in {"immediate", "not_running"}
+                or (
+                    checkpoint.get("phase") == "verifying"
+                    and checkpoint.get("stop_intent") == "after_room"
+                )
+            )
             completed = reason == "all_rooms_verified"
             terminal_state = hass.states.get(checkpoint.get("entity_id", ""))
             terminal_activity = terminal_state.state if terminal_state else "unknown"

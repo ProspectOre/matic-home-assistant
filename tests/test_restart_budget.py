@@ -6,7 +6,7 @@ from datetime import timedelta
 from unittest.mock import AsyncMock, patch
 
 import pytest
-from homeassistant.core import CoreState
+from homeassistant.core import CoreState, ServiceCall
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand
@@ -14,7 +14,9 @@ from custom_components.matic_robot.plans import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.services import (
     _async_completion_budget,
+    _async_dispatch_leg_command,
     _PreparedRoomDispatch,
+    _remaining_completion_time,
 )
 
 from .test_restart import recovery_state as recovery_fixture
@@ -28,6 +30,7 @@ async def recovery_state(hass):
 async def test_completion_budget_is_persisted_once_and_not_reset():
     saver = AsyncMock()
     dispatch = _PreparedRoomDispatch((), frozenset(), dt_util.utcnow())
+    assert _remaining_completion_time(dispatch, 100) == 100
     remaining = await _async_completion_budget(dispatch, 100, saver)
     assert 99 < remaining <= 100
     saved = saver.await_args.args[0]
@@ -38,6 +41,42 @@ async def test_completion_budget_is_persisted_once_and_not_reset():
     )
     assert 0 < await _async_completion_budget(near_end, 100, saver) <= 5
     saver.assert_not_awaited()
+
+
+async def test_dispatch_has_absolute_budget_before_initial_state_wait(hass):
+    hass.services.async_register("vacuum", "send_command", AsyncMock())
+    dispatch = await _async_dispatch_leg_command(
+        hass,
+        ServiceCall(
+            hass, "matic_robot", "clean_entire_plan", {"completion_timeout": 100}
+        ),
+        "vacuum.matic",
+        [CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")],
+        None,
+        AsyncMock(return_value=()),
+        session_identity=AsyncMock(side_effect=[b"", b"accepted"]),
+    )
+    assert dispatch.native_identity == b"accepted"
+    assert dispatch.completion_deadline == dispatch.dispatched_at + timedelta(
+        seconds=100
+    )
+
+
+@pytest.mark.parametrize("missing", [True, False])
+async def test_accepted_checkpoint_without_budget_is_not_recoverable(
+    hass, recovery_state, missing
+):
+    manager, entry, checkpoint, _ = recovery_state
+    if missing:
+        checkpoint.pop("completion_deadline")
+    else:
+        checkpoint["completion_deadline"] = None
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    with patch("custom_components.matic_robot.restart._async_execute_rooms") as execute:
+        await async_recover_managed_run(hass, entry, "serial")
+    execute.assert_not_called()
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
 @pytest.mark.parametrize("multi", [False, True])

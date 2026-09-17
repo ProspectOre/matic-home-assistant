@@ -1185,7 +1185,13 @@ async def _async_dispatch_leg_command(
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
-        leg, history_baseline, dispatched_at, identity_baseline, identity
+        leg,
+        history_baseline,
+        dispatched_at,
+        identity_baseline,
+        identity,
+        completion_deadline=dispatched_at
+        + timedelta(seconds=call.data.get("completion_timeout", 21600)),
     )
 
 
@@ -2227,6 +2233,7 @@ async def _async_verify_leg_completion(
     cancel_event: asyncio.Event | None = None,
     attempts: int = SESSION_HISTORY_ATTEMPTS,
     allow_active_cleaning: bool = False,
+    timeout_seconds: float | None = None,
 ) -> dict[str, tuple[str, int]] | None:
     """Match one new native leg record and return per-room completion evidence.
 
@@ -2240,7 +2247,11 @@ async def _async_verify_leg_completion(
     evidence: dict[str, tuple[str, int]] | None = None
     matched_key: bytes | None = None
     try:
-        async with asyncio.timeout(SESSION_HISTORY_TIMEOUT_SECONDS):
+        async with asyncio.timeout(
+            SESSION_HISTORY_TIMEOUT_SECONDS
+            if timeout_seconds is None
+            else timeout_seconds
+        ):
             for attempt in range(attempts):
                 _raise_if_completion_verification_was_replaced(
                     hass,
