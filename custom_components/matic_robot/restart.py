@@ -18,6 +18,7 @@ from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .plans import CleaningRoom, leg_groups, plan_floor_token
 from .services import (
     _async_execute_rooms,
+    _async_managed_user_command,
     _async_verify_leg_completion,
     _PreparedRoomDispatch,
     _room_outcomes,
@@ -241,11 +242,9 @@ async def async_recover_managed_run(
             return
 
         async def command(token: int, value: UserCommand) -> None:
-            async with manager.managed_command(serial_number, token):
-                await runtime.client.async_send_user_command(value)
-                if value is UserCommand.STOP:
-                    await manager.async_mark_stop_pending(serial_number)
-                await runtime.coordinator.async_request_refresh()
+            await _async_managed_user_command(
+                hass, entry, manager, serial_number, entity_id, None, token, value
+            )
 
         await _async_execute_rooms(
             hass,

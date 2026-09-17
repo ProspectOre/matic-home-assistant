@@ -524,44 +524,16 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
-            stop_run_id = (
-                manager.active_run_id(serial_number)
-                if command is UserCommand.STOP
-                else None
+            await _async_managed_user_command(
+                hass,
+                entry,
+                manager,
+                serial_number,
+                entity_id,
+                call.context,
+                token,
+                command,
             )
-            async with manager.managed_command(serial_number, token):
-                await entry.runtime_data.client.async_send_user_command(command)
-                if command is UserCommand.STOP:
-                    await manager.async_mark_stop_pending(serial_number)
-                await entry.runtime_data.coordinator.async_request_refresh()
-            if command is UserCommand.STOP:
-                schedule_dock_after_stop(
-                    hass,
-                    client=entry.runtime_data.client,
-                    refresh=entry.runtime_data.coordinator.async_request_refresh,
-                    manager=manager,
-                    serial_number=serial_number,
-                    entity_id=entity_id,
-                    run_id=stop_run_id,
-                    set_run_id=getattr(
-                        getattr(entry.runtime_data.client, "activity_journal", None),
-                        "set_run_id",
-                        None,
-                    ),
-                    get_run_id=getattr(
-                        getattr(entry.runtime_data.client, "activity_journal", None),
-                        "current_run_id",
-                        None,
-                    ),
-                    on_docked=partial(
-                        _async_mark_run_docked,
-                        manager,
-                        serial_number,
-                        stop_run_id,
-                        entity_id,
-                        call.context,
-                    ),
-                )
 
         await _async_execute_rooms(
             hass,
@@ -642,44 +614,16 @@ async def async_register_services(hass: HomeAssistant) -> None:
         )
 
         async def async_managed_command(token: int, command: UserCommand) -> None:
-            stop_run_id = (
-                manager.active_run_id(serial_number)
-                if command is UserCommand.STOP
-                else None
+            await _async_managed_user_command(
+                hass,
+                entry,
+                manager,
+                serial_number,
+                entity_id,
+                call.context,
+                token,
+                command,
             )
-            async with manager.managed_command(serial_number, token):
-                await entry.runtime_data.client.async_send_user_command(command)
-                if command is UserCommand.STOP:
-                    await manager.async_mark_stop_pending(serial_number)
-                await entry.runtime_data.coordinator.async_request_refresh()
-            if command is UserCommand.STOP:
-                schedule_dock_after_stop(
-                    hass,
-                    client=entry.runtime_data.client,
-                    refresh=entry.runtime_data.coordinator.async_request_refresh,
-                    manager=manager,
-                    serial_number=serial_number,
-                    entity_id=entity_id,
-                    run_id=stop_run_id,
-                    set_run_id=getattr(
-                        getattr(entry.runtime_data.client, "activity_journal", None),
-                        "set_run_id",
-                        None,
-                    ),
-                    get_run_id=getattr(
-                        getattr(entry.runtime_data.client, "activity_journal", None),
-                        "current_run_id",
-                        None,
-                    ),
-                    on_docked=partial(
-                        _async_mark_run_docked,
-                        manager,
-                        serial_number,
-                        stop_run_id,
-                        entity_id,
-                        call.context,
-                    ),
-                )
 
         await _async_execute_rooms(
             hass,
@@ -1118,6 +1062,49 @@ async def async_register_services(hass: HomeAssistant) -> None:
         schema=FIRMWARE_SNAPSHOT_SCHEMA,
         supports_response=SupportsResponse.ONLY,
     )
+
+
+async def _async_managed_user_command(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    context: Context | None,
+    token: int,
+    command: UserCommand,
+) -> None:
+    """Use the same ownership, stop fence and dock settlement for every run."""
+    runtime = entry.runtime_data
+    stop_run_id = (
+        manager.active_run_id(serial_number) if command is UserCommand.STOP else None
+    )
+    async with manager.managed_command(serial_number, token):
+        await runtime.client.async_send_user_command(command)
+        if command is UserCommand.STOP:
+            await manager.async_mark_stop_pending(serial_number)
+        await runtime.coordinator.async_request_refresh()
+    if command is UserCommand.STOP:
+        journal = getattr(runtime.client, "activity_journal", None)
+        schedule_dock_after_stop(
+            hass,
+            client=runtime.client,
+            refresh=runtime.coordinator.async_request_refresh,
+            manager=manager,
+            serial_number=serial_number,
+            entity_id=entity_id,
+            run_id=stop_run_id,
+            set_run_id=getattr(journal, "set_run_id", None),
+            get_run_id=getattr(journal, "current_run_id", None),
+            on_docked=partial(
+                _async_mark_run_docked,
+                manager,
+                serial_number,
+                stop_run_id,
+                entity_id,
+                context,
+            ),
+        )
 
 
 async def _async_dispatch_leg_command(
@@ -3458,7 +3445,7 @@ async def _async_mark_run_docked(
     serial_number: str,
     run_id: str | None,
     entity_id: str,
-    context: Context,
+    context: Context | None,
 ) -> None:
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:

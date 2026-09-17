@@ -13,6 +13,7 @@ from custom_components.matic_robot.client.commands import UserCommand
 from custom_components.matic_robot.plans import CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 from custom_components.matic_robot.services import (
+    RoomRunOutcome,
     _async_completion_budget,
     _async_dispatch_leg_command,
     _PreparedRoomDispatch,
@@ -77,6 +78,58 @@ async def test_accepted_checkpoint_without_budget_is_not_recoverable(
     execute.assert_not_called()
     assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("native_active", [False, True, None])
+async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
+    hass, recovery_state, native_active
+):
+    manager, entry, checkpoint, _ = recovery_state
+    client = entry.runtime_data.client
+
+    async def command(value):
+        if value is UserCommand.STOP:
+            manager.mark_managed_stop("serial")
+            hass.states.async_set(checkpoint["entity_id"], "idle")
+            client.async_has_active_cleaning_session.return_value = native_active
+        elif value is UserCommand.DOCK:
+            hass.states.async_set(checkpoint["entity_id"], "docked")
+
+    client.async_send_user_command.side_effect = command
+    docked = []
+    hass.bus.async_listen("matic_robot_plan_docked", docked.append)
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_wait_with_native_identity",
+            return_value=RoomRunOutcome.STOPPED_IN_PLACE,
+        ),
+        patch(
+            "custom_components.matic_robot.stop_return.DOCK_SETTLE_TIMEOUT_SECONDS", 0
+        ),
+        patch("custom_components.matic_robot.stop_return.DOCK_SETTLE_POLL_SECONDS", 0),
+        patch("custom_components.matic_robot.services._schedule_native_reconciliation"),
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+        tasks = tuple(manager._reconciliation_tasks.get("serial", ()))
+        await asyncio.wait_for(asyncio.gather(*tasks), 1)
+        await hass.async_block_till_done()
+    expected = (
+        [UserCommand.STOP, UserCommand.DOCK]
+        if native_active is False
+        else [UserCommand.STOP]
+    )
+    assert [
+        call.args[0] for call in client.async_send_user_command.await_args_list
+    ] == expected
+    final = manager.snapshot("serial")["last_run"]
+    assert final["outcome"] == (
+        "stopped_docked" if native_active is False else "unverified"
+    )
+    if native_active is False:
+        assert docked[0].data["run_id"] == "run"
+        assert docked[0].data["provenance"] == "automation"
+    else:
+        assert not docked
 
 
 @pytest.mark.parametrize("multi", [False, True])
