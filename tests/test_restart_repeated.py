@@ -2,13 +2,14 @@
 
 import asyncio
 from copy import deepcopy
+from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from homeassistant.core import CoreState
 
-from custom_components.matic_robot.plans import CleaningPlanManager
+from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
 from custom_components.matic_robot.restart import async_recover_managed_run
 
 from .test_restart import recovery_state as recovery_fixture
@@ -120,3 +121,29 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
     assert restored.snapshot("serial")["completed_runs"] == 1
     dispatch.assert_not_awaited()
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_credited_intermediate_leg_does_not_authorize_offline_queue_replay(
+    hass, recovery_state
+):
+    manager, entry, checkpoint, room = recovery_state
+    next_room = CleaningRoom("office", "Office", "vacuum", "quick")
+    await manager.async_begin_run(
+        "serial", "plan", "run", 2, trigger="automation", service="clean_entire_plan"
+    )
+    checkpoint["rooms"] = [asdict(room), asdict(next_room)]
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    await manager.async_mark_started("serial", "plan", room, run_id="run")
+    await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
+    with patch(
+        "custom_components.matic_robot.restart._async_execute_rooms",
+        new_callable=AsyncMock,
+    ) as execute:
+        await async_recover_managed_run(hass, entry, "serial")
+    execute.assert_not_awaited()
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+    final = manager.snapshot("serial")["last_run"]
+    assert final["completed_room_count"] == 1
+    assert final["outcome"] == "unverified"
+    assert final["reason_code"] == "restart_native_mission_changed_or_ended"

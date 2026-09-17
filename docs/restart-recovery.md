@@ -31,6 +31,10 @@ over recovery; a saved finish-current-room request is not cleared by reconnect.
   import can still credit its explicit room results. The managed run remains
   unverified and its remaining queue is not automatically dispatched: history
   alone does not establish continuous ownership of that queue.
+- This also applies between different-settings legs, even when the prior leg
+  was credited before shutdown and the next leg is known to be undispatched.
+  Verified completion proves prior work, not continued authority to start new
+  motion after an unobserved interval. Remaining work needs a fresh user start.
 - If all requested rooms were already durably verified before shutdown,
   recovery preserves completion even if the final run record was not yet saved.
 - Missing identity/history, stale floor evidence, malformed checkpoints, and
