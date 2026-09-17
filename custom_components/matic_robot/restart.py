@@ -186,6 +186,7 @@ async def async_recover_managed_run(
     finally:
         if (
             reason != "home_assistant_shutdown"
+            and not _shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery_run(serial_number) is not None
         ):
             stopped = manager.cancellation_reason(
