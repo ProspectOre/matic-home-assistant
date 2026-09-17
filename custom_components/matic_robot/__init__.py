@@ -544,7 +544,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
             str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
         )
     unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
-    if not unload_ok and preserve_run:
+    if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
         recovery_reader = getattr(
             entry.runtime_data.cleaning_plans, "recovery_run", None
         )
@@ -553,8 +553,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
             if callable(recovery_reader)
             else None
         )
+        pending_reader = getattr(
+            entry.runtime_data.cleaning_plans, "pending_stop_run_id", None
+        )
+        pending_stop = (
+            pending_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(pending_reader)
+            else None
+        )
         create_task = getattr(entry, "async_create_background_task", None)
-        if recovery is not None and callable(create_task):
+        if (recovery is not None or pending_stop is not None) and callable(create_task):
             create_task(
                 hass,
                 _async_recover_after_failed_unload(

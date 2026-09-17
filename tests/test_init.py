@@ -1402,6 +1402,52 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
 
 
+async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value=None),
+        pending_stop_run_id=MagicMock(return_value="run"),
+    )
+    target_tasks = []
+
+    def capture_task(_hass, target, name):
+        target_tasks.append((target, name))
+        target.close()
+
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(side_effect=capture_task),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_called_once()
+    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
+
+
+async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value={"run_id": "run"}),
+        pending_stop_run_id=MagicMock(return_value="run"),
+    )
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.is_stopping = True
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_not_called()
+
+
 async def test_failed_unload_recovery_waits_for_entry_state(hass) -> None:
     entry = SimpleNamespace(state=ConfigEntryState.UNLOAD_IN_PROGRESS)
     with patch(
