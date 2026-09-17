@@ -166,6 +166,7 @@ export interface WorkspaceNotice {
 export interface WorkspaceState {
   readonly owner: { readonly userKey: string; readonly entryKey: string | null } | null;
   readonly draftFloorOrdinal: number | null;
+  readonly draftMapSessionKey: string | null;
   readonly generation: number;
   readonly coherence: CoherenceState;
   readonly dataMode: DataMode;
