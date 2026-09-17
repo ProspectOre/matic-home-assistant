@@ -9,12 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
     FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
+    _async_recover_after_failed_unload,
     _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
     _register_native_history_sync,
@@ -1398,6 +1400,19 @@ async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
     await async_unload_entry(hass, entry)
     entry.async_create_background_task.assert_called_once()
     assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
+
+
+async def test_failed_unload_recovery_waits_for_entry_state(hass) -> None:
+    entry = SimpleNamespace(state=ConfigEntryState.UNLOAD_IN_PROGRESS)
+    with patch(
+        "custom_components.matic_robot.async_recover_managed_run",
+        new_callable=AsyncMock,
+    ) as recover:
+        asyncio.get_running_loop().call_soon(
+            setattr, entry, "state", ConfigEntryState.FAILED_UNLOAD
+        )
+        await _async_recover_after_failed_unload(hass, entry, "serial")
+    recover.assert_awaited_once_with(hass, entry, "serial")
 
 
 @pytest.mark.parametrize("with_plans", [True, False])

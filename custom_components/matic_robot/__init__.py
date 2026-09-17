@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
@@ -83,6 +83,15 @@ class MaticRuntimeData:
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def _async_recover_after_failed_unload(
+    hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
+) -> None:
+    """Resume ownership after HA finishes marking a failed unload."""
+    while getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
+        await asyncio.sleep(0)
+    await async_recover_managed_run(hass, entry, serial_number)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -548,7 +557,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         if recovery is not None and callable(create_task):
             create_task(
                 hass,
-                async_recover_managed_run(
+                _async_recover_after_failed_unload(
                     hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
                 ),
                 f"{DOMAIN} managed run recovery after unload failure",
