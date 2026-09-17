@@ -1,16 +1,14 @@
 {
   "source": "ProspectOre/dev-workspace",
   "path": "scripts/review-gate/evaluate.sh",
-  "sha256": "cf55b6465d528aaed519ba4eec61760aed1897154ea6b5b373571b3a2814d0ce",
+  "sha256": "970d84111592e25013f2fb1251cb5f5806c06535297c738760135137f4492072",
   "dependencyClassifierSha256": "3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455",
   "eventRelaySha256": "cd79db46c17508f7f32397f42884a947170777b8c39e2271fde617b12f3ad9d0",
   "eventReceiverSha256": "dce721760725859e7e766c4c26f25e164cd7646ff71f7382453e735f9e7d3b28",
   "generated": true,
   "managedWorkflows": [
-    ".github/workflows/review-event-receiver.yml",
     ".github/workflows/review-gate-audit.yml",
     ".github/workflows/review-gate-rollout.yml",
-    ".github/workflows/review-gate.yml",
-    ".github/workflows/review-regular-review.yml"
+    ".github/workflows/review-gate.yml"
   ]
 }

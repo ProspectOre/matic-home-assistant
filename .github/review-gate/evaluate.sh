@@ -129,6 +129,17 @@ stamp_status_for_sha() {
   local context="$2"
   local state="$3"
   local description="$4"
+  # GitHub commit-status descriptions are limited to 140 characters. History
+  # records must fail closed rather than truncating the head or origin marker.
+  if (( ${#description} > 140 )); then
+    case "$context" in
+      review-finding-history|review-security-history)
+        echo "A finding-history status description exceeded GitHub's 140-character limit." >&2
+        exit 1
+        ;;
+      *) description="${description:0:137}..." ;;
+    esac
+  fi
   local history
   if (( evidence_only_mode )); then
     return 0
@@ -939,7 +950,7 @@ fi
     if [[ ! "$comment_id" =~ ^[1-9][0-9]*$ || "$(jq -r '.action' "$event_path")" != deleted ]]; then
       security_withdrawal_unresolved=true
     fi
-    stamp_status "review-security-history" pending "Security review invalidated at $withdrawal_at; $security_marker for PR #$pr_number on head $head_sha" >/dev/null
+    stamp_status "review-security-history" pending "Security invalidated; $security_marker for PR #$pr_number on head $head_sha" >/dev/null
     edited_clean=true
   fi
   if [[ "$security_event" != true && "$(jq -r '.action' "$event_path")" == edited ]]; then
