@@ -9,12 +9,14 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from homeassistant.components import frontend
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
     FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
+    _async_recover_after_failed_unload,
     _async_resume_native_reconciliation,
     _floor_plan_supports_area_binding,
     _register_native_history_sync,
@@ -1317,13 +1319,20 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
 
 
 @pytest.mark.parametrize("unload_ok", [True, False])
-async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -> None:
+@pytest.mark.parametrize("disabled", [True, False])
+@pytest.mark.parametrize("stopping", [True, False])
+async def test_unload_closes_client_only_after_all_platforms_unload(
+    unload_ok, disabled, stopping
+) -> None:
     client = MagicMock()
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
-    plans = SimpleNamespace(async_cancel_and_wait=AsyncMock())
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(), async_retire_recovery=AsyncMock()
+    )
     entry = SimpleNamespace(
         entry_id="entry",
+        disabled_by="user" if disabled else None,
         data={CONF_SERIAL_NUMBER: "synthetic-serial"},
         runtime_data=SimpleNamespace(
             client=client,
@@ -1340,6 +1349,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     )
 
     hass = SimpleNamespace(
+        is_stopping=stopping,
         config_entries=SimpleNamespace(
             async_unload_platforms=AsyncMock(return_value=unload_ok)
         ),
@@ -1351,8 +1361,14 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
 
     assert await async_unload_entry(hass, entry) is unload_ok
     plans.async_cancel_and_wait.assert_awaited_once_with(
-        "synthetic-serial", preserve_run=False
+        "synthetic-serial", preserve_run=not disabled
     )
+    if disabled:
+        plans.async_retire_recovery.assert_awaited_once_with(
+            "synthetic-serial", "config_entry_unload"
+        )
+    else:
+        plans.async_retire_recovery.assert_not_awaited()
     assert client.close.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
@@ -1360,8 +1376,108 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     assert slam_history.async_shutdown.await_count == int(unload_ok)
 
 
-async def test_remove_entry_erases_firmware_history() -> None:
+async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
+    """A failed platform unload must not strand a preserved managed run."""
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value={"run_id": "run"}),
+    )
+    target_tasks = []
+
+    def capture_task(_hass, target, name):
+        target_tasks.append((target, name))
+        target.close()
+
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(side_effect=capture_task),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_called_once()
+    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
+
+
+async def test_failed_unload_reschedules_pending_stop_settlement(hass) -> None:
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value=None),
+        pending_stop_run_id=MagicMock(return_value="run"),
+    )
+    target_tasks = []
+
+    def capture_task(_hass, target, name):
+        target_tasks.append((target, name))
+        target.close()
+
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(side_effect=capture_task),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_called_once()
+    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
+
+
+async def test_failed_shutdown_unload_does_not_resume_recovery(hass) -> None:
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value={"run_id": "run"}),
+        pending_stop_run_id=MagicMock(return_value="run"),
+    )
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.is_stopping = True
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_not_called()
+
+
+async def test_failed_unload_recovery_waits_for_entry_state(hass) -> None:
+    entry = SimpleNamespace(state=ConfigEntryState.UNLOAD_IN_PROGRESS)
+    with patch(
+        "custom_components.matic_robot.async_recover_managed_run",
+        new_callable=AsyncMock,
+    ) as recover:
+        asyncio.get_running_loop().call_soon(
+            setattr, entry, "state", ConfigEntryState.FAILED_UNLOAD
+        )
+        await _async_recover_after_failed_unload(hass, entry, "serial")
+    recover.assert_awaited_once_with(hass, entry, "serial")
+
+
+async def test_failed_unload_recovery_rechecks_shutdown(hass) -> None:
+    entry = SimpleNamespace(state=ConfigEntryState.FAILED_UNLOAD, disabled_by=None)
+    hass.is_stopping = True
+    with patch(
+        "custom_components.matic_robot.async_recover_managed_run",
+        new_callable=AsyncMock,
+    ) as recover:
+        await _async_recover_after_failed_unload(hass, entry, "serial")
+    recover.assert_not_awaited()
+
+
+@pytest.mark.parametrize("with_plans", [True, False])
+async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
+    plans = SimpleNamespace(
+        async_retire_recovery=AsyncMock(), async_clear_stop_pending=AsyncMock()
+    )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
@@ -1371,12 +1487,15 @@ async def test_remove_entry_erases_firmware_history() -> None:
 
     hass = SimpleNamespace(
         data={
-            DOMAIN: {DATA_FIRMWARE_TRACKER: tracker},
+            DOMAIN: {
+                DATA_FIRMWARE_TRACKER: tracker,
+                **({DATA_PLAN_MANAGER: plans} if with_plans else {}),
+            },
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
         }
     )
-    entry = SimpleNamespace(entry_id="entry")
+    entry = SimpleNamespace(entry_id="entry", data={CONF_SERIAL_NUMBER: "serial"})
     slam_map = SimpleNamespace(async_remove=AsyncMock())
     slam_history = SimpleNamespace(async_remove=AsyncMock())
 
@@ -1393,6 +1512,11 @@ async def test_remove_entry_erases_firmware_history() -> None:
         await async_remove_entry(hass, entry)
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
+    if with_plans:
+        plans.async_retire_recovery.assert_awaited_once_with(
+            "serial", "config_entry_removed"
+        )
+        plans.async_clear_stop_pending.assert_awaited_once_with("serial")
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()

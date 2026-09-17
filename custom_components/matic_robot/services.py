@@ -4135,7 +4135,11 @@ async def _async_execute_rooms(
                             )
             finally:
                 manager.end_managed_motion(serial_number, motion_token)
-                manager.unregister_run_task(serial_number)
+                # The recovery wrapper still needs the lifecycle reason to
+                # preserve this checkpoint when HA itself is not stopping.
+                # It unregisters the same task after observing suspension.
+                if recovery is None or not shutdown_suspended:
+                    manager.unregister_run_task(serial_number)
                 reconciliation_active_reader = getattr(
                     manager, "dock_reconciliation_active", None
                 )

@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, cast
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
@@ -83,6 +83,17 @@ class MaticRuntimeData:
 
 MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
+
+
+async def _async_recover_after_failed_unload(
+    hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
+) -> None:
+    """Resume ownership after HA finishes marking a failed unload."""
+    while getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
+        await asyncio.sleep(0)
+    if getattr(hass, "is_stopping", False) or getattr(entry, "disabled_by", None):
+        return
+    await async_recover_managed_run(hass, entry, serial_number)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -523,11 +534,45 @@ def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
+    # HA can reload an enabled entry again during startup (for example after
+    # discovery updates its endpoint). Losing this observer is not a Stop.
+    preserve_run = entry.disabled_by is None
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
         str(entry.data[CONF_SERIAL_NUMBER]),
-        preserve_run=bool(getattr(hass, "is_stopping", False)),
+        preserve_run=preserve_run,
     )
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    if not preserve_run:
+        await entry.runtime_data.cleaning_plans.async_retire_recovery(
+            str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
+        )
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
+        recovery_reader = getattr(
+            entry.runtime_data.cleaning_plans, "recovery_run", None
+        )
+        recovery = (
+            recovery_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(recovery_reader)
+            else None
+        )
+        pending_reader = getattr(
+            entry.runtime_data.cleaning_plans, "pending_stop_run_id", None
+        )
+        pending_stop = (
+            pending_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(pending_reader)
+            else None
+        )
+        create_task = getattr(entry, "async_create_background_task", None)
+        if (recovery is not None or pending_stop is not None) and callable(create_task):
+            create_task(
+                hass,
+                _async_recover_after_failed_unload(
+                    hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
+                ),
+                f"{DOMAIN} managed run recovery after unload failure",
+            )
+    if unload_ok:
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
@@ -537,6 +582,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
     """Erase the removed robot's persisted firmware history and repairs."""
+    plans: CleaningPlanManager | None = hass.data.get(DOMAIN, {}).get(DATA_PLAN_MANAGER)
+    if plans is not None:
+        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        await plans.async_retire_recovery(serial_number, "config_entry_removed")
+        await plans.async_clear_stop_pending(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(

@@ -2,8 +2,13 @@
 
 Home Assistant shutdown is an observer lifecycle event, not a robot Stop.
 Cancellation while HA is stopping must not send Stop or publish a terminal
-managed-run outcome. Explicit user Stop, integration unload, replacement
-commands, and real failures retain their separate cancellation behavior.
+managed-run outcome. Reloading an enabled integration preserves the same
+checkpoint, including a second reload during HA startup. Explicit user Stop,
+disabling/removing the integration, replacement commands, and real failures
+retain their separate cancellation behavior. Removal retires durable queue
+ownership so later pairing cannot resurrect the removed entry's plan.
+Removal does not stop an already running native mission; use Stop before
+removing the integration if you want the robot to stop as well.
 
 ## Durable ownership
 

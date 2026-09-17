@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 from typing import TYPE_CHECKING
 
+from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import entity_registry as er
@@ -43,6 +44,11 @@ async def async_recover_managed_run(
     native history import can still credit rooms, but cannot prove continuous
     ownership of the remaining queue.
     """
+    # A queued background recovery may first run after unload has begun.
+    # Leave its checkpoint for the next setup instead of acquiring ownership
+    # after the unload handler already checked for a registered task.
+    if getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:
+        return
     runtime = entry.runtime_data
     manager = runtime.cleaning_plans
     restored_stop_owner = manager.pending_stop_run_id(serial_number)

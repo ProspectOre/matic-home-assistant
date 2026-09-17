@@ -605,9 +605,13 @@ class CleaningPlanManager:
         """Interrupt a managed run and wait before its client can be closed."""
         task = self._run_tasks.get(serial_number)
         if task is not None and not task.done():
-            self._cancellation_reasons[serial_number] = (
-                "home_assistant_shutdown" if preserve_run else "config_entry_unload"
-            )
+            if self._cancellation_reasons.get(serial_number) not in {
+                "managed_stop",
+                "motion_replaced",
+            }:
+                self._cancellation_reasons[serial_number] = (
+                    "home_assistant_shutdown" if preserve_run else "config_entry_unload"
+                )
             self.finish_room_event(serial_number).clear()
             self.cancellation_event(serial_number).set()
             if task is not asyncio.current_task():
@@ -1231,6 +1235,18 @@ class CleaningPlanManager:
             if isinstance(run.get("recovery_checkpoint"), dict):
                 return deepcopy(run)
         return None
+
+    async def async_retire_recovery(self, serial_number: str, reason: str) -> None:
+        """Withdraw queue ownership when an entry is disabled or removed."""
+        if (run := self.recovery_run(serial_number)) is not None:
+            await self.async_finish_run(
+                serial_number,
+                run["run_id"],
+                "unverified",
+                reason,
+                run.get("completed_room_count", 0),
+                cause="home_assistant",
+            )
 
     async def async_mark_recovery_status(
         self, serial_number: str, status: str, *, reason: str
