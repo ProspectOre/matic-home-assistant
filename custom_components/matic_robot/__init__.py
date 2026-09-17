@@ -91,6 +91,8 @@ async def _async_recover_after_failed_unload(
     """Resume ownership after HA finishes marking a failed unload."""
     while getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
         await asyncio.sleep(0)
+    if getattr(hass, "is_stopping", False) or getattr(entry, "disabled_by", None):
+        return
     await async_recover_managed_run(hass, entry, serial_number)
 
 

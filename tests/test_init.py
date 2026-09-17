@@ -1461,6 +1461,17 @@ async def test_failed_unload_recovery_waits_for_entry_state(hass) -> None:
     recover.assert_awaited_once_with(hass, entry, "serial")
 
 
+async def test_failed_unload_recovery_rechecks_shutdown(hass) -> None:
+    entry = SimpleNamespace(state=ConfigEntryState.FAILED_UNLOAD, disabled_by=None)
+    hass.is_stopping = True
+    with patch(
+        "custom_components.matic_robot.async_recover_managed_run",
+        new_callable=AsyncMock,
+    ) as recover:
+        await _async_recover_after_failed_unload(hass, entry, "serial")
+    recover.assert_not_awaited()
+
+
 @pytest.mark.parametrize("with_plans", [True, False])
 async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
