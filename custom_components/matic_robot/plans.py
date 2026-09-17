@@ -356,7 +356,6 @@ class CleaningPlanManager:
                 and active.get("plan_id") == last_run.get("plan_id")
             ):
                 active["status"] = "recovering"
-                active["active_segment_started"] = None
                 recovered = True
             elif active:
                 rotation = robot["rotations"].setdefault(
@@ -1168,6 +1167,11 @@ class CleaningPlanManager:
         last_run["recovery_checkpoint"] = {
             **deepcopy(checkpoint),
             **(
+                {"started_room_ids": existing["started_room_ids"]}
+                if "started_room_ids" in existing
+                else {}
+            ),
+            **(
                 {"stop_intent": existing["stop_intent"]}
                 if "stop_intent" in existing
                 else {}
@@ -1332,32 +1336,73 @@ class CleaningPlanManager:
         room: CleaningRoom,
         *,
         run_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Record and publish the start of one room."""
         now = dt_util.utcnow().isoformat()
         record = self._room(serial_number, plan_id, room)
-        record["last_started"] = now
+        robot = self._robot(serial_number)
+        last_run = robot.get("last_run")
+        checkpoint = (
+            last_run.get("recovery_checkpoint", {})
+            if isinstance(last_run, dict) and last_run.get("run_id") == run_id
+            else {}
+        )
+        started_ids = (
+            checkpoint.get("started_room_ids", [])
+            if isinstance(checkpoint, dict)
+            else []
+        )
+        duplicate = run_id is not None and room.room_id in started_ids
+        if not duplicate:
+            record["last_started"] = now
         record["last_result"] = "running"
         if run_id is not None:
             record["run_id"] = run_id
         else:
             record.pop("run_id", None)
-        robot = self._robot(serial_number)
         robot.pop("pending_native_reconciliation", None)
+        previous_active = robot.get("active_plan")
+        previous_active = previous_active if isinstance(previous_active, dict) else {}
+        recovering_same_room = (
+            run_id is not None
+            and (duplicate or previous_active.get("status") == "recovering")
+            and previous_active.get("plan_id") == plan_id
+            and previous_active.get("room_id") == room.room_id
+            and previous_active.get("run_id") == run_id
+        )
         robot["active_plan"] = {
             "plan_id": plan_id,
             "plan_name": self._plan_name(serial_number, plan_id),
             "room_id": room.room_id,
             "room": room.name,
-            "started": now,
+            "started": (
+                previous_active.get("started", now) if recovering_same_room else now
+            ),
             "status": "starting",
-            "cleaning_started": None,
-            "active_elapsed_seconds": 0,
-            "active_segment_started": None,
+            "cleaning_started": (
+                previous_active.get("cleaning_started")
+                if recovering_same_room
+                else None
+            ),
+            "active_elapsed_seconds": (
+                previous_active.get("active_elapsed_seconds", 0)
+                if recovering_same_room
+                else 0
+            ),
+            "active_segment_started": (
+                previous_active.get("active_segment_started")
+                if recovering_same_room
+                else None
+            ),
         }
         if run_id is not None:
             robot["active_plan"]["run_id"] = run_id
+            if isinstance(checkpoint, dict):
+                checkpoint["started_room_ids"] = list(
+                    dict.fromkeys([*started_ids, room.room_id])
+                )
         await self._async_save_and_notify(serial_number)
+        return not duplicate
 
     async def async_mark_completed(
         self,

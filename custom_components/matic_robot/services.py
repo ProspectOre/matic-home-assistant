@@ -1205,10 +1205,11 @@ async def _async_run_room(
         "run_id": run_id,
         "provenance": _run_provenance(call),
     }
-    await manager.async_mark_started(
+    first_start = await manager.async_mark_started(
         serial_number, call.data["plan_id"], room, run_id=run_id
     )
-    hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
+    if first_start:
+        hass.bus.async_fire(f"{DOMAIN}_room_started", event_data, context=call.context)
     completion_verified = False
     dispatch_attempted = False
     room_started = False
@@ -1670,6 +1671,7 @@ async def _async_run_leg(
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
     checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
     | None = None,
+    recovered_room_id: str | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1725,14 +1727,17 @@ async def _async_run_leg(
             "provenance": _run_provenance(call),
         }
 
-    active_room = leg[0]
+    active_room = next(
+        (room for room in leg if room.room_id == recovered_room_id), leg[0]
+    )
     observed_ids = {active_room.room_id}
-    await manager.async_mark_started(
+    first_start = await manager.async_mark_started(
         serial_number, call.data["plan_id"], active_room, run_id=run_id
     )
-    hass.bus.async_fire(
-        f"{DOMAIN}_room_started", event_data(active_room), context=call.context
-    )
+    if first_start:
+        hass.bus.async_fire(
+            f"{DOMAIN}_room_started", event_data(active_room), context=call.context
+        )
     dispatch_attempted = False
     stop_sent = False
     evidence: dict[str, tuple[str, int]] | None = None
@@ -1855,13 +1860,13 @@ async def _async_run_leg(
                         active_room = changed_room
                         first_observation = active_room.room_id not in observed_ids
                         observed_ids.add(active_room.room_id)
-                        await manager.async_mark_started(
+                        first_start = await manager.async_mark_started(
                             serial_number,
                             call.data["plan_id"],
                             active_room,
                             run_id=run_id,
                         )
-                        if first_observation:
+                        if first_observation and first_start:
                             hass.bus.async_fire(
                                 f"{DOMAIN}_room_started",
                                 event_data(active_room),
@@ -3669,6 +3674,13 @@ async def _async_execute_rooms(
                     run_id=run_id,
                     record_room_completed=record_room_completion,
                     checkpoint_dispatch=save_dispatch if durable else None,
+                    recovered_room_id=(
+                        (manager.snapshot(serial_number).get("active_plan") or {}).get(
+                            "room_id"
+                        )
+                        if recovery is not None and index == checkpoint["leg_index"]
+                        else None
+                    ),
                 )
                 if not completion_verified:
                     break

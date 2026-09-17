@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 from copy import deepcopy
 from dataclasses import asdict
+from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -62,6 +63,7 @@ async def recovery_state(hass):
         "dispatched_at": dt_util.utcnow().isoformat(),
         "history_baseline": [],
         "completed_room_ids": [],
+        "started_room_ids": [room.room_id],
     }
     await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
     client = SimpleNamespace(
@@ -475,6 +477,8 @@ async def test_restart_after_final_credit_preserves_verified_completion(
     hass, recovery_state
 ):
     manager, entry, _, room = recovery_state
+    events = []
+    hass.bus.async_listen("matic_robot_plan_finished", events.append)
     await manager.async_mark_completed("serial", "plan", room, duration_seconds=30)
     entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
     with patch(
@@ -486,6 +490,46 @@ async def test_restart_after_final_credit_preserves_verified_completion(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
     assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"
     assert manager.snapshot("serial")["completed_runs"] == 1
+    await hass.async_block_till_done()
+    assert events[0].data["room_outcomes"] == [
+        {"room_id": room.room_id, "room": room.name, "outcome": "completed"}
+    ]
+
+
+@pytest.mark.parametrize("paused", [False, True])
+async def test_reloaded_room_retains_elapsed_and_original_timestamps(
+    hass, recovery_state, paused
+):
+    manager, _, checkpoint, room = recovery_state
+    robot = manager._robot("serial")
+    active = robot["active_plan"]
+    earlier = (dt_util.utcnow() - timedelta(seconds=90)).isoformat()
+    active.update(
+        started=earlier,
+        cleaning_started=earlier,
+        active_elapsed_seconds=45,
+        active_segment_started=None if paused else earlier,
+    )
+    persisted = deepcopy(manager._data)
+    restored = CleaningPlanManager(hass)
+    restored._store = SimpleNamespace(
+        async_load=AsyncMock(return_value=persisted), async_save=AsyncMock()
+    )
+    await restored.async_load()
+    await restored.async_mark_recovery_status("serial", "running", reason="test")
+    assert not await restored.async_mark_started("serial", "plan", room, run_id="run")
+    recovered = restored.snapshot("serial")["active_plan"]
+    assert recovered["started"] == earlier
+    assert recovered["cleaning_started"] == earlier
+    assert recovered["active_elapsed_seconds"] >= (45 if paused else 135)
+    await restored.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    another = CleaningRoom("office", "Office", "vacuum", "standard")
+    assert await restored.async_mark_started("serial", "plan", another, run_id="run")
+    await restored.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    assert restored.recovery_run("serial")["recovery_checkpoint"][
+        "started_room_ids"
+    ] == [room.room_id, another.room_id]
+    assert not await restored.async_mark_started("serial", "plan", room, run_id="run")
 
 
 @pytest.mark.parametrize("multi", [False, True])
@@ -493,6 +537,8 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     hass, recovery_state, multi
 ):
     manager, entry, checkpoint, room = recovery_state
+    starts = []
+    hass.bus.async_listen("matic_robot_room_started", starts.append)
     rooms = (
         [room, CleaningRoom("office", "Office", "vacuum", "standard")]
         if multi
@@ -509,6 +555,7 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
         )
         checkpoint["rooms"] = [asdict(value) for value in rooms]
         await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+        await manager.async_mark_started("serial", "plan", rooms[1], run_id="run")
     with (
         patch(
             "custom_components.matic_robot.services._async_dispatch_leg_command",
@@ -551,3 +598,5 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     assert run["outcome"] == "completed"
     assert run["completed_room_count"] == len(rooms)
     assert manager.snapshot("serial")["active_plan"] is None
+    await hass.async_block_till_done()
+    assert not starts
