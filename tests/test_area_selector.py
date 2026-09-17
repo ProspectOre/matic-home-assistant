@@ -5,6 +5,7 @@ import voluptuous as vol
 
 from custom_components.matic_robot.area_selector import (
     MaticAreaSelector,
+    _IndexedPolygon,
     _RoomGeometryIndex,
 )
 
@@ -91,3 +92,22 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
         assert geometry.contains(x, y, tolerance) is (
             MaticAreaSelector._point_in_or_near_polygon(x, y, boundary, tolerance)
         )
+
+
+def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None:
+    """A tall zigzag polygon retains storage proportional to its input size."""
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0]
+        for index in range(4_096)
+    ]
+
+    polygon = _IndexedPolygon(boundary)
+
+    assert polygon.boundary is boundary
+    assert vars(polygon) == {
+        "boundary": boundary,
+        "minimum_x": 0.0,
+        "maximum_x": 4_095.0,
+        "minimum_y": -10_000.0,
+        "maximum_y": 10_000.0,
+    }
