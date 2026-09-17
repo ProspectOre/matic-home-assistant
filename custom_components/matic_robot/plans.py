@@ -54,6 +54,7 @@ ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
+STOP_FENCE_RUN_ID = "stop_fence_run_id"
 
 # These are the only terminal outcomes exposed for a managed run.  ``running``
 # remains an internal in-flight marker; room history keeps its own evidence
@@ -324,6 +325,7 @@ class CleaningPlanManager:
             if fence_value is not None:
                 if fence_remaining is None or fence_remaining <= 0:
                     robot.pop(STOP_FENCE_EXPIRES_AT, None)
+                    robot.pop(STOP_FENCE_RUN_ID, None)
                     fence_remaining = None
                     recovered = True
                 else:
@@ -394,20 +396,28 @@ class CleaningPlanManager:
         self,
         serial_number: str,
         duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+        *,
+        run_id: str | None = None,
     ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
         self._arm_stop_pending(serial_number, duration_seconds)
         self._robot(serial_number)[STOP_FENCE_EXPIRES_AT] = (
             dt_util.utcnow() + timedelta(seconds=duration_seconds)
         ).isoformat()
+        robot = self._robot(serial_number)
+        robot.pop(STOP_FENCE_RUN_ID, None)
+        if run_id is not None:
+            robot[STOP_FENCE_RUN_ID] = run_id
 
     async def async_mark_stop_pending(
         self,
         serial_number: str,
         duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+        *,
+        run_id: str | None = None,
     ) -> None:
         """Persist an accepted OEM STOP before releasing command ownership."""
-        self.mark_stop_pending(serial_number, duration_seconds)
+        self.mark_stop_pending(serial_number, duration_seconds, run_id=run_id)
         await self._async_save_and_notify(serial_number)
 
     @callback
@@ -419,6 +429,7 @@ class CleaningPlanManager:
         if monotonic() >= deadline:
             self._stop_fences.pop(serial_number, None)
             self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None)
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None)
             return False
         return True
 
@@ -426,10 +437,29 @@ class CleaningPlanManager:
     def clear_stop_pending(self, serial_number: str) -> bool:
         """Clear a completed OEM stop fence after the robot reaches a stable state."""
         removed = self._stop_fences.pop(serial_number, None) is not None
+        owner_removed = (
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None) is not None
+        )
         return (
             self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None) is not None
             or removed
+            or owner_removed
         )
+
+    def pending_stop_run_id(self, serial_number: str) -> str | None:
+        """Restore only a live stop fence still belonging to the last managed run."""
+        robot = self._robot(serial_number)
+        owner = robot.get(STOP_FENCE_RUN_ID)
+        run = robot.get("last_run")
+        if (
+            self.stop_pending(serial_number)
+            and isinstance(owner, str)
+            and isinstance(run, dict)
+            and run.get("run_id") == owner
+            and run.get("outcome") in {"running", "cancelled", "unverified", "failed"}
+        ):
+            return owner
+        return None
 
     async def async_clear_stop_pending(self, serial_number: str) -> None:
         """Persist removal of a fence after the robot becomes stable."""
@@ -482,10 +512,14 @@ class CleaningPlanManager:
             self.cancellation_event(serial_number).set()
             self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
         self.cancel_reconciliation_tasks(serial_number)
+        stop_owner_removed = (
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None) is not None
+        )
         reconciliation_removed = (
             self._robot(serial_number).pop("pending_native_reconciliation", None)
             is not None
         ) or bool(self._native_history_saves.get(serial_number))
+        reconciliation_removed = stop_owner_removed or reconciliation_removed
         if reconciliation_removed:
             self._reconciliation_removal_pending.add(serial_number)
         self._motion_generations[serial_number] = (

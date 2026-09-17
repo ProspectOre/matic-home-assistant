@@ -22,6 +22,7 @@ from .services import (
     _async_verify_leg_completion,
     _PreparedRoomDispatch,
     _room_outcomes,
+    _schedule_managed_dock_after_stop,
     _shutdown_suspends_run,
 )
 
@@ -44,8 +45,26 @@ async def async_recover_managed_run(
     """
     runtime = entry.runtime_data
     manager = runtime.cleaning_plans
+    restored_stop_owner = manager.pending_stop_run_id(serial_number)
+
+    def restore_stop_settlement() -> None:
+        owner = manager.pending_stop_run_id(serial_number)
+        entity_id = er.async_get(hass).async_get_entity_id(
+            "vacuum", DOMAIN, f"{serial_number}_vacuum"
+        )
+        if (
+            owner is not None
+            and owner == restored_stop_owner
+            and entity_id is not None
+            and not manager.dock_reconciliation_active(serial_number)
+        ):
+            _schedule_managed_dock_after_stop(
+                hass, entry, manager, serial_number, entity_id, owner, None
+            )
+
     run = manager.recovery_run(serial_number)
     if run is None:
+        restore_stop_settlement()
         return
     manager.register_run_task(serial_number)
     cancel = manager.prepare_run(serial_number)
@@ -54,6 +73,9 @@ async def async_recover_managed_run(
     rooms: list[CleaningRoom] = []
     try:
         checkpoint = run["recovery_checkpoint"]
+        if manager.pending_stop_run_id(serial_number) is not None:
+            reason = "restart_stop_settlement_pending"
+            return
         if checkpoint.get("stop_intent") in {"immediate", "not_running"}:
             reason = "restart_stop_requested"
             return
@@ -356,4 +378,7 @@ async def async_recover_managed_run(
                         ),
                     },
                 )
+        shutdown_suspended = _shutdown_suspends_run(hass, manager, serial_number)
         manager.unregister_run_task(serial_number)
+        if not shutdown_suspended:
+            restore_stop_settlement()

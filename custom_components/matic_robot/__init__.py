@@ -170,7 +170,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-        if plans.recovery_run(serial_number) is not None:
+        if (
+            plans.recovery_run(serial_number) is not None
+            or plans.pending_stop_run_id(serial_number) is not None
+        ):
             entry.async_create_background_task(
                 hass,
                 async_recover_managed_run(hass, entry, serial_number),

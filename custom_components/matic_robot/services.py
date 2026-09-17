@@ -1082,29 +1082,40 @@ async def _async_managed_user_command(
     async with manager.managed_command(serial_number, token):
         await runtime.client.async_send_user_command(command)
         if command is UserCommand.STOP:
-            await manager.async_mark_stop_pending(serial_number)
+            await manager.async_mark_stop_pending(serial_number, run_id=stop_run_id)
         await runtime.coordinator.async_request_refresh()
     if command is UserCommand.STOP:
-        journal = getattr(runtime.client, "activity_journal", None)
-        schedule_dock_after_stop(
-            hass,
-            client=runtime.client,
-            refresh=runtime.coordinator.async_request_refresh,
-            manager=manager,
-            serial_number=serial_number,
-            entity_id=entity_id,
-            run_id=stop_run_id,
-            set_run_id=getattr(journal, "set_run_id", None),
-            get_run_id=getattr(journal, "current_run_id", None),
-            on_docked=partial(
-                _async_mark_run_docked,
-                manager,
-                serial_number,
-                stop_run_id,
-                entity_id,
-                context,
-            ),
+        _schedule_managed_dock_after_stop(
+            hass, entry, manager, serial_number, entity_id, stop_run_id, context
         )
+
+
+def _schedule_managed_dock_after_stop(
+    hass: HomeAssistant,
+    entry: ConfigEntry,
+    manager: CleaningPlanManager,
+    serial_number: str,
+    entity_id: str,
+    run_id: str | None,
+    context: Context | None,
+) -> None:
+    """Bind fresh or restored settlement to the same run and native guards."""
+    runtime = entry.runtime_data
+    journal = getattr(runtime.client, "activity_journal", None)
+    schedule_dock_after_stop(
+        hass,
+        client=runtime.client,
+        refresh=runtime.coordinator.async_request_refresh,
+        manager=manager,
+        serial_number=serial_number,
+        entity_id=entity_id,
+        run_id=run_id,
+        set_run_id=getattr(journal, "set_run_id", None),
+        get_run_id=getattr(journal, "current_run_id", None),
+        on_docked=partial(
+            _async_mark_run_docked, manager, serial_number, run_id, entity_id, context
+        ),
+    )
 
 
 async def _async_dispatch_leg_command(

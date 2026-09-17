@@ -24,6 +24,9 @@ binding match. It retains the original run ID and does not resend the accepted
 clean command. Verified prior legs are skipped; the remaining queue continues
 through the existing completion and command-ownership guards. User Stop wins
 over recovery; a saved finish-current-room request is not cleared by reconnect.
+Accepted managed Stops retain a run-bound settlement fence. Restart restores
+the same native-inactive dock watcher even after the cleaning record ended;
+replacement commands, expiry, and mismatched run ownership cannot restore it.
 
 ## Deliberate uncertainty boundaries
 
