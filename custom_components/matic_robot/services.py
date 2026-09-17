@@ -154,6 +154,7 @@ class _PreparedRoomDispatch:
     dispatched_at: datetime
     native_identity_baseline: bytes | None = None
     native_identity: bytes | None = None
+    recovered: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -1272,6 +1273,7 @@ async def _async_run_room(
                 bind_native_identity,
                 dispatch.native_identity_baseline,
                 native_identity,
+                already_accepted=dispatch.recovered,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
@@ -1306,7 +1308,11 @@ async def _async_run_room(
                 while True:
                     outcome = await _async_wait_with_native_identity(
                         lambda: _async_wait_for_room_outcome(
-                            hass, entity_id, room, cancel_event
+                            hass,
+                            entity_id,
+                            room,
+                            cancel_event,
+                            initial_observed=dispatch.recovered,
                         ),
                         session_identity,
                         native_identity,
@@ -1797,6 +1803,7 @@ async def _async_run_leg(
                 bind_native_identity,
                 dispatch.native_identity_baseline,
                 native_identity,
+                already_accepted=dispatch.recovered,
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
@@ -2277,6 +2284,8 @@ async def _async_wait_for_room_outcome(
     entity_id: str,
     room: CleaningRoom,
     cancel_event: asyncio.Event | None = None,
+    *,
+    initial_observed: bool = False,
 ) -> RoomRunOutcome:
     """Classify the next terminal transition using positive room evidence.
 
@@ -2287,7 +2296,12 @@ async def _async_wait_for_room_outcome(
     transition is interrupted/unknown and receives no room-history credit.
     """
     outcome, _changed = await _async_wait_for_leg_outcome(
-        hass, entity_id, [room], room, cancel_event
+        hass,
+        entity_id,
+        [room],
+        room,
+        cancel_event,
+        initial_observed=initial_observed,
     )
     return outcome
 
@@ -3040,6 +3054,8 @@ async def _async_wait_for_owned_start(
     bind_identity: Callable[[bytes | None], None],
     identity_baseline: bytes | None,
     expected: bytes | None,
+    *,
+    already_accepted: bool = False,
 ) -> str:
     """Bind the dispatched task even while HA's activity/room update lags.
 
@@ -3047,6 +3063,18 @@ async def _async_wait_for_owned_start(
     cleanup can stop the same accepted task. Never replace that identity with
     a later OEM task. A successful HA state also needs a current native read.
     """
+    if already_accepted:
+        # Recovery has already verified the accepted mission twice. Requiring
+        # another cleaning transition can misclassify a normal finish in the
+        # handoff window. Join ongoing identity/outcome monitoring instead:
+        # empty identity permits native-history verification, while replacement,
+        # unknown ownership, and an in-place stop still fail closed there.
+        current = hass.states.get(entity_id)
+        return (
+            "paused"
+            if current is not None and current.state == "paused"
+            else "cleaning"
+        )
     if reader is None:
         return await _async_wait_for_vacuum_state(
             hass,

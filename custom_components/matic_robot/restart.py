@@ -165,7 +165,11 @@ async def async_recover_managed_run(
             get_activity_run_id=runtime.client.activity_journal.current_run_id,
             recovery=run,
             recovered_dispatch=_PreparedRoomDispatch(
-                tuple(leg), baseline, dispatched_at, native_identity=identity
+                tuple(leg),
+                baseline,
+                dispatched_at,
+                native_identity=identity,
+                recovered=True,
             ),
         )
         reason = (

@@ -775,7 +775,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             ),
         )
 
-    async def native_outcome(*_args):
+    async def native_outcome(*_args, **_kwargs):
         if scenario == "stop":
             manager.cancel("serial")
             raise PlanCancelledError

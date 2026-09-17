@@ -28,6 +28,7 @@ from custom_components.matic_robot.services import (
     RoomRunOutcome,
     _async_execute_rooms,
     _async_run_leg,
+    _async_wait_for_owned_start,
     _PreparedRoomDispatch,
 )
 
@@ -600,3 +601,104 @@ async def test_startup_rejoins_real_executor_to_completion_without_clean_command
     assert manager.snapshot("serial")["active_plan"] is None
     await hass.async_block_till_done()
     assert not starts
+
+
+@pytest.mark.parametrize("multi", [False, True])
+@pytest.mark.parametrize(
+    "state,identity,verified",
+    [
+        ("returning", b"", True),
+        ("docked", b"", True),
+        ("returning", b"", False),
+        ("idle", b"", False),
+        ("returning", b"replacement", False),
+        ("returning", None, False),
+    ],
+)
+async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
+    hass, recovery_state, multi, state, identity, verified
+):
+    manager, entry, checkpoint, room = recovery_state
+    rooms = (
+        [room, CleaningRoom("office", "Office", "vacuum", "standard")]
+        if multi
+        else [room]
+    )
+    if multi:
+        await manager.async_begin_run(
+            "serial",
+            "plan",
+            "run",
+            2,
+            trigger="automation",
+            service="clean_entire_plan",
+        )
+        checkpoint["rooms"] = [asdict(r) for r in rooms]
+        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    reads = 0
+
+    async def native_identity():
+        nonlocal reads
+        reads += 1
+        if reads <= 2:
+            if reads == 2:
+                hass.states.async_set(checkpoint["entity_id"], state)
+            return b"synthetic-session"
+        return identity
+
+    entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = (
+        native_identity
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+            0,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_verify_room_completion",
+            AsyncMock(return_value=verified),
+        ) as room_history,
+        patch(
+            "custom_components.matic_robot.services._async_verify_leg_completion",
+            AsyncMock(
+                return_value={
+                    r.room_id: (dt_util.utcnow().isoformat(), 30) for r in rooms
+                }
+                if verified
+                else {}
+            ),
+        ) as leg_history,
+        patch(
+            "custom_components.matic_robot.services._async_dispatch_leg_command",
+            new_callable=AsyncMock,
+        ) as dispatch,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+    run = manager.snapshot("serial")["last_run"]
+    assert run["outcome"] == ("completed" if verified else "unverified")
+    history = leg_history if multi else room_history
+    if state in {"returning", "docked"} and identity == b"":
+        history.assert_awaited_once()
+    else:
+        history.assert_not_awaited()
+    dispatch.assert_not_awaited()
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_recovered_paused_start_enters_resume_monitor(hass):
+    hass.states.async_set("vacuum.matic", "paused")
+    assert (
+        await _async_wait_for_owned_start(
+            hass,
+            "vacuum.matic",
+            120,
+            None,
+            [],
+            AsyncMock(),
+            MagicMock(),
+            None,
+            b"synthetic",
+            already_accepted=True,
+        )
+        == "paused"
+    )
