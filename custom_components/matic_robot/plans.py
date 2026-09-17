@@ -478,7 +478,8 @@ class CleaningPlanManager:
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Cancel any managed plan before an independent motion command."""
-        if self.cancel(serial_number):
+        if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
+            self.cancellation_event(serial_number).set()
             self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
         self.cancel_reconciliation_tasks(serial_number)
         reconciliation_removed = (

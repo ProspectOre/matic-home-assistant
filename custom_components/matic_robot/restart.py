@@ -300,25 +300,40 @@ async def async_recover_managed_run(
             and not _shutdown_suspends_run(hass, manager, serial_number)
             and manager.recovery_run(serial_number) is not None
         ):
+            completed = reason == "all_rooms_verified"
+            cancellation = manager.cancellation_reason(serial_number)
+            replaced = cancellation == "motion_replaced"
             stopped = (
-                manager.cancellation_reason(serial_number) == "managed_stop"
+                cancellation == "managed_stop"
                 or checkpoint.get("stop_intent") in {"immediate", "not_running"}
                 or (
                     checkpoint.get("phase") == "verifying"
                     and checkpoint.get("stop_intent") == "after_room"
+                    and not completed
                 )
             )
-            completed = reason == "all_rooms_verified"
+            if cancellation == "config_entry_unload":
+                reason = "config_entry_unload"
             terminal_state = hass.states.get(checkpoint.get("entity_id", ""))
             terminal_activity = terminal_state.state if terminal_state else "unknown"
             finished = await manager.async_finish_run(
                 serial_number,
                 run["run_id"],
-                "cancelled" if stopped else "completed" if completed else "unverified",
-                "managed_stop" if stopped else reason,
+                "cancelled"
+                if replaced or stopped
+                else "completed"
+                if completed
+                else "unverified",
+                "managed_replaced"
+                if replaced
+                else "managed_stop"
+                if stopped
+                else reason,
                 manager.snapshot(serial_number)["last_run"]["completed_room_count"],
                 terminal_activity=terminal_activity,
-                cause="managed_cancellation"
+                cause="replacement"
+                if replaced
+                else "managed_cancellation"
                 if stopped
                 else "verified_completion"
                 if completed

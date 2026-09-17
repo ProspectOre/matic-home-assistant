@@ -252,3 +252,83 @@ async def test_expired_verification_retains_after_room_stop(hass, recovery_state
     assert run["outcome"] == "cancelled"
     assert run["reason_code"] == "managed_stop"
     assert run["completed_room_count"] == 0
+
+
+@pytest.mark.parametrize("already_credited", [False, True])
+async def test_final_room_completion_wins_over_graceful_stop(
+    hass, recovery_state, already_credited
+):
+    manager, entry, checkpoint, room = recovery_state
+    checkpoint["stop_intent"] = "after_room"
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    if already_credited:
+        await manager.async_mark_completed("serial", "plan", room)
+    entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+        completed_record(),
+    )
+    events = []
+    hass.bus.async_listen("matic_robot_plan_finished", events.append)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    run = manager.snapshot("serial")["last_run"]
+    assert run["outcome"] == "completed"
+    assert run["reason_code"] == "all_rooms_verified"
+    assert events[0].data["outcome"] == "completed"
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize("stage", ["refresh", "history", "verifying"])
+@pytest.mark.parametrize("action", ["replace", "stop", "unload", "shutdown"])
+async def test_recovery_cancellation_attribution(hass, recovery_state, stage, action):
+    manager, entry, _, _ = recovery_state
+    client = entry.runtime_data.client
+
+    async def interrupt(*args, **kwargs):
+        if action == "replace":
+            manager.replace_managed_motion("serial")
+        elif action == "stop":
+            manager.request_stop("serial")
+        else:
+            if action == "shutdown":
+                hass.set_state(CoreState.stopping)
+            await manager.async_cancel_and_wait(
+                "serial", preserve_run=action == "shutdown"
+            )
+        return ()
+
+    if stage == "refresh":
+        entry.runtime_data.coordinator.async_request_refresh.side_effect = interrupt
+    elif stage == "history":
+        client.async_get_cleaning_session_records.side_effect = interrupt
+    else:
+        reads = 0
+
+        async def history():
+            nonlocal reads
+            reads += 1
+            if reads > 1:
+                return await interrupt()
+            return ()
+
+        client.async_get_cleaning_session_records.side_effect = history
+    events = []
+    hass.bus.async_listen("matic_robot_plan_finished", events.append)
+    await async_recover_managed_run(hass, entry, "serial")
+    await hass.async_block_till_done()
+    if action == "shutdown":
+        assert manager.recovery_run("serial") is not None
+        assert not events
+    else:
+        expected = {
+            "replace": ("cancelled", "managed_replaced", "replacement"),
+            "stop": ("cancelled", "managed_stop", "managed_cancellation"),
+            "unload": ("unverified", "config_entry_unload", "home_assistant"),
+        }[action]
+        run = manager.snapshot("serial")["last_run"]
+        assert (run["outcome"], run["reason_code"], run["cause"]) == expected
+        assert (
+            events[0].data["outcome"],
+            events[0].data["reason_code"],
+            events[0].data["cause"],
+        ) == expected
+    client.async_send_user_command.assert_not_awaited()
