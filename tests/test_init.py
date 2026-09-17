@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.components import frontend
@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS,
     FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
@@ -1043,11 +1044,38 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
-        client_factory.call_args.kwargs["observation_callback"]({"kind": "started"})
-        hass.bus.async_fire.assert_called_with(
-            "matic_robot_activity_observed",
-            {"entry_id": entry.entry_id, "kind": "started"},
-        )
+        observe = client_factory.call_args.kwargs["observation_callback"]
+        observe({"kind": "started"})
+        with patch(
+            "custom_components.matic_robot.monotonic",
+            side_effect=[100.0, 100.5, 101.0],
+        ):
+            observe({"kind": "state", "state_codes": [106]})
+            observe({"kind": "state", "state_codes": [107]})
+            observe({"kind": "state", "state_codes": [108]})
+        assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
+        assert hass.bus.async_fire.call_args_list[-3:] == [
+            call(
+                "matic_robot_activity_observed",
+                {"entry_id": entry.entry_id, "kind": "started"},
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [106],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [108],
+                },
+            ),
+        ]
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 
