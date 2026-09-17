@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry
@@ -66,6 +67,7 @@ FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
 FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
+ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -95,8 +97,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Set up an unofficial Matic robot integration from a config entry."""
 
+    next_state_event_at = 0.0
+
     @callback
     def _async_observe_activity(observation: dict[str, Any]) -> None:
+        nonlocal next_state_event_at
+        if observation.get("kind") == "state":
+            now = monotonic()
+            if now < next_state_event_at:
+                return
+            next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
         hass.bus.async_fire(
             EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
         )
