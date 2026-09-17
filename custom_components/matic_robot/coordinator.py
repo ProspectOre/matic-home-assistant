@@ -64,6 +64,9 @@ SNAPSHOT_FAILURE_THRESHOLD = 8
 SNAPSHOT_RETRY_SECONDS = 900
 SNAPSHOT_MAX_ATTEMPTS = 3
 ERROR_CONFIRMATION_POLLS = 2
+# Limit robot-driven Cues fan-out while retaining the newest state received during
+# each interval. This bounds coordinator, event-bus, automation, and Recorder work.
+CUES_UPDATE_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -135,18 +138,59 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         retry_delay = 1
         while True:
             try:
-                states_received = 0
-                async for state in self.client.async_subscribe_state():
-                    states_received += 1
-                    if states_received > 1:
-                        retry_delay = 1
-                    self.async_process_cues_state(state)
+                states_received = await self._async_consume_cues_subscription()
+                if states_received > 1:
+                    retry_delay = 1
             except asyncio.CancelledError:
                 raise
             except MaticError as err:
                 _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
+
+    async def _async_consume_cues_subscription(self) -> int:
+        """Consume one subscription, coalescing snapshots to a bounded rate."""
+        pending: RobotOperationalState | None = None
+        pending_available = asyncio.Event()
+        states_received = 0
+
+        async def _collect() -> None:
+            nonlocal pending, states_received
+            try:
+                async for state in self.client.async_subscribe_state():
+                    states_received += 1
+                    pending = state
+                    pending_available.set()
+            finally:
+                # Wake the consumer so it can observe completion or an exception.
+                pending_available.set()
+
+        collector = asyncio.create_task(_collect())
+        next_update_at = 0.0
+        try:
+            while True:
+                await pending_available.wait()
+                pending_available.clear()
+                if pending is None:
+                    await collector
+                    return states_received
+
+                delay = next_update_at - monotonic()
+                if delay > 0:
+                    await asyncio.sleep(delay)
+
+                state = pending
+                pending = None
+                self.async_process_cues_state(state)
+                next_update_at = monotonic() + CUES_UPDATE_INTERVAL_SECONDS
+
+                if collector.done() and pending is None:
+                    await collector
+                    return states_received
+        finally:
+            if not collector.done():
+                collector.cancel()
+            await asyncio.gather(collector, return_exceptions=True)
 
     async def async_watch_floor_plan(self) -> None:
         """Refresh floor geometry when the robot changes displayed mission."""
