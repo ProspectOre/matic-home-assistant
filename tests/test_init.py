@@ -1374,6 +1374,32 @@ async def test_unload_closes_client_only_after_all_platforms_unload(
     assert slam_history.async_shutdown.await_count == int(unload_ok)
 
 
+async def test_failed_enabled_unload_reschedules_recovery(hass) -> None:
+    """A failed platform unload must not strand a preserved managed run."""
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(),
+        async_retire_recovery=AsyncMock(),
+        recovery_run=MagicMock(return_value={"run_id": "run"}),
+    )
+    target_tasks = []
+
+    def capture_task(_hass, target, name):
+        target_tasks.append((target, name))
+        target.close()
+
+    entry = SimpleNamespace(
+        disabled_by=None,
+        data={CONF_SERIAL_NUMBER: "serial"},
+        entry_id="entry",
+        async_create_background_task=MagicMock(side_effect=capture_task),
+        runtime_data=SimpleNamespace(cleaning_plans=plans),
+    )
+    hass.config_entries.async_unload_platforms = AsyncMock(return_value=False)
+    await async_unload_entry(hass, entry)
+    entry.async_create_background_task.assert_called_once()
+    assert target_tasks[0][1] == f"{DOMAIN} managed run recovery after unload failure"
+
+
 @pytest.mark.parametrize("with_plans", [True, False])
 async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())

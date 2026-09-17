@@ -534,7 +534,26 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
         await entry.runtime_data.cleaning_plans.async_retire_recovery(
             str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
         )
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok and preserve_run:
+        recovery_reader = getattr(
+            entry.runtime_data.cleaning_plans, "recovery_run", None
+        )
+        recovery = (
+            recovery_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(recovery_reader)
+            else None
+        )
+        create_task = getattr(entry, "async_create_background_task", None)
+        if recovery is not None and callable(create_task):
+            create_task(
+                hass,
+                async_recover_managed_run(
+                    hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
+                ),
+                f"{DOMAIN} managed run recovery after unload failure",
+            )
+    if unload_ok:
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
