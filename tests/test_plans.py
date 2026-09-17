@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import ServiceCall
+from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -749,8 +749,14 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         async_save=AsyncMock(side_effect=lambda data: saved.append(deepcopy(data)))
     )
     events = []
+
+    @callback
+    def record_event(event):
+        # Record fire order on HA's loop, not executor-thread completion order.
+        events.append(event)
+
     for event in ("room_started", room_event, "plan_finished"):
-        hass.bus.async_listen(f"{DOMAIN}_{event}", events.append)
+        hass.bus.async_listen(f"{DOMAIN}_{event}", record_event)
     hass.services.async_register("vacuum", "send_command", AsyncMock())
     room = _room("Study", "room-study")
     reads = 0

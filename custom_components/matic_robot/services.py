@@ -1446,6 +1446,8 @@ async def _async_run_room(
                 refresh_task.cancel()
                 await asyncio.gather(refresh_task, return_exceptions=True)
     except ManagedMotionReplacedError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         await manager.async_mark_cancelled(serial_number, call.data["plan_id"], room)
         hass.bus.async_fire(
             f"{DOMAIN}_room_cancelled",
@@ -1507,6 +1509,8 @@ async def _async_run_room(
             )
         raise
     except RoomTakenOverError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], room, str(err)
@@ -1527,6 +1531,8 @@ async def _async_run_room(
             {"room": room.name},
         ) from err
     except RoomInterruptedError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
@@ -1583,6 +1589,8 @@ async def _async_run_room(
             str(err), "room_interrupted", {"room": room.name}
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         # A graceful finish request can race a room failure.  Clear that
         # intent before sending the failure STOP so its dock watcher cannot
         # upgrade the still-running record and mask the durable failure.
@@ -2014,6 +2022,8 @@ async def _async_run_leg(
                 refresh_task.cancel()
                 await asyncio.gather(refresh_task, return_exceptions=True)
     except ManagedMotionReplacedError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         await manager.async_mark_cancelled(
             serial_number, call.data["plan_id"], active_room
         )
@@ -2072,6 +2082,8 @@ async def _async_run_leg(
             )
         raise
     except RoomInterruptedError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
@@ -2094,6 +2106,8 @@ async def _async_run_leg(
             str(err), "room_interrupted", {"room": active_room.name}
         ) from err
     except RoomTakenOverError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         err.suspend_reason = _suspended_run_reason(manager, serial_number)
         await manager.async_mark_interrupted(
             serial_number, call.data["plan_id"], active_room, str(err)
@@ -2114,6 +2128,8 @@ async def _async_run_leg(
             {"room": active_room.name},
         ) from err
     except (TimeoutError, HomeAssistantError, MaticError) as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         # A graceful finish request can race a room failure.  Clear that
         # intent before sending the failure STOP so its dock watcher cannot
         # upgrade the still-running record and mask the durable failure.
@@ -3916,9 +3932,7 @@ async def _async_execute_rooms(
                 run_cause = "managed_cancellation"
             return
         except (Exception, asyncio.CancelledError) as err:
-            if isinstance(err, asyncio.CancelledError) and _shutdown_suspends_run(
-                hass, manager, serial_number
-            ):
+            if _shutdown_suspends_run(hass, manager, serial_number):
                 shutdown_suspended = True
                 raise
             # A native task that ends in place is positive evidence that the
