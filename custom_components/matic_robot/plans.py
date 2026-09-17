@@ -1655,7 +1655,12 @@ class CleaningPlanManager:
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_verifying(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        verification_deadline: datetime | None = None,
     ) -> None:
         """Close active timing while native completion evidence is checked."""
         now_value = dt_util.utcnow()
@@ -1669,6 +1674,12 @@ class CleaningPlanManager:
             active["active_segment_started"] = None
             active["status"] = "verifying"
             active.pop("suspend_reason", None)
+        run = self._robot(serial_number).get("last_run")
+        if run is not None and verification_deadline is not None:
+            checkpoint = run.get("recovery_checkpoint")
+            if checkpoint is not None:
+                checkpoint["phase"] = "verifying"
+                checkpoint["verification_deadline"] = verification_deadline.isoformat()
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_resumed(

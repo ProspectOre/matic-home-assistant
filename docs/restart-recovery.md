@@ -27,6 +27,9 @@ over recovery; a saved finish-current-room request is not cleared by reconnect.
 
 ## Deliberate uncertainty boundaries
 
+- If HA already observed the native mission end and began verifying history,
+  restart resumes that history-only observer with its original verification
+  deadline. It can credit explicit results but cannot dispatch another leg.
 - A crash between native command acceptance and the identity checkpoint is
   ambiguous. Recovery does not guess whether dispatch succeeded or replay it.
 - If the native mission ended or changed while HA was offline, native-history

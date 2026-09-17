@@ -1380,7 +1380,11 @@ async def _async_run_room(
                         if session_resolution is False:
                             mission_timeout.reschedule(None)
                             await manager.async_mark_verifying(
-                                serial_number, call.data["plan_id"], room
+                                serial_number,
+                                call.data["plan_id"],
+                                room,
+                                verification_deadline=dt_util.utcnow()
+                                + timedelta(seconds=SESSION_HISTORY_TIMEOUT_SECONDS),
                             )
                             completion_verified = await _async_verify_room_completion(
                                 session_history,
@@ -1954,7 +1958,11 @@ async def _async_run_leg(
                                 )
                         mission_timeout.reschedule(None)
                         await manager.async_mark_verifying(
-                            serial_number, call.data["plan_id"], active_room
+                            serial_number,
+                            call.data["plan_id"],
+                            active_room,
+                            verification_deadline=dt_util.utcnow()
+                            + timedelta(seconds=SESSION_HISTORY_TIMEOUT_SECONDS),
                         )
                         evidence = await _async_verify_leg_completion(
                             session_history,

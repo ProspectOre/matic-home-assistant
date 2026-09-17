@@ -3696,7 +3696,11 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
         )
 
     manager.async_mark_suspended.assert_not_awaited()
-    manager.async_mark_verifying.assert_awaited_once_with("serial", "away", room)
+    manager.async_mark_verifying.assert_awaited_once()
+    assert manager.async_mark_verifying.await_args.args == ("serial", "away", room)
+    assert manager.async_mark_verifying.await_args.kwargs[
+        "verification_deadline"
+    ].tzinfo
     assert manager.async_mark_resumed.await_count == 1
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
@@ -6785,7 +6789,7 @@ async def test_terminal_history_has_its_own_budget(
     rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
     manager = _leg_manager()
 
-    async def slow_persist(*args):
+    async def slow_persist(*args, **kwargs):
         await asyncio.sleep(0.05)
 
     manager.async_mark_verifying = AsyncMock(side_effect=slow_persist)
