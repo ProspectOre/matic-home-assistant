@@ -298,16 +298,27 @@ class CleaningPlanManager:
             recovered = self._normalize_robot(robot) or recovered
             last_run = robot.get("last_run")
             if isinstance(last_run, dict) and last_run.get("outcome") == "running":
-                last_run.update(
-                    {
-                        "outcome": "unverified",
-                        "reason_code": "home_assistant_restart",
-                        "cause": "home_assistant",
-                        "ended_at": None,
-                        "recovered_at": dt_util.utcnow().isoformat(),
-                    }
-                )
-                recovered = True
+                if not isinstance(last_run.get("recovery_checkpoint"), dict):
+                    last_run.update(
+                        {
+                            "outcome": "unverified",
+                            "reason_code": "home_assistant_restart",
+                            "cause": "home_assistant",
+                            "ended_at": None,
+                            "recovered_at": dt_util.utcnow().isoformat(),
+                        }
+                    )
+                    recovered = True
+                else:
+                    last_run.update(
+                        {
+                            "reason_code": "home_assistant_restart",
+                            "cause": "home_assistant",
+                            "recovery_status": "recovering",
+                            "recovered_at": dt_util.utcnow().isoformat(),
+                        }
+                    )
+                    recovered = True
             fence_value = robot.get(STOP_FENCE_EXPIRES_AT)
             fence_remaining = _stop_fence_remaining_seconds(fence_value)
             if fence_value is not None:
@@ -332,7 +343,22 @@ class CleaningPlanManager:
                         fence_remaining = remaining
                         recovered = True
             active = robot.get("active_plan")
-            if active:
+            recoverable = (
+                isinstance(last_run, dict)
+                and last_run.get("outcome") == "running"
+                and isinstance(last_run.get("recovery_checkpoint"), dict)
+            )
+            if (
+                active
+                and recoverable
+                and isinstance(last_run, dict)
+                and active.get("run_id") == last_run.get("run_id")
+                and active.get("plan_id") == last_run.get("plan_id")
+            ):
+                active["status"] = "recovering"
+                active["active_segment_started"] = None
+                recovered = True
+            elif active:
                 rotation = robot["rotations"].setdefault(
                     active["plan_id"], {"rooms": {}}
                 )
@@ -349,7 +375,7 @@ class CleaningPlanManager:
                 robot["last_interrupted_plan"] = deepcopy(active)
                 robot["active_plan"] = None
                 recovered = True
-            if _close_unfinished_room_records(
+            if not recoverable and _close_unfinished_room_records(
                 robot, recovered_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
@@ -539,11 +565,15 @@ class CleaningPlanManager:
         """Authorize an in-flight dock upgrade for a graceful managed stop."""
         self._cancellation_reasons[serial_number] = "managed_stop"
 
-    async def async_cancel_and_wait(self, serial_number: str) -> None:
+    async def async_cancel_and_wait(
+        self, serial_number: str, *, preserve_run: bool = False
+    ) -> None:
         """Interrupt a managed run and wait before its client can be closed."""
         task = self._run_tasks.get(serial_number)
         if task is not None and not task.done():
-            self._cancellation_reasons[serial_number] = "config_entry_unload"
+            self._cancellation_reasons[serial_number] = (
+                "home_assistant_shutdown" if preserve_run else "config_entry_unload"
+            )
             self.finish_room_event(serial_number).clear()
             self.cancellation_event(serial_number).set()
             if task is not asyncio.current_task():
@@ -631,6 +661,10 @@ class CleaningPlanManager:
             self.motion_generation(serial_number) + 1
         )
         if not self.lock(serial_number).locked():
+            if self.recovery_run(serial_number) is not None:
+                self.cancellation_event(serial_number).set()
+                self._cancellation_reasons[serial_number] = "managed_stop"
+                return PlanStopDecision("immediate")
             return PlanStopDecision("not_running")
 
         robot = self._robot(serial_number)
@@ -1120,6 +1154,59 @@ class CleaningPlanManager:
         }
         await self._async_save_and_notify(serial_number)
 
+    async def async_set_recovery_checkpoint(
+        self,
+        serial_number: str,
+        run_id: str,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        """Persist the resolved queue required for safe restart recovery."""
+        last_run = self._robot(serial_number).get("last_run")
+        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+            return
+        existing = last_run.get("recovery_checkpoint", {})
+        last_run["recovery_checkpoint"] = {
+            **deepcopy(checkpoint),
+            **(
+                {"stop_intent": existing["stop_intent"]}
+                if "stop_intent" in existing
+                else {}
+            ),
+        }
+        await self._async_save_and_notify(serial_number)
+
+    async def async_checkpoint_stop_intent(
+        self, serial_number: str, behavior: str
+    ) -> None:
+        """Do not lose a user's stop request if HA restarts before completion."""
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if isinstance(checkpoint, dict):
+            checkpoint["stop_intent"] = behavior
+            await self._async_save_and_notify(serial_number)
+
+    def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
+        """Return private local recovery state, never exposed by entity snapshots."""
+        run = self._robot(serial_number).get("last_run")
+        if isinstance(run, dict) and run.get("outcome") == "running":
+            if isinstance(run.get("recovery_checkpoint"), dict):
+                return deepcopy(run)
+        return None
+
+    async def async_mark_recovery_status(
+        self, serial_number: str, status: str, *, reason: str
+    ) -> None:
+        """Publish reconnection state without inventing a robot outcome."""
+        last_run = self._robot(serial_number).get("last_run")
+        if not isinstance(last_run, dict) or last_run.get("outcome") != "running":
+            return
+        last_run["recovery_status"] = status[:32]
+        last_run["recovery_reason"] = reason[:64]
+        active = self._robot(serial_number).get("active_plan")
+        if isinstance(active, dict):
+            active["status"] = status
+        await self._async_save_and_notify(serial_number)
+
     async def async_finish_run(
         self,
         serial_number: str,
@@ -1159,6 +1246,12 @@ class CleaningPlanManager:
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
             }
         )
+        last_run.pop("recovery_checkpoint", None)
+        last_run.pop("recovery_status", None)
+        last_run.pop("recovery_reason", None)
+        active = robot.get("active_plan")
+        if isinstance(active, dict) and active.get("run_id") == run_id:
+            robot["active_plan"] = None
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
         await self._async_save_and_notify(serial_number)
@@ -1282,6 +1375,20 @@ class CleaningPlanManager:
         credit each verified room with the robot's own per-room timing.
         """
         now_value = dt_util.utcnow()
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if (
+            isinstance(run, dict)
+            and isinstance(checkpoint, dict)
+            and run.get("plan_id") == plan_id
+        ):
+            credited = checkpoint.setdefault("completed_room_ids", [])
+            if room.room_id in credited:
+                # A previous disk write may have failed after updating the
+                # in-memory credit. Retry persistence, never increment twice.
+                await self._async_save_and_notify(serial_number)
+                return
+            credited.append(room.room_id)
         now = (
             completed_at
             if completed_at is not None
@@ -1630,6 +1737,9 @@ class CleaningPlanManager:
             active_plan["active_elapsed_seconds"] = _active_elapsed_seconds(
                 active_plan, dt_util.utcnow()
             )
+        public_last_run = deepcopy(robot.get("last_run"))
+        if isinstance(public_last_run, dict):
+            public_last_run.pop("recovery_checkpoint", None)
         return {
             "completed_runs": completed_runs,
             "failed_runs": failed_runs,
@@ -1662,7 +1772,7 @@ class CleaningPlanManager:
             ),
             "active_plan": active_plan,
             "last_interrupted_plan": deepcopy(robot.get("last_interrupted_plan")),
-            "last_run": deepcopy(robot.get("last_run")),
+            "last_run": public_last_run,
         }
 
     def _robot(self, serial_number: str) -> dict[str, Any]:

@@ -249,6 +249,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_stop(self, **kwargs: object) -> None:
         """Stop now or finish the active room according to the plan policy."""
         decision = self._plans.request_stop(self.coordinator.data.info.serial_number)
+        await self._plans.async_checkpoint_stop_intent(
+            self.coordinator.data.info.serial_number, decision.behavior
+        )
         if decision.behavior == "after_room":
             return
         self.coordinator.async_discard_current_room()

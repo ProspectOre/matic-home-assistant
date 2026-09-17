@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable, Coroutine, Sequence
 from contextlib import asynccontextmanager
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from enum import StrEnum
 from functools import partial, wraps
@@ -118,6 +119,19 @@ SESSION_HISTORY_TIMEOUT_SECONDS = 300
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 
 _LOGGER = logging.getLogger(__name__)
+
+
+def _shutdown_suspends_run(
+    hass: HomeAssistant, manager: CleaningPlanManager, serial_number: str
+) -> bool:
+    """Distinguish HA shutdown from an explicit stop, replacement, or unload."""
+    reader = getattr(manager, "cancellation_reason", None)
+    reason = reader(serial_number) if callable(reader) else None
+    if reason in {"managed_stop", "motion_replaced", "config_entry_unload"}:
+        return False
+    return reason == "home_assistant_shutdown" or (
+        getattr(hass, "is_stopping", False) is True
+    )
 
 
 class RoomRunOutcome(StrEnum):
@@ -762,6 +776,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             hass, call, require_rooms=False
         )
         decision = manager.request_stop(serial_number)
+        await manager.async_checkpoint_stop_intent(serial_number, decision.behavior)
         if decision.behavior == "not_running" and not call.data.get(
             "include_unmanaged"
         ):
@@ -1170,6 +1185,8 @@ async def _async_run_room(
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
+    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
+    | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1241,6 +1258,8 @@ async def _async_run_room(
         history_baseline = dispatch.history_baseline
         dispatched_at = dispatch.dispatched_at
         assert dispatched_at is not None
+        if checkpoint_dispatch is not None:
+            await checkpoint_dispatch(dispatch)
         try:
             start_state = await _async_wait_for_owned_start(
                 hass,
@@ -1255,6 +1274,10 @@ async def _async_run_room(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
+        if checkpoint_dispatch is not None:
+            await checkpoint_dispatch(
+                replace(dispatch, native_identity=native_identity)
+            )
         if start_state == "paused":
             await manager.async_mark_suspended(
                 serial_number, call.data["plan_id"], room, "paused"
@@ -1378,6 +1401,8 @@ async def _async_run_room(
         )
         raise PlanCancelledError from err
     except PlanCancelledError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
@@ -1643,6 +1668,8 @@ async def _async_run_leg(
     on_native_identity: Callable[[bytes | None], None] | None = None,
     run_id: str | None = None,
     record_room_completed: Callable[[CleaningRoom], None] | None = None,
+    checkpoint_dispatch: Callable[[_PreparedRoomDispatch], Awaitable[None]]
+    | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1677,6 +1704,7 @@ async def _async_run_leg(
             on_native_identity=on_native_identity,
             run_id=run_id,
             record_room_completed=record_room_completed,
+            checkpoint_dispatch=checkpoint_dispatch,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1751,6 +1779,8 @@ async def _async_run_leg(
             bind_native_identity(dispatch.native_identity)
         history_baseline = dispatch.history_baseline
         dispatched_at = dispatch.dispatched_at
+        if checkpoint_dispatch is not None:
+            await checkpoint_dispatch(dispatch)
         try:
             start_state = await _async_wait_for_owned_start(
                 hass,
@@ -1765,6 +1795,10 @@ async def _async_run_leg(
             )
         except TimeoutError as err:
             raise RoomStartTimeoutError from err
+        if checkpoint_dispatch is not None:
+            await checkpoint_dispatch(
+                replace(dispatch, native_identity=native_identity)
+            )
         if start_state == "paused":
             await manager.async_mark_suspended(
                 serial_number, call.data["plan_id"], active_room, "paused"
@@ -1920,6 +1954,8 @@ async def _async_run_leg(
         )
         raise PlanCancelledError from err
     except PlanCancelledError as err:
+        if _shutdown_suspends_run(hass, manager, serial_number):
+            raise
         err.suspend_reason = _suspended_run_reason(manager, serial_number)
         if manager.cancellation_reason(serial_number) == "config_entry_unload":
             await _async_cleanup_managed_motion(
@@ -3404,9 +3440,19 @@ async def _async_execute_rooms(
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     set_activity_run_id: Callable[[str | None], None] | None = None,
     get_activity_run_id: Callable[[], str | None] | None = None,
+    recovery: dict[str, Any] | None = None,
+    recovered_dispatch: _PreparedRoomDispatch | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
+    if (
+        isinstance(manager, CleaningPlanManager)
+        and recovery is None
+        and manager.recovery_run(serial_number) is not None
+    ):
+        raise _validation_error(
+            "A managed Matic plan is reconnecting", "plan_already_running"
+        )
     if lock.locked():
         raise _validation_error(
             "A managed Matic cleaning plan is already running", "plan_already_running"
@@ -3418,15 +3464,48 @@ async def _async_execute_rooms(
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = None
-        run_id = uuid4().hex
-        run_started_at = dt_util.utcnow().isoformat()
-        run_started = False
+        run_id = str(recovery["run_id"]) if recovery else uuid4().hex
+        run_started_at = (
+            str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
+        )
+        run_started = recovery is not None
+        shutdown_suspended = False
         run_outcome = "failed"
         run_reason_code = "run_not_finished"
         run_cause = "unknown"
-        run_provenance = _run_provenance(call)
-        completed_room_ids: set[str] = set()
+        run_provenance = (
+            str(recovery["provenance"]) if recovery else _run_provenance(call)
+        )
+        checkpoint = deepcopy(recovery["recovery_checkpoint"]) if recovery else {}
+        completed_room_ids: set[str] = set(checkpoint.get("completed_room_ids", []))
         chosen: list[CleaningRoom] = []
+        durable = (
+            isinstance(manager, CleaningPlanManager)
+            and floor_token is not None
+            and session_identity is not None
+        )
+
+        async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
+            checkpoint.update(
+                {
+                    "phase": "accepted",
+                    "dispatched_at": dispatch.dispatched_at.isoformat(),
+                    "native_identity_hash": hashlib.sha256(
+                        dispatch.native_identity
+                    ).hexdigest()
+                    if dispatch.native_identity
+                    else None,
+                    "history_baseline": [
+                        hashlib.sha256(key).hexdigest()
+                        for key in dispatch.history_baseline
+                    ]
+                    if dispatch.history_baseline is not None
+                    else None,
+                }
+            )
+            await manager.async_set_recovery_checkpoint(
+                serial_number, run_id, checkpoint
+            )
 
         def bind_native_identity(identity: bytes | None) -> None:
             nonlocal native_identity
@@ -3452,14 +3531,20 @@ async def _async_execute_rooms(
             # fence to clear, and prepare_run would erase its cancellation.
             await _ensure_stop_settled(hass, manager, serial_number, entity_id)
             finish_room_event = manager.finish_room_event(serial_number)
+            if checkpoint.get("stop_intent") == "after_room":
+                finish_room_event.set()
             chosen = (
                 manager.choose(serial_number, call.data["plan_id"], rooms)
-                if intelligent
+                if intelligent and recovery is None
                 else rooms
             )
             legs = leg_groups(chosen)
             begin_run = getattr(manager, "async_begin_run", None)
-            if isinstance(manager, CleaningPlanManager) and callable(begin_run):
+            if (
+                recovery is None
+                and isinstance(manager, CleaningPlanManager)
+                and callable(begin_run)
+            ):
                 run_started = True
                 await begin_run(
                     serial_number,
@@ -3470,13 +3555,43 @@ async def _async_execute_rooms(
                     service=str(call.service),
                     provenance=run_provenance,
                 )
+            if durable and recovery is None:
+                checkpoint = {
+                    "version": 1,
+                    "entity_id": entity_id,
+                    "floor_token": floor_token,
+                    "rooms": [asdict(room) for room in chosen],
+                    "data": dict(call.data),
+                    "leg_index": 0,
+                    "phase": "ready",
+                    "completed_room_ids": [],
+                }
+                await manager.async_set_recovery_checkpoint(
+                    serial_number, run_id, checkpoint
+                )
             prepared_dispatches: dict[str, _PreparedRoomDispatch] = {}
             for index, leg in enumerate(legs):
+                if recovery is not None and index < checkpoint["leg_index"]:
+                    continue
                 if cancel_event.is_set() or not manager.managed_motion_is_current(
                     serial_number, motion_token
                 ):
                     raise PlanCancelledError
-                prepared_dispatch = prepared_dispatches.pop(leg[0].room_id, None)
+                prepared_dispatch = recovered_dispatch or prepared_dispatches.pop(
+                    leg[0].room_id, None
+                )
+                recovered_dispatch = None
+                if durable and prepared_dispatch is None:
+                    checkpoint.update(
+                        {
+                            "leg_index": index,
+                            "phase": "dispatching",
+                            "completed_room_ids": sorted(completed_room_ids),
+                        }
+                    )
+                    await manager.async_set_recovery_checkpoint(
+                        serial_number, run_id, checkpoint
+                    )
                 next_leg = legs[index + 1] if index + 1 < len(legs) else None
 
                 async def prefetch_next(
@@ -3543,7 +3658,9 @@ async def _async_execute_rooms(
                         )
                     ),
                     prepared_dispatch=prepared_dispatch,
-                    prefetch_next=prefetch_next if next_leg is not None else None,
+                    prefetch_next=prefetch_next
+                    if next_leg is not None and not durable
+                    else None,
                     finish_room_event=finish_room_event,
                     floor_is_current=floor_is_current,
                     floor_token=floor_token,
@@ -3551,6 +3668,7 @@ async def _async_execute_rooms(
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
                     record_room_completed=record_room_completion,
+                    checkpoint_dispatch=save_dispatch if durable else None,
                 )
                 if not completion_verified:
                     break
@@ -3632,6 +3750,9 @@ async def _async_execute_rooms(
                         "robot_command_failed",
                     ) from err
         except PlanCancelledError as err:
+            if _shutdown_suspends_run(hass, manager, serial_number):
+                shutdown_suspended = True
+                return
             cancellation_reason_reader = getattr(manager, "cancellation_reason", None)
             cancellation_reason = (
                 cancellation_reason_reader(serial_number)
@@ -3675,6 +3796,11 @@ async def _async_execute_rooms(
                 run_cause = "managed_cancellation"
             return
         except (Exception, asyncio.CancelledError) as err:
+            if isinstance(err, asyncio.CancelledError) and _shutdown_suspends_run(
+                hass, manager, serial_number
+            ):
+                shutdown_suspended = True
+                raise
             # A native task that ends in place is positive evidence that the
             # room was stopped, but it does not identify who or what stopped
             # it.  Keep the no-credit guard from the room handler while
@@ -3779,7 +3905,9 @@ async def _async_execute_rooms(
             raise
         finally:
             try:
-                if run_started:
+                # Cancellation during HA shutdown is not a robot outcome.
+                # Explicit unload/stop and genuine failures still finalize.
+                if run_started and not shutdown_suspended:
                     finished_at = dt_util.utcnow().isoformat()
                     states = getattr(hass, "states", None)
                     state_getter = getattr(states, "get", None)
