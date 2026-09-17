@@ -1,0 +1,65 @@
+# Generated review sensor. Its entire definition is verified before its output is trusted.
+name: Route Regular Codex Review Events
+on:
+  pull_request_review:
+    types: [submitted, edited, dismissed]
+  pull_request_review_comment:
+    types: [created, edited, deleted]
+permissions: {}
+concurrency:
+  group: review-sensor-${{ github.run_id }}-${{ github.run_attempt }}
+  cancel-in-progress: false
+jobs:
+  capture:
+    name: capture-review-event
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Preserve the original event envelope
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import base64, json, os
+          MARKER = "REVIEW_EVENT_V1:"
+          IGNORED = "REVIEW_EVENT_IGNORED_V1"
+          LIMIT = 60000
+          BOT = {"id":199175422,"login":"chatgpt-codex-connector[bot]","type":"Bot"}
+          def require(condition, message):
+              if not condition:
+                  raise ValueError(message)
+          
+          def compact(value):
+              require(isinstance(value, dict), "envelope must be an object")
+              raw = json.dumps(value, separators=(",", ":"), ensure_ascii=False).encode()
+              require(len(raw) <= LIMIT, "envelope exceeds 60KB")
+              return raw
+          
+          def capture(event, event_name):
+              repo, pr = event["repository"], event["pull_request"]
+              key = "review" if event_name == "pull_request_review" else "comment"
+              actor = event.get(key, {}).get("user", {})
+              # Filter irrelevant actors before copying or bounding attacker-controlled
+              # review bodies. The receiver records this as a successful no-op receipt.
+              if any(actor.get(k) != v for k, v in BOT.items()):
+                  return None
+              out = {"event_name": event_name,
+                     "repository": {k: repo[k] for k in ("id", "full_name")},
+                     "pull_request": {"number": pr["number"], "head": {"sha": pr["head"]["sha"]},
+                                      "base": {k: pr["base"][k] for k in ("sha", "ref")}},
+                     "action": event["action"]}
+              fields = (("id", "commit_id", "submitted_at", "body") if key == "review" else
+                        ("id", "original_commit_id", "pull_request_review_id", "updated_at", "body"))
+              out[key] = {k: event[key][k] for k in fields}
+              if key == "comment" and "in_reply_to_id" in event[key]:
+                  out[key]["in_reply_to_id"] = event[key]["in_reply_to_id"]
+              out[key]["user"] = {k: event[key]["user"][k] for k in BOT}
+              if "body" in event.get("changes", {}):
+                  out["changes"] = {"body": {"from": event["changes"]["body"]["from"]}}
+              compact(out)
+              return out
+          
+          def encode(event):
+              return MARKER + base64.b64encode(compact(event)).decode("ascii")
+          event = capture(json.loads(open(os.environ['GITHUB_EVENT_PATH']).read()), os.environ['GITHUB_EVENT_NAME'])
+          print(IGNORED if event is None else encode(event))
+          PY
