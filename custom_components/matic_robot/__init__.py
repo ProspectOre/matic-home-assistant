@@ -523,10 +523,17 @@ def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
+    # HA can reload an enabled entry again during startup (for example after
+    # discovery updates its endpoint). Losing this observer is not a Stop.
+    preserve_run = entry.disabled_by is None
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
         str(entry.data[CONF_SERIAL_NUMBER]),
-        preserve_run=bool(getattr(hass, "is_stopping", False)),
+        preserve_run=preserve_run,
     )
+    if not preserve_run:
+        await entry.runtime_data.cleaning_plans.async_retire_recovery(
+            str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
+        )
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
@@ -537,6 +544,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
     """Erase the removed robot's persisted firmware history and repairs."""
+    plans: CleaningPlanManager | None = hass.data.get(DOMAIN, {}).get(DATA_PLAN_MANAGER)
+    if plans is not None:
+        serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        await plans.async_retire_recovery(serial_number, "config_entry_removed")
+        await plans.async_clear_stop_pending(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(

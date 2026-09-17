@@ -1317,13 +1317,20 @@ async def test_setup_closes_client_when_platform_forwarding_fails() -> None:
 
 
 @pytest.mark.parametrize("unload_ok", [True, False])
-async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -> None:
+@pytest.mark.parametrize("disabled", [True, False])
+@pytest.mark.parametrize("stopping", [True, False])
+async def test_unload_closes_client_only_after_all_platforms_unload(
+    unload_ok, disabled, stopping
+) -> None:
     client = MagicMock()
     slam_map = SimpleNamespace(async_shutdown=AsyncMock())
     slam_history = SimpleNamespace(async_shutdown=AsyncMock())
-    plans = SimpleNamespace(async_cancel_and_wait=AsyncMock())
+    plans = SimpleNamespace(
+        async_cancel_and_wait=AsyncMock(), async_retire_recovery=AsyncMock()
+    )
     entry = SimpleNamespace(
         entry_id="entry",
+        disabled_by="user" if disabled else None,
         data={CONF_SERIAL_NUMBER: "synthetic-serial"},
         runtime_data=SimpleNamespace(
             client=client,
@@ -1340,6 +1347,7 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     )
 
     hass = SimpleNamespace(
+        is_stopping=stopping,
         config_entries=SimpleNamespace(
             async_unload_platforms=AsyncMock(return_value=unload_ok)
         ),
@@ -1351,8 +1359,14 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
 
     assert await async_unload_entry(hass, entry) is unload_ok
     plans.async_cancel_and_wait.assert_awaited_once_with(
-        "synthetic-serial", preserve_run=False
+        "synthetic-serial", preserve_run=not disabled
     )
+    if disabled:
+        plans.async_retire_recovery.assert_awaited_once_with(
+            "synthetic-serial", "config_entry_unload"
+        )
+    else:
+        plans.async_retire_recovery.assert_not_awaited()
     assert client.close.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
@@ -1360,8 +1374,12 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     assert slam_history.async_shutdown.await_count == int(unload_ok)
 
 
-async def test_remove_entry_erases_firmware_history() -> None:
+@pytest.mark.parametrize("with_plans", [True, False])
+async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
+    plans = SimpleNamespace(
+        async_retire_recovery=AsyncMock(), async_clear_stop_pending=AsyncMock()
+    )
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
@@ -1371,12 +1389,15 @@ async def test_remove_entry_erases_firmware_history() -> None:
 
     hass = SimpleNamespace(
         data={
-            DOMAIN: {DATA_FIRMWARE_TRACKER: tracker},
+            DOMAIN: {
+                DATA_FIRMWARE_TRACKER: tracker,
+                **({DATA_PLAN_MANAGER: plans} if with_plans else {}),
+            },
             DATA_SLAM_POSE_VIEW: pose_view,
             DATA_SLAM_SCENE_VIEW: scene_view,
         }
     )
-    entry = SimpleNamespace(entry_id="entry")
+    entry = SimpleNamespace(entry_id="entry", data={CONF_SERIAL_NUMBER: "serial"})
     slam_map = SimpleNamespace(async_remove=AsyncMock())
     slam_history = SimpleNamespace(async_remove=AsyncMock())
 
@@ -1393,6 +1414,11 @@ async def test_remove_entry_erases_firmware_history() -> None:
         await async_remove_entry(hass, entry)
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
+    if with_plans:
+        plans.async_retire_recovery.assert_awaited_once_with(
+            "serial", "config_entry_removed"
+        )
+        plans.async_clear_stop_pending.assert_awaited_once_with("serial")
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
