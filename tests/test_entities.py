@@ -235,6 +235,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
+        async_checkpoint_stop_intent=AsyncMock(),
         has_managed_task=MagicMock(return_value=False),
         motion_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),

@@ -54,6 +54,7 @@ ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 OEM_STOP_RECONCILIATION_SECONDS = 12 * 60
 OEM_STOP_FENCE_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 STOP_FENCE_EXPIRES_AT = "stop_fence_expires_at"
+STOP_FENCE_RUN_ID = "stop_fence_run_id"
 
 # These are the only terminal outcomes exposed for a managed run.  ``running``
 # remains an internal in-flight marker; room history keeps its own evidence
@@ -298,21 +299,33 @@ class CleaningPlanManager:
             recovered = self._normalize_robot(robot) or recovered
             last_run = robot.get("last_run")
             if isinstance(last_run, dict) and last_run.get("outcome") == "running":
-                last_run.update(
-                    {
-                        "outcome": "unverified",
-                        "reason_code": "home_assistant_restart",
-                        "cause": "home_assistant",
-                        "ended_at": None,
-                        "recovered_at": dt_util.utcnow().isoformat(),
-                    }
-                )
-                recovered = True
+                if not isinstance(last_run.get("recovery_checkpoint"), dict):
+                    last_run.update(
+                        {
+                            "outcome": "unverified",
+                            "reason_code": "home_assistant_restart",
+                            "cause": "home_assistant",
+                            "ended_at": None,
+                            "recovered_at": dt_util.utcnow().isoformat(),
+                        }
+                    )
+                    recovered = True
+                else:
+                    last_run.update(
+                        {
+                            "reason_code": "home_assistant_restart",
+                            "cause": "home_assistant",
+                            "recovery_status": "recovering",
+                            "recovered_at": dt_util.utcnow().isoformat(),
+                        }
+                    )
+                    recovered = True
             fence_value = robot.get(STOP_FENCE_EXPIRES_AT)
             fence_remaining = _stop_fence_remaining_seconds(fence_value)
             if fence_value is not None:
                 if fence_remaining is None or fence_remaining <= 0:
                     robot.pop(STOP_FENCE_EXPIRES_AT, None)
+                    robot.pop(STOP_FENCE_RUN_ID, None)
                     fence_remaining = None
                     recovered = True
                 else:
@@ -332,7 +345,21 @@ class CleaningPlanManager:
                         fence_remaining = remaining
                         recovered = True
             active = robot.get("active_plan")
-            if active:
+            recoverable = (
+                isinstance(last_run, dict)
+                and last_run.get("outcome") == "running"
+                and isinstance(last_run.get("recovery_checkpoint"), dict)
+            )
+            if (
+                active
+                and recoverable
+                and isinstance(last_run, dict)
+                and active.get("run_id") == last_run.get("run_id")
+                and active.get("plan_id") == last_run.get("plan_id")
+            ):
+                active["status"] = "recovering"
+                recovered = True
+            elif active:
                 rotation = robot["rotations"].setdefault(
                     active["plan_id"], {"rooms": {}}
                 )
@@ -349,7 +376,7 @@ class CleaningPlanManager:
                 robot["last_interrupted_plan"] = deepcopy(active)
                 robot["active_plan"] = None
                 recovered = True
-            if _close_unfinished_room_records(
+            if not recoverable and _close_unfinished_room_records(
                 robot, recovered_at=dt_util.utcnow().isoformat()
             ):
                 recovered = True
@@ -369,20 +396,28 @@ class CleaningPlanManager:
         self,
         serial_number: str,
         duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+        *,
+        run_id: str | None = None,
     ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
         self._arm_stop_pending(serial_number, duration_seconds)
         self._robot(serial_number)[STOP_FENCE_EXPIRES_AT] = (
             dt_util.utcnow() + timedelta(seconds=duration_seconds)
         ).isoformat()
+        robot = self._robot(serial_number)
+        robot.pop(STOP_FENCE_RUN_ID, None)
+        if run_id is not None:
+            robot[STOP_FENCE_RUN_ID] = run_id
 
     async def async_mark_stop_pending(
         self,
         serial_number: str,
         duration_seconds: float = OEM_STOP_FENCE_SECONDS,
+        *,
+        run_id: str | None = None,
     ) -> None:
         """Persist an accepted OEM STOP before releasing command ownership."""
-        self.mark_stop_pending(serial_number, duration_seconds)
+        self.mark_stop_pending(serial_number, duration_seconds, run_id=run_id)
         await self._async_save_and_notify(serial_number)
 
     @callback
@@ -394,6 +429,7 @@ class CleaningPlanManager:
         if monotonic() >= deadline:
             self._stop_fences.pop(serial_number, None)
             self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None)
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None)
             return False
         return True
 
@@ -401,10 +437,29 @@ class CleaningPlanManager:
     def clear_stop_pending(self, serial_number: str) -> bool:
         """Clear a completed OEM stop fence after the robot reaches a stable state."""
         removed = self._stop_fences.pop(serial_number, None) is not None
+        owner_removed = (
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None) is not None
+        )
         return (
             self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None) is not None
             or removed
+            or owner_removed
         )
+
+    def pending_stop_run_id(self, serial_number: str) -> str | None:
+        """Restore only a live stop fence still belonging to the last managed run."""
+        robot = self._robot(serial_number)
+        owner = robot.get(STOP_FENCE_RUN_ID)
+        run = robot.get("last_run")
+        if (
+            self.stop_pending(serial_number)
+            and isinstance(owner, str)
+            and isinstance(run, dict)
+            and run.get("run_id") == owner
+            and run.get("outcome") in {"running", "cancelled", "unverified", "failed"}
+        ):
+            return owner
+        return None
 
     async def async_clear_stop_pending(self, serial_number: str) -> None:
         """Persist removal of a fence after the robot becomes stable."""
@@ -453,13 +508,18 @@ class CleaningPlanManager:
     @callback
     def replace_managed_motion(self, serial_number: str) -> bool:
         """Cancel any managed plan before an independent motion command."""
-        if self.cancel(serial_number):
+        if self.cancel(serial_number) or self.recovery_run(serial_number) is not None:
+            self.cancellation_event(serial_number).set()
             self._cancellation_reasons.setdefault(serial_number, "motion_replaced")
         self.cancel_reconciliation_tasks(serial_number)
+        stop_owner_removed = (
+            self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None) is not None
+        )
         reconciliation_removed = (
             self._robot(serial_number).pop("pending_native_reconciliation", None)
             is not None
         ) or bool(self._native_history_saves.get(serial_number))
+        reconciliation_removed = stop_owner_removed or reconciliation_removed
         if reconciliation_removed:
             self._reconciliation_removal_pending.add(serial_number)
         self._motion_generations[serial_number] = (
@@ -539,11 +599,15 @@ class CleaningPlanManager:
         """Authorize an in-flight dock upgrade for a graceful managed stop."""
         self._cancellation_reasons[serial_number] = "managed_stop"
 
-    async def async_cancel_and_wait(self, serial_number: str) -> None:
+    async def async_cancel_and_wait(
+        self, serial_number: str, *, preserve_run: bool = False
+    ) -> None:
         """Interrupt a managed run and wait before its client can be closed."""
         task = self._run_tasks.get(serial_number)
         if task is not None and not task.done():
-            self._cancellation_reasons[serial_number] = "config_entry_unload"
+            self._cancellation_reasons[serial_number] = (
+                "home_assistant_shutdown" if preserve_run else "config_entry_unload"
+            )
             self.finish_room_event(serial_number).clear()
             self.cancellation_event(serial_number).set()
             if task is not asyncio.current_task():
@@ -631,6 +695,10 @@ class CleaningPlanManager:
             self.motion_generation(serial_number) + 1
         )
         if not self.lock(serial_number).locked():
+            if self.recovery_run(serial_number) is not None:
+                self.cancellation_event(serial_number).set()
+                self._cancellation_reasons[serial_number] = "managed_stop"
+                return PlanStopDecision("immediate")
             return PlanStopDecision("not_running")
 
         robot = self._robot(serial_number)
@@ -1120,6 +1188,64 @@ class CleaningPlanManager:
         }
         await self._async_save_and_notify(serial_number)
 
+    async def async_set_recovery_checkpoint(
+        self,
+        serial_number: str,
+        run_id: str,
+        checkpoint: dict[str, Any],
+    ) -> None:
+        """Persist the resolved queue required for safe restart recovery."""
+        last_run = self._robot(serial_number).get("last_run")
+        if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
+            return
+        existing = last_run.get("recovery_checkpoint", {})
+        last_run["recovery_checkpoint"] = {
+            **deepcopy(checkpoint),
+            **(
+                {"started_room_ids": existing["started_room_ids"]}
+                if "started_room_ids" in existing
+                else {}
+            ),
+            **(
+                {"stop_intent": existing["stop_intent"]}
+                if "stop_intent" in existing
+                else {}
+            ),
+        }
+        await self._async_save_and_notify(serial_number)
+
+    async def async_checkpoint_stop_intent(
+        self, serial_number: str, behavior: str
+    ) -> None:
+        """Do not lose a user's stop request if HA restarts before completion."""
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if isinstance(checkpoint, dict):
+            checkpoint["stop_intent"] = behavior
+            await self._async_save_and_notify(serial_number)
+
+    def recovery_run(self, serial_number: str) -> dict[str, Any] | None:
+        """Return private local recovery state, never exposed by entity snapshots."""
+        run = self._robot(serial_number).get("last_run")
+        if isinstance(run, dict) and run.get("outcome") == "running":
+            if isinstance(run.get("recovery_checkpoint"), dict):
+                return deepcopy(run)
+        return None
+
+    async def async_mark_recovery_status(
+        self, serial_number: str, status: str, *, reason: str
+    ) -> None:
+        """Publish reconnection state without inventing a robot outcome."""
+        last_run = self._robot(serial_number).get("last_run")
+        if not isinstance(last_run, dict) or last_run.get("outcome") != "running":
+            return
+        last_run["recovery_status"] = status[:32]
+        last_run["recovery_reason"] = reason[:64]
+        active = self._robot(serial_number).get("active_plan")
+        if isinstance(active, dict):
+            active["status"] = status
+        await self._async_save_and_notify(serial_number)
+
     async def async_finish_run(
         self,
         serial_number: str,
@@ -1159,6 +1285,12 @@ class CleaningPlanManager:
                 "completed_room_count": min(max(0, completed_room_count), max_rooms),
             }
         )
+        last_run.pop("recovery_checkpoint", None)
+        last_run.pop("recovery_status", None)
+        last_run.pop("recovery_reason", None)
+        active = robot.get("active_plan")
+        if isinstance(active, dict) and active.get("run_id") == run_id:
+            robot["active_plan"] = None
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
         await self._async_save_and_notify(serial_number)
@@ -1239,32 +1371,73 @@ class CleaningPlanManager:
         room: CleaningRoom,
         *,
         run_id: str | None = None,
-    ) -> None:
+    ) -> bool:
         """Record and publish the start of one room."""
         now = dt_util.utcnow().isoformat()
         record = self._room(serial_number, plan_id, room)
-        record["last_started"] = now
+        robot = self._robot(serial_number)
+        last_run = robot.get("last_run")
+        checkpoint = (
+            last_run.get("recovery_checkpoint", {})
+            if isinstance(last_run, dict) and last_run.get("run_id") == run_id
+            else {}
+        )
+        started_ids = (
+            checkpoint.get("started_room_ids", [])
+            if isinstance(checkpoint, dict)
+            else []
+        )
+        duplicate = run_id is not None and room.room_id in started_ids
+        if not duplicate:
+            record["last_started"] = now
         record["last_result"] = "running"
         if run_id is not None:
             record["run_id"] = run_id
         else:
             record.pop("run_id", None)
-        robot = self._robot(serial_number)
         robot.pop("pending_native_reconciliation", None)
+        previous_active = robot.get("active_plan")
+        previous_active = previous_active if isinstance(previous_active, dict) else {}
+        recovering_same_room = (
+            run_id is not None
+            and (duplicate or previous_active.get("status") == "recovering")
+            and previous_active.get("plan_id") == plan_id
+            and previous_active.get("room_id") == room.room_id
+            and previous_active.get("run_id") == run_id
+        )
         robot["active_plan"] = {
             "plan_id": plan_id,
             "plan_name": self._plan_name(serial_number, plan_id),
             "room_id": room.room_id,
             "room": room.name,
-            "started": now,
+            "started": (
+                previous_active.get("started", now) if recovering_same_room else now
+            ),
             "status": "starting",
-            "cleaning_started": None,
-            "active_elapsed_seconds": 0,
-            "active_segment_started": None,
+            "cleaning_started": (
+                previous_active.get("cleaning_started")
+                if recovering_same_room
+                else None
+            ),
+            "active_elapsed_seconds": (
+                previous_active.get("active_elapsed_seconds", 0)
+                if recovering_same_room
+                else 0
+            ),
+            "active_segment_started": (
+                previous_active.get("active_segment_started")
+                if recovering_same_room
+                else None
+            ),
         }
         if run_id is not None:
             robot["active_plan"]["run_id"] = run_id
+            if isinstance(checkpoint, dict):
+                checkpoint["started_room_ids"] = list(
+                    dict.fromkeys([*started_ids, room.room_id])
+                )
         await self._async_save_and_notify(serial_number)
+        return not duplicate
 
     async def async_mark_completed(
         self,
@@ -1282,6 +1455,20 @@ class CleaningPlanManager:
         credit each verified room with the robot's own per-room timing.
         """
         now_value = dt_util.utcnow()
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if (
+            isinstance(run, dict)
+            and isinstance(checkpoint, dict)
+            and run.get("plan_id") == plan_id
+        ):
+            credited = checkpoint.setdefault("completed_room_ids", [])
+            if room.room_id in credited:
+                # A previous disk write may have failed after updating the
+                # in-memory credit. Retry persistence, never increment twice.
+                await self._async_save_and_notify(serial_number)
+                return
+            credited.append(room.room_id)
         now = (
             completed_at
             if completed_at is not None
@@ -1503,7 +1690,12 @@ class CleaningPlanManager:
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_verifying(
-        self, serial_number: str, plan_id: str, room: CleaningRoom
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        verification_deadline: datetime | None = None,
     ) -> None:
         """Close active timing while native completion evidence is checked."""
         now_value = dt_util.utcnow()
@@ -1517,6 +1709,12 @@ class CleaningPlanManager:
             active["active_segment_started"] = None
             active["status"] = "verifying"
             active.pop("suspend_reason", None)
+        run = self._robot(serial_number).get("last_run")
+        if run is not None and verification_deadline is not None:
+            checkpoint = run.get("recovery_checkpoint")
+            if checkpoint is not None:
+                checkpoint["phase"] = "verifying"
+                checkpoint["verification_deadline"] = verification_deadline.isoformat()
         await self._async_save_and_notify(serial_number)
 
     async def async_mark_resumed(
@@ -1630,6 +1828,9 @@ class CleaningPlanManager:
             active_plan["active_elapsed_seconds"] = _active_elapsed_seconds(
                 active_plan, dt_util.utcnow()
             )
+        public_last_run = deepcopy(robot.get("last_run"))
+        if isinstance(public_last_run, dict):
+            public_last_run.pop("recovery_checkpoint", None)
         return {
             "completed_runs": completed_runs,
             "failed_runs": failed_runs,
@@ -1662,7 +1863,7 @@ class CleaningPlanManager:
             ),
             "active_plan": active_plan,
             "last_interrupted_plan": deepcopy(robot.get("last_interrupted_plan")),
-            "last_run": deepcopy(robot.get("last_run")),
+            "last_run": public_last_run,
         }
 
     def _robot(self, serial_number: str) -> dict[str, Any]:

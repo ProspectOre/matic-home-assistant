@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -16,6 +17,7 @@ from custom_components.matic_robot.plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
     CleaningPlanManager,
+    CleaningRoom,
     ManagedMotionReplacedError,
     plan_floor_token,
 )
@@ -280,6 +282,40 @@ async def test_return_to_base_stops_idle_robot_with_managed_plan(hass) -> None:
     ] == [UserCommand.STOP]
     assert "stop_fence_expires_at" in manager._robot("synthetic-serial")
     manager._store.async_save.assert_awaited_once()
+
+
+@pytest.mark.parametrize("action", ["async_stop", "async_return_to_base"])
+async def test_entity_stop_persists_original_run_owner(hass, action):
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    await manager.async_begin_run(
+        "synthetic-serial",
+        "plan",
+        "run",
+        1,
+        trigger="user",
+        service="run_selected_plan",
+    )
+    await manager.async_mark_started(
+        "synthetic-serial",
+        "plan",
+        CleaningRoom("kitchen", "Kitchen", "vacuum", "standard"),
+        run_id="run",
+    )
+    entity = vacuum.MaticVacuum(entry)
+    await getattr(entity, action)()
+    restored = CleaningPlanManager(hass)
+    restored._store = SimpleNamespace(
+        async_save=AsyncMock(),
+        async_load=AsyncMock(return_value=deepcopy(manager._data)),
+    )
+    await restored.async_load()
+    assert restored.pending_stop_run_id("synthetic-serial") == "run"
+    entry.runtime_data.coordinator.client.async_send_user_command.assert_awaited_once_with(
+        UserCommand.STOP
+    )
 
 
 async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> None:

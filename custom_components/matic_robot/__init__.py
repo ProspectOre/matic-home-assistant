@@ -46,6 +46,7 @@ from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager
+from .restart import async_recover_managed_run
 from .services import (
     OEM_STOP_RECONCILIATION_POLL_SECONDS,
     async_register_services,
@@ -169,6 +170,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if (
+            plans.recovery_run(serial_number) is not None
+            or plans.pending_stop_run_id(serial_number) is not None
+        ):
+            entry.async_create_background_task(
+                hass,
+                async_recover_managed_run(hass, entry, serial_number),
+                f"{DOMAIN} managed run recovery",
+            )
         entry.async_create_background_task(
             hass,
             coordinator.async_watch_cues(),
@@ -514,7 +524,8 @@ def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
-        str(entry.data[CONF_SERIAL_NUMBER])
+        str(entry.data[CONF_SERIAL_NUMBER]),
+        preserve_run=bool(getattr(hass, "is_stopping", False)),
     )
     if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
         await entry.runtime_data.slam_history.async_shutdown()

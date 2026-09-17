@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from homeassistant.core import ServiceCall
+from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
@@ -749,8 +749,14 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
         async_save=AsyncMock(side_effect=lambda data: saved.append(deepcopy(data)))
     )
     events = []
+
+    @callback
+    def record_event(event):
+        # Record fire order on HA's loop, not executor-thread completion order.
+        events.append(event)
+
     for event in ("room_started", room_event, "plan_finished"):
-        hass.bus.async_listen(f"{DOMAIN}_{event}", events.append)
+        hass.bus.async_listen(f"{DOMAIN}_{event}", record_event)
     hass.services.async_register("vacuum", "send_command", AsyncMock())
     room = _room("Study", "room-study")
     reads = 0
@@ -775,7 +781,7 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             ),
         )
 
-    async def native_outcome(*_args):
+    async def native_outcome(*_args, **_kwargs):
         if scenario == "stop":
             manager.cancel("serial")
             raise PlanCancelledError
@@ -3696,7 +3702,11 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
         )
 
     manager.async_mark_suspended.assert_not_awaited()
-    manager.async_mark_verifying.assert_awaited_once_with("serial", "away", room)
+    manager.async_mark_verifying.assert_awaited_once()
+    assert manager.async_mark_verifying.await_args.args == ("serial", "away", room)
+    assert manager.async_mark_verifying.await_args.kwargs[
+        "verification_deadline"
+    ].tzinfo
     assert manager.async_mark_resumed.await_count == 1
     manager.async_mark_ended_unverified.assert_awaited_once()
     manager.async_mark_completed.assert_not_awaited()
@@ -6785,7 +6795,7 @@ async def test_terminal_history_has_its_own_budget(
     rooms = _leg_rooms() if multi_room else [_leg_rooms()[0]]
     manager = _leg_manager()
 
-    async def slow_persist(*args):
+    async def slow_persist(*args, **kwargs):
         await asyncio.sleep(0.05)
 
     manager.async_mark_verifying = AsyncMock(side_effect=slow_persist)

@@ -614,6 +614,7 @@ async def test_native_reconciliation_recovery_is_lifecycle_bound() -> None:
         "expires_at": "2026-08-13T12:12:00+00:00",
     }
     plans = MagicMock()
+    plans.recovery_run.return_value = None
     plans.pending_native_reconciliation.return_value = None
     entry = SimpleNamespace(async_create_background_task=MagicMock())
     hass = MagicMock()
@@ -906,12 +907,18 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
 
 
 @pytest.mark.parametrize("native_history_error", [False, True])
+@pytest.mark.parametrize("recovering_run", [False, True])
+@pytest.mark.parametrize("recovering_stop", [False, True])
 async def test_setup_refreshes_before_forwarding_platforms(
     native_history_error: bool,
+    recovering_run: bool,
+    recovering_stop: bool,
 ) -> None:
     coordinator_unsubscribe = MagicMock()
     plan_unsubscribe = MagicMock()
     plans = MagicMock()
+    plans.recovery_run.return_value = {} if recovering_run else None
+    plans.pending_stop_run_id.return_value = "run" if recovering_stop else None
     plans.areas.return_value = {}
     plans.async_add_listener.return_value = plan_unsubscribe
     plans.async_upgrade_area_bindings = AsyncMock(
@@ -1078,7 +1085,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
     slam_history.async_load.assert_awaited_once()
     slam_map.async_collect.assert_called_once_with(client)
     collect_history.assert_called_once()
-    assert entry.async_create_background_task.call_count == 5
+    assert entry.async_create_background_task.call_count == 5 + (
+        recovering_run or recovering_stop
+    )
     coordinator.async_watch_cues.assert_called_once_with()
     coordinator.async_watch_floor_plan.assert_called_once_with()
     assert (
@@ -1164,7 +1173,9 @@ async def test_setup_refreshes_before_forwarding_platforms(
         plans.async_add_listener.call_args.args[1]()
 
     assert listener_sync.call_count == 5
-    assert entry.async_create_background_task.call_count == 8
+    assert entry.async_create_background_task.call_count == 8 + (
+        recovering_run or recovering_stop
+    )
     assert plans.async_upgrade_area_bindings.await_count == 5
     assert plans.async_upgrade_area_bindings.call_args.args == (
         "synthetic-serial",
@@ -1339,7 +1350,9 @@ async def test_unload_closes_client_only_after_all_platforms_unload(unload_ok) -
     )
 
     assert await async_unload_entry(hass, entry) is unload_ok
-    plans.async_cancel_and_wait.assert_awaited_once_with("synthetic-serial")
+    plans.async_cancel_and_wait.assert_awaited_once_with(
+        "synthetic-serial", preserve_run=False
+    )
     assert client.close.called is unload_ok
     assert scene_view.clear_entry.called is unload_ok
     assert pose_view.clear_entry.called is unload_ok
