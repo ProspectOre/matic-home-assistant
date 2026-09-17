@@ -156,7 +156,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 self._require_motion_generation(serial_number, generation)
             await self.coordinator.client.async_send_user_command(command)
             if command is UserCommand.STOP:
-                await self._plans.async_mark_stop_pending(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
             await self.coordinator.async_request_refresh()
         if command is UserCommand.STOP:
             self._schedule_dock_after_stop(serial_number, run_id=run_id)
@@ -283,7 +283,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # firmware's ten-minute countdown.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
-                await self._plans.async_mark_stop_pending(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
                 await self.coordinator.async_request_refresh()
                 stopped = True
             else:
