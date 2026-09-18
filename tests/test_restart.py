@@ -144,6 +144,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     async def execute(*_args, **kwargs):
         assert kwargs["recovery"]["recovery_checkpoint"]["phase"] == "handoff"
         assert kwargs["recovered_dispatch"] is None
+        assert kwargs["handoff_expected_identity"] == b""
 
     async def wait_for_handoff(*_args, **_kwargs):
         if case == "cancel":

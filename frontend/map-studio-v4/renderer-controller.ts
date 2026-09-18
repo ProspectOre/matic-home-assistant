@@ -112,6 +112,16 @@ const rebaseCameraTarget = (
   };
 };
 
+const cameraPreferenceIsFit = (view: MapView, preference: CameraPreference | undefined): boolean => {
+  if (!preference) return true;
+  const top = view === "top";
+  return Math.abs(preference.zoom - 1) < 0.001
+    && Math.abs(preference.targetX) < 0.001
+    && Math.abs(preference.targetZ) < 0.001
+    && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
+    && (top || Math.abs(preference.pitch - 0.82) < 0.001);
+};
+
 const rebaseCameraPreferences = (
   cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
   previousScene: SceneModel,
@@ -120,7 +130,7 @@ const rebaseCameraPreferences = (
   nextHome: Readonly<Record<MapView, number>>,
 ): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
   Object.entries(cameras).map(([view, camera]) => {
-    if (!camera) return [view, camera];
+    if (!camera || cameraPreferenceIsFit(view as MapView, camera)) return [view, camera];
     const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
     const oldHome = previousHome[view as MapView];
     const newHome = nextHome[view as MapView];
@@ -409,10 +419,12 @@ export class RendererController {
         preserveCamera,
         previousScene,
         sameSceneContext,
-        // Installing a rebased scene before switching workflows must not emit
-        // the old camera through the new draw workflow. The canvas callback
-        // would interpret that 3D distance as a draw zoom percentage.
-        !(previous?.workflow !== "draw" && state.workflow === "draw"),
+        // The canvas interprets notifications in the destination view. Never
+        // publish the departing camera as that view's preference or draw zoom.
+        previous !== null
+          && (previous.workflow === "draw" ? "top" : previous.view)
+            === (state.workflow === "draw" ? "top" : state.view)
+          && !(previous.workflow !== "draw" && state.workflow === "draw"),
         previous
           ? previous.workflow === "draw" ? "top" : previous.view
           : null,
@@ -427,7 +439,7 @@ export class RendererController {
     if (!previous || previous.view !== state.view || enteredDraw || leftDraw) {
       const view = state.workflow === "draw" ? "top" : state.view;
       this.#camera = this.#preferredCamera(view, state, rebasedPreferences);
-      this.#fitActive = this.#preferenceIsFit(view, state);
+      this.#fitActive = this.#preferenceIsFit(view, state, rebasedPreferences);
     }
     if (state.workflow === "draw" && previous?.draw.zoomPercent !== state.draw.zoomPercent) {
       this.#camera = {
@@ -471,15 +483,13 @@ export class RendererController {
     };
   }
 
-  #preferenceIsFit(view: MapView, state: WorkspaceState): boolean {
-    const preference = state.cameras[view];
-    if (!preference) return true;
-    const top = view === "top";
-    return Math.abs(preference.zoom - 1) < 0.001
-      && Math.abs(preference.targetX) < 0.001
-      && Math.abs(preference.targetZ) < 0.001
-      && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
-      && (top || Math.abs(preference.pitch - 0.82) < 0.001);
+  #preferenceIsFit(
+    view: MapView,
+    state: WorkspaceState,
+    rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null,
+  ): boolean {
+    const preference = rebasedPreferences?.[view] ?? state.cameras[view];
+    return cameraPreferenceIsFit(view, preference);
   }
 
   #compile(type: number, source: string): WebGLShader {
@@ -603,7 +613,7 @@ export class RendererController {
     if (preserveCamera && previousScene) {
       this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), notifyCamera);
     }
-    else this.fit(false);
+    else this.fit(false, preferenceView ?? undefined);
     const state = this.#state;
     if (rebasePreferences && previousScene && state) {
       const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
@@ -1088,8 +1098,11 @@ export class RendererController {
     if (roomId) this.#callbacks.onRoom?.(roomId);
   }
 
-  fit(notify = true): void {
-    const top = this.#state?.view === "top" || this.#state?.workflow === "draw";
+  fit(
+    notify = true,
+    view: MapView = this.#state?.workflow === "draw" ? "top" : this.#state?.view ?? "three",
+  ): void {
+    const top = view === "top";
     this.#camera = top
       ? { yaw: 0, pitch: Math.PI / 2 - 0.018, distance: this.#homeTop, targetX: 0, targetZ: 0, orthographic: true }
       : { yaw: -Math.PI / 4, pitch: 0.82, distance: this.#homeThree, targetX: 0, targetZ: 0, orthographic: false };

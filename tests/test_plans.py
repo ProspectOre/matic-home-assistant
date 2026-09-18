@@ -284,6 +284,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "stopped_in_place"
     assert last_run["completed_room_count"] == 0
+    await hass.async_block_till_done()
     assert events[0].data["cause"] == "unknown"
     assert events[0].data["completed_room_count"] == 0
 
@@ -6014,27 +6015,64 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
 
-async def test_settings_handoff_rechecks_identity_before_dispatch(hass) -> None:
-    """A replacement mission cannot pass the resumed handoff boundary."""
+@pytest.mark.parametrize("takeover_leg", [0, 1, 2])
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_settings_handoff_rechecks_identity_before_dispatch(
+    hass, takeover_leg, multi_room
+) -> None:
+    """Every settled boundary fences the real dispatcher, not its later reads."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
-    rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
+    rooms = [
+        _room("Kitchen", "room-kitchen"),
+        _heavy_room("Study", "room-study"),
+        _room("Hall", "room-hall"),
+    ]
+    if multi_room:
+        rooms = [
+            item
+            for room in rooms
+            for item in (
+                room,
+                replace(
+                    room, room_id=room.room_id + "-extra", name=room.name + " Extra"
+                ),
+            )
+        ]
     sender = AsyncMock()
-    identity = AsyncMock(return_value=b"replacement")
+    identity = AsyncMock(return_value=b"")
+    command = AsyncMock()
+    hass.services.async_register("vacuum", "send_command", command)
     calls = 0
 
     async def run_leg(*args, **kwargs) -> bool:
         nonlocal calls
+        index = calls
         calls += 1
-        if calls == 1:
-            kwargs["record_room_completed"](args[5][0])
-            return True
-        try:
-            await kwargs["session_identity"]()
-        except RoomTakenOverError:
-            identity.return_value = b""
-            await kwargs["session_identity"]()
-            raise
+        assert kwargs["session_identity"] is identity
+        assert kwargs["expected_dispatch_identity"] == (
+            b"" if index > 0 or takeover_leg == 0 else None
+        )
+        if index == takeover_leg:
+            identity.return_value = b"replacement"
+            return await _async_run_leg(*args, **kwargs)
+        # Exercise the actual before/after-command reads for each successful
+        # earlier leg, allowing its newly created native identity.
+        identity.side_effect = [b"", b"managed-session"]
+        dispatch = await _async_dispatch_leg_command(
+            hass,
+            _call(hass),
+            "vacuum.matic",
+            args[5],
+            None,
+            None,
+            session_identity=identity,
+            expected_dispatch_identity=kwargs["expected_dispatch_identity"],
+        )
+        assert dispatch.native_identity == b"managed-session"
+        identity.side_effect = None
+        for room in args[5]:
+            kwargs["record_room_completed"](room)
         return True
 
     with (
@@ -6046,7 +6084,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(hass) -> None:
             "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
             AsyncMock(return_value=True),
         ),
-        pytest.raises(RoomTakenOverError),
+        pytest.raises(ServiceValidationError, match="original native cleaning task"),
     ):
         await _async_execute_rooms(
             hass,
@@ -6060,10 +6098,11 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(hass) -> None:
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=identity,
-            handoff_expected_identity=b"",
+            handoff_expected_identity=b"" if takeover_leg == 0 else None,
         )
 
-    assert run.await_count == 2
+    assert run.await_count == takeover_leg + 1
+    assert command.await_count == takeover_leg
     sender.assert_not_awaited()
 
 

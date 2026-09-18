@@ -1501,6 +1501,76 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.preferences.top.zoom).not.toBe(result.previousTopZoom);
   });
 
+  for (const [transition, destinationFit] of ["three-top", "top-three", "enter-draw", "leave-draw"]
+    .flatMap(transition => [false, true].map(fit => [transition, fit]))) {
+    test(`preserves rebased camera ownership during ${transition} fit=${destinationFit}`, async ({ page }) => {
+      const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+      await page.route("**/camera-transition.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+      await page.goto("/");
+      const result = await page.evaluate(async ({ transition, destinationFit }) => {
+        const { RendererController, createGalleryState } = await import("/camera-transition.js");
+        const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+        for (const canvas of canvases) {
+          Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+          document.body.append(canvas);
+        }
+        let notifications = 0;
+        let preferences = null;
+        const renderer = new RendererController(...canvases, {
+          onCamera: () => { notifications++; },
+          onCameraPreferences: cameras => { preferences = cameras; },
+        });
+        const state = createGalleryState("ready");
+        state.view = transition === "top-three" ? "top" : "three";
+        state.workflow = transition === "leave-draw" ? "draw" : "none";
+        state.cameras = {
+          three: { yaw: -Math.PI / 4, pitch: 0.82, zoom: 1, targetX: 0, targetZ: 0 },
+          top: { yaw: 0, pitch: Math.PI / 2 - 0.018, zoom: 1, targetX: 0, targetZ: 0 },
+        };
+        const destinationView = transition === "three-top" || transition === "enter-draw" ? "top" : "three";
+        if (!destinationFit) state.cameras[destinationView] = {
+          ...state.cameras[destinationView], zoom: 0.8, targetX: 0.1, targetZ: -0.2,
+        };
+        renderer.setState(state);
+        await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        const next = {
+          ...state,
+          view: transition === "three-top" ? "top" : "three",
+          workflow: transition === "enter-draw" ? "draw" : "none",
+          resources: {
+            ...state.resources,
+            scene: { ...state.resources.scene, value: {
+              ...state.resources.scene.value,
+              revision: state.resources.scene.value.revision + 1,
+              metadata: { ...state.resources.scene.value.metadata, origin: [4, -2], span: [200, 160] },
+            } },
+          },
+        };
+        renderer.setState(next);
+        const afterTransition = renderer.camera;
+        const fitAfterTransition = renderer.diagnostics().fitActive;
+        const outgoing = preferences[transition === "top-three" || transition === "leave-draw" ? "top" : "three"];
+        next.cameras = preferences;
+        renderer.setState({ ...next, resources: { ...next.resources,
+          scene: { ...next.resources.scene, value: { ...next.resources.scene.value, revision: next.resources.scene.value.revision + 1 } },
+        } });
+        const afterRevision = renderer.camera;
+        renderer.dispose();
+        canvases.forEach(canvas => canvas.remove());
+        return { notifications, outgoing, afterTransition, afterRevision, fitAfterTransition };
+      }, { transition, destinationFit });
+      expect(result.notifications).toBe(destinationFit ? 0 : 1); // Only a subsequent navigated revision.
+      expect(result.outgoing.zoom).toBeCloseTo(1, 6);
+      expect(result.outgoing.targetX).toBe(0);
+      expect(result.outgoing.targetZ).toBe(0);
+      expect(result.outgoing.yaw).toBeCloseTo(transition === "top-three" || transition === "leave-draw" ? 0 : -Math.PI / 4, 6);
+      expect(result.fitAfterTransition).toBe(destinationFit);
+      expect(result.afterTransition.targetX).toBeCloseTo(destinationFit ? 0 : 0.8, 6);
+      expect(result.afterTransition.targetZ).toBeCloseTo(destinationFit ? 0 : -0.6, 6);
+      expect(result.afterRevision).toEqual(result.afterTransition);
+    });
+  }
+
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
     const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-generation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

@@ -1138,6 +1138,7 @@ async def _async_dispatch_leg_command(
     on_dispatch: Callable[[], None] | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
+    expected_dispatch_identity: bytes | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline."""
     leg = tuple(rooms)
@@ -1157,6 +1158,11 @@ async def _async_dispatch_leg_command(
         raise RoomTakenOverError(
             "The native task before dispatch could not be verified"
         )
+    if (
+        expected_dispatch_identity is not None
+        and identity_baseline != expected_dispatch_identity
+    ):
+        raise RoomTakenOverError("The native task changed during the handoff boundary")
     if floor_is_current is not None and not floor_is_current():
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
@@ -1223,6 +1229,7 @@ async def _async_run_room(
     | None = None,
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
+    expected_dispatch_identity: bytes | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1286,6 +1293,7 @@ async def _async_run_room(
                 on_dispatch=mark_dispatch_attempted,
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
+                expected_dispatch_identity=expected_dispatch_identity,
             )
         else:
             if dispatch.rooms != (room,):
@@ -1733,6 +1741,7 @@ async def _async_run_leg(
     recovered_room_id: str | None = None,
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
+    expected_dispatch_identity: bytes | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1770,6 +1779,7 @@ async def _async_run_leg(
             checkpoint_dispatch=checkpoint_dispatch,
             provenance=provenance,
             recovered_suspend_reason=recovered_suspend_reason,
+            expected_dispatch_identity=expected_dispatch_identity,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1841,6 +1851,7 @@ async def _async_run_leg(
                 on_dispatch=mark_dispatch_attempted,
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
+                expected_dispatch_identity=expected_dispatch_identity,
             )
         else:
             if dispatch.rooms != tuple(leg):
@@ -3651,26 +3662,7 @@ async def _async_execute_rooms(
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = handoff_expected_identity
-        dispatch_session_identity = session_identity
-        if handoff_expected_identity is not None and session_identity is not None:
-            baseline_checked = False
-
-            async def guarded_dispatch_identity() -> bytes | None:
-                nonlocal baseline_checked
-                observed = await session_identity()
-                if (
-                    not baseline_checked
-                    and observed is not None
-                    and observed != handoff_expected_identity
-                ):
-                    raise RoomTakenOverError(
-                        "The native task changed during the handoff boundary"
-                    )
-                if observed is not None:
-                    baseline_checked = True
-                return observed
-
-            dispatch_session_identity = guarded_dispatch_identity
+        expected_dispatch_identity = handoff_expected_identity
         run_id = str(recovery["run_id"]) if recovery else uuid4().hex
         run_started_at = (
             str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
@@ -3827,6 +3819,7 @@ async def _async_execute_rooms(
                     # next dispatch so a new external mission cannot be
                     # adopted as our baseline.
                     native_identity = b""
+                    expected_dispatch_identity = b""
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
@@ -3869,7 +3862,7 @@ async def _async_execute_rooms(
                             session_history,
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
-                            session_identity=dispatch_session_identity,
+                            session_identity=session_identity,
                             on_dispatch=lambda: bind_native_identity(None),
                             on_identity=bind_native_identity,
                         )
@@ -3914,7 +3907,8 @@ async def _async_execute_rooms(
                     finish_room_event=finish_room_event,
                     floor_is_current=floor_is_current,
                     floor_token=floor_token,
-                    session_identity=dispatch_session_identity,
+                    session_identity=session_identity,
+                    expected_dispatch_identity=expected_dispatch_identity,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
                     record_room_completed=record_room_completion,
@@ -3935,6 +3929,7 @@ async def _async_execute_rooms(
                         else None
                     ),
                 )
+                expected_dispatch_identity = None
                 if not completion_verified:
                     break
                 if cancel_event.is_set() or not manager.managed_motion_is_current(
