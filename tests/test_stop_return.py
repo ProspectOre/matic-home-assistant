@@ -353,6 +353,64 @@ async def test_skips_when_the_stop_fence_was_cleared(hass) -> None:
     client.async_send_user_command.assert_not_awaited()
 
 
+async def test_terminal_exit_clears_the_inherited_run_scope(
+    hass, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A dock watcher releases run correlation when replacement work wins."""
+    monkeypatch.setattr(stop_return, "DOCK_SETTLE_TRANSITION_GRACE_SECONDS", 0)
+    hass.states.async_set(ENTITY, "cleaning", {})
+    scope: dict[str, str | None] = {"run_id": "run-1"}
+
+    assert not await async_dock_when_stop_settles(
+        hass,
+        client=_client(session=False),
+        refresh=AsyncMock(),
+        manager=_manager(),
+        serial_number="serial",
+        entity_id=ENTITY,
+        run_id="run-1",
+        set_run_id=lambda run_id: scope.update(run_id=run_id),
+        get_run_id=lambda: scope["run_id"],
+    )
+    assert scope["run_id"] is None
+
+
+async def test_cancellation_clears_the_inherited_run_scope(hass) -> None:
+    """Cancelling a dock watcher releases correlation owned by that watcher."""
+    hass.states.async_set(ENTITY, "idle", {})
+    entered = asyncio.Event()
+
+    async def read_active_session() -> bool:
+        entered.set()
+        await asyncio.Event().wait()
+        return False
+
+    client = _client()
+    client.async_has_active_cleaning_session = AsyncMock(
+        side_effect=read_active_session
+    )
+    scope: dict[str, str | None] = {"run_id": "run-1"}
+    task = asyncio.create_task(
+        async_dock_when_stop_settles(
+            hass,
+            client=client,
+            refresh=AsyncMock(),
+            manager=_manager(),
+            serial_number="serial",
+            entity_id=ENTITY,
+            run_id="run-1",
+            set_run_id=lambda run_id: scope.update(run_id=run_id),
+            get_run_id=lambda: scope["run_id"],
+        )
+    )
+    await entered.wait()
+    task.cancel()
+
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert scope["run_id"] is None
+
+
 async def test_waits_for_an_active_session_to_end_before_docking(hass) -> None:
     """A still-running task is never docked mid-flight."""
     hass.states.async_set(ENTITY, "idle", {})
