@@ -233,6 +233,11 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         saved = manager.recovery_run("serial")
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
         assert kwargs["prefetch_next"] is None
+        if args[5] == [room]:
+            # Model the native leg ending before the next settings boundary;
+            # the durable runner must wait for this settled handoff.
+            hass.states.async_set(checkpoint["entity_id"], "idle")
+            kwargs["on_native_identity"](b"new")
         dispatch = _PreparedRoomDispatch(
             tuple(args[5]),
             frozenset({b"old"}),
@@ -261,7 +266,7 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             [room, room2],
             intelligent=False,
             floor_token=checkpoint["floor_token"],
-            session_identity=AsyncMock(return_value=b"new"),
+            session_identity=AsyncMock(return_value=b""),
         )
     assert [value["leg_index"] for value in seen] == [0, 1]
     assert all(
