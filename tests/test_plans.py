@@ -5943,8 +5943,11 @@ async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None
         )
 
 
-async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) -> None:
-    """A blocked boundary leaves remaining legs due instead of sending STOP."""
+@pytest.mark.parametrize("settled", [False, True])
+async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
+    hass, settled
+) -> None:
+    """A blocked or stopped boundary leaves remaining legs unattempted."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
@@ -5959,7 +5962,9 @@ async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) ->
         assert recovery is not None
         assert recovery["recovery_checkpoint"]["phase"] == "handoff"
         assert recovery["recovery_checkpoint"]["leg_index"] == 1
-        return False
+        if settled:
+            manager.finish_room_event("serial").set()
+        return settled
 
     with (
         patch(

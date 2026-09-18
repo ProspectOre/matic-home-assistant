@@ -1496,7 +1496,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       overlayCanvas.remove();
       return { preferences, previousTopZoom };
     });
-    expect(result.preferences).toMatchObject({ top: { targetX: 0.8, targetZ: -0.6 } });
+    expect(result.preferences.top.targetX).toBeCloseTo(0.8, 12);
+    expect(result.preferences.top.targetZ).toBeCloseTo(-0.6, 12);
     expect(result.preferences.top.zoom).not.toBe(result.previousTopZoom);
   });
 
