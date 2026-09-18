@@ -653,7 +653,7 @@ read_gate_snapshot() (
   evidence="$(regular_evidence)"
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
-  review_ids="$(jq -c '.review_ids' <<< "$evidence")"
+  review_ids="$(jq -c '[.deliveries[] | select(.source == "review" and (.dismissed != true)) | .id]' <<< "$evidence")"
   thread_summary="$(regular_review_thread_summary "$review_ids")"
   verdict_selection="$(
     issue_comment_at="$(latest_regular_issue_comment_at)"
