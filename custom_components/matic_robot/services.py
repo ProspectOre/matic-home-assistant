@@ -3822,6 +3822,11 @@ async def _async_execute_rooms(
                         # here would restart the OEM stop countdown we just
                         # waited out.
                         break
+                    # The settled handoff establishes an empty ownership
+                    # boundary. Recheck that boundary immediately before the
+                    # next dispatch so a new external mission cannot be
+                    # adopted as our baseline.
+                    native_identity = b""
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
