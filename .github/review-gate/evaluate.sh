@@ -305,6 +305,22 @@ latest_regular_review_invalidation_at() {
         ' | latest_timestamp
 }
 
+# Finding-history statuses are append-only authenticated observations. Their
+# publication timestamp is the durable edit/finding watermark even when the
+# originating review is later dismissed and the API exposes only its original
+# submission time. Keep this separate from the mutable review delivery.
+latest_regular_finding_history_at() {
+  gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+    | jq -c --arg context "review-finding-history" --arg head "$head_sha" --argjson number "$pr_number" '
+        [.[][]
+         | select(.context == $context and .state == "pending")
+         | (.description // "") as $description
+         | select($description | contains("for PR #" + ($number | tostring) + " on head " + $head)
+                  or (contains("for PR #") | not))
+         | (.updated_at // .created_at // "")]
+        ' | latest_timestamp
+}
+
 active_security_findings() {
   local review_findings issue_comment_findings inline_findings security_reviews
   review_findings="$(
@@ -376,7 +392,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->")[-1] | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->") as $parts | (if ($parts | length) > 1 then $parts[1:] | join("-->") else . end) | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
@@ -410,7 +426,7 @@ regular_evidence() {
            | select(($body | security_heading) | not)
            | select(($body | availability_notice) | not)
            | select($body | exact_head)
-           | {at: (.updatedAt // .submittedAt),
+           | {at: (if .state == "DISMISSED" then .submittedAt else (.updatedAt // .submittedAt) end),
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
@@ -423,7 +439,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->")[-1] | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->") as $parts | (if ($parts | length) > 1 then $parts[1:] | join("-->") else . end) | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
@@ -533,10 +549,10 @@ findings_dismissed() {
        | select((.description // "") | contains("for PR #" + ($number | tostring) + " on head " + $head)
                 or (contains("for PR #") | not))
        | (.description // "") as $description
-       | if ($description | test("^" + $label + " findings observed for PR #" + ($number | tostring) + " on head " + $head + "; (review|issue-comment):[1-9][0-9]*$")) then
-           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)$"))
-         elif ($description | test("^" + $label + " findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*$")) then
-           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)$"))
+       | if ($description | test("^" + $label + " findings observed for PR #" + ($number | tostring) + " on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; observed-at:[^;]+)?$")) then
+           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; observed-at:[^;]+)?$"))
+         elif ($description | test("^" + $label + " findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; observed-at:[^;]+)?$")) then
+           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; observed-at:[^;]+)?$"))
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* for PR #" + ($number | tostring) + " on head " + $head + "$")) then
            ($description | capture("withdrawn (?<source>issue-comment):(?<id>[1-9][0-9]*) on head"))
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* on head " + $head + "$")) then
@@ -629,7 +645,7 @@ read_gate_snapshot() (
   REVIEW_READ_CACHE="$(mktemp -d "${TMPDIR:-/tmp}/review-snapshot.XXXXXX")"
   export REVIEW_READ_CACHE
   trap 'rm -rf "$REVIEW_READ_CACHE"' EXIT
-  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at withdrawal_at
+  local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count security_finding_count security_findings latest_finding_at issue_comment_at review_invalidation_at finding_history_at withdrawal_at
   evidence="$(regular_evidence)"
   deliveries="$(jq -c '.deliveries' <<< "$evidence")"
   reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
@@ -638,8 +654,9 @@ read_gate_snapshot() (
   verdict_selection="$(
     issue_comment_at="$(latest_regular_issue_comment_at)"
     review_invalidation_at="$(latest_regular_review_invalidation_at)"
+    finding_history_at="$(latest_regular_finding_history_at)"
     withdrawal_at="$(withdrawn_evidence_at "$deliveries")"
-    jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg withdrawal_at "$withdrawal_at" '
+    jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg finding_history_at "$finding_history_at" --arg withdrawal_at "$withdrawal_at" '
       ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
       | (([$deliveries[] | select(.clean | not) | .at]
           + [$reviews[]
@@ -647,6 +664,7 @@ read_gate_snapshot() (
              | .at]
           + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
           + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end)
+          + (if $finding_history_at == "" then [] else [$finding_history_at] end)
           + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $latest_finding_at
       | ($deliveries | sort_by(.at) | last) as $latest_delivery
@@ -684,7 +702,7 @@ read_gate_snapshot() (
 
 require_clean_regular_snapshot() {
   local gate_snapshot="$1"
-  local verdict verdict_at finding_count regular_finding_count security_finding_count latest_finding_at
+  local verdict verdict_at finding_count regular_finding_count security_finding_count latest_finding_at history_statuses origin description observed_at existing_at
   verdict="$(jq -c '.verdict' <<< "$gate_snapshot")"
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
@@ -692,9 +710,27 @@ require_clean_regular_snapshot() {
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
   if [[ "$regular_finding_count" -gt 0 ]]; then
     local origin
+    history_statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)"
+    observed_at="${latest_finding_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
     while IFS= read -r origin; do
       [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
-      stamp_status "review-finding-history" pending "Regular findings observed for PR #$pr_number on head $head_sha; $origin" >/dev/null
+      description="Regular findings observed for PR #$pr_number on head $head_sha; $origin"
+      existing_at="$(jq -r --arg context "review-finding-history" --arg description "$description" '
+        [.[][] | select(.context == $context and .state == "pending" and .description == $description)
+         | (.updated_at // .created_at // "")] | max // ""' <<< "$history_statuses")"
+      if [[ -n "$existing_at" ]]; then
+        if [[ "$observed_at" > "$existing_at" ]]; then
+          description="$description; observed-at:$observed_at"
+        else
+          continue
+        fi
+      fi
+      if jq -e --arg context "review-finding-history" --arg description "$description" \
+          'any(.[][]; .context == $context and .state == "pending" and .description == $description)' \
+          <<< "$history_statuses" >/dev/null; then
+        continue
+      fi
+      stamp_status "review-finding-history" pending "$description" >/dev/null
     done < <(jq -r '.regular_findings[] | .source + ":" + .id' <<< "$gate_snapshot")
   fi
   # Retain every adverse origin before any existing finding can stop the audit.
