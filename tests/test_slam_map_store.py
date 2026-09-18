@@ -299,14 +299,18 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
     assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
 
-    # Repeated pages from the already-classified layer must not repeatedly
-    # disable every floor-bound button while the active robot is idle.
+    # Repeated pages from the classified alternative remain contrary live
+    # evidence. Each one must fail closed, while fresh proof from both active
+    # layers may still recover the floor between those observations.
     with patch(
         "custom_components.matic_robot.slam_map_store.monotonic",
         return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
     ):
         for _ in range(10):
             await store.async_add(candidate)
+            assert not store.floor_plan_is_current(active_plan)
+            await store.async_add(synthetic_slam_entry(page_x=8))
+            await store.async_add_structure(synthetic_structure_entry(page_x=8))
             assert store.floor_plan_is_current(active_plan)
             assert not store._candidates[candidate_token].blocks_active
 
