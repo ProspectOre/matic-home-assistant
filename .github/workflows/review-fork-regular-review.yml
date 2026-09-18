@@ -45,4 +45,4 @@ jobs:
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/${{ github.run_id }}"
           fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
-            -f pull_request="$PR_NUMBER" -f runner_route=mbp
+            -f pull_request="$PR_NUMBER"

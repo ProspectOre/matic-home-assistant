@@ -207,6 +207,5 @@ jobs:
             exit 0
           fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" \
-            -f pull_request="$PR_NUMBER" \
-            -f runner_route=mbp
+            -f pull_request="$PR_NUMBER"
           echo "Dispatched regular-review evaluation for PR #$PR_NUMBER."
