@@ -40,9 +40,22 @@ jobs:
             -f state=pending -f context=review-gate \
             -f description='Fork review changed; reevaluating exact head' \
             -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/${{ github.run_id }}"
-          gh api "repos/$REPO/statuses/$head_sha" --silent \
-            -f state=pending -f context=review-gate-regular-review \
-            -f description="Regular review invalidated at ${{ github.event.workflow_run.updated_at }}; fork review delivery" \
-            -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/${{ github.run_id }}"
+          latest_review="$(gh api "repos/$REPO/pulls/$PR_NUMBER/reviews?per_page=100" | jq -c --arg head "$head_sha" '[.[] | select(.commit_id == $head)] | sort_by(.updated_at // .submitted_at) | last // empty')"
+          review_invalidated=false
+          if [[ -n "$latest_review" ]]; then
+            review_state="$(jq -r '.state // ""' <<< "$latest_review")"
+            review_body="$(jq -r '.body // ""' <<< "$latest_review")"
+            review_submitted="$(jq -r '.submitted_at // ""' <<< "$latest_review")"
+            review_updated="$(jq -r '.updated_at // ""' <<< "$latest_review")"
+            if [[ "$review_state" == "DISMISSED" ]] || { [[ "$review_updated" != "$review_submitted" ]] && ! grep -Eiq '(^|[[:space:]#])codex[[:space:]]+review([[:space:]]|:|$)|(^|[[:space:]#])review[[:space:]]+result([[:space:]]|:|$)' <<< "$review_body"; }; then
+              review_invalidated=true
+            fi
+          fi
+          if [[ "$review_invalidated" == true ]]; then
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending -f context=review-gate-regular-review \
+              -f description="Regular review invalidated; fork review delivery" \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
             -f pull_request="$PR_NUMBER"
