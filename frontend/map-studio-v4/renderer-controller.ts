@@ -408,6 +408,10 @@ export class RendererController {
         preserveCamera,
         previousScene,
         sameSceneContext,
+        // Installing a rebased scene before switching workflows must not emit
+        // the old camera through the new draw workflow. The canvas callback
+        // would interpret that 3D distance as a draw zoom percentage.
+        !(previous?.workflow !== "draw" && state.workflow === "draw"),
         previous
           ? previous.workflow === "draw" ? "top" : previous.view
           : null,
@@ -575,6 +579,7 @@ export class RendererController {
     preserveCamera = false,
     previousScene: SceneModel | null = null,
     rebasePreferences = false,
+    notifyCamera = true,
     preferenceView: MapView | null = null,
   ): void {
     this.#cancelFallback();
@@ -591,7 +596,7 @@ export class RendererController {
     const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
-      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), true);
+      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), notifyCamera);
     }
     else this.fit(false);
     const state = this.#state;
