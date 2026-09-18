@@ -392,7 +392,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->") as $parts | (if ($parts | length) > 1 then $parts[1:] | join("-->") else . end) | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
@@ -441,7 +441,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)review-request:v2") then split("review-request:v2")[-1] | split("-->") as $parts | (if ($parts | length) > 1 then $parts[1:] | join("-->") else . end) | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
