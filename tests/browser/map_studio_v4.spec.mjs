@@ -1319,6 +1319,51 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(diagnostics.cameraDistance).toBeCloseTo(diagnostics.fitDistance, 6);
   });
 
+  test("preserves navigation when a live scene revision arrives", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/scene-camera-preservation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/scene-camera-preservation.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+        document.body.append(canvas);
+      }
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      const state = createGalleryState("ready");
+      renderer.setState(state);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      renderer.setCamera({
+        ...renderer.camera,
+        yaw: 0.35,
+        pitch: 1.04,
+        distance: renderer.camera.distance * 0.62,
+        targetX: 0.2,
+        targetZ: -0.3,
+      });
+      const before = renderer.camera;
+      const scene = state.resources.scene.value;
+      renderer.setState({
+        ...state,
+        resources: {
+          ...state.resources,
+          scene: { ...state.resources.scene, value: { ...scene, revision: scene.revision + 1 } },
+        },
+      });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const after = renderer.camera;
+      const diagnostics = renderer.diagnostics();
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return { before, after, fitActive: diagnostics.fitActive };
+    });
+    expect(result.after).toEqual(result.before);
+    expect(result.fitActive).toBe(false);
+  });
+
   test("keeps an off-screen room polygon intact while zooming", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate((tag) => {

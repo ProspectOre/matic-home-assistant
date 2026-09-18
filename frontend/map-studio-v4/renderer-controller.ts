@@ -321,8 +321,18 @@ export class RendererController {
     this.#state = state;
     const scene = state.resources.scene.value;
     if (scene !== this.#scene) {
+      // Delta revisions replace the immutable scene object while retaining the
+      // same floor/session generation. Keep a user-adjusted camera for those
+      // updates; a new generation may represent a different floor and must
+      // still start from a safe fitted view.
+      const preserveCamera = this.#scene !== null
+        && !this.#fitActive
+        && previous !== null
+        && previous.generation === state.generation
+        && previous.dataMode === state.dataMode
+        && previous.selection.floorId === state.selection.floorId;
       this.#scene = scene;
-      this.#installScene(scene);
+      this.#installScene(scene, preserveCamera);
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -481,7 +491,7 @@ export class RendererController {
     }
   }
 
-  #installScene(scene: SceneModel | null): void {
+  #installScene(scene: SceneModel | null, preserveCamera = false): void {
     this.#cancelFallback();
     if (!scene) {
       this.#renderedPoints = 0;
@@ -494,7 +504,8 @@ export class RendererController {
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
     this.#updateHomeDistances();
-    this.fit(false);
+    if (preserveCamera) this.setCamera(this.#camera, false);
+    else this.fit(false);
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
   }
