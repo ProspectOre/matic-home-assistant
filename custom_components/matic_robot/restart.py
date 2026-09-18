@@ -281,10 +281,7 @@ async def async_recover_managed_run(
         await manager.async_mark_recovery_status(
             serial_number, "running", reason="same_native_mission_verified"
         )
-        if (
-            cancel.is_set()
-            or manager.motion_generation(serial_number) != generation
-        ):
+        if cancel.is_set() or manager.motion_generation(serial_number) != generation:
             reason = "restart_recovery_cancelled"
             return
 
