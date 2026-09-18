@@ -3651,6 +3651,18 @@ async def _async_execute_rooms(
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
         native_identity: bytes | None = handoff_expected_identity
+        dispatch_session_identity = session_identity
+        if handoff_expected_identity is not None and session_identity is not None:
+
+            async def guarded_dispatch_identity() -> bytes | None:
+                observed = await session_identity()
+                if observed is not None and observed != handoff_expected_identity:
+                    raise RoomTakenOverError(
+                        "The native task changed during the handoff boundary"
+                    )
+                return observed
+
+            dispatch_session_identity = guarded_dispatch_identity
         run_id = str(recovery["run_id"]) if recovery else uuid4().hex
         run_started_at = (
             str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
@@ -3844,7 +3856,7 @@ async def _async_execute_rooms(
                             session_history,
                             floor_is_current=floor_is_current,
                             floor_token=floor_token,
-                            session_identity=session_identity,
+                            session_identity=dispatch_session_identity,
                             on_dispatch=lambda: bind_native_identity(None),
                             on_identity=bind_native_identity,
                         )
@@ -3889,7 +3901,7 @@ async def _async_execute_rooms(
                     finish_room_event=finish_room_event,
                     floor_is_current=floor_is_current,
                     floor_token=floor_token,
-                    session_identity=session_identity,
+                    session_identity=dispatch_session_identity,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
                     record_room_completed=record_room_completion,

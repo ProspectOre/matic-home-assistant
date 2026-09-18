@@ -393,6 +393,7 @@ export class RendererController {
     const previousScene = this.#scene;
     this.#state = state;
     const scene = state.resources.scene.value;
+    let rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null;
     if (scene !== this.#scene) {
       // Delta revisions replace the immutable scene object while retaining the
       // same map context. Keep a user-adjusted camera for those updates; a
@@ -403,7 +404,7 @@ export class RendererController {
       const preserveCamera = sameSceneContext && !this.#fitActive;
       this.#scene = scene;
       this.#sceneContext = scene ? sceneContext(state) : null;
-      this.#installScene(
+      rebasedPreferences = this.#installScene(
         scene,
         preserveCamera,
         previousScene,
@@ -425,7 +426,7 @@ export class RendererController {
     const leftDraw = previous?.workflow === "draw" && state.workflow !== "draw";
     if (!previous || previous.view !== state.view || enteredDraw || leftDraw) {
       const view = state.workflow === "draw" ? "top" : state.view;
-      this.#camera = this.#preferredCamera(view, state);
+      this.#camera = this.#preferredCamera(view, state, rebasedPreferences);
       this.#fitActive = this.#preferenceIsFit(view, state);
     }
     if (state.workflow === "draw" && previous?.draw.zoomPercent !== state.draw.zoomPercent) {
@@ -443,10 +444,14 @@ export class RendererController {
     this.requestRender();
   }
 
-  #preferredCamera(view: MapView, state: WorkspaceState): CameraState {
+  #preferredCamera(
+    view: MapView,
+    state: WorkspaceState,
+    rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null,
+  ): CameraState {
     const top = view === "top";
     const home = top ? this.#homeTop : this.#homeThree;
-    const preference = state.cameras[view];
+    const preference = rebasedPreferences?.[view] ?? state.cameras[view];
     if (!preference) {
       return top
         ? { yaw: 0, pitch: Math.PI / 2 - 0.018, distance: home, targetX: 0, targetZ: 0, orthographic: true }
@@ -581,12 +586,12 @@ export class RendererController {
     rebasePreferences = false,
     notifyCamera = true,
     preferenceView: MapView | null = null,
-  ): void {
+  ): Partial<Record<MapView, CameraPreference>> | null {
     this.#cancelFallback();
     if (!scene) {
       this.#renderedPoints = 0;
       this.requestRender();
-      return;
+      return null;
     }
     const [spanX, spanY] = scene.metadata.span;
     const meters = scene.metadata.metersPerCell;
@@ -620,9 +625,13 @@ export class RendererController {
         targetZ: this.#camera.targetZ,
       };
       this.#callbacks.onCameraPreferences?.(preferences);
+      if (this.#mode === "webgl2") this.#uploadScene(scene);
+      else this.#buildFallback(scene);
+      return preferences;
     }
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
+    return null;
   }
 
   #updateHomeDistances(): void {
