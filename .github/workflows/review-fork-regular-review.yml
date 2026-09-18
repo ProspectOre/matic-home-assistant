@@ -29,5 +29,20 @@ jobs:
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]]
+          head_sha="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.head.sha')"
+          [[ "$head_sha" =~ ^[0-9a-f]{40}$ ]]
+          jobs="$(gh api "repos/$REPO/actions/runs/${{ github.event.workflow_run.id }}/jobs?per_page=100")"
+          signal_name="$(jq -r '.jobs[] | select(.name | startswith("fork-regular-review-")) | .name' <<< "$jobs" | head -n1)"
+          if [[ "$signal_name" == *-true ]]; then
+            invalidated_at="${{ github.event.workflow_run.updated_at }}"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending -f context=review-gate-regular-review \
+              -f description="Regular review invalidated at $invalidated_at; fork review delivery" \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/${{ github.run_id }}"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending -f context=review-gate \
+              -f description='Fork review changed; reevaluating exact head' \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/${{ github.run_id }}"
+          fi
           gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
             -f pull_request="$PR_NUMBER" -f runner_route=mbp
