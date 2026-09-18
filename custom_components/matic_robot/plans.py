@@ -1667,10 +1667,11 @@ class CleaningPlanManager:
             if completed_count < room_count:
                 completed_count += 1
                 last_run["completed_room_count"] = completed_count
-            if (
-                completed_count >= room_count
-                and last_run.get("outcome") in {"running", "cancelled", "unverified"}
-            ):
+            if completed_count >= room_count and last_run.get("outcome") in {
+                "running",
+                "cancelled",
+                "unverified",
+            }:
                 last_run.update(
                     {
                         "outcome": "completed",
