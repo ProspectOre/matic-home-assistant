@@ -116,6 +116,46 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
     assert manager.snapshot("serial")["active_plan"] is None
 
 
+async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
+    hass, recovery_state
+):
+    """A shutdown during settings handoff resumes the next leg, not the old one."""
+    manager, entry, checkpoint, room = recovery_state
+    next_room = CleaningRoom("office", "Office", "mop", "standard")
+    checkpoint.update(
+        {
+            "phase": "handoff",
+            "leg_index": 1,
+            "rooms": [asdict(room), asdict(next_room)],
+            "completed_room_ids": [room.room_id],
+        }
+    )
+    manager._robot("serial")["last_run"]["room_count"] = 2
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
+    hass.states.async_set(checkpoint["entity_id"], "idle")
+
+    async def execute(*_args, **kwargs):
+        assert kwargs["recovery"]["recovery_checkpoint"]["phase"] == "handoff"
+        assert kwargs["recovered_dispatch"] is None
+
+    with (
+        patch(
+            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=True),
+        ) as settled,
+        patch(
+            "custom_components.matic_robot.restart._async_execute_rooms",
+            side_effect=execute,
+        ) as runner,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+
+    settled.assert_awaited_once()
+    runner.assert_awaited_once()
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "case",
     [

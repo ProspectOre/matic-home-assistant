@@ -3624,6 +3624,7 @@ async def _async_execute_rooms(
     get_activity_run_id: Callable[[], str | None] | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
+    handoff_expected_identity: bytes | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3645,7 +3646,7 @@ async def _async_execute_rooms(
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
-        native_identity: bytes | None = None
+        native_identity: bytes | None = handoff_expected_identity
         run_id = str(recovery["run_id"]) if recovery else uuid4().hex
         run_started_at = (
             str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
@@ -3771,6 +3772,17 @@ async def _async_execute_rooms(
                 )
                 recovered_dispatch = None
                 if durable and index > 0 and prepared_dispatch is None:
+                    if checkpoint.get("phase") != "handoff":
+                        checkpoint.update(
+                            {
+                                "leg_index": index,
+                                "phase": "handoff",
+                                "completed_room_ids": sorted(completed_room_ids),
+                            }
+                        )
+                        await manager.async_set_recovery_checkpoint(
+                            serial_number, run_id, checkpoint
+                        )
                     if not await _async_wait_for_settled_leg_handoff(
                         hass,
                         entity_id,
@@ -3904,6 +3916,23 @@ async def _async_execute_rooms(
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
+                if durable and index + 1 < len(legs):
+                    # The verified leg is complete, but the native task may
+                    # still be returning. Persist the next leg before the
+                    # bounded handoff wait so restart recovery can resume the
+                    # queue instead of treating the prior verifying leg as
+                    # the only recoverable work.
+                    checkpoint.update(
+                        {
+                            "leg_index": index + 1,
+                            "phase": "handoff",
+                            "completed_room_ids": sorted(completed_room_ids),
+                        }
+                    )
+                    checkpoint.pop("verification_deadline", None)
+                    await manager.async_set_recovery_checkpoint(
+                        serial_number, run_id, checkpoint
+                    )
             completed_room_count = len(completed_room_ids)
             if finish_room_event.is_set() and completed_room_count < len(chosen):
                 run_outcome = "cancelled"

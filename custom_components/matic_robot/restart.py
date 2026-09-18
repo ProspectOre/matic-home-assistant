@@ -18,9 +18,11 @@ from .client.models import CleaningSessionRecord
 from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .plans import CleaningRoom, leg_groups, plan_floor_token
 from .services import (
+    LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_execute_rooms,
     _async_managed_user_command,
     _async_verify_leg_completion,
+    _async_wait_for_settled_leg_handoff,
     _PreparedRoomDispatch,
     _room_outcomes,
     _schedule_managed_dock_after_stop,
@@ -85,12 +87,15 @@ async def async_recover_managed_run(
         if checkpoint.get("stop_intent") in {"immediate", "not_running"}:
             reason = "restart_stop_requested"
             return
-        if checkpoint.get("version") != 1 or checkpoint.get("phase") not in {
+        phase = checkpoint.get("phase")
+        if checkpoint.get("version") != 1 or phase not in {
             "accepted",
             "verifying",
+            "handoff",
         }:
             return
-        verifying = checkpoint["phase"] == "verifying"
+        verifying = phase == "verifying"
+        handoff = phase == "handoff"
         verification_deadline = None
         if verifying:
             verification_deadline = dt_util.parse_datetime(
@@ -110,29 +115,57 @@ async def async_recover_managed_run(
             # normal finalizer cannot erase an already verified completion.
             reason = "all_rooms_verified"
             return
+        legs = leg_groups(rooms)
+        leg_index = checkpoint.get("leg_index")
+        if (
+            not isinstance(leg_index, int)
+            or leg_index < 0
+            or leg_index >= len(legs)
+            or (
+                handoff
+                and (
+                    leg_index == 0
+                    or not {
+                        room.room_id for leg in legs[:leg_index] for room in leg
+                    }.issubset(set(checkpoint.get("completed_room_ids", [])))
+                )
+            )
+        ):
+            return
+        leg = legs[leg_index]
         expected = checkpoint.get("native_identity_hash")
         if not isinstance(expected, str) or len(expected) != 64:
             return
-        legs = leg_groups(rooms)
-        leg = legs[checkpoint["leg_index"]]
-        dispatched_at = dt_util.parse_datetime(checkpoint["dispatched_at"])
-        if dispatched_at is None or dispatched_at.tzinfo is None:
-            return
-        deadline_value = checkpoint.get("completion_deadline")
-        completion_deadline = (
-            dt_util.parse_datetime(deadline_value)
-            if isinstance(deadline_value, str)
-            else None
-        )
-        if not verifying and (
-            completion_deadline is None or completion_deadline.tzinfo is None
-        ):
-            return
+        if handoff:
+            # A handoff checkpoint has no accepted dispatch for the next leg;
+            # its previous native identity is retained only to reject a
+            # replacement before the queue is resumed.
+            dispatched_at = None
+            completion_deadline = None
+        else:
+            dispatched_at = dt_util.parse_datetime(checkpoint["dispatched_at"])
+            if dispatched_at is None or dispatched_at.tzinfo is None:
+                return
+            deadline_value = checkpoint.get("completion_deadline")
+            completion_deadline = (
+                dt_util.parse_datetime(deadline_value)
+                if isinstance(deadline_value, str)
+                else None
+            )
+            if not verifying and (
+                completion_deadline is None or completion_deadline.tzinfo is None
+            ):
+                return
         entity_id = er.async_get(hass).async_get_entity_id(
             "vacuum", DOMAIN, f"{serial_number}_vacuum"
         )
         if entity_id is None:
             return
+
+        async def command(token: int, value: UserCommand) -> None:
+            await _async_managed_user_command(
+                hass, entry, manager, serial_number, entity_id, None, token, value
+            )
 
         def floor_is_current() -> bool:
             floor = runtime.coordinator.data.floor_plan
@@ -162,12 +195,66 @@ async def async_recover_managed_run(
         else:
             reason = "restart_state_unavailable"
             return
-        if (verifying and identity != b"") or (
+        if handoff:
+            if not identity or hashlib.sha256(identity).hexdigest() != expected:
+                if identity != b"":
+                    reason = "restart_native_mission_changed_or_ended"
+                    return
+        elif (verifying and identity != b"") or (
             not verifying
             and (not identity or hashlib.sha256(identity).hexdigest() != expected)
         ):
             reason = "restart_native_mission_changed_or_ended"
             return
+        if handoff:
+            await manager.async_mark_recovery_status(
+                serial_number, "running", reason="handoff_checkpoint_verified"
+            )
+            settled = await _async_wait_for_settled_leg_handoff(
+                hass,
+                entity_id,
+                cancel,
+                refresh=runtime.coordinator.async_request_refresh,
+                identity_reader=runtime.client.async_get_cleaning_session_identity,
+                expected_identity=identity if identity else None,
+                timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
+            )
+            if not settled:
+                reason = "restart_handoff_unsettled"
+                return
+            if (
+                cancel.is_set()
+                or manager.motion_generation(serial_number) != generation
+            ):
+                reason = "restart_recovery_cancelled"
+                return
+            await _async_execute_rooms(
+                hass,
+                ServiceCall(hass, DOMAIN, run["service"], checkpoint["data"]),
+                manager,
+                entity_id,
+                serial_number,
+                rooms,
+                intelligent=False,
+                refresh=runtime.coordinator.async_request_refresh,
+                active_session=runtime.client.async_has_active_cleaning_session,
+                session_history=runtime.client.async_get_cleaning_session_records,
+                session_identity=runtime.client.async_get_cleaning_session_identity,
+                confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
+                managed_user_command=command,
+                floor_is_current=floor_is_current,
+                floor_token=checkpoint["floor_token"],
+                set_activity_run_id=runtime.client.activity_journal.set_run_id,
+                get_activity_run_id=runtime.client.activity_journal.current_run_id,
+                recovery=run,
+            )
+            reason = (
+                "home_assistant_shutdown"
+                if _shutdown_suspends_run(hass, manager, serial_number)
+                else "restart_execution_ended"
+            )
+            return
+        assert dispatched_at is not None
         records = await runtime.client.async_get_cleaning_session_records()
         hashes = checkpoint.get("history_baseline")
         if not isinstance(hashes, list):
@@ -193,7 +280,10 @@ async def async_recover_managed_run(
         await manager.async_mark_recovery_status(
             serial_number, "running", reason="same_native_mission_verified"
         )
-        if cancel.is_set() or manager.motion_generation(serial_number) != generation:
+        if (
+            cancel.is_set()
+            or manager.motion_generation(serial_number) != generation
+        ):
             reason = "restart_recovery_cancelled"
             return
 
@@ -268,11 +358,6 @@ async def async_recover_managed_run(
                 else "restart_remaining_queue_unverified"
             )
             return
-
-        async def command(token: int, value: UserCommand) -> None:
-            await _async_managed_user_command(
-                hass, entry, manager, serial_number, entity_id, None, token, value
-            )
 
         await _async_execute_rooms(
             hass,

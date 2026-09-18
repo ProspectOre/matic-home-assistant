@@ -5954,6 +5954,13 @@ async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) ->
         kwargs["record_room_completed"](args[5][0])
         return True
 
+    async def block_handoff(*_args, **_kwargs) -> bool:
+        recovery = manager.recovery_run("serial")
+        assert recovery is not None
+        assert recovery["recovery_checkpoint"]["phase"] == "handoff"
+        assert recovery["recovery_checkpoint"]["leg_index"] == 1
+        return False
+
     with (
         patch(
             "custom_components.matic_robot.services._async_run_leg",
@@ -5961,7 +5968,7 @@ async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) ->
         ) as run,
         patch(
             "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
-            AsyncMock(return_value=False),
+            AsyncMock(side_effect=block_handoff),
         ),
     ):
         await _async_execute_rooms(

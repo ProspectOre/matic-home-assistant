@@ -593,7 +593,14 @@ export class RendererController {
           nextHome,
         );
         const effectiveView = state.workflow === "draw" ? "top" : state.view;
-        delete preferences[effectiveView];
+        const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
+        preferences[effectiveView] = {
+          yaw: this.#camera.yaw,
+          pitch: this.#camera.pitch,
+          zoom: home / Math.max(0.2, this.#camera.distance),
+          targetX: this.#camera.targetX,
+          targetZ: this.#camera.targetZ,
+        };
         this.#callbacks.onCameraPreferences?.(preferences);
       }
     }

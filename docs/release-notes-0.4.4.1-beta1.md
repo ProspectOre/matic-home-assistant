@@ -10,6 +10,8 @@
 - Managed plans now wait for firmware handoff between legs with different
   cleaning settings, and no longer send a redundant STOP while the robot is
   already returning to the dock.
+- A Home Assistant restart during that handoff now resumes the next settings
+  leg instead of abandoning the remaining queue.
 
 This beta is for testing the map-navigation and managed-plan handoff fixes.
 Install it through HACS beta versions and restart Home Assistant before
