@@ -624,6 +624,12 @@ def area_binding_status(
             return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+        # V2 did not persist the local boundary evidence, so its digest cannot
+        # distinguish an unrelated edit from a coordinate-frame translation.
+        # Fail closed on every whole-map change rather than authorizing stale
+        # coordinates from an unanchored occupancy-only match.
+        if saved_geometry != current["geometry_sha256"]:
+            return AreaBindingStatus.GEOMETRY_CHANGED
         try:
             local_geometry = _hash_only_area_geometry_fingerprint(
                 floor_plan, area["circles"], room_geometry=room_geometry
@@ -632,9 +638,15 @@ def area_binding_status(
             return AreaBindingStatus.INVALID
         if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
             return AreaBindingStatus.CURRENT
-        if saved_geometry != current["geometry_sha256"]:
-            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.INVALID
+
+    # An interior area with no nearby boundary has no positional anchor. Its
+    # occupancy signature can survive a map-coordinate translation, so only
+    # exact whole-floor geometry can establish that its coordinates are safe.
+    if not saved["local_segments_mm"] and (
+        saved_geometry != current["geometry_sha256"]
+    ):
+        return AreaBindingStatus.GEOMETRY_CHANGED
 
     try:
         room_geometry = room_geometry or _room_geometry_index(floor_plan)
