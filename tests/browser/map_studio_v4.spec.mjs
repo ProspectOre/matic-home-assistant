@@ -1364,6 +1364,107 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.fitActive).toBe(false);
   });
 
+  test("rebases the navigation target when live scene bounds move", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/scene-camera-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/scene-camera-rebase.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+        document.body.append(canvas);
+      }
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      const state = createGalleryState("ready");
+      renderer.setState(state);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      renderer.setCamera({
+        ...renderer.camera,
+        yaw: 0.35,
+        pitch: 1.04,
+        distance: renderer.camera.distance * 0.62,
+        targetX: 0.2,
+        targetZ: -0.3,
+      });
+      const before = renderer.camera;
+      const scene = state.resources.scene.value;
+      renderer.setState({
+        ...state,
+        resources: {
+          ...state.resources,
+          scene: {
+            ...state.resources.scene,
+            value: {
+              ...scene,
+              revision: scene.revision + 1,
+              metadata: {
+                ...scene.metadata,
+                origin: [4, -2],
+                span: [200, 160],
+              },
+            },
+          },
+        },
+      });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const after = renderer.camera;
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return { before, after };
+    });
+    expect(result.after.targetX).toBeCloseTo(result.before.targetX + 0.7, 6);
+    expect(result.after.targetZ).toBeCloseTo(result.before.targetZ - 0.4, 6);
+    expect(result.after.yaw).toBe(result.before.yaw);
+    expect(result.after.distance).toBe(result.before.distance);
+  });
+
+  test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/scene-camera-generation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/scene-camera-generation.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+        document.body.append(canvas);
+      }
+      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      const state = { ...createGalleryState("ready"), generation: 1 };
+      renderer.setState(state);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      renderer.setCamera({
+        ...renderer.camera,
+        yaw: 0.35,
+        pitch: 1.04,
+        distance: renderer.camera.distance * 0.62,
+        targetX: 0.2,
+        targetZ: -0.3,
+      });
+      const scene = state.resources.scene.value;
+      renderer.setState({ ...state, generation: 2 });
+      renderer.setState({
+        ...state,
+        generation: 2,
+        resources: {
+          ...state.resources,
+          scene: { ...state.resources.scene, value: { ...scene, revision: scene.revision + 1 } },
+        },
+      });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const diagnostics = renderer.diagnostics();
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return diagnostics;
+    });
+    expect(result.fitActive).toBe(true);
+  });
+
   test("keeps an off-screen room polygon intact while zooming", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate((tag) => {

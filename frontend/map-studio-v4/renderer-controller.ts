@@ -72,6 +72,29 @@ const qualityScale = (quality: MapQuality): number => {
   }
 };
 
+const rebaseCameraTarget = (
+  camera: CameraState,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+): CameraState => {
+  const center = (scene: SceneModel): readonly [number, number] => {
+    const meters = scene.metadata.metersPerCell;
+    return [
+      (scene.metadata.origin[0] + (scene.metadata.span[0] - 1) / 2) * meters,
+      (scene.metadata.origin[1] + (scene.metadata.span[1] - 1) / 2) * meters,
+    ];
+  };
+  const previousCenter = center(previousScene);
+  const nextCenter = center(nextScene);
+  return {
+    ...camera,
+    // World X is measured from the scene centre in the opposite direction;
+    // world Z is measured from the scene centre in the same direction.
+    targetX: camera.targetX + (nextCenter[0] - previousCenter[0]),
+    targetZ: camera.targetZ + (previousCenter[1] - nextCenter[1]),
+  };
+};
+
 // Matches the literal colours the overlay shipped with, so nothing changes
 // until a host wires `readCanvasPalette()` through `setPalette()`.
 const DEFAULT_PALETTE: CanvasPalette = {
@@ -200,6 +223,7 @@ export class RendererController {
   #maxPointPixels: WebGLUniformLocation | null = null;
   #state: WorkspaceState | null = null;
   #scene: SceneModel | null = null;
+  #sceneGeneration: number | null = null;
   #frame: number | null = null;
   #fallbackFrame: number | null = null;
   #resizeObserver: ResizeObserver;
@@ -318,6 +342,7 @@ export class RendererController {
   setState(state: WorkspaceState): void {
     if (this.#disposed) return;
     const previous = this.#state;
+    const previousScene = this.#scene;
     this.#state = state;
     const scene = state.resources.scene.value;
     if (scene !== this.#scene) {
@@ -329,10 +354,12 @@ export class RendererController {
         && !this.#fitActive
         && previous !== null
         && previous.generation === state.generation
+        && this.#sceneGeneration === state.generation
         && previous.dataMode === state.dataMode
         && previous.selection.floorId === state.selection.floorId;
       this.#scene = scene;
-      this.#installScene(scene, preserveCamera);
+      this.#sceneGeneration = scene ? state.generation : null;
+      this.#installScene(scene, preserveCamera, previousScene);
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -491,7 +518,11 @@ export class RendererController {
     }
   }
 
-  #installScene(scene: SceneModel | null, preserveCamera = false): void {
+  #installScene(
+    scene: SceneModel | null,
+    preserveCamera = false,
+    previousScene: SceneModel | null = null,
+  ): void {
     this.#cancelFallback();
     if (!scene) {
       this.#renderedPoints = 0;
@@ -504,7 +535,9 @@ export class RendererController {
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
     this.#updateHomeDistances();
-    if (preserveCamera) this.setCamera(this.#camera, false);
+    if (preserveCamera && previousScene) {
+      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), false);
+    }
     else this.fit(false);
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
