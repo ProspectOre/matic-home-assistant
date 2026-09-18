@@ -1656,6 +1656,28 @@ class CleaningPlanManager:
         if duration is not None:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
+        last_run = robot.get("last_run")
+        if (
+            isinstance(last_run, dict)
+            and last_run.get("run_id") == pending.get("run_id")
+            and last_run.get("plan_id") == plan_id
+        ):
+            room_count = _stored_count(last_run, "room_count")
+            completed_count = _stored_count(last_run, "completed_room_count")
+            if completed_count < room_count:
+                completed_count += 1
+                last_run["completed_room_count"] = completed_count
+            if (
+                completed_count >= room_count
+                and last_run.get("outcome") in {"running", "cancelled", "unverified"}
+            ):
+                last_run.update(
+                    {
+                        "outcome": "completed",
+                        "reason_code": "all_rooms_verified",
+                        "cause": "verified_completion",
+                    }
+                )
         robot.pop("pending_native_reconciliation", None)
         await self._async_save_native_history(serial_number, before)
         self._notify_listeners(serial_number)
