@@ -598,7 +598,7 @@ withdrawn_evidence_at() {
   delivery_at="$(jq -r --arg key "$key" '
     [.[] | select(.clean | not)
       | select((if .source == "review" then "review:" + .id else (.id | sub("^issue-comment-"; "issue-comment:")) end) == $key)
-      | .at] | sort | last // ""' <<< "$deliveries")"
+      | (.at // .updatedAt // .submittedAt // "")] | sort | last // ""' <<< "$deliveries")"
   if [[ -n "$delivery_at" ]]; then
     normalize_timestamp "$delivery_at"
     return 0
