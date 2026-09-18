@@ -3772,17 +3772,16 @@ async def _async_execute_rooms(
                 )
                 recovered_dispatch = None
                 if durable and index > 0 and prepared_dispatch is None:
-                    if checkpoint.get("phase") != "handoff":
-                        checkpoint.update(
-                            {
-                                "leg_index": index,
-                                "phase": "handoff",
-                                "completed_room_ids": sorted(completed_room_ids),
-                            }
-                        )
-                        await manager.async_set_recovery_checkpoint(
-                            serial_number, run_id, checkpoint
-                        )
+                    checkpoint.update(
+                        {
+                            "leg_index": index,
+                            "phase": "handoff",
+                            "completed_room_ids": sorted(completed_room_ids),
+                        }
+                    )
+                    await manager.async_set_recovery_checkpoint(
+                        serial_number, run_id, checkpoint
+                    )
                     if not await _async_wait_for_settled_leg_handoff(
                         hass,
                         entity_id,
