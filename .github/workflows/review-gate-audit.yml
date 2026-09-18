@@ -131,9 +131,8 @@ jobs:
 
           current_regular_comment_records() {
             local head_sha="$1"
-            local head_prefix="${head_sha:0:10}"
             gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
-              | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+              | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" '
                   def regular_heading:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -143,15 +142,15 @@ jobs:
                   def availability_notice:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-                  def exact_head:
-                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  def exact_full_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60" + $head + "\\x60");
                   [.[][]
                    | select((.user.login // "") == $bot)
                    | (.body // "") as $body
                    | select($body | regular_heading)
                    | select(($body | security_heading) | not)
                    | select(($body | availability_notice) | not)
-                   | select($body | exact_head)
+                   | select($body | exact_full_head)
                    | {id: ("issue-comment:" + (.id | tostring)),
                       at: (.updated_at // .created_at)}]'
           }
