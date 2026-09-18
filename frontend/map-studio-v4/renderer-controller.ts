@@ -1,5 +1,5 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
-import type { MapQuality, MapView, WorkspaceState } from "./contracts";
+import type { CameraPreference, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { canShowExactPose } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
 
@@ -48,6 +48,9 @@ interface RendererCallbacks {
     zoomPercent: number,
     origin?: CameraOrigin,
   ) => void;
+  readonly onCameraPreferences?: (
+    cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
+  ) => void;
   readonly onRoom?: (roomId: string) => void;
   readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
@@ -70,6 +73,84 @@ const qualityScale = (quality: MapQuality): number => {
     case "maximum":
     case "auto": return 1;
   }
+};
+
+const sceneCenter = (scene: SceneModel): readonly [number, number] => {
+  const meters = scene.metadata.metersPerCell;
+  return [
+    (scene.metadata.origin[0] + (scene.metadata.span[0] - 1) / 2) * meters,
+    (scene.metadata.origin[1] + (scene.metadata.span[1] - 1) / 2) * meters,
+  ];
+};
+
+const rebaseTarget = (
+  targetX: number,
+  targetZ: number,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+): readonly [number, number] => {
+  const previousCenter = sceneCenter(previousScene);
+  const nextCenter = sceneCenter(nextScene);
+  return [
+    targetX + (nextCenter[0] - previousCenter[0]),
+    targetZ + (previousCenter[1] - nextCenter[1]),
+  ];
+};
+
+const rebaseCameraTarget = (
+  camera: CameraState,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+): CameraState => {
+  const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
+  return {
+    ...camera,
+    // World X is measured from the scene centre in the opposite direction;
+    // world Z is measured from the scene centre in the same direction.
+    targetX,
+    targetZ,
+  };
+};
+
+const cameraPreferenceIsFit = (view: MapView, preference: CameraPreference | undefined): boolean => {
+  if (!preference) return true;
+  const top = view === "top";
+  return Math.abs(preference.zoom - 1) < 0.001
+    && Math.abs(preference.targetX) < 0.001
+    && Math.abs(preference.targetZ) < 0.001
+    && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
+    && (top || Math.abs(preference.pitch - 0.82) < 0.001);
+};
+
+const rebaseCameraPreferences = (
+  cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+  previousHome: Readonly<Record<MapView, number>>,
+  nextHome: Readonly<Record<MapView, number>>,
+): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
+  Object.entries(cameras).map(([view, camera]) => {
+    if (!camera || cameraPreferenceIsFit(view as MapView, camera)) return [view, camera];
+    const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
+    const oldHome = previousHome[view as MapView];
+    const newHome = nextHome[view as MapView];
+    const zoom = oldHome > 0 && newHome > 0
+      ? camera.zoom * newHome / oldHome
+      : camera.zoom;
+    return [view, { ...camera, targetX, targetZ, zoom }];
+  }),
+) as Partial<Record<MapView, CameraPreference>>;
+
+const sceneContext = (state: WorkspaceState): string => {
+  const entry = state.resources.entry;
+  return [
+    state.dataMode,
+    state.selection.floorId,
+    entry?.entryId ?? "none",
+    entry?.selectedFloorOrdinal ?? "none",
+    entry?.mapFloorOrdinal ?? "none",
+    entry?.mapSessionKey ?? "none",
+  ].join("|");
 };
 
 // Matches the literal colours the overlay shipped with, so nothing changes
@@ -200,6 +281,7 @@ export class RendererController {
   #maxPointPixels: WebGLUniformLocation | null = null;
   #state: WorkspaceState | null = null;
   #scene: SceneModel | null = null;
+  #sceneContext: string | null = null;
   #frame: number | null = null;
   #fallbackFrame: number | null = null;
   #resizeObserver: ResizeObserver;
@@ -318,11 +400,29 @@ export class RendererController {
   setState(state: WorkspaceState): void {
     if (this.#disposed) return;
     const previous = this.#state;
+    const previousScene = this.#scene;
     this.#state = state;
     const scene = state.resources.scene.value;
+    let rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null;
     if (scene !== this.#scene) {
+      // Delta revisions replace the immutable scene object while retaining the
+      // same map context. Keep a user-adjusted camera for those updates; a
+      // changed floor/session context must still start from a safe fitted view.
+      const sameSceneContext = this.#scene !== null
+        && previous !== null
+        && this.#sceneContext === sceneContext(state);
+      const preserveCamera = sameSceneContext && !this.#fitActive;
       this.#scene = scene;
-      this.#installScene(scene);
+      this.#sceneContext = scene ? sceneContext(state) : null;
+      rebasedPreferences = this.#installScene(
+        scene,
+        preserveCamera,
+        previousScene,
+        sameSceneContext,
+        previous
+          ? previous.workflow === "draw" ? "top" : previous.view
+          : null,
+      );
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -332,10 +432,12 @@ export class RendererController {
     const leftDraw = previous?.workflow === "draw" && state.workflow !== "draw";
     if (!previous || previous.view !== state.view || enteredDraw || leftDraw) {
       const view = state.workflow === "draw" ? "top" : state.view;
-      this.#camera = this.#preferredCamera(view, state);
-      this.#fitActive = this.#preferenceIsFit(view, state);
+      this.#camera = this.#preferredCamera(view, state, rebasedPreferences);
+      this.#fitActive = this.#preferenceIsFit(view, state, rebasedPreferences);
     }
-    if (state.workflow === "draw" && previous?.draw.zoomPercent !== state.draw.zoomPercent) {
+    if (state.workflow === "draw"
+      && previous?.draw.zoomPercent !== state.draw.zoomPercent
+      && Math.round(this.#homeTop / this.#camera.distance * 100) !== state.draw.zoomPercent) {
       this.#camera = {
         ...this.#camera,
         orthographic: true,
@@ -347,13 +449,20 @@ export class RendererController {
         && Math.abs(this.#camera.targetZ) < 0.001
         && Math.abs(angle(this.#camera.yaw)) < 0.001;
     }
+    // Publish only the final effective camera. Its percentage also updates the
+    // draw control; echoing that rounded percentage must not move the camera.
+    if (rebasedPreferences || enteredDraw) this.#notifyCamera();
     this.requestRender();
   }
 
-  #preferredCamera(view: MapView, state: WorkspaceState): CameraState {
+  #preferredCamera(
+    view: MapView,
+    state: WorkspaceState,
+    rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null,
+  ): CameraState {
     const top = view === "top";
     const home = top ? this.#homeTop : this.#homeThree;
-    const preference = state.cameras[view];
+    const preference = rebasedPreferences?.[view] ?? state.cameras[view];
     if (!preference) {
       return top
         ? { yaw: 0, pitch: Math.PI / 2 - 0.018, distance: home, targetX: 0, targetZ: 0, orthographic: true }
@@ -373,15 +482,13 @@ export class RendererController {
     };
   }
 
-  #preferenceIsFit(view: MapView, state: WorkspaceState): boolean {
-    const preference = state.cameras[view];
-    if (!preference) return true;
-    const top = view === "top";
-    return Math.abs(preference.zoom - 1) < 0.001
-      && Math.abs(preference.targetX) < 0.001
-      && Math.abs(preference.targetZ) < 0.001
-      && Math.abs(angle(preference.yaw - (top ? 0 : -Math.PI / 4))) < 0.001
-      && (top || Math.abs(preference.pitch - 0.82) < 0.001);
+  #preferenceIsFit(
+    view: MapView,
+    state: WorkspaceState,
+    rebasedPreferences: Partial<Record<MapView, CameraPreference>> | null = null,
+  ): boolean {
+    const preference = rebasedPreferences?.[view] ?? state.cameras[view];
+    return cameraPreferenceIsFit(view, preference);
   }
 
   #compile(type: number, source: string): WebGLShader {
@@ -481,22 +588,58 @@ export class RendererController {
     }
   }
 
-  #installScene(scene: SceneModel | null): void {
+  #installScene(
+    scene: SceneModel | null,
+    preserveCamera = false,
+    previousScene: SceneModel | null = null,
+    rebasePreferences = false,
+    preferenceView: MapView | null = null,
+  ): Partial<Record<MapView, CameraPreference>> | null {
     this.#cancelFallback();
     if (!scene) {
       this.#renderedPoints = 0;
       this.requestRender();
-      return;
+      return null;
     }
     const [spanX, spanY] = scene.metadata.span;
     const meters = scene.metadata.metersPerCell;
     const width = spanX * meters;
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
+    const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
     this.#updateHomeDistances();
-    this.fit(false);
+    if (preserveCamera && previousScene) {
+      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), false);
+    }
+    else this.fit(false, preferenceView ?? undefined);
+    const state = this.#state;
+    if (rebasePreferences && previousScene && state) {
+      const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
+      const preferences = rebaseCameraPreferences(
+        state.cameras,
+        previousScene,
+        scene,
+        previousHome,
+        nextHome,
+      );
+      const effectiveView = preferenceView
+        ?? (state.workflow === "draw" ? "top" : state.view);
+      const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
+      preferences[effectiveView] = {
+        yaw: this.#camera.yaw,
+        pitch: this.#camera.pitch,
+        zoom: home / Math.max(0.2, this.#camera.distance),
+        targetX: this.#camera.targetX,
+        targetZ: this.#camera.targetZ,
+      };
+      this.#callbacks.onCameraPreferences?.(preferences);
+      if (this.#mode === "webgl2") this.#uploadScene(scene);
+      else this.#buildFallback(scene);
+      return preferences;
+    }
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
+    return null;
   }
 
   #updateHomeDistances(): void {
@@ -953,8 +1096,11 @@ export class RendererController {
     if (roomId) this.#callbacks.onRoom?.(roomId);
   }
 
-  fit(notify = true): void {
-    const top = this.#state?.view === "top" || this.#state?.workflow === "draw";
+  fit(
+    notify = true,
+    view: MapView = this.#state?.workflow === "draw" ? "top" : this.#state?.view ?? "three",
+  ): void {
+    const top = view === "top";
     this.#camera = top
       ? { yaw: 0, pitch: Math.PI / 2 - 0.018, distance: this.#homeTop, targetX: 0, targetZ: 0, orthographic: true }
       : { yaw: -Math.PI / 4, pitch: 0.82, distance: this.#homeThree, targetX: 0, targetZ: 0, orthographic: false };

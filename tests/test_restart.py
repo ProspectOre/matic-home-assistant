@@ -119,6 +119,99 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
 @pytest.mark.parametrize(
     "case",
     [
+        "valid",
+        "bad_index",
+        "replacement",
+        "timeout",
+        "cancel",
+        "stop",
+        "stop_during_wait",
+        "missing_history",
+        "bad_history",
+        "changed_history",
+        "history_error",
+        "enriched_history",
+    ],
+)
+async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
+    hass, recovery_state, case
+):
+    """A shutdown during settings handoff resumes the next leg, not the old one."""
+    manager, entry, checkpoint, room = recovery_state
+    next_room = CleaningRoom("office", "Office", "mop", "standard")
+    checkpoint.update(
+        {
+            "phase": "handoff",
+            "handoff_history": [],
+            "leg_index": 0 if case == "bad_index" else 1,
+            "rooms": [asdict(room), asdict(next_room)],
+            "completed_room_ids": [] if case == "bad_index" else [room.room_id],
+            **({"stop_intent": "after_room"} if case == "stop" else {}),
+        }
+    )
+    if case == "missing_history":
+        checkpoint.pop("handoff_history")
+    elif case == "bad_history":
+        checkpoint["handoff_history"] = [None]
+    elif case in {"changed_history", "enriched_history"}:
+        key = b"synthetic-history-key"
+        entry.runtime_data.client.async_get_cleaning_session_records.return_value = (
+            SimpleNamespace(key=key, session=SimpleNamespace(enriched=True)),
+        )
+        if case == "enriched_history":
+            checkpoint["handoff_history"] = [hashlib.sha256(key).hexdigest()]
+    elif case == "history_error":
+        entry.runtime_data.client.async_get_cleaning_session_records.side_effect = (
+            CannotConnectError("unavailable")
+        )
+    manager._robot("serial")["last_run"]["room_count"] = 2
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = (
+        b"replacement" if case == "replacement" else b""
+    )
+    hass.states.async_set(checkpoint["entity_id"], "idle")
+
+    async def execute(*_args, **kwargs):
+        assert kwargs["recovery"]["recovery_checkpoint"]["phase"] == "handoff"
+        assert kwargs["recovered_dispatch"] is None
+        assert kwargs["handoff_expected_identity"] == b""
+
+    async def wait_for_handoff(*_args, **_kwargs):
+        assert _kwargs["finish_room_event"] is manager.finish_room_event("serial")
+        if case == "cancel":
+            manager.begin_managed_motion("serial")
+        if case == "stop_during_wait":
+            manager.finish_room_event("serial").set()
+        return case != "timeout"
+
+    with (
+        patch(
+            "custom_components.matic_robot.restart._async_wait_for_settled_leg_handoff",
+            AsyncMock(side_effect=wait_for_handoff),
+        ) as settled,
+        patch(
+            "custom_components.matic_robot.restart._async_execute_rooms",
+            side_effect=execute,
+        ) as runner,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+
+    if case in {"valid", "timeout", "cancel", "stop_during_wait", "enriched_history"}:
+        settled.assert_awaited_once()
+    else:
+        settled.assert_not_awaited()
+    if case in {"valid", "enriched_history"}:
+        runner.assert_awaited_once()
+    else:
+        runner.assert_not_awaited()
+    if case == "stop_during_wait":
+        assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
+@pytest.mark.parametrize(
+    "case",
+    [
         "dispatching",
         "starting",
         "no_identity",
@@ -221,8 +314,9 @@ async def test_checkpoint_load_preserves_active_room_and_hides_private_state(
     assert manager.snapshot("serial")["completed_runs"] == 1
 
 
+@pytest.mark.parametrize("history_state", ["available", "missing", "error"])
 async def test_executor_checkpoints_dispatch_and_disables_prefetch(
-    hass, recovery_state
+    hass, recovery_state, history_state
 ):
     manager, _, checkpoint, room = recovery_state
     await manager.async_finish_run("serial", "run", "unverified", "test", 0)
@@ -233,6 +327,15 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         saved = manager.recovery_run("serial")
         assert saved["recovery_checkpoint"]["phase"] == "dispatching"
         assert kwargs["prefetch_next"] is None
+        if args[5] == [room2]:
+            expected = hashlib.sha256(b"new").hexdigest()
+            assert kwargs["expected_dispatch_history"] == frozenset({expected})
+            assert saved["recovery_checkpoint"]["handoff_history"] == [expected]
+        if args[5] == [room]:
+            # Model the native leg ending before the next settings boundary;
+            # the durable runner must wait for this settled handoff.
+            hass.states.async_set(checkpoint["entity_id"], "idle")
+            kwargs["on_native_identity"](b"new")
         dispatch = _PreparedRoomDispatch(
             tuple(args[5]),
             frozenset({b"old"}),
@@ -261,8 +364,19 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             [room, room2],
             intelligent=False,
             floor_token=checkpoint["floor_token"],
-            session_identity=AsyncMock(return_value=b"new"),
+            session_identity=AsyncMock(return_value=b""),
+            session_history=(
+                None
+                if history_state == "missing"
+                else AsyncMock(side_effect=CannotConnectError("unavailable"))
+                if history_state == "error"
+                else AsyncMock(return_value=(SimpleNamespace(key=b"new"),))
+            ),
         )
+    if history_state != "available":
+        assert len(seen) == 1
+        assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
+        return
     assert [value["leg_index"] for value in seen] == [0, 1]
     assert all(
         value["phase"] == "accepted" and value["completion_deadline"] for value in seen

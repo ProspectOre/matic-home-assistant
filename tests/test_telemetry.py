@@ -149,6 +149,12 @@ async def test_cleaning_session_records_keep_opaque_keys_in_memory() -> None:
     client.async_get_tracked_collection_entries.assert_awaited_once_with(
         "coverage_session_history", limit=64
     )
+    with pytest.raises(api_module.MaticError, match="incomplete or undecodable"):
+        await client.async_get_cleaning_session_records(strict=True)
+    client.async_get_tracked_collection_entries.return_value = (
+        client.async_get_tracked_collection_entries.return_value[0],
+    )
+    assert await client.async_get_cleaning_session_records(strict=True) == records
 
 
 async def test_complete_telemetry_snapshot_omits_sensitive_payloads() -> None:

@@ -117,6 +117,13 @@ SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
 SESSION_HISTORY_TIMEOUT_SECONDS = 300
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
+# A completed native leg can leave the robot in ``returning`` while the
+# firmware finishes its dock/settle handoff. Do not dispatch a different
+# settings leg during that window: the native identity is still transient and
+# a failed dispatch would otherwise enter STOP cleanup and start the OEM
+# ten-minute stop countdown.
+LEG_HANDOFF_POLL_SECONDS = ROOM_STATUS_REFRESH_SECONDS
+LEG_HANDOFF_TIMEOUT_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -547,8 +554,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             active_session=(
                 entry.runtime_data.client.async_has_active_cleaning_session
             ),
-            session_history=(
-                entry.runtime_data.client.async_get_cleaning_session_records
+            session_history=partial(
+                entry.runtime_data.client.async_get_cleaning_session_records,
+                strict=True,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -637,8 +645,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             active_session=(
                 entry.runtime_data.client.async_has_active_cleaning_session
             ),
-            session_history=(
-                entry.runtime_data.client.async_get_cleaning_session_records
+            session_history=partial(
+                entry.runtime_data.client.async_get_cleaning_session_records,
+                strict=True,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -1131,6 +1140,8 @@ async def _async_dispatch_leg_command(
     on_dispatch: Callable[[], None] | None = None,
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
+    expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline."""
     leg = tuple(rooms)
@@ -1139,6 +1150,12 @@ async def _async_dispatch_leg_command(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await _async_session_history_baseline(session_history)
+    if expected_dispatch_history is not None and (
+        history_baseline is None
+        or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
+        != expected_dispatch_history
+    ):
+        raise RoomTakenOverError("Native history changed during the handoff boundary")
     identity_baseline: bytes | None = None
     for attempt in range(ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
         identity_baseline = await _async_read_session_identity(session_identity)
@@ -1150,6 +1167,11 @@ async def _async_dispatch_leg_command(
         raise RoomTakenOverError(
             "The native task before dispatch could not be verified"
         )
+    if (
+        expected_dispatch_identity is not None
+        and identity_baseline != expected_dispatch_identity
+    ):
+        raise RoomTakenOverError("The native task changed during the handoff boundary")
     if floor_is_current is not None and not floor_is_current():
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
@@ -1216,6 +1238,8 @@ async def _async_run_room(
     | None = None,
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
+    expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1279,6 +1303,8 @@ async def _async_run_room(
                 on_dispatch=mark_dispatch_attempted,
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
+                expected_dispatch_identity=expected_dispatch_identity,
+                expected_dispatch_history=expected_dispatch_history,
             )
         else:
             if dispatch.rooms != (room,):
@@ -1726,6 +1752,8 @@ async def _async_run_leg(
     recovered_room_id: str | None = None,
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
+    expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1763,6 +1791,8 @@ async def _async_run_leg(
             checkpoint_dispatch=checkpoint_dispatch,
             provenance=provenance,
             recovered_suspend_reason=recovered_suspend_reason,
+            expected_dispatch_identity=expected_dispatch_identity,
+            expected_dispatch_history=expected_dispatch_history,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1834,6 +1864,8 @@ async def _async_run_leg(
                 on_dispatch=mark_dispatch_attempted,
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
+                expected_dispatch_identity=expected_dispatch_identity,
+                expected_dispatch_history=expected_dispatch_history,
             )
         else:
             if dispatch.rooms != tuple(leg):
@@ -2696,6 +2728,88 @@ async def _async_wait_for_active_session_resolution(
         raise PlanCancelledError
 
 
+async def _async_wait_for_settled_leg_handoff(
+    hass: HomeAssistant,
+    entity_id: str,
+    cancel_event: asyncio.Event | None,
+    *,
+    refresh: Callable[[], Awaitable[None]] | None = None,
+    identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
+    expected_identity: bytes | None = None,
+    reject_new_identity: bool = False,
+    timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
+    finish_room_event: asyncio.Event | None = None,
+) -> bool:
+    """Wait until a completed leg can safely hand off to new settings.
+
+    A native completion record only proves that the prior mission ended; the
+    vacuum may still be returning and its session identity may remain visible
+    for a short period. Dispatching the next settings leg in that window is
+    rejected by firmware and the generic failure cleanup sends STOP, which
+    starts the long OEM stop countdown. A stable idle state is sufficient for
+    continuation (the dock is not a required boundary), while an unknown or
+    still-active native identity is deliberately held until it clears.
+
+    ``False`` is a bounded timeout or graceful stop, not a command failure. The caller
+    leaves the remaining legs unattempted and lets normal terminal accounting
+    describe the run without issuing a second STOP.
+    """
+    deadline = monotonic() + max(0.0, timeout_seconds)
+    settled_states = {"docked", "charging", "idle"}
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PlanCancelledError
+        if finish_room_event is not None and finish_room_event.is_set():
+            return False
+        if refresh is not None:
+            try:
+                await refresh()
+            except (MaticError, HomeAssistantError) as err:
+                _LOGGER.debug(
+                    "Matic leg handoff refresh unavailable (%s)",
+                    type(err).__name__,
+                )
+        state = hass.states.get(entity_id)
+        if state is not None and state.state == "error":
+            raise _validation_error(
+                "The selected Matic robot reported an error", "robot_error"
+            )
+        identity = await _async_read_session_identity(identity_reader)
+        if identity and (
+            reject_new_identity
+            or (expected_identity is not None and identity != expected_identity)
+        ):
+            raise RoomTakenOverError("The returning native task was replaced")
+        if (
+            state is not None
+            and state.state in settled_states
+            and (identity_reader is None or identity == b"")
+        ):
+            return True
+        if monotonic() >= deadline:
+            _LOGGER.warning(
+                "Matic leg handoff did not settle before the bounded timeout"
+            )
+            return False
+        events = [
+            event for event in (cancel_event, finish_room_event) if event is not None
+        ]
+        if not events:
+            await asyncio.sleep(LEG_HANDOFF_POLL_SECONDS)
+            continue
+        waiters = [asyncio.create_task(event.wait()) for event in events]
+        try:
+            await asyncio.wait(
+                waiters,
+                timeout=LEG_HANDOFF_POLL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
+
+
 def _guard_native_commands(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     manager: CleaningPlanManager,
@@ -3550,6 +3664,7 @@ async def _async_execute_rooms(
     get_activity_run_id: Callable[[], str | None] | None = None,
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
+    handoff_expected_identity: bytes | None = None,
 ) -> None:
     """Execute every resolved room with safe cancellation semantics."""
     lock = manager.lock(serial_number)
@@ -3571,7 +3686,8 @@ async def _async_execute_rooms(
         motion_token = manager.begin_managed_motion(serial_number)
         cleanup_stop_sent = False
         dock_confirmation_scheduled = False
-        native_identity: bytes | None = None
+        native_identity: bytes | None = handoff_expected_identity
+        expected_dispatch_identity = handoff_expected_identity
         run_id = str(recovery["run_id"]) if recovery else uuid4().hex
         run_started_at = (
             str(recovery["started_at"]) if recovery else dt_util.utcnow().isoformat()
@@ -3696,6 +3812,52 @@ async def _async_execute_rooms(
                     leg[0].room_id, None
                 )
                 recovered_dispatch = None
+                expected_dispatch_history = None
+                if durable and index > 0 and prepared_dispatch is None:
+                    handoff_history = checkpoint.get("handoff_history")
+                    if isinstance(handoff_history, list):
+                        expected_dispatch_history = frozenset(handoff_history)
+                    else:
+                        # No durable evidence boundary means we cannot prove
+                        # that an intervening native mission did not complete.
+                        break
+                    checkpoint.update(
+                        {
+                            "leg_index": index,
+                            "phase": "handoff",
+                            "completed_room_ids": sorted(completed_room_ids),
+                        }
+                    )
+                    await manager.async_set_recovery_checkpoint(
+                        serial_number, run_id, checkpoint
+                    )
+                    if finish_room_event.is_set():
+                        break
+                    if not await _async_wait_for_settled_leg_handoff(
+                        hass,
+                        entity_id,
+                        cancel_event,
+                        refresh=refresh,
+                        identity_reader=session_identity,
+                        expected_identity=native_identity,
+                        finish_room_event=finish_room_event,
+                    ):
+                        # The previous native leg is complete, but the robot
+                        # never reached a safe handoff state. Leave the
+                        # remaining settings legs unattempted; issuing STOP
+                        # here would restart the OEM stop countdown we just
+                        # waited out.
+                        break
+                    # The settled handoff establishes an empty ownership
+                    # boundary. Recheck that boundary immediately before the
+                    # next dispatch so a new external mission cannot be
+                    # adopted as our baseline.
+                    native_identity = b""
+                    expected_dispatch_identity = b""
+                    if finish_room_event.is_set():
+                        # Honor a graceful finish request before dispatching a
+                        # new settings-boundary leg.
+                        break
                 if durable and prepared_dispatch is None:
                     checkpoint.update(
                         {
@@ -3780,6 +3942,8 @@ async def _async_execute_rooms(
                     floor_is_current=floor_is_current,
                     floor_token=floor_token,
                     session_identity=session_identity,
+                    expected_dispatch_identity=expected_dispatch_identity,
+                    expected_dispatch_history=expected_dispatch_history,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
                     record_room_completed=record_room_completion,
@@ -3800,6 +3964,7 @@ async def _async_execute_rooms(
                         else None
                     ),
                 )
+                expected_dispatch_identity = None
                 if not completion_verified:
                     break
                 if cancel_event.is_set() or not manager.managed_motion_is_current(
@@ -3815,6 +3980,31 @@ async def _async_execute_rooms(
                         )
                         cleanup_stop_sent = _stop_is_pending(manager, serial_number)
                     break
+                if durable and index + 1 < len(legs):
+                    # The verified leg is complete, but the native task may
+                    # still be returning. Persist the next leg before the
+                    # bounded handoff wait so restart recovery can resume the
+                    # queue instead of treating the prior verifying leg as
+                    # the only recoverable work.
+                    handoff_keys = await _async_session_history_baseline(
+                        session_history
+                    )
+                    checkpoint.update(
+                        {
+                            "leg_index": index + 1,
+                            "phase": "handoff",
+                            "completed_room_ids": sorted(completed_room_ids),
+                            "handoff_history": sorted(
+                                hashlib.sha256(key).hexdigest() for key in handoff_keys
+                            )
+                            if handoff_keys is not None
+                            else None,
+                        }
+                    )
+                    checkpoint.pop("verification_deadline", None)
+                    await manager.async_set_recovery_checkpoint(
+                        serial_number, run_id, checkpoint
+                    )
             completed_room_count = len(completed_room_ids)
             if finish_room_event.is_set() and completed_room_count < len(chosen):
                 run_outcome = "cancelled"
@@ -4026,7 +4216,16 @@ async def _async_execute_rooms(
                                 "Unable to confirm aborted native session ended (%s)",
                                 type(cleanup_error).__name__,
                             )
-                    if not session_ended:
+                    # Returning is already a firmware-owned terminal motion
+                    # state. Sending STOP here can replace a natural handoff
+                    # with the OEM ten-minute stop countdown, leaving later
+                    # settings legs unattempted. Only stop when the robot is
+                    # not already on its way home.
+                    if not session_ended and (
+                        current is None
+                        or current.state != "returning"
+                        or current.attributes.get("low_charge") is True
+                    ):
                         await _async_cleanup_managed_motion(
                             outer_command, motion_token, dispatch_attempted=True
                         )

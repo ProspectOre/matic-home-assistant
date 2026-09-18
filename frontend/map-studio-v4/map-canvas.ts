@@ -333,6 +333,12 @@ export class MaticMapCanvasV4 extends LitElement {
           });
         }
       },
+      onCameraPreferences: (cameras) => {
+        for (const view of ["top", "three"] as const) {
+          const camera = cameras[view];
+          if (camera) this.#intent({ type: "set-camera", view, camera });
+        }
+      },
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
       onProblem: () => this.#action("renderer-problem"),
     });

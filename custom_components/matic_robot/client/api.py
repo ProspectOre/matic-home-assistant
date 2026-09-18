@@ -703,17 +703,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_get_cleaning_session_records(
         self,
+        *,
+        strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
-        return tuple(
+        records = tuple(
             CleaningSessionRecord(entry.key, session)
             for entry in entries
             if entry.key
             and (session := _decode_cleaning_session(entry.value)) is not None
         )
+        if strict and len(records) != len(entries):
+            raise MaticError("Native history is incomplete or undecodable")
+        return records
 
     async def async_get_cleaning_session_images(
         self,

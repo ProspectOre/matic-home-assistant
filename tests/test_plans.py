@@ -77,6 +77,7 @@ from custom_components.matic_robot.services import (
     _async_verify_room_completion,
     _async_wait_for_active_session_resolution,
     _async_wait_for_room_outcome,
+    _async_wait_for_settled_leg_handoff,
     _async_wait_for_vacuum_state,
     _entry_for_entity,
     _PreparedRoomDispatch,
@@ -283,6 +284,7 @@ async def test_native_stop_in_place_is_a_controlled_partial_run(hass) -> None:
     assert last_run["outcome"] == "unverified"
     assert last_run["reason_code"] == "stopped_in_place"
     assert last_run["completed_room_count"] == 0
+    await hass.async_block_till_done()
     assert events[0].data["cause"] == "unknown"
     assert events[0].data["completed_room_count"] == 0
 
@@ -5833,6 +5835,333 @@ async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> No
     assert legs_seen == [[rooms[0], rooms[1]], [rooms[2]]]
 
 
+async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) -> None:
+    """A settings boundary waits for return settlement without sending STOP."""
+    states = iter(
+        [
+            SimpleNamespace(state="returning"),
+            SimpleNamespace(state="idle"),
+        ]
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(side_effect=lambda _entity_id: next(states))
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+
+    assert await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        asyncio.Event(),
+        identity_reader=AsyncMock(return_value=b""),
+        timeout_seconds=1,
+    )
+    assert fake_hass.states.get.call_count == 2
+
+
+async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
+    hass,
+) -> None:
+    """Handoff fails closed for cancellation, refresh errors, and takeover."""
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    cancelled = asyncio.Event()
+    cancelled.set()
+    with pytest.raises(PlanCancelledError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass, "vacuum.matic", cancelled, timeout_seconds=1
+        )
+
+    with pytest.raises(HomeAssistantError):
+        await _async_wait_for_settled_leg_handoff(
+            SimpleNamespace(
+                states=SimpleNamespace(
+                    get=MagicMock(return_value=SimpleNamespace(state="error"))
+                )
+            ),
+            "vacuum.matic",
+            None,
+            refresh=AsyncMock(side_effect=MaticError("refresh failed")),
+            identity_reader=AsyncMock(return_value=b""),
+            timeout_seconds=1,
+        )
+
+    with pytest.raises(RoomTakenOverError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            None,
+            identity_reader=AsyncMock(return_value=b"replacement"),
+            expected_identity=b"original",
+            timeout_seconds=1,
+        )
+
+    with pytest.raises(RoomTakenOverError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            None,
+            identity_reader=AsyncMock(return_value=b"replacement"),
+            reject_new_identity=True,
+            timeout_seconds=1,
+        )
+
+
+async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> None:
+    """A returning robot reaches the bounded handoff timeout without STOP."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    assert not await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        identity_reader=AsyncMock(return_value=b"active"),
+        timeout_seconds=0.001,
+    )
+
+
+async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None:
+    """Cancellation while waiting aborts the handoff without cleanup."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 1
+    )
+    cancel_event = asyncio.Event()
+    hass.loop.call_soon(cancel_event.set)
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    with pytest.raises(PlanCancelledError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            cancel_event,
+            identity_reader=AsyncMock(return_value=b"active"),
+            timeout_seconds=1,
+        )
+
+
+@pytest.mark.parametrize("with_cancel", [False, True])
+async def test_settled_handoff_wakes_on_graceful_stop(
+    hass, monkeypatch, with_cancel
+) -> None:
+    """A stop wakes the real waiter promptly even while the robot returns."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 60
+    )
+    finish = asyncio.Event()
+    observed = asyncio.Event()
+
+    async def identity():
+        observed.set()
+        return b"previous"
+
+    hass.states.async_set("vacuum.matic", "returning")
+    waiting = asyncio.create_task(
+        _async_wait_for_settled_leg_handoff(
+            hass,
+            "vacuum.matic",
+            asyncio.Event() if with_cancel else None,
+            identity_reader=identity,
+            expected_identity=b"previous",
+            finish_room_event=finish,
+            timeout_seconds=720,
+        )
+    )
+    await observed.wait()
+    finish.set()
+    assert await asyncio.wait_for(waiting, 1) is False
+
+
+@pytest.mark.parametrize("settled", [False, True, "pre_stop", "during_wait"])
+async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
+    hass, settled
+) -> None:
+    """A blocked or stopped boundary leaves remaining legs unattempted."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
+    sender = AsyncMock()
+    if settled == "pre_stop":
+        save_checkpoint = manager.async_set_recovery_checkpoint
+
+        async def save_then_stop(*args, **kwargs):
+            await save_checkpoint(*args, **kwargs)
+            if args[2].get("phase") == "handoff":
+                manager.finish_room_event("serial").set()
+
+        manager.async_set_recovery_checkpoint = save_then_stop
+
+    async def complete_first_leg(*args, **kwargs) -> bool:
+        kwargs["record_room_completed"](args[5][0])
+        return True
+
+    async def block_handoff(*_args, **_kwargs) -> bool:
+        recovery = manager.recovery_run("serial")
+        assert recovery is not None
+        assert recovery["recovery_checkpoint"]["phase"] == "handoff"
+        assert recovery["recovery_checkpoint"]["leg_index"] == 1
+        if settled is True:
+            manager.finish_room_event("serial").set()
+        if settled == "during_wait":
+            hass.states.async_set("vacuum.matic", "returning")
+            hass.loop.call_soon(manager.finish_room_event("serial").set)
+            return await asyncio.wait_for(
+                _async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
+            )
+        return settled is True
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_run_leg",
+            AsyncMock(side_effect=complete_first_leg),
+        ) as run,
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            AsyncMock(side_effect=block_handoff),
+        ),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            managed_user_command=sender,
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=AsyncMock(return_value=b""),
+            session_history=AsyncMock(return_value=()),
+        )
+
+    run.assert_awaited_once()
+    sender.assert_not_awaited()
+    assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
+
+
+@pytest.mark.parametrize(
+    ("takeover_leg", "takeover"),
+    [
+        (0, "identity"),
+        (1, "identity"),
+        (2, "identity"),
+        (1, "history"),
+        (2, "history"),
+        (1, "history_error"),
+    ],
+)
+@pytest.mark.parametrize("multi_room", [False, True])
+async def test_settings_handoff_rechecks_identity_before_dispatch(
+    hass, takeover_leg, takeover, multi_room
+) -> None:
+    """Every settled boundary fences the real dispatcher, not its later reads."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        _room("Kitchen", "room-kitchen"),
+        _heavy_room("Study", "room-study"),
+        _room("Hall", "room-hall"),
+    ]
+    if multi_room:
+        rooms = [
+            item
+            for room in rooms
+            for item in (
+                room,
+                replace(
+                    room, room_id=room.room_id + "-extra", name=room.name + " Extra"
+                ),
+            )
+        ]
+    sender = AsyncMock()
+    identity = AsyncMock(return_value=b"")
+    history = AsyncMock(return_value=())
+    command = AsyncMock()
+    hass.services.async_register("vacuum", "send_command", command)
+    calls = 0
+
+    async def run_leg(*args, **kwargs) -> bool:
+        nonlocal calls
+        index = calls
+        calls += 1
+        assert kwargs["session_identity"] is identity
+        assert kwargs["expected_dispatch_identity"] == (
+            b"" if index > 0 or takeover_leg == 0 else None
+        )
+        if index == takeover_leg:
+            if takeover == "identity":
+                identity.return_value = b"replacement"
+            elif takeover == "history":
+                history.return_value = (SimpleNamespace(key=b"external-completed"),)
+            else:
+                history.side_effect = MaticError("history unavailable")
+            return await _async_run_leg(*args, **kwargs)
+        # Exercise the actual before/after-command reads for each successful
+        # earlier leg, allowing its newly created native identity.
+        identity.side_effect = [b"", b"managed-session"]
+        dispatch = await _async_dispatch_leg_command(
+            hass,
+            _call(hass),
+            "vacuum.matic",
+            args[5],
+            None,
+            None,
+            session_identity=identity,
+            expected_dispatch_identity=kwargs["expected_dispatch_identity"],
+        )
+        assert dispatch.native_identity == b"managed-session"
+        identity.side_effect = None
+        for room in args[5]:
+            kwargs["record_room_completed"](room)
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_run_leg",
+            AsyncMock(side_effect=run_leg),
+        ) as run,
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=True),
+        ),
+        pytest.raises(ServiceValidationError, match="original native cleaning task"),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            managed_user_command=sender,
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=identity,
+            session_history=history,
+            handoff_expected_identity=b"" if takeover_leg == 0 else None,
+        )
+
+    assert run.await_count == takeover_leg + 1
+    assert command.await_count == takeover_leg
+    sender.assert_not_awaited()
+
+
 async def test_execute_rooms_prepares_next_command_during_current_return(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -6402,18 +6731,19 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
 
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
 @pytest.mark.parametrize(
-    ("activity", "session", "expect_stop"),
+    ("activity", "session", "low_charge", "expect_stop"),
     [
-        ("docked", False, False),
-        ("cleaning", False, True),
-        ("returning", True, True),
-        ("charging", True, True),
-        ("docked", None, True),
-        ("charging", RuntimeError, True),
+        ("docked", False, False, False),
+        ("cleaning", False, False, True),
+        ("returning", True, False, False),
+        ("returning", True, True, True),
+        ("charging", True, False, True),
+        ("docked", None, False, True),
+        ("charging", RuntimeError, False, True),
     ],
 )
 async def test_execute_history_failure_does_not_orphan_verifying_room(
-    hass, failure, activity, session, expect_stop, monkeypatch
+    hass, failure, activity, session, low_charge, expect_stop, monkeypatch
 ):
     """The real runner must retire ownership even when verification aborts."""
     manager = CleaningPlanManager(hass)
@@ -6436,7 +6766,11 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         if reads == 1:
             return ()
         assert manager.snapshot("serial")["active_plan"]["status"] == "verifying"
-        hass.states.async_set("vacuum.matic", activity, {"current_area": "Kitchen"})
+        hass.states.async_set(
+            "vacuum.matic",
+            activity,
+            {"current_area": "Kitchen", "low_charge": low_charge},
+        )
         raise failure("synthetic verification abort")
 
     hass.services.async_register("vacuum", "send_command", send_command)
