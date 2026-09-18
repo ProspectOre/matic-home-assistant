@@ -6014,6 +6014,59 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
 
+async def test_settings_handoff_rechecks_identity_before_dispatch(hass) -> None:
+    """A replacement mission cannot pass the resumed handoff boundary."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
+    sender = AsyncMock()
+    identity = AsyncMock(return_value=b"replacement")
+    calls = 0
+
+    async def run_leg(*args, **kwargs) -> bool:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            kwargs["record_room_completed"](args[5][0])
+            return True
+        try:
+            await kwargs["session_identity"]()
+        except RoomTakenOverError:
+            identity.return_value = b""
+            await kwargs["session_identity"]()
+            raise
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_run_leg",
+            AsyncMock(side_effect=run_leg),
+        ) as run,
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=True),
+        ),
+        pytest.raises(RoomTakenOverError),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            managed_user_command=sender,
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=identity,
+            handoff_expected_identity=b"",
+        )
+
+    assert run.await_count == 2
+    sender.assert_not_awaited()
+
+
 async def test_execute_rooms_prepares_next_command_during_current_return(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
