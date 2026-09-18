@@ -247,6 +247,7 @@ async def async_recover_managed_run(
                 set_activity_run_id=runtime.client.activity_journal.set_run_id,
                 get_activity_run_id=runtime.client.activity_journal.current_run_id,
                 recovery=run,
+                recovered_dispatch=None,
             )
             reason = (
                 "home_assistant_shutdown"
