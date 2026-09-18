@@ -711,6 +711,21 @@ class CleaningPlanManager:
         if reconciliation_tasks:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
+    async def async_remove_robot(self, serial_number: str) -> None:
+        """Cancel work and erase one robot's private persisted planning data."""
+        await self.async_cancel_and_wait(serial_number)
+        for done in tuple(self._native_history_saves.get(serial_number, ())):
+            await done.wait()
+
+        async with self.lock(serial_number), self.command_lock(serial_number):
+            robots = self._data.get("robots")
+            if isinstance(robots, dict) and robots.pop(serial_number, None) is not None:
+                await self._store.async_save(self._data)
+
+        self._listeners.pop(serial_number, None)
+        self._stop_fences.pop(serial_number, None)
+        self._reconciliation_removal_pending.discard(serial_number)
+
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
         """Replace a managed run and serialize one independent command."""

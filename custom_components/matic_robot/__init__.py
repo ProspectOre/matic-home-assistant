@@ -672,12 +672,11 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
-    """Erase the removed robot's persisted firmware history and repairs."""
+    """Erase the removed robot's persisted private data."""
     plans: CleaningPlanManager | None = hass.data.get(DOMAIN, {}).get(DATA_PLAN_MANAGER)
     if plans is not None:
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
-        await plans.async_retire_recovery(serial_number, "config_entry_removed")
-        await plans.async_clear_stop_pending(serial_number)
+        await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
