@@ -921,6 +921,7 @@ fi
   if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
    jq -e --arg head "$head_sha" --arg prefix "$head_prefix" '
      (.action == "deleted" or .action == "edited") and
+     ([.comment.body // "", .changes.body.from // ""] | all(test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not)) and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] | any(
