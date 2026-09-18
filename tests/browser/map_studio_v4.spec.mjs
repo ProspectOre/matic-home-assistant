@@ -1446,7 +1446,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.after.yaw).toBe(result.before.yaw);
     expect(result.after.distance).toBe(result.before.distance);
     expect(result.notified).toMatchObject({ targetX: result.after.targetX, targetZ: result.after.targetZ });
-    expect(result.preferences).toMatchObject({ three: { targetX: 0.8, targetZ: -0.6 } });
+    expect(result.preferences.three.targetX).toBeCloseTo(0.8, 12);
+    expect(result.preferences.three.targetZ).toBeCloseTo(-0.6, 12);
     expect(result.preferences.three.zoom).not.toBe(result.previousThreeZoom);
   });
 
