@@ -57,8 +57,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert managed
     workflows = ROOT / ".github" / "workflows"
     assert all((ROOT / name).exists() for name in managed)
-    assert (workflows / "review-regular-review.yml").exists()
-    assert "pull_request_review:" in (workflows / "review-regular-review.yml").read_text()
+    review_workflow = workflows / "review-regular-review.yml"
+    assert review_workflow.exists()
+    assert "pull_request_review:" in review_workflow.read_text()
     assert not (workflows / "claude-review.yml").exists()
     evaluator_bytes = (ROOT / ".github" / "review-gate" / "evaluate.sh").read_bytes()
     evaluator = evaluator_bytes.decode()
