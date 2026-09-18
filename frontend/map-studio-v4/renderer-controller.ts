@@ -116,11 +116,18 @@ const rebaseCameraPreferences = (
   cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
   previousScene: SceneModel,
   nextScene: SceneModel,
+  previousHome: Readonly<Record<MapView, number>>,
+  nextHome: Readonly<Record<MapView, number>>,
 ): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
   Object.entries(cameras).map(([view, camera]) => {
     if (!camera) return [view, camera];
     const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
-    return [view, { ...camera, targetX, targetZ }];
+    const oldHome = previousHome[view as MapView];
+    const newHome = nextHome[view as MapView];
+    const zoom = oldHome > 0 && newHome > 0
+      ? camera.zoom * newHome / oldHome
+      : camera.zoom;
+    return [view, { ...camera, targetX, targetZ, zoom }];
   }),
 ) as Partial<Record<MapView, CameraPreference>>;
 
@@ -571,12 +578,20 @@ export class RendererController {
     const width = spanX * meters;
     const depth = spanY * meters;
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
+    const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
       this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), true);
       const state = this.#state;
       if (state) {
-        const preferences = rebaseCameraPreferences(state.cameras, previousScene, scene);
+        const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
+        const preferences = rebaseCameraPreferences(
+          state.cameras,
+          previousScene,
+          scene,
+          previousHome,
+          nextHome,
+        );
         const effectiveView = state.workflow === "draw" ? "top" : state.view;
         delete preferences[effectiveView];
         this.#callbacks.onCameraPreferences?.(preferences);

@@ -2,6 +2,8 @@
 
 - Map Studio keeps the current zoom, pan, and orbit while live scene revisions
   arrive during navigation.
+- Inactive camera preferences rebase their zoom when the scene bounds change,
+  so switching views keeps the same visual scale after a map refresh.
 - Initial loading and an explicit Fit map action still fit the complete scene.
 - Adds browser regression coverage for preserving a user-controlled camera when
   the live map scene is replaced.

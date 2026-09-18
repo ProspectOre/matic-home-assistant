@@ -5861,6 +5861,88 @@ async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) 
     assert fake_hass.states.get.call_count == 2
 
 
+async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
+    hass,
+) -> None:
+    """Handoff fails closed for cancellation, refresh errors, and takeover."""
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    cancelled = asyncio.Event()
+    cancelled.set()
+    with pytest.raises(PlanCancelledError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass, "vacuum.matic", cancelled, timeout_seconds=1
+        )
+
+    with pytest.raises(HomeAssistantError):
+        await _async_wait_for_settled_leg_handoff(
+            SimpleNamespace(
+                states=SimpleNamespace(
+                    get=MagicMock(return_value=SimpleNamespace(state="error"))
+                )
+            ),
+            "vacuum.matic",
+            None,
+            refresh=AsyncMock(side_effect=MaticError("refresh failed")),
+            identity_reader=AsyncMock(return_value=b""),
+            timeout_seconds=1,
+        )
+
+    with pytest.raises(RoomTakenOverError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            None,
+            identity_reader=AsyncMock(return_value=b"replacement"),
+            expected_identity=b"original",
+            timeout_seconds=1,
+        )
+
+
+async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> None:
+    """A returning robot reaches the bounded handoff timeout without STOP."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    assert not await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        identity_reader=AsyncMock(return_value=b"active"),
+        timeout_seconds=0.001,
+    )
+
+
+async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None:
+    """Cancellation while waiting aborts the handoff without cleanup."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 1
+    )
+    cancel_event = asyncio.Event()
+    hass.loop.call_soon(cancel_event.set)
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+    with pytest.raises(PlanCancelledError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            cancel_event,
+            identity_reader=AsyncMock(return_value=b"active"),
+            timeout_seconds=1,
+        )
+
+
 async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) -> None:
     """A blocked boundary leaves remaining legs due instead of sending STOP."""
     manager = CleaningPlanManager(hass)

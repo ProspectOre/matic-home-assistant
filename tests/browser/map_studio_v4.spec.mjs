@@ -1394,6 +1394,16 @@ test.describe("Map Studio v0.4 foundation", () => {
         onCameraPreferences: cameras => { preferences = cameras; },
       });
       const state = createGalleryState("ready");
+      state.cameras = {
+        ...state.cameras,
+        three: {
+          ...state.cameras.three,
+          zoom: 0.8,
+          targetX: 0.1,
+          targetZ: -0.2,
+        },
+      };
+      const previousThreeZoom = state.cameras.three.zoom;
       renderer.setState(state);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       renderer.setCamera({
@@ -1429,7 +1439,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       renderer.dispose();
       sceneCanvas.remove();
       overlayCanvas.remove();
-      return { before, after, notified, preferences };
+      return { before, after, notified, preferences, previousThreeZoom };
     });
     expect(result.after.targetX).toBeCloseTo(result.before.targetX + 0.7, 6);
     expect(result.after.targetZ).toBeCloseTo(result.before.targetZ - 0.4, 6);
@@ -1437,6 +1447,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.after.distance).toBe(result.before.distance);
     expect(result.notified).toMatchObject({ targetX: result.after.targetX, targetZ: result.after.targetZ });
     expect(result.preferences).toMatchObject({ three: { targetX: 0.8, targetZ: -0.6 } });
+    expect(result.preferences.three.zoom).not.toBe(result.previousThreeZoom);
   });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
