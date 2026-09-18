@@ -234,6 +234,7 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_recovery_cancelled"
                 return
+            identity = b""
             await _async_execute_rooms(
                 hass,
                 ServiceCall(hass, DOMAIN, run["service"], checkpoint["data"]),

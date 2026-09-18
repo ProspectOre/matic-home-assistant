@@ -3653,13 +3653,21 @@ async def _async_execute_rooms(
         native_identity: bytes | None = handoff_expected_identity
         dispatch_session_identity = session_identity
         if handoff_expected_identity is not None and session_identity is not None:
+            baseline_checked = False
 
             async def guarded_dispatch_identity() -> bytes | None:
+                nonlocal baseline_checked
                 observed = await session_identity()
-                if observed is not None and observed != handoff_expected_identity:
+                if (
+                    not baseline_checked
+                    and observed is not None
+                    and observed != handoff_expected_identity
+                ):
                     raise RoomTakenOverError(
                         "The native task changed during the handoff boundary"
                     )
+                if observed is not None:
+                    baseline_checked = True
                 return observed
 
             dispatch_session_identity = guarded_dispatch_identity
