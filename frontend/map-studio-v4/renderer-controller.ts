@@ -1,5 +1,5 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
-import type { MapQuality, MapView, WorkspaceState } from "./contracts";
+import type { CameraPreference, MapQuality, MapView, WorkspaceState } from "./contracts";
 import { canShowExactPose } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
 
@@ -48,6 +48,9 @@ interface RendererCallbacks {
     zoomPercent: number,
     origin?: CameraOrigin,
   ) => void;
+  readonly onCameraPreferences?: (
+    cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
+  ) => void;
   readonly onRoom?: (roomId: string) => void;
   readonly onViewport?: () => void;
   readonly onProblem?: (problem: string) => void;
@@ -72,28 +75,54 @@ const qualityScale = (quality: MapQuality): number => {
   }
 };
 
+const sceneCenter = (scene: SceneModel): readonly [number, number] => {
+  const meters = scene.metadata.metersPerCell;
+  return [
+    (scene.metadata.origin[0] + (scene.metadata.span[0] - 1) / 2) * meters,
+    (scene.metadata.origin[1] + (scene.metadata.span[1] - 1) / 2) * meters,
+  ];
+};
+
+const rebaseTarget = (
+  targetX: number,
+  targetZ: number,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+): readonly [number, number] => {
+  const previousCenter = sceneCenter(previousScene);
+  const nextCenter = sceneCenter(nextScene);
+  return [
+    targetX + (nextCenter[0] - previousCenter[0]),
+    targetZ + (previousCenter[1] - nextCenter[1]),
+  ];
+};
+
 const rebaseCameraTarget = (
   camera: CameraState,
   previousScene: SceneModel,
   nextScene: SceneModel,
 ): CameraState => {
-  const center = (scene: SceneModel): readonly [number, number] => {
-    const meters = scene.metadata.metersPerCell;
-    return [
-      (scene.metadata.origin[0] + (scene.metadata.span[0] - 1) / 2) * meters,
-      (scene.metadata.origin[1] + (scene.metadata.span[1] - 1) / 2) * meters,
-    ];
-  };
-  const previousCenter = center(previousScene);
-  const nextCenter = center(nextScene);
+  const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
   return {
     ...camera,
     // World X is measured from the scene centre in the opposite direction;
     // world Z is measured from the scene centre in the same direction.
-    targetX: camera.targetX + (nextCenter[0] - previousCenter[0]),
-    targetZ: camera.targetZ + (previousCenter[1] - nextCenter[1]),
+    targetX,
+    targetZ,
   };
 };
+
+const rebaseCameraPreferences = (
+  cameras: Readonly<Partial<Record<MapView, CameraPreference>>>,
+  previousScene: SceneModel,
+  nextScene: SceneModel,
+): Partial<Record<MapView, CameraPreference>> => Object.fromEntries(
+  Object.entries(cameras).map(([view, camera]) => {
+    if (!camera) return [view, camera];
+    const [targetX, targetZ] = rebaseTarget(camera.targetX, camera.targetZ, previousScene, nextScene);
+    return [view, { ...camera, targetX, targetZ }];
+  }),
+) as Partial<Record<MapView, CameraPreference>>;
 
 const sceneContext = (state: WorkspaceState): string => {
   const entry = state.resources.entry;
@@ -545,6 +574,12 @@ export class RendererController {
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
       this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), true);
+      const state = this.#state;
+      if (state) {
+        const preferences = rebaseCameraPreferences(state.cameras, previousScene, scene);
+        delete preferences[state.view];
+        this.#callbacks.onCameraPreferences?.(preferences);
+      }
     }
     else this.fit(false);
     if (this.#mode === "webgl2") this.#uploadScene(scene);

@@ -1332,7 +1332,18 @@ test.describe("Map Studio v0.4 foundation", () => {
         document.body.append(canvas);
       }
       const renderer = new RendererController(sceneCanvas, overlayCanvas);
-      const state = createGalleryState("ready");
+      const state = {
+        ...createGalleryState("ready"),
+        cameras: {
+          three: {
+            yaw: -0.7,
+            pitch: 0.82,
+            zoom: 0.8,
+            targetX: 0.1,
+            targetZ: -0.2,
+          },
+        },
+      };
       renderer.setState(state);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       renderer.setCamera({
@@ -1377,8 +1388,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         document.body.append(canvas);
       }
       let notified = null;
+      let preferences = null;
       const renderer = new RendererController(sceneCanvas, overlayCanvas, {
         onCamera: camera => { notified = camera; },
+        onCameraPreferences: cameras => { preferences = cameras; },
       });
       const state = createGalleryState("ready");
       renderer.setState(state);
@@ -1416,13 +1429,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       renderer.dispose();
       sceneCanvas.remove();
       overlayCanvas.remove();
-      return { before, after, notified };
+      return { before, after, notified, preferences };
     });
     expect(result.after.targetX).toBeCloseTo(result.before.targetX + 0.7, 6);
     expect(result.after.targetZ).toBeCloseTo(result.before.targetZ - 0.4, 6);
     expect(result.after.yaw).toBe(result.before.yaw);
     expect(result.after.distance).toBe(result.before.distance);
     expect(result.notified).toMatchObject({ targetX: result.after.targetX, targetZ: result.after.targetZ });
+    expect(result.preferences).toMatchObject({ three: { targetX: 0.8, targetZ: -0.6 } });
   });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
