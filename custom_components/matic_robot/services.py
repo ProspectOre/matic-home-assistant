@@ -3796,6 +3796,10 @@ async def _async_execute_rooms(
                         # here would restart the OEM stop countdown we just
                         # waited out.
                         break
+                    if finish_room_event.is_set():
+                        # Honor a graceful finish request before dispatching a
+                        # new settings-boundary leg.
+                        break
                 if durable and prepared_dispatch is None:
                     checkpoint.update(
                         {

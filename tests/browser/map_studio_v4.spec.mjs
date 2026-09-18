@@ -1451,6 +1451,55 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.preferences.three.zoom).not.toBe(result.previousThreeZoom);
   });
 
+  test("rebases inactive preferences when the active view is still fitted", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/scene-camera-fit-rebase.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState } = await import("/scene-camera-fit-rebase.js");
+      const sceneCanvas = document.createElement("canvas");
+      const overlayCanvas = document.createElement("canvas");
+      for (const canvas of [sceneCanvas, overlayCanvas]) {
+        Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+        document.body.append(canvas);
+      }
+      let preferences = null;
+      const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+        onCameraPreferences: cameras => { preferences = cameras; },
+      });
+      const state = createGalleryState("ready");
+      state.cameras = {
+        ...state.cameras,
+        top: { ...state.cameras.top, zoom: 0.8, targetX: 0.1, targetZ: -0.2 },
+      };
+      const previousTopZoom = state.cameras.top.zoom;
+      renderer.setState(state);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scene = state.resources.scene.value;
+      renderer.setState({
+        ...state,
+        resources: {
+          ...state.resources,
+          scene: {
+            ...state.resources.scene,
+            value: {
+              ...scene,
+              revision: scene.revision + 1,
+              metadata: { ...scene.metadata, origin: [4, -2], span: [200, 160] },
+            },
+          },
+        },
+      });
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      renderer.dispose();
+      sceneCanvas.remove();
+      overlayCanvas.remove();
+      return { preferences, previousTopZoom };
+    });
+    expect(result.preferences).toMatchObject({ top: { targetX: 0.8, targetZ: -0.6 } });
+    expect(result.preferences.top.zoom).not.toBe(result.previousTopZoom);
+  });
+
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
     const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
     await page.route("**/scene-camera-generation.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));

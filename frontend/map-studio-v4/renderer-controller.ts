@@ -397,13 +397,13 @@ export class RendererController {
       // Delta revisions replace the immutable scene object while retaining the
       // same map context. Keep a user-adjusted camera for those updates; a
       // changed floor/session context must still start from a safe fitted view.
-      const preserveCamera = this.#scene !== null
-        && !this.#fitActive
+      const sameSceneContext = this.#scene !== null
         && previous !== null
         && this.#sceneContext === sceneContext(state);
+      const preserveCamera = sameSceneContext && !this.#fitActive;
       this.#scene = scene;
       this.#sceneContext = scene ? sceneContext(state) : null;
-      this.#installScene(scene, preserveCamera, previousScene);
+      this.#installScene(scene, preserveCamera, previousScene, sameSceneContext);
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -566,6 +566,7 @@ export class RendererController {
     scene: SceneModel | null,
     preserveCamera = false,
     previousScene: SceneModel | null = null,
+    rebasePreferences = false,
   ): void {
     this.#cancelFallback();
     if (!scene) {
@@ -582,29 +583,29 @@ export class RendererController {
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
       this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), true);
-      const state = this.#state;
-      if (state) {
-        const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
-        const preferences = rebaseCameraPreferences(
-          state.cameras,
-          previousScene,
-          scene,
-          previousHome,
-          nextHome,
-        );
-        const effectiveView = state.workflow === "draw" ? "top" : state.view;
-        const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
-        preferences[effectiveView] = {
-          yaw: this.#camera.yaw,
-          pitch: this.#camera.pitch,
-          zoom: home / Math.max(0.2, this.#camera.distance),
-          targetX: this.#camera.targetX,
-          targetZ: this.#camera.targetZ,
-        };
-        this.#callbacks.onCameraPreferences?.(preferences);
-      }
     }
     else this.fit(false);
+    const state = this.#state;
+    if (rebasePreferences && previousScene && state) {
+      const nextHome = { three: this.#homeThree, top: this.#homeTop } as const;
+      const preferences = rebaseCameraPreferences(
+        state.cameras,
+        previousScene,
+        scene,
+        previousHome,
+        nextHome,
+      );
+      const effectiveView = state.workflow === "draw" ? "top" : state.view;
+      const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
+      preferences[effectiveView] = {
+        yaw: this.#camera.yaw,
+        pitch: this.#camera.pitch,
+        zoom: home / Math.max(0.2, this.#camera.distance),
+        targetX: this.#camera.targetX,
+        targetZ: this.#camera.targetZ,
+      };
+      this.#callbacks.onCameraPreferences?.(preferences);
+    }
     if (this.#mode === "webgl2") this.#uploadScene(scene);
     else this.#buildFallback(scene);
   }
