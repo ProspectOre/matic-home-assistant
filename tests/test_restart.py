@@ -116,7 +116,9 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
     assert manager.snapshot("serial")["active_plan"] is None
 
 
-@pytest.mark.parametrize("case", ["valid", "bad_index", "replacement", "timeout", "cancel"])
+@pytest.mark.parametrize(
+    "case", ["valid", "bad_index", "replacement", "timeout", "cancel"]
+)
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     hass, recovery_state, case
 ):
