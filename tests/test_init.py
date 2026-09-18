@@ -217,13 +217,23 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_wait(
         async_request_floor_plan_refresh=AsyncMock(),
     )
 
+    recovery_wait_started = asyncio.Event()
+    never_timeout = asyncio.Event()
+
     async def sleep(delay: int) -> None:
         if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            slam_map.mission_identity = second_identity
+            recovery_wait_started.set()
+            await never_timeout.wait()
 
     with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
         _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
-        await scheduled[0]
+        first_task = asyncio.create_task(scheduled[0])
+        await recovery_wait_started.wait()
+        slam_map.mission_identity = second_identity
+        slam_map.async_add_listener.call_args.args[0]()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await first_task
 
     assert coordinator.async_request_floor_plan_refresh.await_count == 4
     assert len(scheduled) == 2
