@@ -1376,7 +1376,10 @@ test.describe("Map Studio v0.4 foundation", () => {
         Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
         document.body.append(canvas);
       }
-      const renderer = new RendererController(sceneCanvas, overlayCanvas);
+      let notified = null;
+      const renderer = new RendererController(sceneCanvas, overlayCanvas, {
+        onCamera: camera => { notified = camera; },
+      });
       const state = createGalleryState("ready");
       renderer.setState(state);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
@@ -1413,12 +1416,13 @@ test.describe("Map Studio v0.4 foundation", () => {
       renderer.dispose();
       sceneCanvas.remove();
       overlayCanvas.remove();
-      return { before, after };
+      return { before, after, notified };
     });
     expect(result.after.targetX).toBeCloseTo(result.before.targetX + 0.7, 6);
     expect(result.after.targetZ).toBeCloseTo(result.before.targetZ - 0.4, 6);
     expect(result.after.yaw).toBe(result.before.yaw);
     expect(result.after.distance).toBe(result.before.distance);
+    expect(result.notified).toMatchObject({ targetX: result.after.targetX, targetZ: result.after.targetZ });
   });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
@@ -1434,7 +1438,11 @@ test.describe("Map Studio v0.4 foundation", () => {
         document.body.append(canvas);
       }
       const renderer = new RendererController(sceneCanvas, overlayCanvas);
-      const state = { ...createGalleryState("ready"), generation: 1 };
+      const state = {
+        ...createGalleryState("ready"),
+        generation: 1,
+        selection: { ...createGalleryState("ready").selection, floorId: "floor-1" },
+      };
       renderer.setState(state);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
       renderer.setCamera({
@@ -1446,10 +1454,12 @@ test.describe("Map Studio v0.4 foundation", () => {
         targetZ: -0.3,
       });
       const scene = state.resources.scene.value;
-      renderer.setState({ ...state, generation: 2 });
+      const nextSelection = { ...state.selection, floorId: "floor-2" };
+      renderer.setState({ ...state, generation: 2, selection: nextSelection });
       renderer.setState({
         ...state,
         generation: 2,
+        selection: nextSelection,
         resources: {
           ...state.resources,
           scene: { ...state.resources.scene, value: { ...scene, revision: scene.revision + 1 } },

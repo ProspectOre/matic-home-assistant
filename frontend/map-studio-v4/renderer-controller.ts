@@ -95,6 +95,18 @@ const rebaseCameraTarget = (
   };
 };
 
+const sceneContext = (state: WorkspaceState): string => {
+  const entry = state.resources.entry;
+  return [
+    state.dataMode,
+    state.selection.floorId,
+    entry?.entryId ?? "none",
+    entry?.selectedFloorOrdinal ?? "none",
+    entry?.mapFloorOrdinal ?? "none",
+    entry?.mapSessionKey ?? "none",
+  ].join("|");
+};
+
 // Matches the literal colours the overlay shipped with, so nothing changes
 // until a host wires `readCanvasPalette()` through `setPalette()`.
 const DEFAULT_PALETTE: CanvasPalette = {
@@ -223,7 +235,7 @@ export class RendererController {
   #maxPointPixels: WebGLUniformLocation | null = null;
   #state: WorkspaceState | null = null;
   #scene: SceneModel | null = null;
-  #sceneGeneration: number | null = null;
+  #sceneContext: string | null = null;
   #frame: number | null = null;
   #fallbackFrame: number | null = null;
   #resizeObserver: ResizeObserver;
@@ -347,18 +359,14 @@ export class RendererController {
     const scene = state.resources.scene.value;
     if (scene !== this.#scene) {
       // Delta revisions replace the immutable scene object while retaining the
-      // same floor/session generation. Keep a user-adjusted camera for those
-      // updates; a new generation may represent a different floor and must
-      // still start from a safe fitted view.
+      // same map context. Keep a user-adjusted camera for those updates; a
+      // changed floor/session context must still start from a safe fitted view.
       const preserveCamera = this.#scene !== null
         && !this.#fitActive
         && previous !== null
-        && previous.generation === state.generation
-        && this.#sceneGeneration === state.generation
-        && previous.dataMode === state.dataMode
-        && previous.selection.floorId === state.selection.floorId;
+        && this.#sceneContext === sceneContext(state);
       this.#scene = scene;
-      this.#sceneGeneration = scene ? state.generation : null;
+      this.#sceneContext = scene ? sceneContext(state) : null;
       this.#installScene(scene, preserveCamera, previousScene);
     }
     if (!previous || previous.quality !== state.quality) {
@@ -536,7 +544,7 @@ export class RendererController {
     this.#radius = Math.max(1, Math.hypot(width, depth) / 2);
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
-      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), false);
+      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), true);
     }
     else this.fit(false);
     if (this.#mode === "webgl2") this.#uploadScene(scene);
