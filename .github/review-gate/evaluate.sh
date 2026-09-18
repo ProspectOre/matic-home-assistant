@@ -401,13 +401,15 @@ regular_evidence() {
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+          def multiple_result_sections:
+            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           # A "no major/blocking issues" claim must carry the
           # known connector footer; a body-only claim is not a
           # clean verdict.
           def stock_clean_envelope:
-            test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>.*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[^\\r\\n]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[^\\r\\n]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)*<details>.*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
+            test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*#{1,6}[^\\r\\n]*codex[[:space:]]+review[^\\r\\n]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[^\\r\\n]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)*<details>(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
             or test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[] | .data.repository.pullRequest.reviews.nodes[]?] as $records
           # This synthetic record is used only to classify a previously
@@ -430,7 +432,7 @@ regular_evidence() {
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              clean: ((.state == "COMMENTED" or .state == "APPROVED") and ($body | stock_clean_envelope))}]'
+              clean: ((.state == "COMMENTED" or .state == "APPROVED") and (($body | multiple_result_sections) | not) and ($body | stock_clean_envelope))}]'
   )"
   issue_comment_records="$(
     gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
@@ -448,11 +450,13 @@ regular_evidence() {
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+          def multiple_result_sections:
+            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           # An issue comment has no review-thread metadata. A generic
           # suggestions envelope therefore cannot prove a clean verdict.
           def stock_clean_issue_comment_envelope:
-            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*@codex review[^\\r\\n]*(?:\\r?\\n[^\\r\\n]*)*?[[:space:]]*<!--[[:space:]]*review-request:v2[[:space:]]+head=(" + $head + "|" + $prefix + ")[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n[[:space:]]*)*(?:(?:Retry reason|Root-cause diagnosis):[^\\r\\n]*(?:\\r?\\n[[:space:]]*-[^\\r\\n]*)*(?:\\r?\\n[[:space:]]*)*)*(?:\\r?\\n[[:space:]]*)+codex review:[[:space:]]*didn.t find any major issues\\.[ \\t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \\t]*(?::\\+1:|👍|:rocket:|🚀)?[ \\t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github.*</details>[[:space:]]*$")
+            test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
+            or test("(?is)\\A[[:space:]]*@codex review[^\\r\\n]*(?:\\r?\\n[^\\r\\n]*)*?[[:space:]]*<!--[[:space:]]*review-request:v2[[:space:]]+head=(" + $head + "|" + $prefix + ")[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n[[:space:]]*)*(?:(?:Retry reason|Root-cause diagnosis):[^\\r\\n]*(?:\\r?\\n[[:space:]]*-[^\\r\\n]*)*(?:\\r?\\n[[:space:]]*)*)*(?:\\r?\\n[[:space:]]*)+codex review:[[:space:]]*didn.t find any major issues\\.[ \\t]*(?:What shall we delve into next\\?|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Chef.s kiss|:tada:)?[ \\t]*(?::\\+1:|👍|:rocket:|🚀)?[ \\t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
             or test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           [.[][]
            | if (.id | tostring) == $prior_id then .body = $prior_body else . end
@@ -466,7 +470,7 @@ regular_evidence() {
               id: ("issue-comment-" + (.id | tostring)),
               source: "issue_comment",
               body: $body,
-              clean: ($body | stock_clean_issue_comment_envelope)}]'
+              clean: ((($body | multiple_result_sections) | not) and ($body | stock_clean_issue_comment_envelope))}]'
   )"
   jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
     {deliveries: ($reviews + $issue_comments),
@@ -549,10 +553,10 @@ findings_dismissed() {
        | select((.description // "") | contains("for PR #" + ($number | tostring) + " on head " + $head)
                 or (contains("for PR #") | not))
        | (.description // "") as $description
-       | if ($description | test("^" + $label + " findings observed for PR #" + ($number | tostring) + " on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; observed-at:[^;]+)?$")) then
-           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; observed-at:[^;]+)?$"))
-         elif ($description | test("^" + $label + " findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; observed-at:[^;]+)?$")) then
-           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; observed-at:[^;]+)?$"))
+       | if ($description | test("^" + $label + " findings observed for PR #" + ($number | tostring) + " on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; (?:t|observed-at):[^;]+)?$")) then
+           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; (?:t|observed-at):[^;]+)?$"))
+         elif ($description | test("^" + $label + " findings observed on head " + $head + "; (review|issue-comment):[1-9][0-9]*(; (?:t|observed-at):[^;]+)?$")) then
+           ($description | capture("; (?<source>review|issue-comment):(?<id>[1-9][0-9]*)(?:; (?:t|observed-at):[^;]+)?$"))
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* for PR #" + ($number | tostring) + " on head " + $head + "$")) then
            ($description | capture("withdrawn (?<source>issue-comment):(?<id>[1-9][0-9]*) on head"))
          elif ($description | test("^Security review invalidated at [^;]+; withdrawn issue-comment:[1-9][0-9]* on head " + $head + "$")) then
@@ -667,6 +671,14 @@ read_gate_snapshot() (
           + (if $finding_history_at == "" then [] else [$finding_history_at] end)
           + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $latest_finding_at
+      | (([$deliveries[] | select(.clean | not) | .at]
+          + [$reviews[]
+             | select(.id as $id | ($finding_ids | index($id)) != null)
+             | .at]
+          + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
+          + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end)
+          + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
+         | max // "") as $source_latest_finding_at
       | ($deliveries | sort_by(.at) | last) as $latest_delivery
       | {verdict:
            (if $latest_delivery != null
@@ -677,7 +689,8 @@ read_gate_snapshot() (
             then $latest_delivery
             else null
             end),
-         latest_finding_at: $latest_finding_at}'
+         latest_finding_at: $latest_finding_at,
+         source_latest_finding_at: $source_latest_finding_at}'
   )"
   verdict="$(jq -c '.verdict' <<< "$verdict_selection")"
   latest_finding_at="$(jq -r '.latest_finding_at' <<< "$verdict_selection")"
@@ -692,7 +705,8 @@ read_gate_snapshot() (
     --argjson security_finding_count "$security_finding_count" \
     --argjson security_findings "$security_findings" \
     --arg latest_finding_at "$latest_finding_at" \
-    '{regular_findings: (([$deliveries[] | select((.clean | not) and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
+    '{deliveries: $deliveries,
+      regular_findings: (([$deliveries[] | select((.clean | not) and .dismissed != true) | {source: (if .source == "issue_comment" then "issue-comment" else .source end), id: (.id | sub("^issue-comment-"; ""))}] + [$thread_summary[] | select(.total_count > 0) | {source:"review", id:.id}]) | unique),
       verdict: $verdict,
       finding_count: $finding_count,
       security_finding_count: $security_finding_count,
@@ -702,25 +716,53 @@ read_gate_snapshot() (
 
 require_clean_regular_snapshot() {
   local gate_snapshot="$1"
-  local verdict verdict_at finding_count regular_finding_count security_finding_count latest_finding_at history_statuses origin description observed_at existing_at
+  local verdict verdict_at finding_count regular_finding_count security_finding_count latest_finding_at source_latest_finding_at history_statuses origin origin_observed_at description base_description observed_at existing_at marker_tag
   verdict="$(jq -c '.verdict' <<< "$gate_snapshot")"
   latest_finding_at="$(jq -r '.latest_finding_at // empty' <<< "$gate_snapshot")"
+  source_latest_finding_at="$(jq -r '.source_latest_finding_at // empty' <<< "$gate_snapshot")"
   finding_count="$(jq -r '.finding_count' <<< "$gate_snapshot")"
   regular_finding_count="$(jq '.regular_findings | length' <<< "$gate_snapshot")"
   security_finding_count="$(jq -r '.security_finding_count' <<< "$gate_snapshot")"
   if [[ "$regular_finding_count" -gt 0 ]]; then
     local origin
     history_statuses="$(gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp)"
-    observed_at="${latest_finding_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    observed_at="${source_latest_finding_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    # Keep the append-only marker date-sensitive with millisecond precision,
+    # while staying within GitHub's 140-character status-description limit.
+    marker_tag="${observed_at%%Z}"
+    marker_tag="${marker_tag//T/}"
+    marker_tag="${marker_tag//-/}"
+    marker_tag="${marker_tag//:/}"
+    marker_tag="${marker_tag//./}"
+    marker_tag="${marker_tag:0:17}"
     while IFS= read -r origin; do
       [[ "$origin" =~ ^(review|issue-comment):[1-9][0-9]*$ ]] || exit 1
-      description="Regular findings observed for PR #$pr_number on head $head_sha; $origin"
-      existing_at="$(jq -r --arg context "review-finding-history" --arg description "$description" '
-        [.[][] | select(.context == $context and .state == "pending" and .description == $description)
+      origin_observed_at="$(jq -r --arg origin "$origin" '
+        [.deliveries[]
+         | ((if .source == "issue_comment" then "issue-comment:" + (.id | sub("^issue-comment-"; "")) else .source + ":" + .id end) as $key
+            | select($key == $origin) | .at)] | max // ""' <<< "$gate_snapshot")"
+      observed_at="${origin_observed_at:-$source_latest_finding_at}"
+      observed_at="${observed_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+      marker_tag="${observed_at%%Z}"
+      marker_tag="${marker_tag//T/}"
+      marker_tag="${marker_tag//-/}"
+      marker_tag="${marker_tag//:/}"
+      marker_tag="${marker_tag//./}"
+      marker_tag="${marker_tag:0:17}"
+      base_description="Regular findings observed for PR #$pr_number on head $head_sha; $origin"
+      description="$base_description"
+      existing_at="$(jq -r --arg context "review-finding-history" --arg description "$base_description" '
+        [.[][] | select(.context == $context and .state == "pending" and (.description == $description or (.description | startswith($description + "; t:")) or (.description | startswith($description + "; observed-at:"))))
          | (.updated_at // .created_at // "")] | max // ""' <<< "$history_statuses")"
+      existing_at="$(normalize_timestamp "$existing_at")"
       if [[ -n "$existing_at" ]]; then
         if [[ "$observed_at" > "$existing_at" ]]; then
-          description="$description; observed-at:$observed_at"
+          description="$base_description; t:$marker_tag"
+          if jq -e --arg context "review-finding-history" --arg description "$description" \
+              'any(.[][]; .context == $context and .state == "pending" and .description == $description)' \
+              <<< "$history_statuses" >/dev/null; then
+            continue
+          fi
         else
           continue
         fi
