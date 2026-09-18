@@ -77,6 +77,7 @@ from custom_components.matic_robot.services import (
     _async_verify_room_completion,
     _async_wait_for_active_session_resolution,
     _async_wait_for_room_outcome,
+    _async_wait_for_settled_leg_handoff,
     _async_wait_for_vacuum_state,
     _entry_for_entity,
     _PreparedRoomDispatch,
@@ -5833,6 +5834,73 @@ async def test_execute_rooms_groups_same_settings_rooms_into_one_leg(hass) -> No
     assert legs_seen == [[rooms[0], rooms[1]], [rooms[2]]]
 
 
+async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) -> None:
+    """A settings boundary waits for return settlement without sending STOP."""
+    states = iter(
+        [
+            SimpleNamespace(state="returning"),
+            SimpleNamespace(state="idle"),
+        ]
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(side_effect=lambda _entity_id: next(states))
+        )
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+
+    assert await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        asyncio.Event(),
+        identity_reader=AsyncMock(return_value=b""),
+        timeout_seconds=1,
+    )
+    assert fake_hass.states.get.call_count == 2
+
+
+async def test_unsettled_settings_handoff_does_not_stop_incomplete_plan(hass) -> None:
+    """A blocked boundary leaves remaining legs due instead of sending STOP."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
+    sender = AsyncMock()
+
+    async def complete_first_leg(*args, **kwargs) -> bool:
+        kwargs["record_room_completed"](args[5][0])
+        return True
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._async_run_leg",
+            AsyncMock(side_effect=complete_first_leg),
+        ) as run,
+        patch(
+            "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
+            AsyncMock(return_value=False),
+        ),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            managed_user_command=sender,
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=AsyncMock(return_value=b""),
+        )
+
+    run.assert_awaited_once()
+    sender.assert_not_awaited()
+    assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
+
+
 async def test_execute_rooms_prepares_next_command_during_current_return(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -6406,7 +6474,7 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
     [
         ("docked", False, False),
         ("cleaning", False, True),
-        ("returning", True, True),
+        ("returning", True, False),
         ("charging", True, True),
         ("docked", None, True),
         ("charging", RuntimeError, True),

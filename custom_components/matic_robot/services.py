@@ -117,6 +117,13 @@ SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
 SESSION_HISTORY_TIMEOUT_SECONDS = 300
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
+# A completed native leg can leave the robot in ``returning`` while the
+# firmware finishes its dock/settle handoff. Do not dispatch a different
+# settings leg during that window: the native identity is still transient and
+# a failed dispatch would otherwise enter STOP cleanup and start the OEM
+# ten-minute stop countdown.
+LEG_HANDOFF_POLL_SECONDS = ROOM_STATUS_REFRESH_SECONDS
+LEG_HANDOFF_TIMEOUT_SECONDS = OEM_STOP_RECONCILIATION_SECONDS
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -2696,6 +2703,73 @@ async def _async_wait_for_active_session_resolution(
         raise PlanCancelledError
 
 
+async def _async_wait_for_settled_leg_handoff(
+    hass: HomeAssistant,
+    entity_id: str,
+    cancel_event: asyncio.Event | None,
+    *,
+    refresh: Callable[[], Awaitable[None]] | None = None,
+    identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
+    expected_identity: bytes | None = None,
+    timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
+) -> bool:
+    """Wait until a completed leg can safely hand off to new settings.
+
+    A native completion record only proves that the prior mission ended; the
+    vacuum may still be returning and its session identity may remain visible
+    for a short period. Dispatching the next settings leg in that window is
+    rejected by firmware and the generic failure cleanup sends STOP, which
+    starts the long OEM stop countdown. A stable idle state is sufficient for
+    continuation (the dock is not a required boundary), while an unknown or
+    still-active native identity is deliberately held until it clears.
+
+    ``False`` is a bounded handoff timeout, not a command failure. The caller
+    leaves the remaining legs unattempted and lets normal terminal accounting
+    describe the run without issuing a second STOP.
+    """
+    deadline = monotonic() + max(0.0, timeout_seconds)
+    settled_states = {"docked", "charging", "idle"}
+    while True:
+        if cancel_event is not None and cancel_event.is_set():
+            raise PlanCancelledError
+        if refresh is not None:
+            try:
+                await refresh()
+            except (MaticError, HomeAssistantError) as err:
+                _LOGGER.debug(
+                    "Matic leg handoff refresh unavailable (%s)",
+                    type(err).__name__,
+                )
+        state = hass.states.get(entity_id)
+        if state is not None and state.state == "error":
+            raise _validation_error(
+                "The selected Matic robot reported an error", "robot_error"
+            )
+        identity = await _async_read_session_identity(identity_reader)
+        if identity and expected_identity and identity != expected_identity:
+            raise RoomTakenOverError("The returning native task was replaced")
+        if (
+            state is not None
+            and state.state in settled_states
+            and (identity_reader is None or identity == b"")
+        ):
+            return True
+        if monotonic() >= deadline:
+            _LOGGER.warning(
+                "Matic leg handoff did not settle before the bounded timeout"
+            )
+            return False
+        if cancel_event is None:
+            await asyncio.sleep(LEG_HANDOFF_POLL_SECONDS)
+            continue
+        try:
+            async with asyncio.timeout(LEG_HANDOFF_POLL_SECONDS):
+                await cancel_event.wait()
+        except TimeoutError:
+            continue
+        raise PlanCancelledError
+
+
 def _guard_native_commands(
     sender: Callable[[int, UserCommand], Awaitable[None]] | None,
     manager: CleaningPlanManager,
@@ -3696,6 +3770,21 @@ async def _async_execute_rooms(
                     leg[0].room_id, None
                 )
                 recovered_dispatch = None
+                if durable and index > 0 and prepared_dispatch is None:
+                    if not await _async_wait_for_settled_leg_handoff(
+                        hass,
+                        entity_id,
+                        cancel_event,
+                        refresh=refresh,
+                        identity_reader=session_identity,
+                        expected_identity=native_identity,
+                    ):
+                        # The previous native leg is complete, but the robot
+                        # never reached a safe handoff state. Leave the
+                        # remaining settings legs unattempted; issuing STOP
+                        # here would restart the OEM stop countdown we just
+                        # waited out.
+                        break
                 if durable and prepared_dispatch is None:
                     checkpoint.update(
                         {
@@ -4026,7 +4115,14 @@ async def _async_execute_rooms(
                                 "Unable to confirm aborted native session ended (%s)",
                                 type(cleanup_error).__name__,
                             )
-                    if not session_ended:
+                    # Returning is already a firmware-owned terminal motion
+                    # state. Sending STOP here can replace a natural handoff
+                    # with the OEM ten-minute stop countdown, leaving later
+                    # settings legs unattempted. Only stop when the robot is
+                    # not already on its way home.
+                    if not session_ended and (
+                        current is None or current.state != "returning"
+                    ):
                         await _async_cleanup_managed_motion(
                             outer_command, motion_token, dispatch_attempted=True
                         )
