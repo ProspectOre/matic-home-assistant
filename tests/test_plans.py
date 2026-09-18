@@ -2432,6 +2432,15 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     room = _room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
     dispatched_at = (now - timedelta(seconds=5)).isoformat()
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "synthetic-recovered-run",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
     await manager.async_mark_started("serial", "away", room)
     await manager.async_mark_failed(
         "serial",
@@ -2608,6 +2617,9 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
             "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
             "run_id": "run-1",
         },
+    )
+    await manager.async_finish_run(
+        "serial", "run-1", "failed", "room_failed", 1, cause="native_result"
     )
     assert await manager.async_mark_native_completed(
         "serial",

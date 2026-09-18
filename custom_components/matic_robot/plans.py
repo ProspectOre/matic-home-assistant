@@ -1656,29 +1656,7 @@ class CleaningPlanManager:
         if duration is not None:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
-        last_run = robot.get("last_run")
-        if (
-            isinstance(last_run, dict)
-            and last_run.get("run_id") == pending.get("run_id")
-            and last_run.get("plan_id") == plan_id
-        ):
-            room_count = _stored_count(last_run, "room_count")
-            completed_count = _stored_count(last_run, "completed_room_count")
-            if completed_count < room_count:
-                completed_count += 1
-                last_run["completed_room_count"] = completed_count
-            if completed_count >= room_count and last_run.get("outcome") in {
-                "running",
-                "cancelled",
-                "unverified",
-            }:
-                last_run.update(
-                    {
-                        "outcome": "completed",
-                        "reason_code": "all_rooms_verified",
-                        "cause": "verified_completion",
-                    }
-                )
+        _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         await self._async_save_native_history(serial_number, before)
         self._notify_listeners(serial_number)
@@ -2416,10 +2394,42 @@ def _reconcile_pending_native_history(
         completed_at=matches[0][1],
         duration_seconds=matches[0][2],
     )
+    _repair_native_reconciled_run(robot, pending, pending["plan_id"])
     robot.pop("pending_native_reconciliation", None)
     if on_reconciled is not None:
         on_reconciled(pending)
     return True
+
+
+def _repair_native_reconciled_run(
+    robot: dict[str, Any], pending: Mapping[str, str], plan_id: str
+) -> None:
+    """Repair the matching managed run after a late native completion."""
+    last_run = robot.get("last_run")
+    if (
+        not isinstance(last_run, dict)
+        or last_run.get("run_id") != pending.get("run_id")
+        or last_run.get("plan_id") != plan_id
+    ):
+        return
+    room_count = _stored_count(last_run, "room_count")
+    completed_count = _stored_count(last_run, "completed_room_count")
+    if completed_count < room_count:
+        completed_count += 1
+        last_run["completed_room_count"] = completed_count
+    if completed_count >= room_count and last_run.get("outcome") in {
+        "running",
+        "cancelled",
+        "failed",
+        "unverified",
+    }:
+        last_run.update(
+            {
+                "outcome": "completed",
+                "reason_code": "all_rooms_verified",
+                "cause": "verified_completion",
+            }
+        )
 
 
 def _record_native_completion(
