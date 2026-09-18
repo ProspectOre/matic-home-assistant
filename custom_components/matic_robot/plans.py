@@ -1290,15 +1290,36 @@ class CleaningPlanManager:
             ended_at=ended_at,
         )
         docked = last_run.get("outcome") == "stopped_docked"
+        completed = last_run.get("outcome") == "completed"
+        stored_completed_count = _stored_count(last_run, "completed_room_count")
         last_run.update(
             {
                 "ended_at": ended_at,
                 "outcome": (
-                    "stopped_docked" if docked else normalize_run_outcome(outcome)
+                    "stopped_docked"
+                    if docked
+                    else "completed"
+                    if completed
+                    else normalize_run_outcome(outcome)
                 ),
-                "reason_code": "stopped_docked" if docked else reason_code[:64],
-                "cause": "managed_cancellation" if docked else cause[:64],
-                "completed_room_count": min(max(0, completed_room_count), max_rooms),
+                "reason_code": (
+                    "stopped_docked"
+                    if docked
+                    else last_run.get("reason_code", "all_rooms_verified")
+                    if completed
+                    else reason_code[:64]
+                ),
+                "cause": (
+                    "managed_cancellation"
+                    if docked
+                    else last_run.get("cause", "verified_completion")
+                    if completed
+                    else cause[:64]
+                ),
+                "completed_room_count": min(
+                    max(0, max(completed_room_count, stored_completed_count)),
+                    max_rooms,
+                ),
             }
         )
         last_run.pop("recovery_checkpoint", None)

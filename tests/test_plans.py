@@ -2633,6 +2633,12 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     assert last_run["completed_room_count"] == 2
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
+    await manager.async_finish_run(
+        "serial", "run-1", "failed", "partial_native_result", 1, cause="native_result"
+    )
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["completed_room_count"] == 2
+    assert last_run["outcome"] == "completed"
 
 
 async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:
