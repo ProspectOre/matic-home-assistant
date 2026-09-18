@@ -1001,6 +1001,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert history.extra_state_attributes["plan_running"] is False
     assert history.extra_state_attributes["last_completed_by_room"] == {}
     assert "plans" in sensor.MaticCleaningHistorySensor._unrecorded_attributes
+    assert "last_run" in sensor.MaticCleaningHistorySensor._unrecorded_attributes
     active_plan = sensor.MaticActiveCleaningPlanSensor(entry)
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     assert active_plan.native_value is None
