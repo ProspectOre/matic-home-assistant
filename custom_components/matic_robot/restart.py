@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from functools import partial
 from typing import TYPE_CHECKING
 
 from homeassistant.config_entries import ConfigEntryState
@@ -212,6 +213,20 @@ async def async_recover_managed_run(
             reason = "restart_native_mission_changed_or_ended"
             return
         if handoff:
+            handoff_history = checkpoint.get("handoff_history")
+            if not isinstance(handoff_history, list) or not all(
+                isinstance(key, str) and len(key) == 64 for key in handoff_history
+            ):
+                reason = "restart_handoff_history_unavailable"
+                return
+            records = await runtime.client.async_get_cleaning_session_records(
+                strict=True
+            )
+            if {hashlib.sha256(record.key).hexdigest() for record in records} != set(
+                handoff_history
+            ):
+                reason = "restart_handoff_history_changed"
+                return
             await manager.async_mark_recovery_status(
                 serial_number, "running", reason="handoff_checkpoint_verified"
             )
@@ -249,7 +264,9 @@ async def async_recover_managed_run(
                 intelligent=False,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_has_active_cleaning_session,
-                session_history=runtime.client.async_get_cleaning_session_records,
+                session_history=partial(
+                    runtime.client.async_get_cleaning_session_records, strict=True
+                ),
                 session_identity=runtime.client.async_get_cleaning_session_identity,
                 confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
                 managed_user_command=command,
@@ -379,7 +396,9 @@ async def async_recover_managed_run(
             intelligent=False,
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_has_active_cleaning_session,
-            session_history=runtime.client.async_get_cleaning_session_records,
+            session_history=partial(
+                runtime.client.async_get_cleaning_session_records, strict=True
+            ),
             session_identity=runtime.client.async_get_cleaning_session_identity,
             confirm_room_completed=runtime.coordinator.async_confirm_room_completed,
             managed_user_command=command,

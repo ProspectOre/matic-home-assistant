@@ -554,8 +554,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             active_session=(
                 entry.runtime_data.client.async_has_active_cleaning_session
             ),
-            session_history=(
-                entry.runtime_data.client.async_get_cleaning_session_records
+            session_history=partial(
+                entry.runtime_data.client.async_get_cleaning_session_records,
+                strict=True,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -644,8 +645,9 @@ async def async_register_services(hass: HomeAssistant) -> None:
             active_session=(
                 entry.runtime_data.client.async_has_active_cleaning_session
             ),
-            session_history=(
-                entry.runtime_data.client.async_get_cleaning_session_records
+            session_history=partial(
+                entry.runtime_data.client.async_get_cleaning_session_records,
+                strict=True,
             ),
             session_identity=(
                 entry.runtime_data.client.async_get_cleaning_session_identity
@@ -1139,6 +1141,7 @@ async def _async_dispatch_leg_command(
     session_identity: Callable[[], Awaitable[bytes | None]] | None = None,
     on_identity: Callable[[bytes | None], None] | None = None,
     expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> _PreparedRoomDispatch:
     """Issue one owned leg mission with its completion-history baseline."""
     leg = tuple(rooms)
@@ -1147,6 +1150,12 @@ async def _async_dispatch_leg_command(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
     history_baseline = await _async_session_history_baseline(session_history)
+    if expected_dispatch_history is not None and (
+        history_baseline is None
+        or frozenset(hashlib.sha256(key).hexdigest() for key in history_baseline)
+        != expected_dispatch_history
+    ):
+        raise RoomTakenOverError("Native history changed during the handoff boundary")
     identity_baseline: bytes | None = None
     for attempt in range(ACTIVE_SESSION_UNKNOWN_ATTEMPTS):
         identity_baseline = await _async_read_session_identity(session_identity)
@@ -1230,6 +1239,7 @@ async def _async_run_room(
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> bool:
     """Run one room and report whether native history verified completion."""
     if not room_name_is_unique:
@@ -1294,6 +1304,7 @@ async def _async_run_room(
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
+                expected_dispatch_history=expected_dispatch_history,
             )
         else:
             if dispatch.rooms != (room,):
@@ -1742,6 +1753,7 @@ async def _async_run_leg(
     provenance: str | None = None,
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
+    expected_dispatch_history: frozenset[str] | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1780,6 +1792,7 @@ async def _async_run_leg(
             provenance=provenance,
             recovered_suspend_reason=recovered_suspend_reason,
             expected_dispatch_identity=expected_dispatch_identity,
+            expected_dispatch_history=expected_dispatch_history,
         )
     if not room_name_is_unique:
         raise _validation_error(
@@ -1852,6 +1865,7 @@ async def _async_run_leg(
                 session_identity=session_identity,
                 on_identity=bind_native_identity,
                 expected_dispatch_identity=expected_dispatch_identity,
+                expected_dispatch_history=expected_dispatch_history,
             )
         else:
             if dispatch.rooms != tuple(leg):
@@ -3798,7 +3812,15 @@ async def _async_execute_rooms(
                     leg[0].room_id, None
                 )
                 recovered_dispatch = None
+                expected_dispatch_history = None
                 if durable and index > 0 and prepared_dispatch is None:
+                    handoff_history = checkpoint.get("handoff_history")
+                    if isinstance(handoff_history, list):
+                        expected_dispatch_history = frozenset(handoff_history)
+                    else:
+                        # No durable evidence boundary means we cannot prove
+                        # that an intervening native mission did not complete.
+                        break
                     checkpoint.update(
                         {
                             "leg_index": index,
@@ -3921,6 +3943,7 @@ async def _async_execute_rooms(
                     floor_token=floor_token,
                     session_identity=session_identity,
                     expected_dispatch_identity=expected_dispatch_identity,
+                    expected_dispatch_history=expected_dispatch_history,
                     on_native_identity=bind_native_identity,
                     run_id=run_id,
                     record_room_completed=record_room_completion,
@@ -3963,11 +3986,19 @@ async def _async_execute_rooms(
                     # bounded handoff wait so restart recovery can resume the
                     # queue instead of treating the prior verifying leg as
                     # the only recoverable work.
+                    handoff_keys = await _async_session_history_baseline(
+                        session_history
+                    )
                     checkpoint.update(
                         {
                             "leg_index": index + 1,
                             "phase": "handoff",
                             "completed_room_ids": sorted(completed_room_ids),
+                            "handoff_history": sorted(
+                                hashlib.sha256(key).hexdigest() for key in handoff_keys
+                            )
+                            if handoff_keys is not None
+                            else None,
                         }
                     )
                     checkpoint.pop("verification_deadline", None)

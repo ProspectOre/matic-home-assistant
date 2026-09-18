@@ -7,6 +7,7 @@
 - Initial loading and an explicit Fit map action still fit the complete scene.
 - Saved fitted views remain fitted when switching between 2D, 3D, and drawing;
   user-adjusted views retain their map position and scale.
+- Drawing zoom controls follow the final rebased camera without feedback jumps.
 - Adds browser regression coverage for preserving a user-controlled camera when
   the live map scene is replaced.
 - Managed plans now wait for firmware handoff between legs with different
@@ -16,6 +17,8 @@
   leg instead of abandoning the remaining queue.
 - Graceful stop requests prevent the next settings leg, and a new external
   mission blocks a pending managed handoff without being replaced or stopped.
+- Restart handoffs also reject intervening completed missions or unavailable
+  native-history evidence, using a persisted, privacy-safe history boundary.
 
 This beta is for testing the map-navigation and managed-plan handoff fixes.
 Install it through HACS beta versions and restart Home Assistant before

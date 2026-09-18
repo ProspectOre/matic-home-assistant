@@ -1533,6 +1533,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         };
         renderer.setState(state);
         await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+        notifications = 0;
         const next = {
           ...state,
           view: transition === "three-top" ? "top" : "three",
@@ -1559,7 +1560,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         canvases.forEach(canvas => canvas.remove());
         return { notifications, outgoing, afterTransition, afterRevision, fitAfterTransition };
       }, { transition, destinationFit });
-      expect(result.notifications).toBe(destinationFit ? 0 : 1); // Only a subsequent navigated revision.
+      expect(result.notifications).toBe(2); // Final destination, then the same-view revision.
       expect(result.outgoing.zoom).toBeCloseTo(1, 6);
       expect(result.outgoing.targetX).toBe(0);
       expect(result.outgoing.targetZ).toBe(0);
@@ -1570,6 +1571,63 @@ test.describe("Map Studio v0.4 foundation", () => {
       expect(result.afterRevision).toEqual(result.afterTransition);
     });
   }
+
+  test("draw zoom control follows the rebased destination without feedback jumps", async ({ page }) => {
+    const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state"; export { WorkspaceStore } from "./frontend/map-studio-v4/state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });
+    await page.route("**/draw-camera-authority.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      const { RendererController, createGalleryState, WorkspaceStore } = await import("/draw-camera-authority.js");
+      const canvases = [document.createElement("canvas"), document.createElement("canvas")];
+      for (const canvas of canvases) {
+        Object.assign(canvas.style, { position: "absolute", width: "720px", height: "540px" });
+        document.body.append(canvas);
+      }
+      const state = createGalleryState("ready");
+      state.cameras = { top: { yaw: 0, pitch: 1.55, zoom: 2, targetX: 0.1, targetZ: -0.2 } };
+      state.draw = { ...state.draw, zoomPercent: 200 };
+      const store = new WorkspaceStore(state);
+      const notices = [];
+      const renderer = new RendererController(...canvases, {
+        onCameraPreferences: cameras => {
+          for (const [view, camera] of Object.entries(cameras)) store.dispatch({ type: "set-camera", view, camera });
+        },
+        onCamera: (camera, zoomPercent) => {
+          notices.push({ camera, zoomPercent });
+          store.dispatch({ type: "set-camera", view: store.value.workflow === "draw" ? "top" : store.value.view,
+            camera: { ...camera, zoom: zoomPercent / 100 } });
+          if (store.value.workflow === "draw") store.dispatch({ type: "set-zoom", value: zoomPercent });
+        },
+      });
+      renderer.setState(store.value);
+      await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
+      const scene = state.resources.scene.value;
+      store.replace({ ...store.value, workflow: "draw", resources: { ...state.resources,
+        scene: { ...state.resources.scene, value: { ...scene, revision: scene.revision + 1,
+          metadata: { ...scene.metadata, origin: [4, -2], span: [200, 160] } } },
+      } });
+      renderer.setState(store.value);
+      const rebased = renderer.camera;
+      const zoom = store.value.draw.zoomPercent;
+      const fit = renderer.diagnostics().fitDistance;
+      renderer.setState(store.value);
+      const echoed = renderer.camera;
+      store.dispatch({ type: "step-zoom", factor: 1.25 });
+      renderer.setState(store.value);
+      const stepped = renderer.camera;
+      renderer.dispose();
+      canvases.forEach(canvas => canvas.remove());
+      return { rebased, echoed, stepped, zoom, fit, notices };
+    });
+    expect(result.notices).toHaveLength(1);
+    expect(result.notices[0].camera.orthographic).toBe(true);
+    expect(result.zoom).toBe(Math.round(result.fit / result.rebased.distance * 100));
+    expect(result.zoom).not.toBe(200);
+    expect(result.echoed).toEqual(result.rebased);
+    expect(result.stepped.distance).toBeCloseTo(result.fit * 100 / Math.round(result.zoom * 1.25), 8);
+    expect(result.stepped.targetX).toBe(result.rebased.targetX);
+    expect(result.stepped.targetZ).toBe(result.rebased.targetZ);
+  });
 
   test("fits after a generation changes before its replacement scene arrives", async ({ page }) => {
     const bundle = await build({ stdin: { contents: 'export { RendererController } from "./frontend/map-studio-v4/renderer-controller"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";', resolveDir: process.cwd() }, bundle: true, format: "esm", write: false });

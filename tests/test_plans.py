@@ -6046,6 +6046,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=AsyncMock(return_value=b""),
+            session_history=AsyncMock(return_value=()),
         )
 
     run.assert_awaited_once()
@@ -6053,10 +6054,20 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
 
-@pytest.mark.parametrize("takeover_leg", [0, 1, 2])
+@pytest.mark.parametrize(
+    ("takeover_leg", "takeover"),
+    [
+        (0, "identity"),
+        (1, "identity"),
+        (2, "identity"),
+        (1, "history"),
+        (2, "history"),
+        (1, "history_error"),
+    ],
+)
 @pytest.mark.parametrize("multi_room", [False, True])
 async def test_settings_handoff_rechecks_identity_before_dispatch(
-    hass, takeover_leg, multi_room
+    hass, takeover_leg, takeover, multi_room
 ) -> None:
     """Every settled boundary fences the real dispatcher, not its later reads."""
     manager = CleaningPlanManager(hass)
@@ -6079,6 +6090,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
         ]
     sender = AsyncMock()
     identity = AsyncMock(return_value=b"")
+    history = AsyncMock(return_value=())
     command = AsyncMock()
     hass.services.async_register("vacuum", "send_command", command)
     calls = 0
@@ -6092,7 +6104,12 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             b"" if index > 0 or takeover_leg == 0 else None
         )
         if index == takeover_leg:
-            identity.return_value = b"replacement"
+            if takeover == "identity":
+                identity.return_value = b"replacement"
+            elif takeover == "history":
+                history.return_value = (SimpleNamespace(key=b"external-completed"),)
+            else:
+                history.side_effect = MaticError("history unavailable")
             return await _async_run_leg(*args, **kwargs)
         # Exercise the actual before/after-command reads for each successful
         # earlier leg, allowing its newly created native identity.
@@ -6136,6 +6153,7 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=identity,
+            session_history=history,
             handoff_expected_identity=b"" if takeover_leg == 0 else None,
         )
 

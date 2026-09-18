@@ -419,12 +419,6 @@ export class RendererController {
         preserveCamera,
         previousScene,
         sameSceneContext,
-        // The canvas interprets notifications in the destination view. Never
-        // publish the departing camera as that view's preference or draw zoom.
-        previous !== null
-          && (previous.workflow === "draw" ? "top" : previous.view)
-            === (state.workflow === "draw" ? "top" : state.view)
-          && !(previous.workflow !== "draw" && state.workflow === "draw"),
         previous
           ? previous.workflow === "draw" ? "top" : previous.view
           : null,
@@ -441,7 +435,9 @@ export class RendererController {
       this.#camera = this.#preferredCamera(view, state, rebasedPreferences);
       this.#fitActive = this.#preferenceIsFit(view, state, rebasedPreferences);
     }
-    if (state.workflow === "draw" && previous?.draw.zoomPercent !== state.draw.zoomPercent) {
+    if (state.workflow === "draw"
+      && previous?.draw.zoomPercent !== state.draw.zoomPercent
+      && Math.round(this.#homeTop / this.#camera.distance * 100) !== state.draw.zoomPercent) {
       this.#camera = {
         ...this.#camera,
         orthographic: true,
@@ -453,6 +449,9 @@ export class RendererController {
         && Math.abs(this.#camera.targetZ) < 0.001
         && Math.abs(angle(this.#camera.yaw)) < 0.001;
     }
+    // Publish only the final effective camera. Its percentage also updates the
+    // draw control; echoing that rounded percentage must not move the camera.
+    if (rebasedPreferences || enteredDraw) this.#notifyCamera();
     this.requestRender();
   }
 
@@ -594,7 +593,6 @@ export class RendererController {
     preserveCamera = false,
     previousScene: SceneModel | null = null,
     rebasePreferences = false,
-    notifyCamera = true,
     preferenceView: MapView | null = null,
   ): Partial<Record<MapView, CameraPreference>> | null {
     this.#cancelFallback();
@@ -611,7 +609,7 @@ export class RendererController {
     const previousHome = { three: this.#homeThree, top: this.#homeTop } as const;
     this.#updateHomeDistances();
     if (preserveCamera && previousScene) {
-      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), notifyCamera);
+      this.setCamera(rebaseCameraTarget(this.#camera, previousScene, scene), false);
     }
     else this.fit(false, preferenceView ?? undefined);
     const state = this.#state;
