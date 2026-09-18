@@ -46,14 +46,43 @@ if [[ -n "$expected_base_sha" && ! "$expected_base_sha" =~ ^[0-9a-f]{40}$ ]]; th
   echo "EXPECTED_BASE_SHA must be a full lowercase commit SHA." >&2
   exit 1
 fi
+# Self-hosted runner services cache PATH at launch; export the
+# Homebrew paths before any jq/python/date helper is invoked.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 normalize_timestamp() {
-  python3 -c 'import datetime, sys; value=sys.argv[1]; print(datetime.datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat(timespec="microseconds").replace("+00:00", "Z") if value else "")' "$1"
+  jq -nr --arg value "$1" '
+    if $value == "" then ""
+    elif ($value | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$")) | not then error("invalid RFC3339 timestamp")
+    else ($value | capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.(?<fraction>[0-9]+))?Z$")
+      | .base + "." + ((.fraction // "") + "000000" | .[0:6]) + "Z") as $normalized
+      | ($normalized | sub("\\.[0-9]+Z$"; "Z")) as $whole
+      | ($whole | fromdateiso8601) as $epoch
+      | ($epoch | todate) as $roundtrip
+      | if $roundtrip != $whole then error("invalid calendar timestamp") else $normalized end
+    end'
 }
 latest_timestamp() {
-  python3 -c 'import datetime,json,sys; values=json.load(sys.stdin); print(max((datetime.datetime.fromisoformat(v.replace("Z","+00:00")).isoformat(timespec="microseconds").replace("+00:00","Z") for v in values if v), default=""))'
+  jq -r '
+    map(select(. != "")
+      | (if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$") | not
+          then error("invalid RFC3339 timestamp")
+          else capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.(?<fraction>[0-9]+))?Z$")
+        end | .base + "." + ((.fraction // "") + "000000" | .[0:6]) + "Z") as $normalized
+      | ($normalized | sub("\\.[0-9]+Z$"; "Z")) as $whole
+      | ($whole | fromdateiso8601) as $epoch
+      | ($epoch | todate) as $roundtrip
+      | if $roundtrip != $whole then error("invalid calendar timestamp") else $normalized end)
+    | max // ""'
 }
 normalize_delivery_timestamps() {
-  python3 -c 'import datetime,json,sys; data=json.load(sys.stdin); [(item.update(at=datetime.datetime.fromisoformat(item["at"].replace("Z","+00:00")).isoformat(timespec="microseconds").replace("+00:00","Z"))) for item in data["deliveries"]]; print(json.dumps(data))'
+  jq '
+    .deliveries |= map(
+      .at |= (if test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]+)?Z$") | not then error("invalid RFC3339 timestamp") else capture("^(?<base>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\\.(?<fraction>[0-9]+))?Z$") end
+        | .base + "." + ((.fraction // "") + "000000" | .[0:6]) + "Z") as $normalized
+        | ($normalized | sub("\\.[0-9]+Z$"; "Z")) as $whole
+        | ($whole | fromdateiso8601) as $epoch
+        | ($epoch | todate) as $roundtrip
+        | if $roundtrip != $whole then error("invalid calendar timestamp") else $normalized end)'
 }
 finding_after="$(normalize_timestamp "$finding_after")"
 head_observed_at="$(normalize_timestamp "$head_observed_at")"
@@ -63,9 +92,6 @@ if [[ -n "$head_observed_at" && "$head_observed_at" > "$evidence_after" ]]; then
 fi
 event_name="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 event_path="${FORWARDED_EVENT_PATH:-${GITHUB_EVENT_PATH:-}}"
-# Self-hosted runner services cache PATH at launch; export the
-# Homebrew paths so gh/jq resolve instead of failing with 127.
-export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
 gh_path="${REVIEW_GATE_GH:-$(command -v gh || true)}"
 [[ -n "$gh_path" ]] || { echo "GitHub CLI (gh) is required." >&2; exit 1; }
 gh() {
@@ -392,7 +418,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
@@ -441,7 +467,7 @@ regular_evidence() {
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
           def result_section:
-            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
+            if test("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->") then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | test("(?i)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)"))) | .[0].key) as $start | if $start == null then . else $lines[$start:] | join("\n") end else . end;
           def security_heading:
             result_section | ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)");
