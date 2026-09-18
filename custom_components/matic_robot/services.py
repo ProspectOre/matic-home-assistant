@@ -3640,55 +3640,6 @@ async def _async_mark_run_docked(
     )
 
 
-def _room_outcomes(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    plan_id: str,
-    run_id: str,
-    chosen: Sequence[CleaningRoom],
-    completed_room_ids: set[str],
-) -> list[dict[str, str]]:
-    """Return the bounded room outcome vocabulary for one terminal run."""
-    history = manager.snapshot(serial_number).get("plan_history", {})
-    plan_history = history.get(plan_id, {}) if isinstance(history, dict) else {}
-    records = plan_history.get("rooms", {}) if isinstance(plan_history, dict) else {}
-    result: list[dict[str, str]] = []
-    for room in chosen:
-        record = records.get(room.room_id, {}) if isinstance(records, dict) else {}
-        attempted = isinstance(record, dict) and (
-            record.get("run_id") == run_id
-            and record.get("last_result")
-            in {
-                "running",
-                "suspended",
-                "verifying",
-                "ended_unverified",
-                "cancelled",
-                "interrupted",
-                "failed",
-            }
-        )
-        result.append(
-            {
-                "room_id": room.room_id,
-                "room": room.name,
-                "outcome": (
-                    "completed"
-                    if room.room_id in completed_room_ids
-                    or (
-                        isinstance(record, dict)
-                        and record.get("run_id") == run_id
-                        and record.get("last_result") == "completed"
-                    )
-                    else "partial"
-                    if attempted
-                    else "unattempted"
-                ),
-            }
-        )
-    return result
-
-
 async def _async_execute_rooms(
     hass: HomeAssistant,
     call: ServiceCall,
@@ -4309,7 +4260,6 @@ async def _async_execute_rooms(
                         if current_state is not None
                         else "unknown"
                     )
-                    room_outcomes: list[dict[str, str]] = []
                     event_outcome = run_outcome
                     event_reason_code = run_reason_code
                     event_cause = run_cause
@@ -4358,14 +4308,6 @@ async def _async_execute_rooms(
                             completed = final_last_run.get("completed_room_count")
                             if isinstance(completed, int):
                                 event_completed_room_count = completed
-                        room_outcomes = _room_outcomes(
-                            manager,
-                            serial_number,
-                            call.data["plan_id"],
-                            run_id,
-                            chosen,
-                            completed_room_ids,
-                        )
                     finally:
                         # Room terminal events are queued by the HA bus. Yield
                         # once so the plan terminal event is observed after the
@@ -4391,7 +4333,6 @@ async def _async_execute_rooms(
                                     "terminal_activity": event_terminal_activity,
                                     "room_count": len(chosen),
                                     "completed_room_count": event_completed_room_count,
-                                    "room_outcomes": room_outcomes,
                                 },
                                 context=call.context,
                             )
