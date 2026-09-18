@@ -224,7 +224,11 @@ async def async_recover_managed_run(
                 expected_identity=identity if identity else None,
                 reject_new_identity=not identity,
                 timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
+                finish_room_event=manager.finish_room_event(serial_number),
             )
+            if manager.finish_room_event(serial_number).is_set():
+                reason = "restart_stop_requested"
+                return
             if not settled:
                 reason = "restart_handoff_unsettled"
                 return
@@ -423,6 +427,7 @@ async def async_recover_managed_run(
             replaced = cancellation == "motion_replaced"
             stopped = (
                 cancellation == "managed_stop"
+                or reason == "restart_stop_requested"
                 or checkpoint.get("stop_intent") in {"immediate", "not_running"}
                 or (
                     checkpoint.get("phase") in {"verifying", "handoff"}

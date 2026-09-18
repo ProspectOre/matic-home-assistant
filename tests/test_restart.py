@@ -117,7 +117,16 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
 
 
 @pytest.mark.parametrize(
-    "case", ["valid", "bad_index", "replacement", "timeout", "cancel", "stop"]
+    "case",
+    [
+        "valid",
+        "bad_index",
+        "replacement",
+        "timeout",
+        "cancel",
+        "stop",
+        "stop_during_wait",
+    ],
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     hass, recovery_state, case
@@ -147,8 +156,11 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         assert kwargs["handoff_expected_identity"] == b""
 
     async def wait_for_handoff(*_args, **_kwargs):
+        assert _kwargs["finish_room_event"] is manager.finish_room_event("serial")
         if case == "cancel":
             manager.begin_managed_motion("serial")
+        if case == "stop_during_wait":
+            manager.finish_room_event("serial").set()
         return case != "timeout"
 
     with (
@@ -163,7 +175,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     ):
         await async_recover_managed_run(hass, entry, "serial")
 
-    if case in {"valid", "timeout", "cancel"}:
+    if case in {"valid", "timeout", "cancel", "stop_during_wait"}:
         settled.assert_awaited_once()
     else:
         settled.assert_not_awaited()
@@ -171,6 +183,8 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
         runner.assert_awaited_once()
     else:
         runner.assert_not_awaited()
+    if case == "stop_during_wait":
+        assert manager.snapshot("serial")["last_run"]["reason_code"] == "managed_stop"
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 

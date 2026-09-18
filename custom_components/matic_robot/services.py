@@ -2724,6 +2724,7 @@ async def _async_wait_for_settled_leg_handoff(
     expected_identity: bytes | None = None,
     reject_new_identity: bool = False,
     timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
+    finish_room_event: asyncio.Event | None = None,
 ) -> bool:
     """Wait until a completed leg can safely hand off to new settings.
 
@@ -2735,7 +2736,7 @@ async def _async_wait_for_settled_leg_handoff(
     continuation (the dock is not a required boundary), while an unknown or
     still-active native identity is deliberately held until it clears.
 
-    ``False`` is a bounded handoff timeout, not a command failure. The caller
+    ``False`` is a bounded timeout or graceful stop, not a command failure. The caller
     leaves the remaining legs unattempted and lets normal terminal accounting
     describe the run without issuing a second STOP.
     """
@@ -2744,6 +2745,8 @@ async def _async_wait_for_settled_leg_handoff(
     while True:
         if cancel_event is not None and cancel_event.is_set():
             raise PlanCancelledError
+        if finish_room_event is not None and finish_room_event.is_set():
+            return False
         if refresh is not None:
             try:
                 await refresh()
@@ -2774,15 +2777,23 @@ async def _async_wait_for_settled_leg_handoff(
                 "Matic leg handoff did not settle before the bounded timeout"
             )
             return False
-        if cancel_event is None:
+        events = [
+            event for event in (cancel_event, finish_room_event) if event is not None
+        ]
+        if not events:
             await asyncio.sleep(LEG_HANDOFF_POLL_SECONDS)
             continue
+        waiters = [asyncio.create_task(event.wait()) for event in events]
         try:
-            async with asyncio.timeout(LEG_HANDOFF_POLL_SECONDS):
-                await cancel_event.wait()
-        except TimeoutError:
-            continue
-        raise PlanCancelledError
+            await asyncio.wait(
+                waiters,
+                timeout=LEG_HANDOFF_POLL_SECONDS,
+                return_when=asyncio.FIRST_COMPLETED,
+            )
+        finally:
+            for waiter in waiters:
+                waiter.cancel()
+            await asyncio.gather(*waiters, return_exceptions=True)
 
 
 def _guard_native_commands(
@@ -3807,6 +3818,7 @@ async def _async_execute_rooms(
                         refresh=refresh,
                         identity_reader=session_identity,
                         expected_identity=native_identity,
+                        finish_room_event=finish_room_event,
                     ):
                         # The previous native leg is complete, but the robot
                         # never reached a safe handoff state. Leave the

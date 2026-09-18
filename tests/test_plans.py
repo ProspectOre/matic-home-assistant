@@ -5954,7 +5954,39 @@ async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None
         )
 
 
-@pytest.mark.parametrize("settled", [False, True, "pre_stop"])
+@pytest.mark.parametrize("with_cancel", [False, True])
+async def test_settled_handoff_wakes_on_graceful_stop(
+    hass, monkeypatch, with_cancel
+) -> None:
+    """A stop wakes the real waiter promptly even while the robot returns."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 60
+    )
+    finish = asyncio.Event()
+    observed = asyncio.Event()
+
+    async def identity():
+        observed.set()
+        return b"previous"
+
+    hass.states.async_set("vacuum.matic", "returning")
+    waiting = asyncio.create_task(
+        _async_wait_for_settled_leg_handoff(
+            hass,
+            "vacuum.matic",
+            asyncio.Event() if with_cancel else None,
+            identity_reader=identity,
+            expected_identity=b"previous",
+            finish_room_event=finish,
+            timeout_seconds=720,
+        )
+    )
+    await observed.wait()
+    finish.set()
+    assert await asyncio.wait_for(waiting, 1) is False
+
+
+@pytest.mark.parametrize("settled", [False, True, "pre_stop", "during_wait"])
 async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     hass, settled
 ) -> None:
@@ -5984,6 +6016,12 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         assert recovery["recovery_checkpoint"]["leg_index"] == 1
         if settled is True:
             manager.finish_room_event("serial").set()
+        if settled == "during_wait":
+            hass.states.async_set("vacuum.matic", "returning")
+            hass.loop.call_soon(manager.finish_room_event("serial").set)
+            return await asyncio.wait_for(
+                _async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
+            )
         return settled is True
 
     with (
