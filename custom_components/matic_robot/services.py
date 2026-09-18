@@ -2711,6 +2711,7 @@ async def _async_wait_for_settled_leg_handoff(
     refresh: Callable[[], Awaitable[None]] | None = None,
     identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
     expected_identity: bytes | None = None,
+    reject_new_identity: bool = False,
     timeout_seconds: float = LEG_HANDOFF_TIMEOUT_SECONDS,
 ) -> bool:
     """Wait until a completed leg can safely hand off to new settings.
@@ -2746,7 +2747,10 @@ async def _async_wait_for_settled_leg_handoff(
                 "The selected Matic robot reported an error", "robot_error"
             )
         identity = await _async_read_session_identity(identity_reader)
-        if identity and expected_identity and identity != expected_identity:
+        if identity and (
+            reject_new_identity
+            or (expected_identity is not None and identity != expected_identity)
+        ):
             raise RoomTakenOverError("The returning native task was replaced")
         if (
             state is not None
@@ -3782,6 +3786,8 @@ async def _async_execute_rooms(
                     await manager.async_set_recovery_checkpoint(
                         serial_number, run_id, checkpoint
                     )
+                    if finish_room_event.is_set():
+                        break
                     if not await _async_wait_for_settled_leg_handoff(
                         hass,
                         entity_id,

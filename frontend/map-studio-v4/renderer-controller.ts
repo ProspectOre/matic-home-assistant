@@ -403,7 +403,15 @@ export class RendererController {
       const preserveCamera = sameSceneContext && !this.#fitActive;
       this.#scene = scene;
       this.#sceneContext = scene ? sceneContext(state) : null;
-      this.#installScene(scene, preserveCamera, previousScene, sameSceneContext);
+      this.#installScene(
+        scene,
+        preserveCamera,
+        previousScene,
+        sameSceneContext,
+        previous
+          ? previous.workflow === "draw" ? "top" : previous.view
+          : null,
+      );
     }
     if (!previous || previous.quality !== state.quality) {
       this.#qualityScale = qualityScale(state.quality);
@@ -567,6 +575,7 @@ export class RendererController {
     preserveCamera = false,
     previousScene: SceneModel | null = null,
     rebasePreferences = false,
+    preferenceView: MapView | null = null,
   ): void {
     this.#cancelFallback();
     if (!scene) {
@@ -595,7 +604,8 @@ export class RendererController {
         previousHome,
         nextHome,
       );
-      const effectiveView = state.workflow === "draw" ? "top" : state.view;
+      const effectiveView = preferenceView
+        ?? (state.workflow === "draw" ? "top" : state.view);
       const home = effectiveView === "top" ? this.#homeTop : this.#homeThree;
       preferences[effectiveView] = {
         yaw: this.#camera.yaw,

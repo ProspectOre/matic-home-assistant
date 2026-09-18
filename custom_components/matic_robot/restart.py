@@ -217,6 +217,7 @@ async def async_recover_managed_run(
                 refresh=runtime.coordinator.async_request_refresh,
                 identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
+                reject_new_identity=not identity,
                 timeout_seconds=LEG_HANDOFF_TIMEOUT_SECONDS,
             )
             if not settled:

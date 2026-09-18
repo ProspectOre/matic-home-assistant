@@ -5901,6 +5901,16 @@ async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
             timeout_seconds=1,
         )
 
+    with pytest.raises(RoomTakenOverError):
+        await _async_wait_for_settled_leg_handoff(
+            fake_hass,
+            "vacuum.matic",
+            None,
+            identity_reader=AsyncMock(return_value=b"replacement"),
+            reject_new_identity=True,
+            timeout_seconds=1,
+        )
+
 
 async def test_settled_leg_handoff_times_out_without_stop(hass, monkeypatch) -> None:
     """A returning robot reaches the bounded handoff timeout without STOP."""
@@ -5943,7 +5953,7 @@ async def test_settled_leg_handoff_cancel_during_wait(hass, monkeypatch) -> None
         )
 
 
-@pytest.mark.parametrize("settled", [False, True])
+@pytest.mark.parametrize("settled", [False, True, "pre_stop"])
 async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     hass, settled
 ) -> None:
@@ -5952,6 +5962,15 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     manager._store = SimpleNamespace(async_save=AsyncMock())
     rooms = [_room("Kitchen", "room-kitchen"), _heavy_room("Study", "room-study")]
     sender = AsyncMock()
+    if settled == "pre_stop":
+        save_checkpoint = manager.async_set_recovery_checkpoint
+
+        async def save_then_stop(*args, **kwargs):
+            await save_checkpoint(*args, **kwargs)
+            if args[2].get("phase") == "handoff":
+                manager.finish_room_event("serial").set()
+
+        manager.async_set_recovery_checkpoint = save_then_stop
 
     async def complete_first_leg(*args, **kwargs) -> bool:
         kwargs["record_room_completed"](args[5][0])
@@ -5962,9 +5981,9 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
         assert recovery is not None
         assert recovery["recovery_checkpoint"]["phase"] == "handoff"
         assert recovery["recovery_checkpoint"]["leg_index"] == 1
-        if settled:
+        if settled is True:
             manager.finish_room_event("serial").set()
-        return settled
+        return settled is True
 
     with (
         patch(
