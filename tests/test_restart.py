@@ -117,7 +117,7 @@ async def test_recovery_passes_existing_dispatch_and_run_identity(hass, recovery
 
 
 @pytest.mark.parametrize(
-    "case", ["valid", "bad_index", "replacement", "timeout", "cancel"]
+    "case", ["valid", "bad_index", "replacement", "timeout", "cancel", "stop"]
 )
 async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
     hass, recovery_state, case
@@ -131,6 +131,7 @@ async def test_handoff_checkpoint_resumes_remaining_legs_after_restart(
             "leg_index": 0 if case == "bad_index" else 1,
             "rooms": [asdict(room), asdict(next_room)],
             "completed_room_ids": [] if case == "bad_index" else [room.room_id],
+            **({"stop_intent": "after_room"} if case == "stop" else {}),
         }
     )
     manager._robot("serial")["last_run"]["room_count"] = 2

@@ -96,6 +96,11 @@ async def async_recover_managed_run(
             return
         verifying = phase == "verifying"
         handoff = phase == "handoff"
+        if handoff and checkpoint.get("stop_intent") == "after_room":
+            # The preceding leg is already credited. A persisted graceful
+            # stop must not wait for native settlement or resume the queue.
+            reason = "restart_stop_requested"
+            return
         verification_deadline = None
         if verifying:
             verification_deadline = dt_util.parse_datetime(
@@ -419,7 +424,7 @@ async def async_recover_managed_run(
                 cancellation == "managed_stop"
                 or checkpoint.get("stop_intent") in {"immediate", "not_running"}
                 or (
-                    checkpoint.get("phase") == "verifying"
+                    checkpoint.get("phase") in {"verifying", "handoff"}
                     and checkpoint.get("stop_intent") == "after_room"
                     and not completed
                 )
