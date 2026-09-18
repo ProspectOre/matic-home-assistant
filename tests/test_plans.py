@@ -6583,18 +6583,19 @@ async def test_finish_room_threshold_never_rounds_progress_up(hass) -> None:
 
 @pytest.mark.parametrize("failure", [RuntimeError, asyncio.CancelledError])
 @pytest.mark.parametrize(
-    ("activity", "session", "expect_stop"),
+    ("activity", "session", "low_charge", "expect_stop"),
     [
-        ("docked", False, False),
-        ("cleaning", False, True),
-        ("returning", True, False),
-        ("charging", True, True),
-        ("docked", None, True),
-        ("charging", RuntimeError, True),
+        ("docked", False, False, False),
+        ("cleaning", False, False, True),
+        ("returning", True, False, False),
+        ("returning", True, True, True),
+        ("charging", True, False, True),
+        ("docked", None, False, True),
+        ("charging", RuntimeError, False, True),
     ],
 )
 async def test_execute_history_failure_does_not_orphan_verifying_room(
-    hass, failure, activity, session, expect_stop, monkeypatch
+    hass, failure, activity, session, low_charge, expect_stop, monkeypatch
 ):
     """The real runner must retire ownership even when verification aborts."""
     manager = CleaningPlanManager(hass)
@@ -6617,7 +6618,11 @@ async def test_execute_history_failure_does_not_orphan_verifying_room(
         if reads == 1:
             return ()
         assert manager.snapshot("serial")["active_plan"]["status"] == "verifying"
-        hass.states.async_set("vacuum.matic", activity, {"current_area": "Kitchen"})
+        hass.states.async_set(
+            "vacuum.matic",
+            activity,
+            {"current_area": "Kitchen", "low_charge": low_charge},
+        )
         raise failure("synthetic verification abort")
 
     hass.services.async_register("vacuum", "send_command", send_command)

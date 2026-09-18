@@ -4159,7 +4159,9 @@ async def _async_execute_rooms(
                     # settings legs unattempted. Only stop when the robot is
                     # not already on its way home.
                     if not session_ended and (
-                        current is None or current.state != "returning"
+                        current is None
+                        or current.state != "returning"
+                        or current.attributes.get("low_charge") is True
                     ):
                         await _async_cleanup_managed_motion(
                             outer_command, motion_token, dispatch_attempted=True
