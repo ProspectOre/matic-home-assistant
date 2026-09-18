@@ -577,7 +577,8 @@ export class RendererController {
       const state = this.#state;
       if (state) {
         const preferences = rebaseCameraPreferences(state.cameras, previousScene, scene);
-        delete preferences[state.view];
+        const effectiveView = state.workflow === "draw" ? "top" : state.view;
+        delete preferences[effectiveView];
         this.#callbacks.onCameraPreferences?.(preferences);
       }
     }
