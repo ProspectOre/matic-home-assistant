@@ -124,6 +124,29 @@ def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
     )
 
 
+async def test_remove_robot_erases_only_its_persisted_data(hass) -> None:
+    """Removing an entry must not leave its private data or erase another robot."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {
+        "robots": {
+            "removed": {"plans": {"private": {"name": "Bedroom"}}},
+            "retained": {"plans": {"shared": {"name": "Kitchen"}}},
+        }
+    }
+    manager.async_cancel_and_wait = AsyncMock()
+
+    await manager.async_remove_robot("removed")
+
+    manager.async_cancel_and_wait.assert_awaited_once_with("removed")
+    assert manager._data == {
+        "robots": {
+            "retained": {"plans": {"shared": {"name": "Kitchen"}}},
+        }
+    }
+    manager._store.async_save.assert_awaited_once_with(manager._data)
+
+
 async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
     manager = CleaningPlanManager(hass)
