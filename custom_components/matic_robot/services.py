@@ -4140,18 +4140,24 @@ async def _async_execute_rooms(
                 # It unregisters the same task after observing suspension.
                 if recovery is None or not shutdown_suspended:
                     manager.unregister_run_task(serial_number)
-                reconciliation_active_reader = getattr(
-                    manager, "dock_reconciliation_active", None
+                defer_scope_cleanup = getattr(
+                    manager, "defer_activity_scope_cleanup", None
                 )
-                stop_watcher_active = callable(reconciliation_active_reader) and bool(
-                    reconciliation_active_reader(serial_number)
+                stop_watcher_owns_scope = (
+                    set_activity_run_id is not None
+                    and not dock_confirmation_scheduled
+                    and callable(defer_scope_cleanup)
+                    and defer_scope_cleanup(
+                        serial_number,
+                        run_id,
+                        set_activity_run_id,
+                        get_activity_run_id,
+                    )
                 )
-                if stop_watcher_active and get_activity_run_id is not None:
-                    stop_watcher_active = get_activity_run_id() == run_id
                 if (
                     set_activity_run_id is not None
                     and not dock_confirmation_scheduled
-                    and not stop_watcher_active
+                    and not stop_watcher_owns_scope
                 ):
                     set_activity_run_id(None)
 
