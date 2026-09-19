@@ -584,6 +584,30 @@ class CleaningPlanManager:
         return bool(self._dock_reconciliation_tasks.get(serial_number))
 
     @callback
+    def defer_activity_scope_cleanup(
+        self,
+        serial_number: str,
+        run_id: str,
+        set_run_id: Callable[[str | None], None],
+        get_run_id: Callable[[], str | None] | None,
+    ) -> bool:
+        """Release a run scope when its specific dock watcher terminates."""
+        tasks = tuple(self._dock_reconciliation_tasks.get(serial_number, ()))
+        if not tasks or (get_run_id is not None and get_run_id() != run_id):
+            return False
+
+        remaining = set(tasks)
+
+        def _release(done: asyncio.Task[None]) -> None:
+            remaining.discard(done)
+            if not remaining and (get_run_id is None or get_run_id() == run_id):
+                set_run_id(None)
+
+        for task in tasks:
+            task.add_done_callback(_release)
+        return True
+
+    @callback
     def cancel_reconciliation_tasks(self, serial_number: str) -> None:
         """Cancel obsolete late-completion watchers without blocking."""
         for task in tuple(self._reconciliation_tasks.pop(serial_number, set())):

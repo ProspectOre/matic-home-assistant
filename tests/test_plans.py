@@ -182,7 +182,11 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     """A registered STOP watcher owns the journal until dock confirmation ends."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
-    set_run_id = MagicMock()
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
     watcher_release = asyncio.Event()
 
     async def watcher() -> None:
@@ -207,14 +211,54 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
             [_room("Kitchen", "room-kitchen")],
             intelligent=False,
             set_activity_run_id=set_run_id,
+            get_activity_run_id=lambda: scope["run_id"],
         )
 
-    assert set_run_id.call_count == 1
-    assert set_run_id.call_args.args[0]
+    assert scope["run_id"] is not None
     assert manager.dock_reconciliation_active("serial") is True
     watcher_release.set()
+    await asyncio.sleep(0)
+    assert scope["run_id"] is None
+
+
+async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> None:
+    """A delegated journal scope is released even when its watcher is cancelled."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    scope: dict[str, str | None] = {"run_id": None}
+    watcher_started = asyncio.Event()
+
+    async def watcher() -> None:
+        watcher_started.set()
+        await asyncio.Event().wait()
+
+    async def fake_leg(*_args, **_kwargs):
+        manager.register_reconciliation_task(
+            "serial", asyncio.create_task(watcher()), dock=True
+        )
+        await watcher_started.wait()
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+            set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
+            get_activity_run_id=lambda: scope["run_id"],
+        )
+
+    assert scope["run_id"] is not None
     manager.cancel_reconciliation_tasks("serial")
     await asyncio.sleep(0)
+    assert scope["run_id"] is None
 
 
 async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
