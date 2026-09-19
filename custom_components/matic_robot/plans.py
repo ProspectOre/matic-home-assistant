@@ -1307,14 +1307,14 @@ class CleaningPlanManager:
                 "reason_code": (
                     "stopped_docked"
                     if docked
-                    else last_run.get("reason_code", "all_rooms_verified")
+                    else "all_rooms_verified"
                     if completed
                     else reason_code[:64]
                 ),
                 "cause": (
                     "managed_cancellation"
                     if docked
-                    else last_run.get("cause", "verified_completion")
+                    else "verified_completion"
                     if completed
                     else cause[:64]
                 ),
