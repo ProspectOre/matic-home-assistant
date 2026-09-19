@@ -28,8 +28,14 @@ class _WireShapeLimitError(Exception):
     """Signal that a structural fingerprint exceeded its public bounds."""
 
 
-def decode_fields(payload: bytes) -> tuple[WireField, ...]:
-    """Decode a protobuf message without requiring its private schema."""
+def decode_fields(
+    payload: bytes, *, max_fields: int | None = None
+) -> tuple[WireField, ...]:
+    """Decode a protobuf message without requiring its private schema.
+
+    When ``max_fields`` is supplied, reject field-dense untrusted messages
+    before constructing more than that many ``WireField`` objects.
+    """
     fields: list[WireField] = []
     offset = 0
     while offset < len(payload):
@@ -50,6 +56,8 @@ def decode_fields(payload: bytes) -> tuple[WireField, ...]:
             value, offset = _take(payload, offset, 4)
         else:
             raise DecodeError(f"unsupported protobuf wire type {wire_type}")
+        if max_fields is not None and len(fields) >= max_fields:
+            raise DecodeError("protobuf message exceeds its field limit")
         fields.append(WireField(number, wire_type, value))
     return tuple(fields)
 
