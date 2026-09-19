@@ -81,7 +81,6 @@ from custom_components.matic_robot.services import (
     _async_wait_for_vacuum_state,
     _entry_for_entity,
     _PreparedRoomDispatch,
-    _room_outcomes,
 )
 
 
@@ -170,6 +169,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     assert event["run_id"] == last_run["run_id"]
     assert event["outcome"] == "completed"
     assert event["terminal_activity"] == "unknown"
+    assert "room_outcomes" not in event
     assert "@" not in str(event)
     assert set_run_id.call_args_list[0].args[0] == last_run["run_id"]
     assert set_run_id.call_args_list[-1].args[0] is None
@@ -462,56 +462,6 @@ async def test_finish_current_room_uses_normalized_cancelled_outcome(hass) -> No
         )
 
     assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
-
-
-async def test_room_outcomes_ignore_prior_run_terminal_state(hass) -> None:
-    """A prior room failure cannot make an unvisited room partial now."""
-    manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    robot = manager._robot("serial")
-    robot["plan_history"] = {
-        "away": {
-            "rooms": {
-                "room-kitchen": {
-                    "run_id": "old-run",
-                    "last_result": "failed",
-                }
-            }
-        }
-    }
-
-    outcomes = _room_outcomes(
-        manager,
-        "serial",
-        "away",
-        "new-run",
-        [_room("Kitchen", "room-kitchen")],
-        set(),
-    )
-    assert outcomes == [
-        {"room_id": "room-kitchen", "room": "Kitchen", "outcome": "unattempted"}
-    ]
-
-
-async def test_room_outcomes_use_room_ids_for_duplicate_names(hass) -> None:
-    """One completed duplicate-name room cannot credit its sibling."""
-    manager = CleaningPlanManager(hass)
-    manager._store = SimpleNamespace(async_save=AsyncMock())
-    rooms = [_room("Hall", "room-hall-a"), _room("Hall", "room-hall-b")]
-
-    outcomes = _room_outcomes(
-        manager,
-        "serial",
-        "away",
-        "run-1",
-        rooms,
-        {"room-hall-a"},
-    )
-
-    assert outcomes == [
-        {"room_id": "room-hall-a", "room": "Hall", "outcome": "completed"},
-        {"room_id": "room-hall-b", "room": "Hall", "outcome": "unattempted"},
-    ]
 
 
 @pytest.mark.parametrize(
