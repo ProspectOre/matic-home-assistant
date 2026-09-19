@@ -77,6 +77,10 @@ show_missing = true
 target-version = "py314"
 line-length = 88
 
+[tool.ruff.format]
+# Canonical generated policy is owned upstream; do not reformat its pinned bytes.
+exclude = [".github/review-gate/*.py"]
+
 [tool.ruff.lint]
 select = [
   "ASYNC",

@@ -828,6 +828,10 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             active_session=AsyncMock(return_value=False),
         )
     await manager.async_cancel_and_wait("serial")
+    # The terminal plan event is fired from the run finalizer after the room
+    # boundary. Give Home Assistant's event bus one loop turn to schedule that
+    # listener before draining pending work.
+    await asyncio.sleep(0)
     await hass.async_block_till_done()
     snapshot = manager.snapshot("serial")
     last_run = snapshot["last_run"]
