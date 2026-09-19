@@ -32,6 +32,11 @@ SCENE_VERSION = 1
 SCENE_POINT_STRIDE = 8
 MAX_SCENE_POINTS = 1_500_000
 MAX_SCENE_SPAN = 65_536
+# Bound intermediate rasters independently of the compact point-cloud output.
+# A sparse set of pages can otherwise describe a huge Cartesian extent while
+# remaining well below the tile and wire-byte limits.
+MAX_SCENE_RASTER_CELLS = 4 * 1024 * 1024
+MAX_RENDER_PIXELS = 16 * 1024 * 1024
 _SCENE_HEADER = struct.Struct("<8sHHIII")
 
 
@@ -241,8 +246,14 @@ def encode_slam_scene(
     max_cell_y = max(tile.page_y * TILE_SIDE + TILE_SIDE - 1 for tile in tiles)
     span_x = max_cell_x - min_cell_x + 1
     span_y = max_cell_y - min_cell_y + 1
-    if span_x > MAX_SCENE_SPAN or span_y > MAX_SCENE_SPAN:
-        raise DecodeError("photorealistic SLAM scene is too wide")
+    if (
+        span_x > MAX_SCENE_SPAN
+        or span_y > MAX_SCENE_SPAN
+        or span_x * span_y > MAX_SCENE_RASTER_CELLS
+    ):
+        raise DecodeError(
+            "photorealistic SLAM scene is too wide or raster is too large"
+        )
 
     floor_counts: list[int] = []
     surface_counts: list[int] = []
@@ -417,6 +428,8 @@ def decode_slam_tile(entry: HermesCollectionEntry) -> SlamTile:
     # into alternating bands, making a complete map look like scattered tiles.
     page_x = _optional_sint32(page, 3)
     page_y = _optional_sint32(page, 4)
+    if max(abs(page_x), abs(page_y)) > _MAX_TILE_PAGE_COORDINATE:
+        raise DecodeError("photorealistic SLAM page is outside safe bounds")
 
     surface_envelope = first_bytes(entry.value, 4)
     dimensions = first_bytes(surface_envelope, 2)
@@ -471,6 +484,8 @@ def decode_slam_structure_tile(entry: HermesCollectionEntry) -> SlamStructureTil
     page = first_bytes(entry.key, 1)
     page_x = _optional_sint32(page, 3)
     page_y = _optional_sint32(page, 4)
+    if max(abs(page_x), abs(page_y)) > _MAX_TILE_PAGE_COORDINATE:
+        raise DecodeError("integrated SLAM page is outside safe bounds")
 
     surface_envelope = first_bytes(entry.value, 5)
     dimensions = first_bytes(surface_envelope, 2)
@@ -646,6 +661,12 @@ def render_slam_map(
     max_cell_y = max(point[1] for point in cell_points) + TILE_SIDE - 1
     grid_width = max_cell_x - min_cell_x + 1
     grid_height = max_cell_y - min_cell_y + 1
+    if (
+        grid_width > MAX_SCENE_SPAN
+        or grid_height > MAX_SCENE_SPAN
+        or grid_width * grid_height > MAX_SCENE_RASTER_CELLS
+    ):
+        raise DecodeError("photorealistic SLAM map raster is too large")
 
     top_down = Image.new("RGBA", (grid_width, grid_height), (0, 0, 0, 0))
     top_draw = ImageDraw.Draw(top_down, "RGBA")
@@ -698,6 +719,8 @@ def render_slam_map(
     vertical_headroom = round((TILE_HEIGHT - 7) * 2.5) + 8
     projected_width = 2 * (grid_width + grid_height - 2) + margin_x * 2 + 1
     projected_height = grid_width + grid_height - 1 + vertical_headroom + 8
+    if projected_width * projected_height > MAX_RENDER_PIXELS:
+        raise DecodeError("photorealistic SLAM projection is too large")
     floor_projection = top_down.transform(
         (projected_width, projected_height),
         Image.Transform.AFFINE,
