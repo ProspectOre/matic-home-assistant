@@ -403,6 +403,55 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     )
 
 
+async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = client.async_get_state.return_value
+    first = replace(initial, cues_voice_status=CuesVoiceStatus.LISTENING_FOR_WAKE_WORD)
+    superseded = replace(
+        initial, cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT
+    )
+    latest = replace(initial, cues_voice_status=CuesVoiceStatus.THINKING_FOR_INTENT)
+    release_burst = asyncio.Event()
+    burst_sent = asyncio.Event()
+    keep_open = asyncio.Event()
+
+    async def subscription():
+        yield first
+        await release_burst.wait()
+        yield superseded
+        yield latest
+        burst_sent.set()
+        await keep_open.wait()
+
+    client.async_subscribe_state = subscription
+    processed: list[RobotOperationalState] = []
+    first_processed = asyncio.Event()
+
+    def process(state: RobotOperationalState) -> None:
+        processed.append(state)
+        first_processed.set()
+
+    coordinator.async_process_cues_state = process
+
+    with patch(
+        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
+        0.01,
+    ):
+        watcher = asyncio.create_task(coordinator.async_watch_cues())
+        await first_processed.wait()
+        release_burst.set()
+        await burst_sent.wait()
+
+        assert processed == [first]
+        await asyncio.sleep(0.02)
+        assert processed == [first, latest]
+
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
+
+
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
     hass, monkeypatch
 ) -> None:
