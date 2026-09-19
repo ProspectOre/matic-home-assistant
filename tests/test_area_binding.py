@@ -359,6 +359,35 @@ def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> No
     assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
 
 
+def test_scoped_binding_rejects_translated_map_without_local_boundary_anchor() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("room", "Room", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    circles = [{"x": 5.0, "y": 5.0, "radius": 0.35}]
+    area = _scoped_area(floor_plan, circles)
+    translated = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 0.0), (11.0, 0.0), (11.0, 10.0), (1.0, 10.0)),
+            ),
+        ),
+    )
+
+    assert area["map_binding"]["local_segments_mm"] == []
+    assert area_geometry_fingerprint(translated, circles) == (
+        area_geometry_fingerprint(floor_plan, circles)
+    )
+    assert floor_plan_geometry_fingerprint(translated) != (
+        floor_plan_geometry_fingerprint(floor_plan)
+    )
+    assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_scoped_binding_uses_union_of_separated_mark_neighborhoods() -> None:
     floor_plan = FloorPlan(
         42,
@@ -416,7 +445,10 @@ def test_hash_only_v2_binding_remains_valid_for_safe_migration() -> None:
     )
 
     assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
-    assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
+    assert (
+        area_binding_status(area, changed_elsewhere)
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
     invalid = {
         **area,
         "map_binding": {
