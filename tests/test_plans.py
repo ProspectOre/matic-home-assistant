@@ -2432,6 +2432,15 @@ async def test_pending_native_stop_completion_is_reconciled_on_history_import(
     room = _room("Kitchen", "room-kitchen")
     now = dt_util.utcnow()
     dispatched_at = (now - timedelta(seconds=5)).isoformat()
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "synthetic-recovered-run",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
     await manager.async_mark_started("serial", "away", room)
     await manager.async_mark_failed(
         "serial",
@@ -2575,6 +2584,64 @@ async def test_expired_native_reconciliation_is_cleared_without_plan_credit(
     assert plan_record["last_result"] == "failed"
     assert plan_record.get("completed_runs", 0) == 0
     assert snapshot["native_reconciliation_pending"] is False
+
+
+async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None:
+    """A delayed dock-room completion must not leave the run partially failed."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    first = _room("Kitchen", "room-kitchen")
+    second = _room("Dining Room", "room-dining")
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        2,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    await manager.async_mark_started("serial", "away", first)
+    await manager.async_mark_completed("serial", "away", first)
+    now = dt_util.utcnow()
+    await manager.async_mark_started("serial", "away", second)
+    await manager.async_mark_failed(
+        "serial",
+        "away",
+        second,
+        "The selected Matic robot reported an error",
+        native_reconciliation={
+            "plan_id": "away",
+            "room_id": second.room_id,
+            "room": second.name,
+            "dispatched_at": (now - timedelta(seconds=5)).isoformat(),
+            "run_id": "run-1",
+        },
+    )
+    await manager.async_finish_run(
+        "serial", "run-1", "failed", "room_failed", 1, cause="native_result"
+    )
+    manager._robot("serial")["last_run"]["recovery_checkpoint"] = {
+        "completed_room_ids": []
+    }
+    assert await manager.async_mark_native_completed(
+        "serial",
+        "away",
+        second,
+        dispatched_at=now - timedelta(seconds=5),
+        completed_at=now.isoformat(),
+        duration_seconds=12,
+    )
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["completed_room_count"] == 2
+    assert last_run["outcome"] == "completed"
+    assert last_run["reason_code"] == "all_rooms_verified"
+    await manager.async_finish_run(
+        "serial", "run-1", "failed", "partial_native_result", 1, cause="native_result"
+    )
+    last_run = manager.snapshot("serial")["last_run"]
+    assert last_run["completed_room_count"] == 2
+    assert last_run["outcome"] == "completed"
 
 
 async def test_native_completion_guard_paths_and_marker_recovery(hass) -> None:

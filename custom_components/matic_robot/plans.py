@@ -1290,18 +1290,49 @@ class CleaningPlanManager:
             ended_at=ended_at,
         )
         docked = last_run.get("outcome") == "stopped_docked"
+        stored_completed_count = _stored_count(last_run, "completed_room_count")
+        was_completed = last_run.get("outcome") == "completed"
+        completed = was_completed or (
+            last_run.get("native_reconciled_completion") is True
+            and max_rooms > 0
+            and stored_completed_count >= max_rooms
+        )
         last_run.update(
             {
                 "ended_at": ended_at,
                 "outcome": (
-                    "stopped_docked" if docked else normalize_run_outcome(outcome)
+                    "stopped_docked"
+                    if docked
+                    else "completed"
+                    if completed
+                    else normalize_run_outcome(outcome)
                 ),
-                "reason_code": "stopped_docked" if docked else reason_code[:64],
-                "cause": "managed_cancellation" if docked else cause[:64],
-                "completed_room_count": min(max(0, completed_room_count), max_rooms),
+                "reason_code": (
+                    "stopped_docked"
+                    if docked
+                    else last_run.get("reason_code", "all_rooms_verified")
+                    if was_completed
+                    else "all_rooms_verified"
+                    if completed
+                    else reason_code[:64]
+                ),
+                "cause": (
+                    "managed_cancellation"
+                    if docked
+                    else last_run.get("cause", "verified_completion")
+                    if was_completed
+                    else "verified_completion"
+                    if completed
+                    else cause[:64]
+                ),
+                "completed_room_count": min(
+                    max(0, max(completed_room_count, stored_completed_count)),
+                    max_rooms,
+                ),
             }
         )
         last_run.pop("recovery_checkpoint", None)
+        last_run.pop("native_reconciled_completion", None)
         last_run.pop("recovery_status", None)
         last_run.pop("recovery_reason", None)
         active = robot.get("active_plan")
@@ -1656,6 +1687,7 @@ class CleaningPlanManager:
         if duration is not None:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
+        _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         await self._async_save_native_history(serial_number, before)
         self._notify_listeners(serial_number)
@@ -2393,10 +2425,51 @@ def _reconcile_pending_native_history(
         completed_at=matches[0][1],
         duration_seconds=matches[0][2],
     )
+    _repair_native_reconciled_run(robot, pending, pending["plan_id"])
     robot.pop("pending_native_reconciliation", None)
     if on_reconciled is not None:
         on_reconciled(pending)
     return True
+
+
+def _repair_native_reconciled_run(
+    robot: dict[str, Any], pending: Mapping[str, str], plan_id: str
+) -> None:
+    """Repair the matching managed run after a late native completion."""
+    last_run = robot.get("last_run")
+    if (
+        not isinstance(last_run, dict)
+        or last_run.get("run_id") != pending.get("run_id")
+        or last_run.get("plan_id") != plan_id
+    ):
+        return
+    room_count = _stored_count(last_run, "room_count")
+    completed_count = _stored_count(last_run, "completed_room_count")
+    if completed_count < room_count:
+        completed_count += 1
+        last_run["completed_room_count"] = completed_count
+        if last_run.get("outcome") == "running":
+            last_run["native_reconciled_completion"] = True
+        checkpoint = last_run.get("recovery_checkpoint")
+        if isinstance(checkpoint, dict):
+            completed_ids = checkpoint.setdefault("completed_room_ids", [])
+            if (
+                isinstance(completed_ids, list)
+                and pending["room_id"] not in completed_ids
+            ):
+                completed_ids.append(pending["room_id"])
+    if completed_count >= room_count and last_run.get("outcome") in {
+        "cancelled",
+        "failed",
+        "unverified",
+    }:
+        last_run.update(
+            {
+                "outcome": "completed",
+                "reason_code": "all_rooms_verified",
+                "cause": "verified_completion",
+            }
+        )
 
 
 def _record_native_completion(
