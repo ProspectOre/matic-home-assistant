@@ -2452,7 +2452,10 @@ def _repair_native_reconciled_run(
         checkpoint = last_run.get("recovery_checkpoint")
         if isinstance(checkpoint, dict):
             completed_ids = checkpoint.setdefault("completed_room_ids", [])
-            if isinstance(completed_ids, list) and pending["room_id"] not in completed_ids:
+            if (
+                isinstance(completed_ids, list)
+                and pending["room_id"] not in completed_ids
+            ):
                 completed_ids.append(pending["room_id"])
     if completed_count >= room_count and last_run.get("outcome") in {
         "cancelled",
