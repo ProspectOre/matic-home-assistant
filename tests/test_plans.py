@@ -2621,6 +2621,9 @@ async def test_late_native_completion_repairs_terminal_run_summary(hass) -> None
     await manager.async_finish_run(
         "serial", "run-1", "failed", "room_failed", 1, cause="native_result"
     )
+    manager._robot("serial")["last_run"]["recovery_checkpoint"] = {
+        "completed_room_ids": []
+    }
     assert await manager.async_mark_native_completed(
         "serial",
         "away",
