@@ -95,69 +95,70 @@ async def async_dock_when_stop_settles(
         deadline, started + DOCK_SETTLE_TRANSITION_GRACE_SECONDS
     )
     settled_state_observed = False
-    run_scope_claimed = False
 
     def clear_run_scope() -> None:
         """Release this watcher without clearing a newer managed run."""
         if set_run_id is not None and (get_run_id is None or get_run_id() == run_id):
             set_run_id(None)
 
-    while True:
-        if not manager.stop_pending(serial_number):
-            return False
-        now = monotonic()
-        refresh_transition = False
-        state = hass.states.get(entity_id)
-        if state is not None:
-            if state.state in HOMEWARD_STATES:
-                if on_docked is not None:
-                    return await async_confirm_docked(
-                        hass,
-                        refresh=refresh,
-                        entity_id=entity_id,
-                        on_docked=on_docked,
-                        run_id=run_id,
-                        set_run_id=set_run_id,
-                        get_run_id=get_run_id,
-                    )
+    try:
+        while True:
+            if not manager.stop_pending(serial_number):
                 return False
-            if state.state in REPLACEMENT_STATES:
-                # The first state read commonly still reflects the task that
-                # accepted STOP. Refresh through that bounded transition edge;
-                # a later or persistent cleaning state is replacement motion.
-                if settled_state_observed or now >= transition_grace_deadline:
-                    return False
-                refresh_transition = True
-            elif state.state == SETTLED_STATE:
-                settled_state_observed = True
-                async with _command_guard(manager, serial_number):
-                    # Replacements invalidate the fence before waiting for
-                    # this lock. Recheck it both before and after the native
-                    # session read so a late false result cannot trigger a
-                    # stale DOCK command.
-                    if not manager.stop_pending(serial_number):
-                        return False
-                    latest_state = hass.states.get(entity_id)
-                    if latest_state is None or latest_state.state != SETTLED_STATE:
-                        return False
-                    try:
-                        active = await client.async_has_active_cleaning_session()
-                    except MaticError as err:
-                        _LOGGER.debug(
-                            "Native Matic stop settlement unreadable (%s)",
-                            type(err).__name__,
+            now = monotonic()
+            refresh_transition = False
+            state = hass.states.get(entity_id)
+            if state is not None:
+                if state.state in HOMEWARD_STATES:
+                    if on_docked is not None:
+                        return await async_confirm_docked(
+                            hass,
+                            refresh=refresh,
+                            entity_id=entity_id,
+                            on_docked=on_docked,
+                            run_id=run_id,
+                            set_run_id=set_run_id,
+                            get_run_id=get_run_id,
                         )
-                        active = None
-                    if active is False:
+                    return False
+                if state.state in REPLACEMENT_STATES:
+                    # The first state read commonly still reflects the task that
+                    # accepted STOP. Refresh through that bounded transition edge;
+                    # a later or persistent cleaning state is replacement motion.
+                    if settled_state_observed or now >= transition_grace_deadline:
+                        return False
+                    refresh_transition = True
+                elif state.state == SETTLED_STATE:
+                    settled_state_observed = True
+                    async with _command_guard(manager, serial_number):
+                        # Replacements invalidate the fence before waiting for
+                        # this lock. Recheck it both before and after the native
+                        # session read so a late false result cannot trigger a
+                        # stale DOCK command.
                         if not manager.stop_pending(serial_number):
                             return False
                         latest_state = hass.states.get(entity_id)
                         if latest_state is None or latest_state.state != SETTLED_STATE:
                             return False
-                        if set_run_id is not None and run_id is not None:
-                            set_run_id(run_id)
-                            run_scope_claimed = True
                         try:
+                            active = await client.async_has_active_cleaning_session()
+                        except MaticError as err:
+                            _LOGGER.debug(
+                                "Native Matic stop settlement unreadable (%s)",
+                                type(err).__name__,
+                            )
+                            active = None
+                        if active is False:
+                            if not manager.stop_pending(serial_number):
+                                return False
+                            latest_state = hass.states.get(entity_id)
+                            if (
+                                latest_state is None
+                                or latest_state.state != SETTLED_STATE
+                            ):
+                                return False
+                            if set_run_id is not None and run_id is not None:
+                                set_run_id(run_id)
                             try:
                                 await client.async_send_user_command(UserCommand.DOCK)
                             except MaticError as err:
@@ -206,15 +207,14 @@ async def async_dock_when_stop_settles(
                                         break
                                     await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
                                     await refresh()
-                        finally:
-                            if run_scope_claimed:
-                                clear_run_scope()
-                        return True
-        if now >= deadline:
-            return False
-        await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
-        if refresh_transition:
-            await refresh()
+                            return True
+            if now >= deadline:
+                return False
+            await asyncio.sleep(DOCK_SETTLE_POLL_SECONDS)
+            if refresh_transition:
+                await refresh()
+    finally:
+        clear_run_scope()
 
 
 def schedule_dock_after_stop(
