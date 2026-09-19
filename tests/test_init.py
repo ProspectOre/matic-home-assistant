@@ -1475,9 +1475,7 @@ async def test_failed_unload_recovery_rechecks_shutdown(hass) -> None:
 @pytest.mark.parametrize("with_plans", [True, False])
 async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     tracker = SimpleNamespace(async_remove_robot=AsyncMock())
-    plans = SimpleNamespace(
-        async_retire_recovery=AsyncMock(), async_clear_stop_pending=AsyncMock()
-    )
+    plans = SimpleNamespace(async_remove_robot=AsyncMock())
     scene_view = SimpleNamespace(clear_entry=MagicMock())
     pose_view = SimpleNamespace(clear_entry=MagicMock())
     from custom_components.matic_robot.frontend import (
@@ -1513,10 +1511,7 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     if with_plans:
-        plans.async_retire_recovery.assert_awaited_once_with(
-            "serial", "config_entry_removed"
-        )
-        plans.async_clear_stop_pending.assert_awaited_once_with("serial")
+        plans.async_remove_robot.assert_awaited_once_with("serial")
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
