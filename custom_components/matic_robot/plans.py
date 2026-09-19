@@ -1290,8 +1290,10 @@ class CleaningPlanManager:
             ended_at=ended_at,
         )
         docked = last_run.get("outcome") == "stopped_docked"
-        completed = last_run.get("outcome") == "completed"
         stored_completed_count = _stored_count(last_run, "completed_room_count")
+        completed = last_run.get("outcome") == "completed" or (
+            max_rooms > 0 and stored_completed_count >= max_rooms
+        )
         last_run.update(
             {
                 "ended_at": ended_at,
@@ -2439,7 +2441,6 @@ def _repair_native_reconciled_run(
         completed_count += 1
         last_run["completed_room_count"] = completed_count
     if completed_count >= room_count and last_run.get("outcome") in {
-        "running",
         "cancelled",
         "failed",
         "unverified",
