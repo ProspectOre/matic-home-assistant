@@ -14,7 +14,9 @@ default, so polling observations cannot evict room and terminal evidence. Pass
 
 The integration emits `matic_robot_activity_observed` events locally. Home
 Assistant Recorder can retain these across restarts according to its event
-exclusions and retention settings. No debug logging needs to be enabled.
+exclusions and retention settings. Raw state events are rate-limited to one per
+second; the in-memory journal still retains state changes at their received rate,
+subject to its 512-observation bound. No debug logging needs to be enabled.
 
 ## Reading the evidence
 
