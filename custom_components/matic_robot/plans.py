@@ -2448,7 +2448,8 @@ def _repair_native_reconciled_run(
     if completed_count < room_count:
         completed_count += 1
         last_run["completed_room_count"] = completed_count
-        last_run["native_reconciled_completion"] = True
+        if last_run.get("outcome") == "running":
+            last_run["native_reconciled_completion"] = True
         checkpoint = last_run.get("recovery_checkpoint")
         if isinstance(checkpoint, dict):
             completed_ids = checkpoint.setdefault("completed_room_ids", [])
