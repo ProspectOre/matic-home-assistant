@@ -213,6 +213,7 @@ async def async_recover_managed_run(
             reason = "restart_native_mission_changed_or_ended"
             return
         if handoff:
+            handoff_identity = identity
             handoff_history = checkpoint.get("handoff_history")
             if not isinstance(handoff_history, list) or not all(
                 isinstance(key, str) and len(key) == 64 for key in handoff_history
@@ -254,7 +255,6 @@ async def async_recover_managed_run(
             ):
                 reason = "restart_recovery_cancelled"
                 return
-            identity = b""
             await _async_execute_rooms(
                 hass,
                 ServiceCall(hass, DOMAIN, run["service"], checkpoint["data"]),
@@ -277,7 +277,7 @@ async def async_recover_managed_run(
                 get_activity_run_id=runtime.client.activity_journal.current_run_id,
                 recovery=run,
                 recovered_dispatch=None,
-                handoff_expected_identity=identity if identity else b"",
+                handoff_expected_identity=handoff_identity or b"",
             )
             reason = (
                 "home_assistant_shutdown"
