@@ -5929,6 +5929,30 @@ async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) 
     assert fake_hass.states.get.call_count == 2
 
 
+async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clears(
+    hass, monkeypatch
+) -> None:
+    """A blocked dock must not strand the next settings leg on stale identity."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+
+    assert await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        active_session=AsyncMock(return_value=False),
+        identity_reader=AsyncMock(return_value=b"completed-session"),
+        expected_identity=b"completed-session",
+        timeout_seconds=1,
+    )
+
+
 async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     hass,
 ) -> None:

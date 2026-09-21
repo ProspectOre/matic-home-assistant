@@ -2734,6 +2734,7 @@ async def _async_wait_for_settled_leg_handoff(
     cancel_event: asyncio.Event | None,
     *,
     refresh: Callable[[], Awaitable[None]] | None = None,
+    active_session: Callable[[], Awaitable[bool | None]] | None = None,
     identity_reader: Callable[[], Awaitable[bytes | None]] | None = None,
     expected_identity: bytes | None = None,
     reject_new_identity: bool = False,
@@ -2775,6 +2776,15 @@ async def _async_wait_for_settled_leg_handoff(
                 "The selected Matic robot reported an error", "robot_error"
             )
         identity = await _async_read_session_identity(identity_reader)
+        session_active: bool | None = None
+        if active_session is not None:
+            try:
+                session_active = await active_session()
+            except MaticError as err:
+                _LOGGER.debug(
+                    "Native Matic handoff session read unavailable (%s)",
+                    type(err).__name__,
+                )
         if identity and (
             reject_new_identity
             or (expected_identity is not None and identity != expected_identity)
@@ -2784,6 +2794,19 @@ async def _async_wait_for_settled_leg_handoff(
             state is not None
             and state.state in settled_states
             and (identity_reader is None or identity == b"")
+        ):
+            return True
+        # A blocked doorway can leave the firmware in its homeward/idle state
+        # while retaining the completed mission identity for a short period.
+        # An explicit inactive-session read is the stronger evidence boundary:
+        # no native mission remains to collide with the next settings leg, so
+        # do not abandon the remaining queue waiting for a stale identity to
+        # clear.
+        if (
+            active_session is not None
+            and session_active is False
+            and state is not None
+            and state.state in {"returning", "docked", "charging", "idle"}
         ):
             return True
         if monotonic() >= deadline:
@@ -3838,6 +3861,7 @@ async def _async_execute_rooms(
                         entity_id,
                         cancel_event,
                         refresh=refresh,
+                        active_session=active_session,
                         identity_reader=session_identity,
                         expected_identity=native_identity,
                         finish_room_event=finish_room_event,
@@ -3854,6 +3878,19 @@ async def _async_execute_rooms(
                     # adopted as our baseline.
                     native_identity = b""
                     expected_dispatch_identity = b""
+                    if active_session is not None:
+                        try:
+                            if await active_session() is False:
+                                # Firmware can retain the completed mission
+                                # identity while a blocked doorway leaves it
+                                # returning/idle.  Inactive-session evidence
+                                # is the safe fence for the next settings leg.
+                                expected_dispatch_identity = None
+                        except MaticError as err:
+                            _LOGGER.debug(
+                                "Native Matic dispatch fence read unavailable (%s)",
+                                type(err).__name__,
+                            )
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
