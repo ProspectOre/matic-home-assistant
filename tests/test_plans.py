@@ -5953,6 +5953,30 @@ async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clea
     )
 
 
+async def test_settled_leg_handoff_tolerates_session_read_error(
+    hass, monkeypatch
+) -> None:
+    """A transient session read error keeps the bounded handoff fail-closed."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+
+    assert not await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        active_session=AsyncMock(side_effect=MaticError("session unavailable")),
+        identity_reader=AsyncMock(return_value=b"completed-session"),
+        expected_identity=b"completed-session",
+        timeout_seconds=0.001,
+    )
+
+
 async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     hass,
 ) -> None:
@@ -6137,6 +6161,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=AsyncMock(return_value=b""),
+            active_session=AsyncMock(return_value=False),
             session_history=AsyncMock(return_value=()),
         )
 
