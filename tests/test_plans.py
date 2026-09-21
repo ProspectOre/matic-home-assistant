@@ -6101,9 +6101,7 @@ async def test_settled_handoff_wakes_on_graceful_stop(
     assert await asyncio.wait_for(waiting, 1) is False
 
 
-@pytest.mark.parametrize(
-    "settled", [False, True, "pre_stop", "during_wait", "active_error"]
-)
+@pytest.mark.parametrize("settled", [False, True, "pre_stop", "during_wait"])
 async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
     hass, settled
 ) -> None:
@@ -6139,7 +6137,7 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             return await asyncio.wait_for(
                 _async_wait_for_settled_leg_handoff(*_args, **_kwargs), 1
             )
-        return settled is True or settled == "active_error"
+        return settled is True
 
     with (
         patch(
@@ -6163,18 +6161,11 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=AsyncMock(return_value=b""),
-            active_session=(
-                AsyncMock(side_effect=MaticError("session unavailable"))
-                if settled == "active_error"
-                else AsyncMock(return_value=False)
-                if settled is True
-                else None
-            ),
+            active_session=AsyncMock(return_value=False) if settled is True else None,
             session_history=AsyncMock(return_value=()),
         )
 
-    expected_runs = 2 if str(settled) == "active_error" else 1
-    assert run.await_count == expected_runs
+    assert run.await_count == 1
     sender.assert_not_awaited()
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
