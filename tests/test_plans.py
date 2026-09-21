@@ -1065,6 +1065,32 @@ async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
     assert PLAN_FLOOR_TOKEN not in params
 
 
+async def test_leg_dispatch_allows_stale_completed_identity(hass) -> None:
+    """A blocked-doorway handoff may retain its completed identity at dispatch."""
+    captured = []
+
+    async def send_command(call) -> None:
+        captured.append(call.data)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    identity = AsyncMock(side_effect=[b"completed", b"completed"])
+
+    dispatch = await _async_dispatch_leg_command(
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        [_room("Dining Room", "room-dining")],
+        None,
+        None,
+        session_identity=identity,
+        expected_dispatch_identity=b"completed",
+    )
+
+    assert captured[0]["command"] == "clean_rooms"
+    assert dispatch.native_identity_baseline == b"completed"
+    assert dispatch.native_identity is None
+
+
 async def test_mark_completed_accepts_native_evidence(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

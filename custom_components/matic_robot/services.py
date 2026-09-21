@@ -1167,9 +1167,9 @@ async def _async_dispatch_leg_command(
         raise RoomTakenOverError(
             "The native task before dispatch could not be verified"
         )
-    if (
-        expected_dispatch_identity is not None
-        and identity_baseline != expected_dispatch_identity
+    if expected_dispatch_identity is not None and not (
+        identity_baseline == expected_dispatch_identity
+        or (expected_dispatch_identity != b"" and identity_baseline == b"")
     ):
         raise RoomTakenOverError("The native task changed during the handoff boundary")
     if floor_is_current is not None and not floor_is_current():
@@ -3876,6 +3876,7 @@ async def _async_execute_rooms(
                     # boundary. Recheck that boundary immediately before the
                     # next dispatch so a new external mission cannot be
                     # adopted as our baseline.
+                    completed_identity = native_identity
                     native_identity = b""
                     expected_dispatch_identity = b""
                     if active_session is not None:
@@ -3886,7 +3887,7 @@ async def _async_execute_rooms(
                             # at dispatch: the inactive read is only safe
                             # when the identity has not changed in the
                             # meantime.
-                            expected_dispatch_identity = b""
+                            expected_dispatch_identity = completed_identity or b""
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.
