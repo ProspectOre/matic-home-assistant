@@ -3882,9 +3882,11 @@ async def _async_execute_rooms(
                         if await active_session() is False:
                             # Firmware can retain the completed mission
                             # identity while a blocked doorway leaves it
-                            # returning/idle.  Inactive-session evidence
-                            # is the safe fence for the next settings leg.
-                            expected_dispatch_identity = None
+                            # returning/idle.  Keep the empty identity fence
+                            # at dispatch: the inactive read is only safe
+                            # when the identity has not changed in the
+                            # meantime.
+                            expected_dispatch_identity = b""
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.

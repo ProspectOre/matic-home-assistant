@@ -235,6 +235,7 @@ async def async_recover_managed_run(
                 entity_id,
                 cancel,
                 refresh=runtime.coordinator.async_request_refresh,
+                active_session=runtime.client.async_has_active_cleaning_session,
                 identity_reader=runtime.client.async_get_cleaning_session_identity,
                 expected_identity=identity if identity else None,
                 reject_new_identity=not identity,
