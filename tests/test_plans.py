@@ -6173,7 +6173,8 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             session_history=AsyncMock(return_value=()),
         )
 
-    assert run.await_count == (2 if settled == "active_error" else 1)
+    expected_runs = 2 if str(settled) == "active_error" else 1
+    assert run.await_count == expected_runs
     sender.assert_not_awaited()
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
