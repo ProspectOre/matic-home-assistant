@@ -3878,16 +3878,12 @@ async def _async_execute_rooms(
                     # adopted as our baseline.
                     completed_identity = native_identity
                     native_identity = b""
-                    expected_dispatch_identity = b""
-                    if active_session is not None:
-                        if await active_session() is False:
-                            # Firmware can retain the completed mission
-                            # identity while a blocked doorway leaves it
-                            # returning/idle.  Keep the empty identity fence
-                            # at dispatch: the inactive read is only safe
-                            # when the identity has not changed in the
-                            # meantime.
-                            expected_dispatch_identity = completed_identity or b""
+                    # Firmware can retain the completed mission identity
+                    # while a blocked doorway leaves it returning/idle. Keep
+                    # that identity as the dispatch fence; the handoff waiter
+                    # already established that the session is inactive, and
+                    # dispatch accepts either this identity or its clearing.
+                    expected_dispatch_identity = completed_identity or b""
                     if finish_room_event.is_set():
                         # Honor a graceful finish request before dispatching a
                         # new settings-boundary leg.

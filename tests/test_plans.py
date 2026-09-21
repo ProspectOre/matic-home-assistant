@@ -6242,9 +6242,13 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
         index = calls
         calls += 1
         assert kwargs["session_identity"] is identity
-        assert kwargs["expected_dispatch_identity"] == (
-            b"" if index > 0 or takeover_leg == 0 else None
-        )
+        if index == 0 and takeover_leg != 0:
+            assert kwargs["expected_dispatch_identity"] is None
+        else:
+            assert kwargs["expected_dispatch_identity"] in {
+                b"",
+                b"managed-session",
+            }
         if index == takeover_leg:
             if takeover == "identity":
                 identity.return_value = b"replacement"
