@@ -1277,7 +1277,7 @@ class CleaningPlanManager:
             or not isinstance(checkpoint, dict)
             or checkpoint.get("phase") != "dispatching"
             or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
-            or checkpoint.get("stop_intent") is not None
+            or checkpoint.get("stop_intent") not in {None, "after_room"}
         ):
             raise HomeAssistantError("Mixed mission STOP no longer owns its checkpoint")
         checkpoint["stop_intent"] = "immediate"

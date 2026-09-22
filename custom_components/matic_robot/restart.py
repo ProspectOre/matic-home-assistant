@@ -98,9 +98,18 @@ async def _async_stop_interrupted_mixed_dispatch(
         ):
             return "restart_mixed_dispatch_superseded"
         token = manager.begin_managed_motion(serial_number)
-        await manager.async_prepare_mixed_dispatch_stop(
-            serial_number, run_id, expected_hash
-        )
+        try:
+            await manager.async_prepare_mixed_dispatch_stop(
+                serial_number, run_id, expected_hash
+            )
+        except BaseException:
+            try:
+                await manager.async_rollback_mixed_dispatch_stop(
+                    serial_number, run_id, expected_hash
+                )
+            finally:
+                manager.end_managed_motion(serial_number, token)
+            raise
         if (
             not manager.managed_motion_is_current(serial_number, token)
             or manager.motion_generation(serial_number) != token

@@ -287,13 +287,17 @@ async def test_interrupted_mixed_dispatch_rechecks_identity_after_fence_persist(
     assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
 
 
+@pytest.mark.parametrize("stop_intent", [None, "after_room"])
 async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
-    hass, recovery_state
+    hass, recovery_state, stop_intent
 ):
     manager, entry, checkpoint, _ = recovery_state
     identity, expected_hash = await _set_interrupted_mixed_dispatch(
         manager, entry, checkpoint
     )
+    if stop_intent is not None:
+        checkpoint["stop_intent"] = stop_intent
+        await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
 
     async def send_stop(command, *, on_transmitted=None):
         assert command is UserCommand.STOP
@@ -303,6 +307,10 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
                 "mixed_initial_session_hash"
             ]
             == expected_hash
+        )
+        assert (
+            manager.recovery_run("serial")["recovery_checkpoint"]["stop_intent"]
+            == "immediate"
         )
         assert entry.runtime_data.client.async_get_cleaning_session_identity.await_args
         if on_transmitted is not None:
@@ -322,6 +330,38 @@ async def test_restart_stops_only_exact_interrupted_mixed_initial_session(
     assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
     assert manager.pending_stop_run_id("serial") == "run"
     assert identity
+
+
+async def test_interrupted_mixed_dispatch_rolls_back_failed_stop_prepare(
+    hass, recovery_state
+):
+    manager, entry, checkpoint, _ = recovery_state
+    await _set_interrupted_mixed_dispatch(manager, entry, checkpoint)
+    first_save = True
+
+    async def fail_first_save(_data):
+        nonlocal first_save
+        if first_save:
+            first_save = False
+            raise OSError("save failed")
+
+    manager._store.async_save.side_effect = fail_first_save
+
+    with (
+        pytest.raises(OSError, match="save failed"),
+        patch(
+            "custom_components.matic_robot.restart._schedule_managed_dock_after_stop"
+        ) as schedule,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+    schedule.assert_not_called()
+    assert not manager.stop_pending("serial")
+    assert "stop_fence_run_id" not in manager._robot("serial")
+    assert not manager._robot("serial")["last_run"].get("recovery_checkpoint")
+    assert "serial" not in manager._managed_motion
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
 
 
 async def test_restart_does_not_stop_replacement_for_interrupted_mixed_dispatch(
