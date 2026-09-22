@@ -94,6 +94,17 @@ async def test_stop_watcher_cannot_recover_without_owned_live_fence(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
+async def test_stop_fence_rollback_is_scoped_to_its_run(hass, recovery_state):
+    manager, _, _, _ = recovery_state
+    await manager.async_mark_stop_pending("serial", run_id="run-one")
+
+    await manager.async_clear_stop_pending("serial", run_id="run-two")
+    assert manager.stop_pending("serial")
+
+    await manager.async_clear_stop_pending("serial", run_id="run-one")
+    assert not manager.stop_pending("serial")
+
+
 async def test_second_shutdown_retains_settlement_owner(hass, recovery_state):
     manager, entry, checkpoint, _ = recovery_state
     await manager.async_mark_stop_pending("serial", run_id="run")

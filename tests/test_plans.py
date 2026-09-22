@@ -360,8 +360,10 @@ async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
     manager._robot("serial")["active_plan"] = {"plan_id": "away"}
     await manager.lock("serial").acquire()
     try:
+        generation = manager.motion_generation("serial")
         decision = manager.request_stop("serial")
         assert decision.behavior == "immediate"
+        assert manager.motion_generation("serial") == generation + 1
         assert manager.cancellation_reason("serial") == "managed_stop"
     finally:
         manager.lock("serial").release()
@@ -3058,9 +3060,11 @@ async def test_stop_policy_learns_room_duration_and_applies_threshold(hass) -> N
         active = manager._data["robots"]["serial"]["active_plan"]
         active["active_elapsed_seconds"] = 60
         active["active_segment_started"] = None
+        motion_token = manager.begin_managed_motion("serial")
         assert manager.request_stop("serial") == PlanStopDecision("after_room", 57, 50)
         assert manager.finish_room_event("serial").is_set()
         assert not manager.cancellation_event("serial").is_set()
+        assert manager.motion_generation("serial") == motion_token
 
         changed = CleaningRoom("room-kitchen", "Kitchen", "mop", "standard")
         await manager.async_mark_started("serial", "away", changed)

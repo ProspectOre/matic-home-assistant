@@ -1220,6 +1220,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_current: Callable[[], None],
         require_owned: Callable[[], None],
         prepare_stop: Callable[[], Awaitable[None]],
+        rollback_stop: Callable[[], Awaitable[None]],
     ) -> None:
         """Start then update only our accepted, still-current native mission.
 
@@ -1288,11 +1289,28 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 current = await self.async_get_cleaning_session_identity()
                 require_owned()
                 if current and uuid_string(current) == commands.session_id:
-                    await prepare_stop()
-                    require_owned()
-                    if await self.async_get_cleaning_session_identity() != current:
-                        raise MaticError("Native mission changed before recovery STOP")
-                    await self.async_send_user_command(UserCommand.STOP)
+                    stop_fence_prepared = False
+                    try:
+                        # A callback can install an in-memory fence before its
+                        # persistence await fails, so arrange rollback first.
+                        stop_fence_prepared = True
+                        await prepare_stop()
+                        require_owned()
+                        if await self.async_get_cleaning_session_identity() != current:
+                            raise MaticError(
+                                "Native mission changed before recovery STOP"
+                            )
+                        await self.async_send_user_command(UserCommand.STOP)
+                        stop_fence_prepared = False
+                    except Exception, asyncio.CancelledError:
+                        if stop_fence_prepared:
+                            try:
+                                await rollback_stop()
+                            except Exception, asyncio.CancelledError:
+                                _LOGGER.warning(
+                                    "Mixed coverage STOP fence rollback failed"
+                                )
+                        raise
             except Exception:
                 _LOGGER.warning(
                     "Mixed coverage recovery could not confirm safe ownership"

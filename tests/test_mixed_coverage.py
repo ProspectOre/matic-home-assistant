@@ -173,6 +173,7 @@ def mixed_client(monkeypatch):
             "require_current": Mock(),
             "require_owned": Mock(),
             "prepare_stop": AsyncMock(),
+            "rollback_stop": AsyncMock(),
         },
     )
 
@@ -199,6 +200,7 @@ async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_cl
     with pytest.raises(MaticError, match="Room map changed"):
         await client.async_start_mixed_coverage(**args)
     args["prepare_stop"].assert_awaited_once()
+    args["rollback_stop"].assert_awaited_once()
     client.async_send_user_command.assert_not_awaited()
 
 
@@ -239,6 +241,27 @@ async def test_start_timeout_and_failed_recovery_never_update(
     client.async_send_user_command.assert_not_awaited()
 
 
+@pytest.mark.parametrize("rollback_fails", [False, True])
+async def test_rejected_recovery_stop_rolls_back_its_fence(
+    mixed_client, rollback_fails
+):
+    client, identity, args = mixed_client
+    client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", identity, identity, identity, identity]
+    )
+    client.async_send_user_command.side_effect = MaticError("STOP rejected")
+    if rollback_fails:
+        args["rollback_stop"].side_effect = MaticError("storage unavailable")
+
+    with pytest.raises(MaticError, match="update failed"):
+        await client.async_start_mixed_coverage(**args)
+
+    client.async_send_user_command.assert_awaited_once()
+    args["prepare_stop"].assert_awaited_once()
+    args["rollback_stop"].assert_awaited_once()
+
+
 @pytest.mark.parametrize("key", ["_region_settings", "_region_modes"])
 def test_mismatched_per_room_encoder_options(key):
     from custom_components.matic_robot.client.commands import encode_coverage_command
@@ -249,7 +272,18 @@ def test_mismatched_per_room_encoder_options(key):
         )
 
 
-@pytest.mark.parametrize("failure", [None, "transport", "stop", "replacement"])
+@pytest.mark.parametrize(
+    "failure",
+    [
+        None,
+        "transport",
+        "stop",
+        "replacement",
+        "cancelled",
+        "prepare_error",
+        "rollback",
+    ],
+)
 async def test_entity_mixed_dispatch_guards(hass, failure):
     from homeassistant.exceptions import HomeAssistantError
 
@@ -272,9 +306,16 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             await kwargs["prepare_stop"]()
             raise MaticError("unavailable")
         if failure == "stop":
-            manager.finish_room_event("synthetic-serial").set()
+            assert manager.request_stop("synthetic-serial").behavior == "after_room"
         if failure == "replacement":
             manager.replace_managed_motion("synthetic-serial")
+        if failure == "cancelled":
+            manager.cancellation_event("synthetic-serial").set()
+        if failure == "prepare_error":
+            await kwargs["prepare_stop"]()
+        if failure == "rollback":
+            await kwargs["prepare_stop"]()
+            await kwargs["rollback_stop"]()
         kwargs["require_current"]()
 
     client = entry.runtime_data.coordinator.client
@@ -287,13 +328,45 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
         "room_coverage": ["quick", "standard"],
         "room_modes": ["vacuum", "mop"],
     }
-    if failure:
-        with pytest.raises((HomeAssistantError, MaticError)):
+    if failure in {"prepare_error", "rollback"}:
+        manager.async_mark_stop_pending = AsyncMock(
+            side_effect=OSError("synthetic stop-fence persistence failure")
+            if failure == "prepare_error"
+            else None
+        )
+        manager.async_clear_stop_pending = AsyncMock()
+    if failure in {"transport", "replacement", "cancelled", "prepare_error"}:
+        with pytest.raises((HomeAssistantError, MaticError, OSError)):
             await entity.async_send_command("clean_rooms", params)
     else:
-        await entity.async_send_command("clean_rooms", params)
+        if failure == "stop":
+            manager._robot("synthetic-serial")["plans"]["test"] = {
+                "finish_current_room": True,
+                "finish_current_room_threshold": 50,
+            }
+            manager._robot("synthetic-serial")["active_plan"] = {
+                "plan_id": "test",
+                "room_id": "Kitchen",
+            }
+            await manager.lock("synthetic-serial").acquire()
+        try:
+            await entity.async_send_command("clean_rooms", params)
+        finally:
+            if failure == "stop":
+                manager.lock("synthetic-serial").release()
     client.async_start_coverage.assert_not_awaited()
     client.async_start_mixed_coverage.assert_awaited_once()
+    if failure == "prepare_error":
+        manager.async_clear_stop_pending.assert_awaited_once_with(
+            "synthetic-serial", run_id=None
+        )
+    if failure == "rollback":
+        manager.async_mark_stop_pending.assert_awaited_once_with(
+            "synthetic-serial", run_id=None
+        )
+        manager.async_clear_stop_pending.assert_awaited_once_with(
+            "synthetic-serial", run_id=None
+        )
 
 
 @pytest.mark.parametrize(

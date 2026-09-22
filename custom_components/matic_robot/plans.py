@@ -465,8 +465,19 @@ class CleaningPlanManager:
             return owner
         return None
 
-    async def async_clear_stop_pending(self, serial_number: str) -> None:
-        """Persist removal of a fence after the robot becomes stable."""
+    async def async_clear_stop_pending(
+        self, serial_number: str, *, run_id: str | None = None
+    ) -> None:
+        """Persist removal of a fence after the robot becomes stable.
+
+        When ``run_id`` is supplied, only that run may roll back its fence.
+        This keeps a failed STOP from clearing a newer run's accepted fence.
+        """
+        if (
+            run_id is not None
+            and self._robot(serial_number).get(STOP_FENCE_RUN_ID) != run_id
+        ):
+            return
         if self.clear_stop_pending(serial_number):
             await self._async_save_and_notify(serial_number)
 
@@ -697,12 +708,17 @@ class CleaningPlanManager:
     @callback
     def request_stop(self, serial_number: str) -> PlanStopDecision:
         """Apply the active plan's immediate-or-after-room stop policy."""
+
+        def fence_new_motion() -> None:
+            self._motion_generations[serial_number] = (
+                self.motion_generation(serial_number) + 1
+            )
+
         # Fence undispatched direct starts/resumes even if no managed lock is
-        # held yet. A graceful stop keeps the current managed owner intact.
-        self._motion_generations[serial_number] = (
-            self.motion_generation(serial_number) + 1
-        )
+        # held yet. A graceful stop keeps the current managed owner intact so
+        # its active room can reach the room-boundary STOP.
         if not self.lock(serial_number).locked():
+            fence_new_motion()
             if self.recovery_run(serial_number) is not None:
                 self.cancellation_event(serial_number).set()
                 self._cancellation_reasons[serial_number] = "managed_stop"
@@ -712,11 +728,13 @@ class CleaningPlanManager:
         robot = self._robot(serial_number)
         active = robot.get("active_plan")
         if active is None:
+            fence_new_motion()
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
         plan = robot["plans"].get(active["plan_id"], {})
         if not plan.get("finish_current_room", False):
+            fence_new_motion()
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
@@ -742,6 +760,7 @@ class CleaningPlanManager:
         )
         progress = _estimated_progress(active, expected)
         if progress is not None and progress < threshold:
+            fence_new_motion()
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate", progress, threshold)

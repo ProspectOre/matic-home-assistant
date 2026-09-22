@@ -250,17 +250,30 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 def require_current() -> None:
                     require_owned()
                     self._current_floor_plan(command_floor_token)
-                    if (
-                        self._plans.cancellation_event(serial_number).is_set()
-                        or self._plans.finish_room_event(serial_number).is_set()
-                    ):
+                    if self._plans.cancellation_event(serial_number).is_set():
                         raise HomeAssistantError(
                             "Mixed coverage was stopped before its update"
                         )
 
+                stop_fence_run_id: str | None = None
+
                 async def prepare_stop() -> None:
-                    await self._plans.async_mark_stop_pending(
-                        serial_number, run_id=self._plans.active_run_id(serial_number)
+                    nonlocal stop_fence_run_id
+                    run_id = self._plans.active_run_id(serial_number)
+                    stop_fence_run_id = run_id
+                    try:
+                        await self._plans.async_mark_stop_pending(
+                            serial_number, run_id=run_id
+                        )
+                    except BaseException:
+                        await self._plans.async_clear_stop_pending(
+                            serial_number, run_id=run_id
+                        )
+                        raise
+
+                async def rollback_stop() -> None:
+                    await self._plans.async_clear_stop_pending(
+                        serial_number, run_id=stop_fence_run_id
                     )
 
                 try:
@@ -273,6 +286,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         require_current=require_current,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
+                        rollback_stop=rollback_stop,
                     )
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(
