@@ -1185,6 +1185,9 @@ async def _async_dispatch_leg_command(
     }
     if motion_token is not None:
         params[PLAN_MOTION_TOKEN] = motion_token
+    if len({(room.cleaning_mode, room.coverage_setting) for room in leg}) > 1:
+        params["room_coverage"] = [room.coverage_setting for room in leg]
+        params["room_modes"] = [room.cleaning_mode for room in leg]
     if floor_token is not None:
         params[PLAN_FLOOR_TOKEN] = floor_token
     if on_dispatch is not None:
@@ -3794,7 +3797,11 @@ async def _async_execute_rooms(
                 if intelligent and recovery is None
                 else rooms
             )
-            legs = leg_groups(chosen)
+            legs = leg_groups(
+                chosen,
+                mixed_settings=durable
+                and (recovery is None or checkpoint.get("mixed_settings") is True),
+            )
             begin_run = getattr(manager, "async_begin_run", None)
             if (
                 recovery is None
@@ -3814,6 +3821,7 @@ async def _async_execute_rooms(
             if durable and recovery is None:
                 checkpoint = {
                     "version": 1,
+                    "mixed_settings": True,
                     "entity_id": entity_id,
                     "floor_token": floor_token,
                     "rooms": [asdict(room) for room in chosen],

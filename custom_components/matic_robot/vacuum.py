@@ -10,13 +10,14 @@ from typing import Any
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
+from .client.exceptions import MaticError
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
@@ -206,7 +207,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         ordered: bool = False,
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
+        room_coverage: list[CoverageSetting] | None = None,
+        room_modes: list[CleaningMode] | None = None,
     ) -> None:
+        if (room_coverage is not None or room_modes is not None) and (
+            motion_token is None
+            or not ordered
+            or room_coverage is None
+            or room_modes is None
+            or len(room_coverage) != len(rooms)
+            or len(room_modes) != len(rooms)
+            or len(rooms) < 2
+        ):
+            raise ServiceValidationError(
+                "Mixed coverage requires an owned ordered plan with per-room settings"
+            )
         floor_plan = self._current_floor_plan(expected_floor_token)
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
@@ -226,13 +241,52 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
             floor_plan = self._current_floor_plan(command_floor_token)
-            await self.coordinator.client.async_start_coverage(
-                floor_plan,
-                [room.protocol_id for room in rooms],
-                cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
-                coverage_setting=coverage_setting or self.coordinator.coverage_setting,
-                ordered=ordered,
-            )
+            if room_coverage is not None:
+                assert room_modes is not None
+
+                def require_owned() -> None:
+                    self._require_motion_generation(serial_number, expected_generation)
+
+                def require_current() -> None:
+                    require_owned()
+                    self._current_floor_plan(command_floor_token)
+                    if (
+                        self._plans.cancellation_event(serial_number).is_set()
+                        or self._plans.finish_room_event(serial_number).is_set()
+                    ):
+                        raise HomeAssistantError(
+                            "Mixed coverage was stopped before its update"
+                        )
+
+                async def prepare_stop() -> None:
+                    await self._plans.async_mark_stop_pending(
+                        serial_number, run_id=self._plans.active_run_id(serial_number)
+                    )
+
+                try:
+                    await self.coordinator.client.async_start_mixed_coverage(
+                        floor_plan,
+                        [room.protocol_id for room in rooms],
+                        room_coverage,
+                        room_modes,
+                        first_room_name=rooms[0].name,
+                        require_current=require_current,
+                        require_owned=require_owned,
+                        prepare_stop=prepare_stop,
+                    )
+                except (MaticError, TimeoutError) as err:
+                    raise HomeAssistantError(
+                        "Mixed coverage dispatch could not be verified"
+                    ) from err
+            else:
+                await self.coordinator.client.async_start_coverage(
+                    floor_plan,
+                    [room.protocol_id for room in rooms],
+                    cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
+                    coverage_setting=coverage_setting
+                    or self.coordinator.coverage_setting,
+                    ordered=ordered,
+                )
             await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
@@ -610,11 +664,26 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             raise _validation_error(
                 "ordered must be true or false", "ordered_must_be_boolean"
             )
-        return {
+        result = {
             "cleaning_mode": mode,
             "coverage_setting": coverage,
             "ordered": ordered,
         }
+        for key in ("room_coverage", "room_modes"):
+            if key in params:
+                values = params[key]
+                if not isinstance(values, list):
+                    raise ServiceValidationError(f"{key} must be a list")
+                try:
+                    result[key] = [
+                        _enum_option(CoverageSetting, value)
+                        if key == "room_coverage"
+                        else _enum_option(CleaningMode, value)
+                        for value in values
+                    ]
+                except ValueError as err:
+                    raise ServiceValidationError("Invalid per-room setting") from err
+        return result
 
     @staticmethod
     def _motion_token(params: dict[str, Any] | list[Any] | None) -> int | None:

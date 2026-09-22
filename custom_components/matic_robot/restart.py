@@ -121,7 +121,9 @@ async def async_recover_managed_run(
             # normal finalizer cannot erase an already verified completion.
             reason = "all_rooms_verified"
             return
-        legs = leg_groups(rooms)
+        legs = leg_groups(
+            rooms, mixed_settings=checkpoint.get("mixed_settings") is True
+        )
         leg_index = checkpoint.get("leg_index")
         if (
             not isinstance(leg_index, int)

@@ -159,20 +159,24 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
     return digest.hexdigest()
 
 
-def leg_groups(rooms: Sequence[CleaningRoom]) -> list[list[CleaningRoom]]:
+def leg_groups(
+    rooms: Sequence[CleaningRoom], *, mixed_settings: bool = False
+) -> list[list[CleaningRoom]]:
     """Group consecutive rooms that can share one native mission.
 
-    Matic firmware glides room to room inside one mission, but each mission
-    carries exactly one cleaning mode and coverage pair. A settings change
-    therefore starts a new leg.
+    Per-room goals keep settings transitions inside one native mission.
+    Firmware owns any required resource servicing. Old checkpoints retain
+    their original settings-boundary grouping during restart recovery.
     """
     groups: list[list[CleaningRoom]] = []
     for room in rooms:
         previous = groups[-1][-1] if groups else None
-        if (
-            previous is not None
-            and previous.cleaning_mode == room.cleaning_mode
-            and previous.coverage_setting == room.coverage_setting
+        if previous is not None and (
+            mixed_settings
+            or (
+                previous.cleaning_mode == room.cleaning_mode
+                and previous.coverage_setting == room.coverage_setting
+            )
         ):
             groups[-1].append(room)
         else:

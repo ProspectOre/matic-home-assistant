@@ -8,7 +8,7 @@ import math
 import socket
 import ssl
 import struct
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -32,6 +32,7 @@ from .commands import (
     UserCommand,
     encode_coverage_command,
     encode_custom_coverage_command,
+    encode_mixed_coverage_commands,
     encode_user_command,
     encode_user_data,
 )
@@ -90,7 +91,7 @@ from .tls import (
     validate_certificate,
 )
 from .trajectory import decode_approximate_trajectory
-from .wire import WireField, decode_fields, first_bytes, first_varint
+from .wire import WireField, decode_fields, first_bytes, first_varint, uuid_string
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -1207,6 +1208,96 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ),
             command_name="START_COVERAGE",
         )
+
+    async def async_start_mixed_coverage(
+        self,
+        floor_plan: FloorPlan,
+        region_ids: list[str],
+        settings: list[CoverageSetting],
+        modes: list[CleaningMode],
+        *,
+        first_room_name: str,
+        require_current: Callable[[], None],
+        require_owned: Callable[[], None],
+        prepare_stop: Callable[[], Awaitable[None]],
+    ) -> None:
+        """Start then update only our accepted, still-current native mission.
+
+        There is no retry/replay of either write. A partial dispatch failure
+        stops only the exact generated session, never an external replacement.
+        """
+        commands = encode_mixed_coverage_commands(
+            mission_id=floor_plan.mission_id,
+            partition_id=floor_plan.partition_protocol_id,
+            region_ids=region_ids,
+            settings=settings,
+            modes=modes,
+        )
+        require_current()
+        if await self.async_get_cleaning_session_identity() != b"":
+            raise MaticError("Mixed coverage requires an idle native session")
+        require_current()
+        try:
+            await self._async_send_user_payload(
+                commands.initial, command_name="START_COVERAGE"
+            )
+            async with asyncio.timeout(180):
+                while True:
+                    require_current()
+                    identity = await self.async_get_cleaning_session_identity()
+                    if identity and uuid_string(identity) != commands.session_id:
+                        raise MaticError(
+                            "Native mission changed before coverage update"
+                        )
+                    state = await self.async_get_state()
+                    if (
+                        identity
+                        and state.activity.value == "cleaning"
+                        and (state.current_area or "").casefold().removeprefix("the ")
+                        == first_room_name.casefold().removeprefix("the ")
+                    ):
+                        break
+                    await asyncio.sleep(2)
+                latest = await self.async_get_floor_plan()
+
+                def floor_identity(floor: FloorPlan) -> tuple[object, ...]:
+                    return (
+                        floor.mission_id,
+                        floor.partition_protocol_id,
+                        floor.partition_id_wire,
+                        frozenset(
+                            (room.id, room.protocol_id, room.id_wire)
+                            for room in floor.rooms
+                        ),
+                    )
+
+                if floor_identity(latest) != floor_identity(floor_plan):
+                    raise MaticError("Room map changed before coverage update")
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed before coverage update")
+                require_current()
+                await self._async_send_user_payload(
+                    commands.update, command_name="UPDATE_COVERAGE"
+                )
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed after coverage update")
+        except Exception, asyncio.CancelledError:
+            # Reconnection/read failure must not turn into an unowned STOP.
+            try:
+                require_owned()
+                current = await self.async_get_cleaning_session_identity()
+                require_owned()
+                if current and uuid_string(current) == commands.session_id:
+                    await prepare_stop()
+                    require_owned()
+                    if await self.async_get_cleaning_session_identity() != current:
+                        raise MaticError("Native mission changed before recovery STOP")
+                    await self.async_send_user_command(UserCommand.STOP)
+            except Exception:
+                _LOGGER.warning(
+                    "Mixed coverage recovery could not confirm safe ownership"
+                )
+            raise
 
     async def async_start_custom_coverage(
         self,

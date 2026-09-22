@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import struct
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from enum import StrEnum
 from uuid import UUID, uuid4
 
@@ -100,6 +101,8 @@ def encode_coverage_command(
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
     ordered: bool = False,
     command_id_factory: Callable[[], UUID] = uuid4,
+    _region_settings: Sequence[CoverageSetting] | None = None,
+    _region_modes: Sequence[CleaningMode] | None = None,
 ) -> bytes:
     """Encode a verified normal coverage command.
 
@@ -113,8 +116,20 @@ def encode_coverage_command(
 
     partition_id = str(UUID(partition_id))
     normalized_regions = tuple(str(UUID(value)) for value in region_ids)
-    setting_value = _COVERAGE_SETTING_VALUES[coverage_setting]
-    specs = _coverage_specs(cleaning_mode, setting_value)
+    settings = (
+        tuple(_region_settings)
+        if _region_settings is not None
+        else (coverage_setting,) * len(normalized_regions)
+    )
+    if len(settings) != len(normalized_regions):
+        raise ValueError("one coverage setting is required per region")
+    modes = (
+        tuple(_region_modes)
+        if _region_modes is not None
+        else (cleaning_mode,) * len(normalized_regions)
+    )
+    if len(modes) != len(normalized_regions):
+        raise ValueError("one cleaning mode is required per region")
     goal_field = 1 if ordered else 2
     goals = b"".join(
         _field(
@@ -126,8 +141,10 @@ def encode_coverage_command(
                 command_id=str(command_id_factory()),
             ),
         )
-        for region_id in normalized_regions
-        for spec in specs
+        for region_id, setting, mode in zip(
+            normalized_regions, settings, modes, strict=True
+        )
+        for spec in _coverage_specs(mode, _COVERAGE_SETTING_VALUES[setting])
     )
     coverage = (
         _field(2, _field(2, _field(1, b"")))
@@ -137,6 +154,76 @@ def encode_coverage_command(
         + _field(7, _field(1, _wrapped_uuid(str(command_id_factory()))))
     )
     return _field(15, _field(1, _field(3, coverage)))
+
+
+@dataclass(frozen=True, slots=True)
+class MixedCoverageCommands:
+    """A normal start and an identity-preserving, live-verified goal update."""
+
+    initial: bytes
+    update: bytes
+    session_id: str
+
+
+def encode_mixed_coverage_commands(
+    *,
+    mission_id: int,
+    partition_id: str,
+    region_ids: Sequence[str],
+    settings: Sequence[CoverageSetting],
+    modes: Sequence[CleaningMode],
+    command_id_factory: Callable[[], UUID] = uuid4,
+) -> MixedCoverageCommands:
+    """Prepare a normal start and a per-room goal update.
+
+    The update must only be sent after observing this exact session cleaning
+    its first room. Round IDs, floor identity and room order stay unchanged.
+    """
+    if (
+        len(region_ids) < 2
+        or len(settings) != len(region_ids)
+        or len(modes) != len(region_ids)
+    ):
+        raise ValueError("mixed coverage requires settings for two or more rooms")
+    settings = tuple(CoverageSetting(setting) for setting in settings)
+    modes = tuple(CleaningMode(mode) for mode in modes)
+    if len({str(UUID(region)) for region in region_ids}) != len(region_ids):
+        raise ValueError("mixed coverage rooms must be distinct")
+    initial_count = len(_coverage_specs(modes[0], 0))
+    ids = tuple(
+        command_id_factory() for _ in range(len(region_ids) * initial_count + 2)
+    )
+    initial_ids = iter(ids)
+    initial = encode_coverage_command(
+        mission_id=mission_id,
+        partition_id=partition_id,
+        region_ids=region_ids,
+        cleaning_mode=modes[0],
+        coverage_setting=settings[0],
+        ordered=True,
+        command_id_factory=lambda: next(initial_ids),
+    )
+    updated_ids: list[UUID] = []
+    for index, mode in enumerate(modes):
+        count = len(_coverage_specs(mode, 0))
+        old_ids = ids[index * initial_count : (index + 1) * initial_count]
+        updated_ids.extend(old_ids[:count])
+        updated_ids.extend(
+            command_id_factory() for _ in range(max(0, count - initial_count))
+        )
+    update_ids = iter((*updated_ids, ids[-2], command_id_factory()))
+    update = encode_coverage_command(
+        mission_id=mission_id,
+        partition_id=partition_id,
+        region_ids=region_ids,
+        cleaning_mode=modes[0],
+        coverage_setting=settings[0],
+        ordered=True,
+        command_id_factory=lambda: next(update_ids),
+        _region_settings=settings,
+        _region_modes=modes,
+    )
+    return MixedCoverageCommands(initial, update, str(ids[-2]))
 
 
 def encode_custom_coverage_command(

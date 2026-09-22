@@ -20,6 +20,7 @@ from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
+    leg_groups,
     plan_floor_token,
 )
 from custom_components.matic_robot.restart import async_recover_managed_run
@@ -352,8 +353,14 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
             kwargs["record_room_completed"](target)
         return True
 
-    with patch(
-        "custom_components.matic_robot.services._async_run_leg", side_effect=leg
+    with (
+        patch("custom_components.matic_robot.services._async_run_leg", side_effect=leg),
+        patch(
+            "custom_components.matic_robot.services.leg_groups",
+            side_effect=lambda rooms, **kwargs: leg_groups(
+                rooms, mixed_settings=history_state == "available"
+            ),
+        ),
     ):
         await _async_execute_rooms(
             hass,
@@ -377,11 +384,15 @@ async def test_executor_checkpoints_dispatch_and_disables_prefetch(
         assert len(seen) == 1
         assert manager.snapshot("serial")["last_run"]["outcome"] == "unverified"
         return
-    assert [value["leg_index"] for value in seen] == [0, 1]
+    assert [value["leg_index"] for value in seen] == [0]
+    assert seen[0]["mixed_settings"] is True
+    assert [item["cleaning_mode"] for item in seen[0]["rooms"]] == [
+        room.cleaning_mode,
+        "mop",
+    ]
     assert all(
         value["phase"] == "accepted" and value["completion_deadline"] for value in seen
     )
-    assert seen[1]["completed_room_ids"] == ["kitchen"]
     assert seen[0]["native_identity_hash"] == hashlib.sha256(b"new").hexdigest()
     assert seen[0]["history_baseline"] == [hashlib.sha256(b"old").hexdigest()]
     assert manager.snapshot("serial")["last_run"]["outcome"] == "completed"

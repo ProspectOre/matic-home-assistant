@@ -6191,6 +6191,10 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             "custom_components.matic_robot.services._async_wait_for_settled_leg_handoff",
             AsyncMock(side_effect=block_handoff),
         ),
+        patch(
+            "custom_components.matic_robot.services.leg_groups",
+            side_effect=lambda rooms, **kwargs: leg_groups(rooms, mixed_settings=False),
+        ),
     ):
         await _async_execute_rooms(
             hass,
@@ -6303,6 +6307,12 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
             AsyncMock(return_value=True),
         ),
         pytest.raises(ServiceValidationError, match="original native cleaning task"),
+        # Preserve coverage of legacy checkpoint boundaries: new mixed runs
+        # deliberately have no separate native mission at these settings changes.
+        patch(
+            "custom_components.matic_robot.services.leg_groups",
+            side_effect=lambda rooms, **kwargs: leg_groups(rooms, mixed_settings=False),
+        ),
     ):
         await _async_execute_rooms(
             hass,
