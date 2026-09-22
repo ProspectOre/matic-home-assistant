@@ -148,6 +148,11 @@ class _TimeoutStream(_Stream):
         raise TimeoutError
 
 
+class _FailedSendStream(_Stream):
+    async def send_message(self, request, *, end):
+        raise StreamTerminatedError("closed before write")
+
+
 class _OpenMethod:
     def __init__(self, stream: _Stream) -> None:
         self.stream = stream
@@ -1729,7 +1734,7 @@ async def test_send_channel_payload_translates_stream_errors(monkeypatch) -> Non
         )
         with pytest.raises(error_type):
             await client._async_send_channel_payload(
-                "user_command", b"payload", on_sending=callback
+                "user_command", b"payload", on_transmitted=callback
             )
         callback.assert_not_called()
         assert client.command_health["user_command"] == error_type.__name__
@@ -1777,8 +1782,27 @@ async def test_send_callback_marks_possible_delivery_before_response(
 
     with pytest.raises(CannotConnectError):
         await client._async_send_channel_payload(
-            "user_command", b"payload", on_sending=callback
+            "user_command", b"payload", on_transmitted=callback
         )
 
     callback.assert_called_once_with()
     assert stream.request.value == b"payload"
+
+
+async def test_send_callback_does_not_mark_locally_rejected_write(monkeypatch) -> None:
+    client = MaticHermesClient("robot.invalid", 16320, credential=_credential())
+    client._channel = object()
+    stream = _FailedSendStream()
+    callback = MagicMock()
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.HermesStub",
+        lambda _: SimpleNamespace(SendToChannel=_OpenMethod(stream)),
+    )
+
+    with pytest.raises(CannotConnectError):
+        await client._async_send_channel_payload(
+            "user_command", b"payload", on_transmitted=callback
+        )
+
+    callback.assert_not_called()
+    assert stream.request is None

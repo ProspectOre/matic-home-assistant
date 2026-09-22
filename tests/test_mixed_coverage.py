@@ -294,10 +294,10 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
         side_effect=[b"", identity, identity, identity, identity]
     )
 
-    async def fail_after_transmission_starts(command, *, on_sending=None):
+    async def fail_after_transmission_starts(command, *, on_transmitted=None):
         assert command.name == "STOP"
-        assert on_sending is not None
-        on_sending()
+        assert on_transmitted is not None
+        on_transmitted()
         raise stop_error
 
     client.async_send_user_command.side_effect = fail_after_transmission_starts

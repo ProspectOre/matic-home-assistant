@@ -1185,13 +1185,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         command: UserCommand,
         *,
-        on_sending: Callable[[], None] | None = None,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Send one live-verified command through the authenticated user channel."""
         payload = encode_user_command(command)
         _LOGGER.debug("Requesting Matic user command %s", command.name)
         await self._async_send_user_payload(
-            payload, command_name=command.name, on_sending=on_sending
+            payload, command_name=command.name, on_transmitted=on_transmitted
         )
 
     async def async_start_coverage(
@@ -1309,12 +1309,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                                 "Native mission changed before recovery STOP"
                             )
 
-                        def note_stop_sending() -> None:
+                        def note_stop_transmitted() -> None:
                             nonlocal stop_may_have_been_sent
                             stop_may_have_been_sent = True
 
                         await self.async_send_user_command(
-                            UserCommand.STOP, on_sending=note_stop_sending
+                            UserCommand.STOP, on_transmitted=note_stop_transmitted
                         )
                         stop_fence_prepared = False
                     except Exception, asyncio.CancelledError:
@@ -1386,14 +1386,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         payload: bytes,
         *,
         command_name: str,
-        on_sending: Callable[[], None] | None = None,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Send an encoded command through the authenticated user channel."""
         await self._async_send_channel_payload(
             "user_command",
             payload,
             command_name=command_name,
-            on_sending=on_sending,
+            on_transmitted=on_transmitted,
         )
 
     async def _async_send_channel_payload(
@@ -1402,14 +1402,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         payload: bytes,
         *,
         command_name: str | None = None,
-        on_sending: Callable[[], None] | None = None,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Observe every outgoing channel write, including internal cleanup."""
         fields = {"channel": channel_name, "command": command_name or channel_name}
         command_id = self.activity_journal.record("command_requested", **fields)
         try:
             outcome = await self._async_transmit_channel_payload(
-                channel_name, payload, command_id, on_sending=on_sending
+                channel_name, payload, command_id, on_transmitted=on_transmitted
             )
         except asyncio.CancelledError:
             self.activity_journal.record(
@@ -1435,7 +1435,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         payload: bytes,
         command_id: int,
         *,
-        on_sending: Callable[[], None] | None = None,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> str:
         """Send unchanged bytes; record when transport transmission begins."""
         if self._channel is None:
@@ -1461,9 +1461,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     self.activity_journal.record(
                         "command_sending", command_id=command_id, channel=channel_name
                     )
-                    if on_sending is not None:
-                        on_sending()
                     await stream.send_message(request, end=True)
+                    # A failed send_message can be a local rejection before
+                    # any request bytes reach the transport. Mark the point
+                    # only after its DATA write returns successfully; errors
+                    # while awaiting the response are then known ambiguous.
+                    if on_transmitted is not None:
+                        on_transmitted()
                     response = await stream.recv_message()
         except MaticError as err:
             self._command_health[channel_name] = type(err).__name__
