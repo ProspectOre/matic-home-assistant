@@ -276,6 +276,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         serial_number, run_id=stop_fence_run_id
                     )
 
+                run_id = self._plans.active_run_id(serial_number)
+
+                async def checkpoint_initial_session(identity_hash: str) -> None:
+                    if run_id is not None:
+                        await self._plans.async_checkpoint_mixed_session(
+                            serial_number, run_id, identity_hash
+                        )
+
                 try:
                     await self.coordinator.client.async_start_mixed_coverage(
                         floor_plan,
@@ -287,6 +295,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
                         rollback_stop=rollback_stop,
+                        checkpoint_initial_session=(
+                            checkpoint_initial_session if run_id is not None else None
+                        ),
                     )
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(

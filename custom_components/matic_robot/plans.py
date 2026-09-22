@@ -1241,6 +1241,68 @@ class CleaningPlanManager:
         }
         await self._async_save_and_notify(serial_number)
 
+    async def async_checkpoint_mixed_session(
+        self, serial_number: str, run_id: str, session_identity_hash: str
+    ) -> None:
+        """Persist the generated native identity before mixed START is sent."""
+        if len(session_identity_hash) != 64 or any(
+            char not in "0123456789abcdef" for char in session_identity_hash
+        ):
+            raise ValueError("mixed session identity must be a SHA-256 fingerprint")
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if (
+            not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or run.get("outcome") != "running"
+            or not isinstance(checkpoint, dict)
+            or checkpoint.get("phase") != "dispatching"
+            or checkpoint.get("mixed_settings") is not True
+            or checkpoint.get("leg_index") != 0
+        ):
+            raise HomeAssistantError("Mixed mission checkpoint is not dispatchable")
+        checkpoint["mixed_initial_session_hash"] = session_identity_hash
+        await self._async_save_and_notify(serial_number)
+
+    async def async_prepare_mixed_dispatch_stop(
+        self, serial_number: str, run_id: str, session_identity_hash: str
+    ) -> None:
+        """Persist an at-most-once STOP intent for an exact partial mission."""
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if (
+            not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or run.get("outcome") != "running"
+            or not isinstance(checkpoint, dict)
+            or checkpoint.get("phase") != "dispatching"
+            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
+            or checkpoint.get("stop_intent") is not None
+        ):
+            raise HomeAssistantError("Mixed mission STOP no longer owns its checkpoint")
+        checkpoint["stop_intent"] = "immediate"
+        self.mark_stop_pending(serial_number, run_id=run_id)
+        await self._async_save_and_notify(serial_number)
+
+    async def async_rollback_mixed_dispatch_stop(
+        self, serial_number: str, run_id: str, session_identity_hash: str
+    ) -> None:
+        """Roll back a STOP fence only when transport proves no bytes were sent."""
+        run = self._robot(serial_number).get("last_run")
+        checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
+        if (
+            not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or not isinstance(checkpoint, dict)
+            or checkpoint.get("mixed_initial_session_hash") != session_identity_hash
+            or checkpoint.get("stop_intent") != "immediate"
+            or self._robot(serial_number).get(STOP_FENCE_RUN_ID) != run_id
+        ):
+            return
+        checkpoint.pop("stop_intent", None)
+        self.clear_stop_pending(serial_number)
+        await self._async_save_and_notify(serial_number)
+
     async def async_checkpoint_stop_intent(
         self, serial_number: str, behavior: str
     ) -> None:

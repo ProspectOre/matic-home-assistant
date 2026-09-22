@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import socket
@@ -1228,11 +1229,14 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_owned: Callable[[], None],
         prepare_stop: Callable[[], Awaitable[None]],
         rollback_stop: Callable[[], Awaitable[None]],
+        checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Start then update only our accepted, still-current native mission.
 
         There is no retry/replay of either write. A partial dispatch failure
         stops only the exact generated session, never an external replacement.
+        Managed callers durably checkpoint the generated identity before the
+        initial write, so restart can fence this exact partial transaction.
         """
         commands = encode_mixed_coverage_commands(
             mission_id=floor_plan.mission_id,
@@ -1244,6 +1248,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_current()
         if await self.async_get_cleaning_session_identity() != b"":
             raise MaticError("Mixed coverage requires an idle native session")
+        require_current()
+        if checkpoint_initial_session is not None:
+            await checkpoint_initial_session(
+                hashlib.sha256(commands.session_id.encode("ascii")).hexdigest()
+            )
         require_current()
         try:
             await self._async_send_user_payload(

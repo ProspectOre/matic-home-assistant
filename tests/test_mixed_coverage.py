@@ -1,6 +1,7 @@
 """Synthetic official-encoder fixtures and mixed mission ownership tests."""
 
 import asyncio
+import hashlib
 from base64 import b64decode
 from itertools import product
 from types import SimpleNamespace
@@ -175,18 +176,43 @@ def mixed_client(monkeypatch):
             "require_owned": Mock(),
             "prepare_stop": AsyncMock(),
             "rollback_stop": AsyncMock(),
+            "checkpoint_initial_session": AsyncMock(),
         },
     )
 
 
 async def test_owned_update_sent_once(mixed_client):
     client, _, args = mixed_client
+    order = []
+
+    async def checkpoint(identity_hash):
+        order.append("checkpoint")
+
+    async def send(_payload, *, command_name):
+        order.append(command_name)
+
+    args["checkpoint_initial_session"] = AsyncMock(side_effect=checkpoint)
+    client._async_send_user_payload.side_effect = send
     await client.async_start_mixed_coverage(**args)
+    assert order == ["checkpoint", "START_COVERAGE", "UPDATE_COVERAGE"]
     assert [
         c.kwargs["command_name"]
         for c in client._async_send_user_payload.await_args_list
     ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
+    args["checkpoint_initial_session"].assert_awaited_once_with(
+        hashlib.sha256(
+            "33333333-3333-4333-8333-333333333333".encode("ascii")
+        ).hexdigest()
+    )
     client.async_send_user_command.assert_not_awaited()
+
+
+async def test_mixed_start_checkpoint_failure_prevents_initial_write(mixed_client):
+    client, _, args = mixed_client
+    args["checkpoint_initial_session"].side_effect = OSError("storage unavailable")
+    with pytest.raises(OSError, match="storage unavailable"):
+        await client.async_start_mixed_coverage(**args)
+    client._async_send_user_payload.assert_not_awaited()
 
 
 async def test_mixed_wait_normalizes_room_spacing(mixed_client):
@@ -415,6 +441,62 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
         )
 
 
+async def test_managed_vacuum_supplies_mixed_session_checkpoint(hass):
+    from custom_components.matic_robot.plans import CleaningPlanManager
+    from custom_components.matic_robot.vacuum import MaticVacuum
+    from tests.test_entities import _entry
+
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    await manager.async_begin_run(
+        "synthetic-serial",
+        "plan",
+        "run",
+        2,
+        trigger="user",
+        service="run_selected_plan",
+    )
+    await manager.async_set_recovery_checkpoint(
+        "synthetic-serial",
+        "run",
+        {
+            "version": 1,
+            "phase": "dispatching",
+            "mixed_settings": True,
+            "leg_index": 0,
+        },
+    )
+    token = manager.begin_managed_motion("synthetic-serial")
+    session_hash = hashlib.sha256(
+        "33333333-3333-4333-8333-333333333333".encode("ascii")
+    ).hexdigest()
+
+    async def checkpoint(_floor, _rooms, _settings, _modes, **kwargs):
+        await kwargs["checkpoint_initial_session"](session_hash)
+
+    client = entry.runtime_data.coordinator.client
+    client.async_start_mixed_coverage = AsyncMock(side_effect=checkpoint)
+    await MaticVacuum(entry).async_send_command(
+        "clean_rooms",
+        {
+            "rooms": ["Kitchen", "Study"],
+            "ordered": True,
+            "room_coverage": ["quick", "standard"],
+            "room_modes": ["vacuum", "mop"],
+            "_matic_plan_run": token,
+        },
+    )
+
+    assert (
+        manager.recovery_run("synthetic-serial")["recovery_checkpoint"][
+            "mixed_initial_session_hash"
+        ]
+        == session_hash
+    )
+
+
 @pytest.mark.parametrize(
     "extra",
     [
@@ -492,7 +574,12 @@ async def test_failed_update_cannot_replay_or_stop_replacement(mixed_client, fai
             ]
         )
     else:
-        args["require_current"].side_effect = [None, None, MaticError("stop")]
+        args["require_current"].side_effect = [
+            None,
+            None,
+            None,
+            MaticError("stop"),
+        ]
         client.async_get_cleaning_session_identity = AsyncMock(
             side_effect=[b"", identity, identity]
         )
