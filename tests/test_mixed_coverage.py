@@ -188,6 +188,21 @@ async def test_owned_update_sent_once(mixed_client):
     client.async_send_user_command.assert_not_awaited()
 
 
+async def test_mixed_wait_normalizes_room_spacing(mixed_client):
+    client, _, args = mixed_client
+    args["first_room_name"] = " Living   Room "
+    client.async_get_state.return_value = SimpleNamespace(
+        activity=SimpleNamespace(value="cleaning"), current_area="The Living Room"
+    )
+
+    await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
+
+
 async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_client):
     client, identity, args = mixed_client
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")

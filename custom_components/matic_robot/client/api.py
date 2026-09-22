@@ -45,7 +45,7 @@ from .exceptions import (
     MaticError,
     PairingModeRequiredError,
 )
-from .floor_plan import decode_floor_plans, decode_pose
+from .floor_plan import decode_floor_plans, decode_pose, room_name_key
 from .flythrough import Flythrough, decode_flythrough
 from .history import (
     CleaningSessionImage,
@@ -1254,8 +1254,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     if (
                         identity
                         and state.activity.value == "cleaning"
-                        and (state.current_area or "").casefold().removeprefix("the ")
-                        == first_room_name.casefold().removeprefix("the ")
+                        and room_name_key(state.current_area)
+                        == room_name_key(first_room_name)
                     ):
                         break
                     await asyncio.sleep(2)
