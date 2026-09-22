@@ -4157,21 +4157,38 @@ async def test_room_handoff_dispatches_after_completion_is_persisted(
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
         return _PreparedRoomDispatch((next_room,), frozenset(), dt_util.utcnow())
 
+    async def resolve_session(*args, **kwargs) -> bool:
+        # Dock travel may briefly report cleaning after leaving the target room.
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Study"})
+
+        async def return_again() -> None:
+            await asyncio.sleep(0)
+            hass.states.async_set(
+                "vacuum.matic", "returning", {"current_area": "Study"}
+            )
+
+        hass.async_create_task(return_again(), eager_start=True)
+        return True
+
     sender = AsyncMock()
-    completed = await _async_run_room(
-        hass,
-        _call(hass),
-        manager,
-        "vacuum.matic",
-        "serial",
-        room,
-        session_history=history,
-        managed_user_command=sender,
-        prefetch_next=prefetch,
-        active_session=(
-            AsyncMock(side_effect=[True, False]) if use_session_reader else None
-        ),
-    )
+    with patch(
+        "custom_components.matic_robot.services._async_wait_for_active_session_resolution",
+        side_effect=resolve_session,
+    ):
+        completed = await _async_run_room(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            room,
+            session_history=history,
+            managed_user_command=sender,
+            prefetch_next=prefetch,
+            active_session=(
+                AsyncMock(side_effect=[True, False]) if use_session_reader else None
+            ),
+        )
 
     assert completed is True
     assert prefetch_calls == 1
