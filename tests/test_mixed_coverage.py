@@ -1,5 +1,6 @@
 """Synthetic official-encoder fixtures and mixed mission ownership tests."""
 
+import asyncio
 from base64 import b64decode
 from itertools import product
 from types import SimpleNamespace
@@ -257,7 +258,7 @@ async def test_start_timeout_and_failed_recovery_never_update(
 
 
 @pytest.mark.parametrize("rollback_fails", [False, True])
-async def test_rejected_recovery_stop_rolls_back_its_fence(
+async def test_pre_send_recovery_stop_failure_rolls_back_its_fence(
     mixed_client, rollback_fails
 ):
     client, identity, args = mixed_client
@@ -275,6 +276,36 @@ async def test_rejected_recovery_stop_rolls_back_its_fence(
     client.async_send_user_command.assert_awaited_once()
     args["prepare_stop"].assert_awaited_once()
     args["rollback_stop"].assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    ("stop_error", "expected_error"),
+    [
+        (MaticError("STOP response lost"), MaticError),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ],
+)
+async def test_ambiguous_recovery_stop_keeps_its_fence(
+    mixed_client, stop_error, expected_error
+):
+    client, identity, args = mixed_client
+    client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", identity, identity, identity, identity]
+    )
+
+    async def fail_after_transmission_starts(command, *, on_sending=None):
+        assert command.name == "STOP"
+        assert on_sending is not None
+        on_sending()
+        raise stop_error
+
+    client.async_send_user_command.side_effect = fail_after_transmission_starts
+    with pytest.raises(expected_error):
+        await client.async_start_mixed_coverage(**args)
+
+    args["prepare_stop"].assert_awaited_once()
+    args["rollback_stop"].assert_not_awaited()
 
 
 @pytest.mark.parametrize("key", ["_region_settings", "_region_modes"])

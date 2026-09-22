@@ -1181,11 +1181,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Return non-sensitive read health for observed endpoints."""
         return dict(self._endpoint_health)
 
-    async def async_send_user_command(self, command: UserCommand) -> None:
+    async def async_send_user_command(
+        self,
+        command: UserCommand,
+        *,
+        on_sending: Callable[[], None] | None = None,
+    ) -> None:
         """Send one live-verified command through the authenticated user channel."""
         payload = encode_user_command(command)
         _LOGGER.debug("Requesting Matic user command %s", command.name)
-        await self._async_send_user_payload(payload, command_name=command.name)
+        await self._async_send_user_payload(
+            payload, command_name=command.name, on_sending=on_sending
+        )
 
     async def async_start_coverage(
         self,
@@ -1290,6 +1297,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 require_owned()
                 if current and uuid_string(current) == commands.session_id:
                     stop_fence_prepared = False
+                    stop_may_have_been_sent = False
                     try:
                         # A callback can install an in-memory fence before its
                         # persistence await fails, so arrange rollback first.
@@ -1300,10 +1308,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                             raise MaticError(
                                 "Native mission changed before recovery STOP"
                             )
-                        await self.async_send_user_command(UserCommand.STOP)
+
+                        def note_stop_sending() -> None:
+                            nonlocal stop_may_have_been_sent
+                            stop_may_have_been_sent = True
+
+                        await self.async_send_user_command(
+                            UserCommand.STOP, on_sending=note_stop_sending
+                        )
                         stop_fence_prepared = False
                     except Exception, asyncio.CancelledError:
-                        if stop_fence_prepared:
+                        if stop_fence_prepared and not stop_may_have_been_sent:
                             try:
                                 await rollback_stop()
                             except Exception, asyncio.CancelledError:
@@ -1367,22 +1382,34 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def _async_send_user_payload(
-        self, payload: bytes, *, command_name: str
+        self,
+        payload: bytes,
+        *,
+        command_name: str,
+        on_sending: Callable[[], None] | None = None,
     ) -> None:
         """Send an encoded command through the authenticated user channel."""
         await self._async_send_channel_payload(
-            "user_command", payload, command_name=command_name
+            "user_command",
+            payload,
+            command_name=command_name,
+            on_sending=on_sending,
         )
 
     async def _async_send_channel_payload(
-        self, channel_name: str, payload: bytes, *, command_name: str | None = None
+        self,
+        channel_name: str,
+        payload: bytes,
+        *,
+        command_name: str | None = None,
+        on_sending: Callable[[], None] | None = None,
     ) -> None:
         """Observe every outgoing channel write, including internal cleanup."""
         fields = {"channel": channel_name, "command": command_name or channel_name}
         command_id = self.activity_journal.record("command_requested", **fields)
         try:
             outcome = await self._async_transmit_channel_payload(
-                channel_name, payload, command_id
+                channel_name, payload, command_id, on_sending=on_sending
             )
         except asyncio.CancelledError:
             self.activity_journal.record(
@@ -1403,7 +1430,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def _async_transmit_channel_payload(
-        self, channel_name: str, payload: bytes, command_id: int
+        self,
+        channel_name: str,
+        payload: bytes,
+        command_id: int,
+        *,
+        on_sending: Callable[[], None] | None = None,
     ) -> str:
         """Send unchanged bytes; record when transport transmission begins."""
         if self._channel is None:
@@ -1429,6 +1461,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     self.activity_journal.record(
                         "command_sending", command_id=command_id, channel=channel_name
                     )
+                    if on_sending is not None:
+                        on_sending()
                     await stream.send_message(request, end=True)
                     response = await stream.recv_message()
         except MaticError as err:
