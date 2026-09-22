@@ -1372,7 +1372,9 @@ async def _async_run_room(
                             entity_id,
                             room,
                             cancel_event,
-                            initial_observed=dispatch.recovered,
+                            # Owned start already observed this room. Preserve that
+                            # evidence across transient cleaning during dock travel.
+                            initial_observed=True,
                         ),
                         session_identity,
                         native_identity,
