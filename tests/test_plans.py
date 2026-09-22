@@ -1065,6 +1065,32 @@ async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
     assert PLAN_FLOOR_TOKEN not in params
 
 
+async def test_leg_dispatch_allows_stale_completed_identity(hass) -> None:
+    """A blocked-doorway handoff may retain its completed identity at dispatch."""
+    captured = []
+
+    async def send_command(call) -> None:
+        captured.append(call.data)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    identity = AsyncMock(side_effect=[b"completed", b"completed"])
+
+    dispatch = await _async_dispatch_leg_command(
+        hass,
+        _call(hass),
+        "vacuum.matic",
+        [_room("Dining Room", "room-dining")],
+        None,
+        None,
+        session_identity=identity,
+        expected_dispatch_identity=b"completed",
+    )
+
+    assert captured[0]["command"] == "clean_rooms"
+    assert dispatch.native_identity_baseline == b"completed"
+    assert dispatch.native_identity is None
+
+
 async def test_mark_completed_accepts_native_evidence(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -5929,6 +5955,54 @@ async def test_settled_leg_handoff_waits_for_returning_robot(hass, monkeypatch) 
     assert fake_hass.states.get.call_count == 2
 
 
+async def test_settled_leg_handoff_accepts_inactive_session_before_identity_clears(
+    hass, monkeypatch
+) -> None:
+    """A blocked dock must not strand the next settings leg on stale identity."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+
+    assert await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        active_session=AsyncMock(return_value=False),
+        identity_reader=AsyncMock(return_value=b"completed-session"),
+        expected_identity=b"completed-session",
+        timeout_seconds=1,
+    )
+
+
+async def test_settled_leg_handoff_tolerates_session_read_error(
+    hass, monkeypatch
+) -> None:
+    """A transient session read error keeps the bounded handoff fail-closed."""
+    monkeypatch.setattr(
+        "custom_components.matic_robot.services.LEG_HANDOFF_POLL_SECONDS", 0
+    )
+    fake_hass = SimpleNamespace(
+        states=SimpleNamespace(
+            get=MagicMock(return_value=SimpleNamespace(state="returning"))
+        )
+    )
+
+    assert not await _async_wait_for_settled_leg_handoff(
+        fake_hass,
+        "vacuum.matic",
+        None,
+        active_session=AsyncMock(side_effect=MaticError("session unavailable")),
+        identity_reader=AsyncMock(return_value=b"completed-session"),
+        expected_identity=b"completed-session",
+        timeout_seconds=0.001,
+    )
+
+
 async def test_settled_leg_handoff_covers_cancel_refresh_error_and_replacement(
     hass,
 ) -> None:
@@ -6113,10 +6187,11 @@ async def test_settings_handoff_does_not_dispatch_after_stop_or_timeout(
             floor_is_current=lambda: True,
             floor_token="a" * 64,
             session_identity=AsyncMock(return_value=b""),
+            active_session=AsyncMock(return_value=False) if settled is True else None,
             session_history=AsyncMock(return_value=()),
         )
 
-    run.assert_awaited_once()
+    assert run.await_count == 1
     sender.assert_not_awaited()
     assert manager.snapshot("serial")["last_run"]["completed_room_count"] == 1
 
@@ -6167,9 +6242,13 @@ async def test_settings_handoff_rechecks_identity_before_dispatch(
         index = calls
         calls += 1
         assert kwargs["session_identity"] is identity
-        assert kwargs["expected_dispatch_identity"] == (
-            b"" if index > 0 or takeover_leg == 0 else None
-        )
+        if index == 0 and takeover_leg != 0:
+            assert kwargs["expected_dispatch_identity"] is None
+        else:
+            assert kwargs["expected_dispatch_identity"] in {
+                b"",
+                b"managed-session",
+            }
         if index == takeover_leg:
             if takeover == "identity":
                 identity.return_value = b"replacement"
