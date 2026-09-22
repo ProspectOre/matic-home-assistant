@@ -396,17 +396,17 @@ def robot_location_source(
         return "exact_pose"
     if floor_plan is None or not floor_plan.rooms:
         return "unavailable"
-    area_key = _room_name_key(current_area)
+    area_key = room_name_key(current_area)
     if area_key is None:
         return "unavailable"
     room = next(
-        (item for item in floor_plan.rooms if _room_name_key(item.name) == area_key),
+        (item for item in floor_plan.rooms if room_name_key(item.name) == area_key),
         None,
     )
     return "current_area" if room is not None else "unavailable"
 
 
-def _room_name_key(value: str | None) -> str | None:
+def room_name_key(value: str | None) -> str | None:
     """Normalize the article and spacing used by the firmware's area phrase."""
     if value is None:
         return None

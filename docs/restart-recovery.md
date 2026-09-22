@@ -19,6 +19,19 @@ room timing, and bounded trigger provenance; restart does not grant extra time.
 Native session identities and history keys remain opaque in memory; only
 fingerprints are stored locally. Checkpoints are excluded from entity snapshots.
 
+Mixed-settings dispatch also stores the generated native-session fingerprint
+before its initial START write. If restart finds the matching session while
+that two-write dispatch is incomplete, recovery persists a run-bound STOP intent
+and settles that exact mission; it never replays START or UPDATE. An ended,
+changed, malformed, or unreadable identity does not authorize a command. If the
+STOP write is ambiguous, recovery does not replay it; the persisted fence resumes
+only the native-inactive settlement watcher. A previously saved
+finish-current-room intent is converted to this exact-session STOP during an
+incomplete mixed dispatch, because the initial START may otherwise continue
+through later rooms using the first room's settings. If persisting the recovery
+STOP intent fails before transmission, recovery rolls the intent and fence back
+and releases command ownership without sending STOP.
+
 The checkpoint is written before dispatch and after accepted identity evidence.
 Durable runs do not prefetch a different-settings mission while verifying the
 previous leg. Same-settings rooms still share one native ordered mission.

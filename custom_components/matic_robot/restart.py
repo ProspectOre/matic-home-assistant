@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from collections.abc import Callable
 from functools import partial
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
+from google.protobuf.message import DecodeError
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import HomeAssistant, ServiceCall
 from homeassistant.exceptions import HomeAssistantError
@@ -16,6 +18,7 @@ from homeassistant.util import dt as dt_util
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
+from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .plans import CleaningRoom, leg_groups, plan_floor_token
 from .services import (
@@ -35,6 +38,143 @@ if TYPE_CHECKING:
 
 RECOVERY_ATTEMPTS = 60
 RECOVERY_RETRY_SECONDS = 2
+
+
+def _matches_mixed_session_hash(identity: bytes, expected_hash: object) -> bool:
+    """Compare a live opaque session to the generated mixed-session fingerprint."""
+    if (
+        not isinstance(expected_hash, str)
+        or len(expected_hash) != 64
+        or any(char not in "0123456789abcdef" for char in expected_hash)
+    ):
+        return False
+    try:
+        canonical_identity = uuid_string(identity)
+    except DecodeError, ValueError:
+        return False
+    return hashlib.sha256(canonical_identity.encode("ascii")).hexdigest() == (
+        expected_hash
+    )
+
+
+async def _async_stop_interrupted_mixed_dispatch(
+    hass: HomeAssistant,
+    entry: MaticConfigEntry,
+    serial_number: str,
+    run: dict[str, Any],
+    expected_hash: str,
+    expected_identity: bytes,
+    generation: int,
+    cancel: asyncio.Event,
+    floor_is_current: Callable[[], bool],
+) -> str:
+    """Stop only the exact initial mission from an interrupted mixed dispatch.
+
+    The STOP intent and native-inactive fence are persisted before transmission.
+    If HA then crashes, recovery never replays STOP; it resumes only the
+    evidence-driven stop-settlement watcher. A locally rejected write rolls the
+    intent back because the client can prove that no DATA was transmitted.
+    """
+    runtime = entry.runtime_data
+    manager = runtime.cleaning_plans
+    run_id = str(run["run_id"])
+    entity_id = str(run["recovery_checkpoint"]["entity_id"])
+    token: int | None = None
+    transmitted = False
+
+    async with manager.command_lock(serial_number):
+        if (
+            cancel.is_set()
+            or manager.motion_generation(serial_number) != generation
+            or not floor_is_current()
+        ):
+            return "restart_mixed_dispatch_superseded"
+        current_identity = await runtime.client.async_get_cleaning_session_identity()
+        if (
+            cancel.is_set()
+            or manager.motion_generation(serial_number) != generation
+            or not floor_is_current()
+            or current_identity != expected_identity
+        ):
+            return "restart_mixed_dispatch_superseded"
+        token = manager.begin_managed_motion(serial_number)
+        try:
+            await manager.async_prepare_mixed_dispatch_stop(
+                serial_number, run_id, expected_hash
+            )
+        except BaseException:
+            try:
+                await manager.async_rollback_mixed_dispatch_stop(
+                    serial_number, run_id, expected_hash
+                )
+            finally:
+                manager.end_managed_motion(serial_number, token)
+            raise
+        if (
+            not manager.managed_motion_is_current(serial_number, token)
+            or manager.motion_generation(serial_number) != token
+            or not floor_is_current()
+        ):
+            await manager.async_rollback_mixed_dispatch_stop(
+                serial_number, run_id, expected_hash
+            )
+            manager.end_managed_motion(serial_number, token)
+            return "restart_mixed_dispatch_superseded"
+        current_identity = await runtime.client.async_get_cleaning_session_identity()
+        if (
+            not manager.managed_motion_is_current(serial_number, token)
+            or manager.motion_generation(serial_number) != token
+            or not floor_is_current()
+            or current_identity != expected_identity
+        ):
+            await manager.async_rollback_mixed_dispatch_stop(
+                serial_number, run_id, expected_hash
+            )
+            manager.end_managed_motion(serial_number, token)
+            return "restart_mixed_dispatch_superseded"
+
+        def note_stop_transmitted() -> None:
+            nonlocal transmitted
+            transmitted = True
+
+        try:
+            await runtime.client.async_send_user_command(
+                UserCommand.STOP, on_transmitted=note_stop_transmitted
+            )
+        except asyncio.CancelledError:
+            if transmitted:
+                manager.request_stop(serial_number)
+                manager.end_managed_motion(serial_number, token)
+                _schedule_managed_dock_after_stop(
+                    hass, entry, manager, serial_number, entity_id, run_id, None
+                )
+            else:
+                await manager.async_rollback_mixed_dispatch_stop(
+                    serial_number, run_id, expected_hash
+                )
+                manager.end_managed_motion(serial_number, token)
+            raise
+        except MaticError:
+            if not transmitted:
+                await manager.async_rollback_mixed_dispatch_stop(
+                    serial_number, run_id, expected_hash
+                )
+                manager.end_managed_motion(serial_number, token)
+                raise
+        except Exception:
+            if not transmitted:
+                await manager.async_rollback_mixed_dispatch_stop(
+                    serial_number, run_id, expected_hash
+                )
+                manager.end_managed_motion(serial_number, token)
+                raise
+        manager.request_stop(serial_number)
+        manager.end_managed_motion(serial_number, token)
+        _schedule_managed_dock_after_stop(
+            hass, entry, manager, serial_number, entity_id, run_id, None
+        )
+        await runtime.coordinator.async_request_refresh()
+    return "restart_mixed_dispatch_stop_requested"
 
 
 async def async_recover_managed_run(
@@ -89,11 +229,17 @@ async def async_recover_managed_run(
             reason = "restart_stop_requested"
             return
         phase = checkpoint.get("phase")
-        if checkpoint.get("version") != 1 or phase not in {
-            "accepted",
-            "verifying",
-            "handoff",
-        }:
+        mixed_initial_hash = checkpoint.get("mixed_initial_session_hash")
+        mixed_dispatch = (
+            phase == "dispatching"
+            and checkpoint.get("mixed_settings") is True
+            and isinstance(mixed_initial_hash, str)
+            and len(mixed_initial_hash) == 64
+            and all(char in "0123456789abcdef" for char in mixed_initial_hash)
+        )
+        if checkpoint.get("version") != 1 or (
+            phase not in {"accepted", "verifying", "handoff"} and not mixed_dispatch
+        ):
             return
         verifying = phase == "verifying"
         handoff = phase == "handoff"
@@ -121,7 +267,9 @@ async def async_recover_managed_run(
             # normal finalizer cannot erase an already verified completion.
             reason = "all_rooms_verified"
             return
-        legs = leg_groups(rooms)
+        legs = leg_groups(
+            rooms, mixed_settings=checkpoint.get("mixed_settings") is True
+        )
         leg_index = checkpoint.get("leg_index")
         if (
             not isinstance(leg_index, int)
@@ -139,10 +287,21 @@ async def async_recover_managed_run(
         ):
             return
         leg = legs[leg_index]
-        expected = checkpoint.get("native_identity_hash")
-        if not isinstance(expected, str) or len(expected) != 64:
+        expected = (
+            mixed_initial_hash
+            if mixed_dispatch
+            else checkpoint.get("native_identity_hash")
+        )
+        if (
+            not isinstance(expected, str)
+            or len(expected) != 64
+            or any(char not in "0123456789abcdef" for char in expected)
+        ):
             return
-        if handoff:
+        if mixed_dispatch:
+            dispatched_at = None
+            completion_deadline = None
+        elif handoff:
             # A handoff checkpoint has no accepted dispatch for the next leg;
             # its previous native identity is retained only to reject a
             # replacement before the queue is resumed.
@@ -200,6 +359,22 @@ async def async_recover_managed_run(
                 await asyncio.sleep(RECOVERY_RETRY_SECONDS)
         else:
             reason = "restart_state_unavailable"
+            return
+        if mixed_dispatch:
+            if not identity or not _matches_mixed_session_hash(identity, expected):
+                reason = "restart_mixed_native_mission_changed_or_ended"
+                return
+            reason = await _async_stop_interrupted_mixed_dispatch(
+                hass,
+                entry,
+                serial_number,
+                run,
+                expected,
+                identity,
+                generation,
+                cancel,
+                floor_is_current,
+            )
             return
         if handoff:
             if not identity or hashlib.sha256(identity).hexdigest() != expected:
