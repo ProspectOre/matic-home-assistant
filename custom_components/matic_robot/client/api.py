@@ -1229,6 +1229,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_owned: Callable[[], None],
         prepare_stop: Callable[[], Awaitable[None]],
         rollback_stop: Callable[[], Awaitable[None]],
+        on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
     ) -> None:
         """Start then update only our accepted, still-current native mission.
@@ -1320,7 +1321,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
                         def note_stop_transmitted() -> None:
                             nonlocal stop_may_have_been_sent
+                            if stop_may_have_been_sent:
+                                return
                             stop_may_have_been_sent = True
+                            if on_recovery_stop_transmitted is not None:
+                                on_recovery_stop_transmitted()
 
                         await self.async_send_user_command(
                             UserCommand.STOP, on_transmitted=note_stop_transmitted

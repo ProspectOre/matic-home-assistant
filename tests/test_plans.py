@@ -4213,6 +4213,7 @@ def _leg_manager(cancellation_reason: str | None = None) -> SimpleNamespace:
         async_mark_resumed=AsyncMock(),
         async_mark_cancelled=AsyncMock(),
         cancellation_reason=MagicMock(return_value=cancellation_reason),
+        pending_stop_run_id=MagicMock(return_value=None),
     )
 
 
@@ -4253,6 +4254,41 @@ def _leg_call(hass, *, start_timeout: int = 120, completion_timeout: int = 21600
 
 def _leg_rooms() -> list[CleaningRoom]:
     return [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
+
+
+async def test_partial_mixed_dispatch_preserves_its_transmitted_stop(hass) -> None:
+    """An API recovery STOP owns settlement; generic cleanup must not replace it."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    sender = AsyncMock()
+
+    async def fail_dispatch(_call) -> None:
+        run_id = manager.active_run_id("serial")
+        assert run_id is not None
+        await manager.async_mark_stop_pending("serial", run_id=run_id)
+        raise HomeAssistantError("mixed update failed after recovery STOP")
+
+    hass.services.async_register("vacuum", "send_command", fail_dispatch)
+    rooms = [
+        CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick"),
+        CleaningRoom("room-office", "Office", "mop", "optimal"),
+    ]
+    with pytest.raises(HomeAssistantError):
+        await _async_execute_rooms(
+            hass,
+            _leg_call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            intelligent=False,
+            managed_user_command=sender,
+            floor_token="synthetic-floor-token",
+            session_identity=AsyncMock(return_value=b""),
+        )
+
+    sender.assert_not_awaited()
+    assert manager.pending_stop_run_id("serial") is not None
 
 
 async def test_leg_rejects_duplicate_room_names(hass) -> None:
@@ -5176,8 +5212,80 @@ async def test_leg_boundary_stop_finishes_current_room_only(hass) -> None:
     sender.assert_awaited_once_with(7, UserCommand.STOP)
     manager.async_mark_completed.assert_awaited_once()
     assert manager.async_mark_completed.await_args.args[2].name == "Kitchen"
-    manager.async_mark_cancelled.assert_awaited_once()
-    assert manager.async_mark_cancelled.await_args.args[2].name == "Office"
+    manager.async_mark_ended_unverified.assert_awaited_once()
+    assert manager.async_mark_ended_unverified.await_args.args[2].name == "Office"
+
+
+async def test_boundary_stop_is_not_repeated_while_next_room_is_still_cleaning(
+    hass,
+):
+    """Track the room after STOP so its live state cannot restart the countdown."""
+    rooms = [
+        _room("Kitchen", "room-kitchen"),
+        _room("Office", "room-office"),
+        _room("Study", "room-study"),
+    ]
+    manager = _leg_manager()
+    finish_room_event = asyncio.Event()
+
+    async def send_command(call) -> None:
+        if call.data.get("command") != "clean_rooms":
+            return
+        hass.states.async_set("vacuum.matic", "cleaning", {"current_area": "Kitchen"})
+
+        async def cross_boundary() -> None:
+            await asyncio.sleep(0)
+            finish_room_event.set()
+            hass.states.async_set(
+                "vacuum.matic", "cleaning", {"current_area": "Office"}
+            )
+
+        hass.async_create_task(cross_boundary(), eager_start=True)
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    stop_count = 0
+
+    async def stop_then_settle(token: int, command: UserCommand) -> None:
+        nonlocal stop_count
+        assert token == 7
+        assert command is UserCommand.STOP
+        stop_count += 1
+        if stop_count == 1:
+
+            async def settle() -> None:
+                await asyncio.sleep(0.01)
+                hass.states.async_set(
+                    "vacuum.matic",
+                    "returning",
+                    {"current_area": "Office", "low_charge": False},
+                )
+
+            hass.async_create_task(settle())
+        else:
+            # The pre-fix loop sends STOP repeatedly while Office remains the
+            # current area. Let it unwind so the assertion reports the defect.
+            hass.states.async_set(
+                "vacuum.matic",
+                "returning",
+                {"current_area": "Office", "low_charge": False},
+            )
+
+    sender = AsyncMock(side_effect=stop_then_settle)
+    completed = await _async_run_leg(
+        hass,
+        _call(hass),
+        manager,
+        "vacuum.matic",
+        "serial",
+        rooms,
+        managed_user_command=sender,
+        motion_token=7,
+        finish_room_event=finish_room_event,
+    )
+
+    assert completed is False
+    assert stop_count == 1
+    sender.assert_awaited_once_with(7, UserCommand.STOP)
 
 
 async def test_room_handoff_waits_for_history_before_dispatch(hass) -> None:

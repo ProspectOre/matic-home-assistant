@@ -276,6 +276,14 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         serial_number, run_id=stop_fence_run_id
                     )
 
+                def recovery_stop_transmitted() -> None:
+                    # The client invokes this only after STOP bytes reached the
+                    # transport. Start settlement watching before the partial
+                    # dispatch error unwinds to managed-plan cleanup.
+                    self._schedule_dock_after_stop(
+                        serial_number, run_id=stop_fence_run_id
+                    )
+
                 run_id = self._plans.active_run_id(serial_number)
 
                 async def checkpoint_initial_session(identity_hash: str) -> None:
@@ -295,6 +303,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
                         rollback_stop=rollback_stop,
+                        on_recovery_stop_transmitted=recovery_stop_transmitted,
                         checkpoint_initial_session=(
                             checkpoint_initial_session if run_id is not None else None
                         ),

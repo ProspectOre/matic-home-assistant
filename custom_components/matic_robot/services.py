@@ -1947,18 +1947,23 @@ async def _async_run_leg(
                     )
                     if outcome is RoomRunOutcome.ROOM_CHANGED:
                         assert changed_room is not None
-                        if finish_room_event is not None and finish_room_event.is_set():
+                        if (
+                            finish_room_event is not None
+                            and finish_room_event.is_set()
+                            and not stop_sent
+                        ):
                             # A finish-current-room stop cannot withhold the
                             # next dispatch inside one native mission, so the
-                            # observed room boundary is where the managed STOP
-                            # honors it.
+                            # first observed room boundary is where the managed
+                            # STOP honors it. Keep observing room transitions
+                            # during firmware settlement without restarting the
+                            # OEM countdown with duplicate STOP commands.
                             await _async_cleanup_managed_motion(
                                 managed_user_command,
                                 motion_token,
                                 dispatch_attempted=True,
                             )
                             stop_sent = True
-                            continue
                         active_room = changed_room
                         first_observation = active_room.room_id not in observed_ids
                         observed_ids.add(active_room.room_id)
@@ -2164,11 +2169,12 @@ async def _async_run_leg(
         # upgrade the still-running record and mask the durable failure.
         if finish_room_event is not None:
             finish_room_event.clear()
-        await _async_cleanup_managed_motion(
-            managed_user_command,
-            motion_token,
-            dispatch_attempted,
-        )
+        if not _managed_stop_fence_owned_by_run(manager, serial_number, run_id):
+            await _async_cleanup_managed_motion(
+                managed_user_command,
+                motion_token,
+                dispatch_attempted,
+            )
         if isinstance(err, RoomStartTimeoutError):
             failure_reason = "The robot did not begin cleaning before the start timeout"
         elif isinstance(err, TimeoutError):
@@ -2888,6 +2894,20 @@ async def _async_cleanup_managed_motion(
             "Unable to stop a failed managed Matic motion before cleanup (%s)",
             type(err).__name__,
         )
+
+
+def _managed_stop_fence_owned_by_run(
+    manager: CleaningPlanManager,
+    serial_number: str,
+    run_id: str | None,
+) -> bool:
+    """Return whether an already-transmitted STOP belongs to this managed run."""
+    pending_stop_run_id = getattr(manager, "pending_stop_run_id", None)
+    return (
+        run_id is not None
+        and callable(pending_stop_run_id)
+        and pending_stop_run_id(serial_number) == run_id
+    )
 
 
 @asynccontextmanager
@@ -4266,9 +4286,12 @@ async def _async_execute_rooms(
                         or current.state != "returning"
                         or current.attributes.get("low_charge") is True
                     ):
-                        await _async_cleanup_managed_motion(
-                            outer_command, motion_token, dispatch_attempted=True
-                        )
+                        if not _managed_stop_fence_owned_by_run(
+                            manager, serial_number, run_id
+                        ):
+                            await _async_cleanup_managed_motion(
+                                outer_command, motion_token, dispatch_attempted=True
+                            )
             raise
         finally:
             try:

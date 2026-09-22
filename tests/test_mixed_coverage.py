@@ -315,6 +315,7 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
     mixed_client, stop_error, expected_error
 ):
     client, identity, args = mixed_client
+    args["on_recovery_stop_transmitted"] = Mock()
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=[b"", identity, identity, identity, identity]
@@ -324,6 +325,7 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
         assert command.name == "STOP"
         assert on_transmitted is not None
         on_transmitted()
+        on_transmitted()
         raise stop_error
 
     client.async_send_user_command.side_effect = fail_after_transmission_starts
@@ -331,6 +333,30 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
         await client.async_start_mixed_coverage(**args)
 
     args["prepare_stop"].assert_awaited_once()
+    args["rollback_stop"].assert_not_awaited()
+    args["on_recovery_stop_transmitted"].assert_called_once_with()
+
+
+async def test_recovery_stop_ack_schedules_settlement_before_dispatch_error(
+    mixed_client,
+):
+    client, identity, args = mixed_client
+    args["on_recovery_stop_transmitted"] = Mock()
+    client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", identity, identity, identity, identity]
+    )
+
+    async def stop_acknowledged(command, *, on_transmitted=None):
+        assert command.name == "STOP"
+        assert on_transmitted is not None
+        on_transmitted()
+
+    client.async_send_user_command.side_effect = stop_acknowledged
+    with pytest.raises(MaticError, match="update failed"):
+        await client.async_start_mixed_coverage(**args)
+
+    args["on_recovery_stop_transmitted"].assert_called_once_with()
     args["rollback_stop"].assert_not_awaited()
 
 
@@ -354,6 +380,7 @@ def test_mismatched_per_room_encoder_options(key):
         "cancelled",
         "prepare_error",
         "rollback",
+        "transmitted_stop",
     ],
 )
 async def test_entity_mixed_dispatch_guards(hass, failure):
@@ -388,11 +415,16 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
         if failure == "rollback":
             await kwargs["prepare_stop"]()
             await kwargs["rollback_stop"]()
+        if failure == "transmitted_stop":
+            await kwargs["prepare_stop"]()
+            kwargs["on_recovery_stop_transmitted"]()
+            raise MaticError("update failed after recovery STOP")
         kwargs["require_current"]()
 
     client = entry.runtime_data.coordinator.client
     client.async_start_mixed_coverage = AsyncMock(side_effect=send)
     entity = MaticVacuum(entry)
+    entity._schedule_dock_after_stop = Mock()
     params = {
         "rooms": ["Kitchen", "Study"],
         "ordered": True,
@@ -407,7 +439,13 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             else None
         )
         manager.async_clear_stop_pending = AsyncMock()
-    if failure in {"transport", "replacement", "cancelled", "prepare_error"}:
+    if failure in {
+        "transport",
+        "replacement",
+        "cancelled",
+        "prepare_error",
+        "transmitted_stop",
+    }:
         with pytest.raises((HomeAssistantError, MaticError, OSError)):
             await entity.async_send_command("clean_rooms", params)
     else:
@@ -437,6 +475,10 @@ async def test_entity_mixed_dispatch_guards(hass, failure):
             "synthetic-serial", run_id=None
         )
         manager.async_clear_stop_pending.assert_awaited_once_with(
+            "synthetic-serial", run_id=None
+        )
+    if failure == "transmitted_stop":
+        entity._schedule_dock_after_stop.assert_called_once_with(
             "synthetic-serial", run_id=None
         )
 
