@@ -765,6 +765,23 @@ def area_binding_status(
                 if len(matching_bounds) == 1:
                     if matching_bounds[0] != old_bounds:
                         return AreaBindingStatus.GEOMETRY_CHANGED
+                elif not matching_bounds:
+                    # When the shape fingerprint changed, retain a bounded
+                    # translation check: a containing room whose two x or y
+                    # bounds moved by the same nonzero amount still signals a
+                    # changed absolute frame, even if another vertex changed.
+                    for current_anchor in current_anchors:
+                        new_bounds = current_anchor["bounds"]
+                        if (
+                            new_bounds[0] - old_bounds[0]
+                            == new_bounds[2] - old_bounds[2]
+                            != 0
+                        ) or (
+                            new_bounds[1] - old_bounds[1]
+                            == new_bounds[3] - old_bounds[3]
+                            != 0
+                        ):
+                            return AreaBindingStatus.GEOMETRY_CHANGED
                 elif len(matching_bounds) > 1 and all(
                     new_bounds != old_bounds for new_bounds in matching_bounds
                 ):

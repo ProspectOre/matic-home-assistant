@@ -2150,6 +2150,43 @@ def test_unanchored_area_fails_closed_when_all_frame_extrema_change() -> None:
     assert area_binding_status(area, edited) is AreaBindingStatus.GEOMETRY_CHANGED
 
 
+def test_unanchored_area_fails_closed_when_containing_room_shape_changes() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("home", "Home", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "remote",
+                "Remote",
+                ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0)),
+            ),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (1.0, 2.0),
+                    (11.0, 2.0),
+                    (11.0, 12.0),
+                    (9.0, 12.0),
+                    (10.0, 11.0),
+                    (1.0, 12.0),
+                ),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+
+    assert not area["map_binding"]["local_segments_mm"]
+    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_room_anchor_containment_uses_the_shared_geometry_budget() -> None:
     geometry = area_binding_module._room_geometry_index(_floor_plan())
     geometry._query_work_remaining = 1
