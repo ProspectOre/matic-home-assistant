@@ -700,3 +700,11 @@ def test_render_slam_map_rejects_empty_or_unbounded_cache() -> None:
     )
     with pytest.raises(DecodeError, match="raster is too large"):
         render_slam_map((tile,), floor_plan=hostile_floor_plan)
+
+
+def test_render_slam_map_rejects_unbounded_projection() -> None:
+    near_corner = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    distant = decode_slam_tile(synthetic_slam_entry(page_x=14, page_y=255))
+
+    with pytest.raises(DecodeError, match="projection is too large"):
+        render_slam_map((near_corner, distant))
