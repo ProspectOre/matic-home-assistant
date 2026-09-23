@@ -690,11 +690,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
     """Erase the removed robot's persisted private data."""
-    plans: CleaningPlanManager | None = hass.data.get(DOMAIN, {}).get(DATA_PLAN_MANAGER)
-    if plans is None:
-        # Use the shared initializer so pre-setup removals and service setup
-        # cannot load independent snapshots of the same store.
-        plans = await async_get_plan_manager(hass)
+    # Always enter the shared initialization lock: the manager may already be
+    # published in hass.data while its initial storage load is still pending.
+    plans = await async_get_plan_manager(hass)
     serial_number = str(entry.data[CONF_SERIAL_NUMBER])
     await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)

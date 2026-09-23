@@ -1640,10 +1640,11 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     slam_history = SimpleNamespace(async_remove=AsyncMock())
 
     temporary_plans = SimpleNamespace(async_remove_robot=AsyncMock())
+    manager_to_remove = plans if with_plans else temporary_plans
     with (
         patch(
             "custom_components.matic_robot.async_get_plan_manager",
-            return_value=temporary_plans,
+            return_value=manager_to_remove,
         ) as get_plan_manager,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
@@ -1657,12 +1658,10 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
         await async_remove_entry(hass, entry)
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
+    get_plan_manager.assert_awaited_once_with(hass)
+    manager_to_remove.async_remove_robot.assert_awaited_once_with("serial")
     if with_plans:
-        get_plan_manager.assert_not_awaited()
-        plans.async_remove_robot.assert_awaited_once_with("serial")
-    else:
-        get_plan_manager.assert_awaited_once_with(hass)
-        temporary_plans.async_remove_robot.assert_awaited_once_with("serial")
+        assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is plans
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
@@ -1690,6 +1689,42 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     bare_get_plan_manager.assert_awaited_once_with(bare)
     bare_plans.async_remove_robot.assert_awaited_once_with("serial")
     delete_bare_area_issue.assert_called_once_with(bare, "entry")
+
+
+async def test_remove_entry_waits_for_published_plan_manager_load(hass) -> None:
+    manager = SimpleNamespace(async_remove_robot=AsyncMock())
+    load_started = asyncio.Event()
+    finish_load = asyncio.Event()
+
+    async def get_manager(_hass):
+        load_started.set()
+        await finish_load.wait()
+        return manager
+
+    hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
+    entry = SimpleNamespace(entry_id="entry", data={CONF_SERIAL_NUMBER: "serial"})
+    slam_map = SimpleNamespace(async_remove=AsyncMock())
+    slam_history = SimpleNamespace(async_remove=AsyncMock())
+    with (
+        patch(
+            "custom_components.matic_robot.async_get_plan_manager",
+            side_effect=get_manager,
+        ),
+        patch("custom_components.matic_robot.clear_slam_scene_cache"),
+        patch("custom_components.matic_robot.async_delete_custom_area_issue"),
+        patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
+        patch(
+            "custom_components.matic_robot.SlamHistoryStore",
+            return_value=slam_history,
+        ),
+    ):
+        removing = asyncio.create_task(async_remove_entry(hass, entry))
+        await load_started.wait()
+        manager.async_remove_robot.assert_not_awaited()
+        finish_load.set()
+        await removing
+
+    manager.async_remove_robot.assert_awaited_once_with("serial")
 
 
 async def test_finished_session_records_where_the_robot_worked(hass) -> None:
