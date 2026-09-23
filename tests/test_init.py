@@ -1084,22 +1084,8 @@ async def test_setup_refreshes_before_forwarding_platforms(
                 },
             ),
         ]
-        with patch(
-            "custom_components.matic_robot.monotonic",
-            side_effect=[101.5, 102.5],
-        ):
-            entry.async_on_unload.call_args_list[0].args[0]()
-            scheduled_state_flushes[0].cancel.assert_called_once_with()
-            scheduled_state_flushes[0].callback()
-            scheduled_state_flushes[1].callback()
-        assert hass.bus.async_fire.call_args_list[-1] == call(
-            "matic_robot_activity_observed",
-            {
-                "entry_id": entry.entry_id,
-                "kind": "state",
-                "state_codes": [107],
-            },
-        )
+        scheduled_state_flushes[0].cancel.assert_called_once_with()
+        assert len(scheduled_state_flushes) == 1
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 

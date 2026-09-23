@@ -147,6 +147,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
                     _schedule_pending_state_flush(next_state_event_at - now)
                 return
             next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
+            if pending_state_timer is not None:
+                pending_state_timer.cancel()
+                pending_state_timer = None
+            pending_state_observation = None
         hass.bus.async_fire(
             EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
         )
