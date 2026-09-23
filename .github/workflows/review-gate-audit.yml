@@ -143,17 +143,21 @@ jobs:
                   def availability_notice:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-                  def exact_head:
+                  def exact_reviewed_head:
                     test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  def exact_full_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60" + $head + "\\x60");
                   [.[][]
                    | select((.user.login // "") == $bot)
                    | (.body // "") as $body
                    | select($body | regular_heading)
                    | select(($body | security_heading) | not)
                    | select(($body | availability_notice) | not)
-                   | select($body | exact_head)
+                   | select($body | exact_reviewed_head)
                    | {id: ("issue-comment:" + (.id | tostring)),
-                      at: (.updated_at // .created_at)}]'
+                      at: (.updated_at // .created_at),
+                      source: "issue_comment",
+                      full_head: ($body | exact_full_head)}]'
           }
 
           current_regular_review_records() {
@@ -276,6 +280,9 @@ jobs:
           elif [[ "$gate_state" == "pending" ]] && is_reconciliation_pending "$gate_description"; then
             needs_reconciliation=true
             reconciliation_reason="a pending normal review evaluation"
+          elif [[ "$gate_state" == "success" && "$evidence_marker" == issue-comment:* ]] && jq -e --arg evidence "$evidence_marker" 'any(.[]; .id == $evidence and .source == "issue_comment" and (.full_head | not))' <<< "$evidence_records" >/dev/null; then
+            needs_reconciliation=true
+            reconciliation_reason="legacy short-SHA clean issue-comment evidence must be revalidated"
           elif [[ "$gate_state" == "success" && -n "$evidence_marker" ]] && ! jq -e --arg evidence "$evidence_marker" 'index($evidence) != null' <<< "$evidence_ids" >/dev/null; then
             needs_reconciliation=true
             reconciliation_reason="clean normal evidence that is no longer current"

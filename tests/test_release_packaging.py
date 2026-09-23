@@ -103,6 +103,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def availability_notice:" in review_gate
     assert "availability_notice) | not" in review_gate
     assert 'source == "issue_comment"' in review_gate
+    assert "def exact_reviewed_head:" in review_gate
+    assert '"|" + $prefix' in review_gate
+    clean_envelope = review_gate[
+        review_gate.index("def stock_clean_issue_comment_envelope:") :
+    ]
+    assert '"|" + $prefix' not in clean_envelope
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
     assert "latest_regular_issue_comment_at" in review_gate
@@ -247,12 +253,25 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
     assert "| jq -er '.head.sha'" in regular_comment
+    assert 'head_prefix="${head_sha:0:10}"' in regular_comment
     assert (
         "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_comment
     )
     assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
+    assert "def exact_reviewed_head:" in regular_comment
+    regular_routing = regular_comment[
+        regular_comment.index("body_is_regular_comment()") : regular_comment.index(
+            "body_is_clean_comment()"
+        )
+    ]
+    clean_validation = regular_comment[
+        regular_comment.index("body_is_clean_comment()") :
+    ]
+    assert "$prefix" in regular_routing
+    assert "$prefix" not in clean_validation
+    assert '--arg prefix "$head_prefix"' in regular_routing
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "Trusted review-gate evaluator is not installed" in regular_comment
@@ -325,6 +344,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def availability_notice:" in audit
     assert "availability_notice) | not" in audit
     assert "current_regular_comment_records" in audit
+    assert "def exact_reviewed_head:" in audit
+    assert '"|" + $prefix' in audit
+    assert "full_head: ($body | exact_full_head)" in audit
+    assert "legacy short-SHA clean issue-comment evidence must be revalidated" in audit
     assert "current_regular_review_records" in audit
     assert "databaseId state submittedAt updatedAt" in audit
     assert 'select((.state // "") != "DISMISSED")' in audit
