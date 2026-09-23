@@ -175,40 +175,62 @@ class _RoomGeometryIndex:
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)
+        self.indexed_polygons = tuple(
+            polygon for polygon in self.polygons if not polygon.overloaded
+        )
+        self.fallback_polygons = tuple(
+            sorted(
+                (polygon for polygon in self.polygons if polygon.overloaded),
+                key=lambda polygon: polygon.fallback_order_key,
+            )
+        )
         self._query_work_remaining = self._MAX_QUERY_WORK
+
+    def _charge_work(self, work: int = 1) -> None:
+        if work > self._query_work_remaining:
+            self._query_work_remaining = 0
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        self._query_work_remaining -= work
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
-        # Indexed rooms have a fixed reference cap, so check them before any
-        # fallback that may need to fail closed for excessive geometry.
-        for polygon in self.polygons:
-            if polygon.overloaded:
-                continue
-            contained, work = polygon.contains_with_work_limit(
-                x, y, tolerance, self._query_work_remaining
-            )
-            self._query_work_remaining -= work
-            if contained:
-                return True
+        if self._query_work_remaining <= 0:
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        try:
+            # Charge each polygon candidate before testing its bounds. The
+            # fallback order was sorted once when this request index was built.
+            for polygon in self.indexed_polygons:
+                self._charge_work()
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    return True
 
-        overloaded = sorted(
-            (
-                polygon
-                for polygon in self.polygons
-                if polygon.overloaded
-                and polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
-                and polygon.minimum_y - tolerance <= y <= polygon.maximum_y + tolerance
-            ),
-            key=lambda polygon: polygon.fallback_order_key,
-        )
-        for polygon in overloaded:
-            contained, work = polygon.contains_with_work_limit(
-                x, y, tolerance, self._query_work_remaining
-            )
-            self._query_work_remaining -= work
-            if contained:
-                return True
-        return False
+            # Indexed rooms have a fixed reference cap, so check them before
+            # fallbacks that may need to fail closed for excessive geometry.
+            for polygon in self.fallback_polygons:
+                self._charge_work()
+                if not (
+                    polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
+                    and polygon.minimum_y - tolerance
+                    <= y
+                    <= polygon.maximum_y + tolerance
+                ):
+                    continue
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    return True
+            return False
+        except GeometryTooComplex:
+            # A failed candidate query must not leave residual budget for the
+            # next saved area in the same request to repeat the expensive work.
+            self._query_work_remaining = 0
+            raise
 
 
 @SELECTORS.register("matic-area")

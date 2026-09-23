@@ -232,6 +232,13 @@ def test_indexed_polygon_uses_bounded_fallback_for_tiny_vertical_span() -> None:
     assert work < 100
 
 
+def test_indexed_polygon_rejects_edge_work_over_query_limit() -> None:
+    polygon = _IndexedPolygon([[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]])
+
+    with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
+        polygon.contains_with_work_limit(0.5, 0.5, 0.0, 0)
+
+
 def test_indexed_polygon_rejects_wide_bucket_span_over_fallback_edge_limit() -> None:
     polygon = _IndexedPolygon([[float(index), 0.0] for index in range(4_097)])
 
@@ -270,7 +277,7 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
         pytest.fail("fallback budget was not exhausted")
 
     assert geometry._query_work_remaining < len(boundary)
-    with pytest.raises(ValueError, match="fallback budget exhausted"):
+    with pytest.raises(ValueError, match="query budget exhausted"):
         geometry.contains(128.5, 0.0)
 
 
@@ -358,7 +365,7 @@ def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
     remaining = geometry._query_work_remaining
 
     assert geometry.contains(-1.0, 0.0) is False
-    assert geometry._query_work_remaining == remaining
+    assert geometry._query_work_remaining == remaining - 1
 
 
 def test_room_index_reports_exhausted_single_polygon_fallback_budget() -> None:
@@ -392,8 +399,44 @@ def test_area_selector_rejects_geometry_budget_exhaustion() -> None:
     geometry = _RoomGeometryIndex(selector.config["rooms"])
     geometry._query_work_remaining = 0
 
-    with pytest.raises(vol.Invalid, match="fallback budget exhausted"):
+    with pytest.raises(vol.Invalid, match="query budget exhausted"):
         selector.validate([{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=geometry)
+
+
+def test_room_index_charges_overloaded_candidate_enumeration() -> None:
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
+    ]
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": str(index), "name": "Room", "boundary": boundary}
+            for index in range(3)
+        ]
+    )
+    assert all(polygon.overloaded for polygon in geometry.polygons)
+    geometry._query_work_remaining = 2
+
+    with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
+        geometry.contains(1_000.0, 0.0)
+
+    assert geometry._query_work_remaining == 0
+
+
+def test_room_index_does_not_reuse_budget_after_candidate_exhaustion() -> None:
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
+    ]
+    geometry = _RoomGeometryIndex(
+        [{"room_id": "room", "name": "Room", "boundary": boundary}]
+    )
+    geometry._query_work_remaining = 2
+
+    with pytest.raises(GeometryTooComplex, match="fallback budget exhausted"):
+        geometry.contains(69.0, 0.0)
+
+    assert geometry._query_work_remaining == 0
+    with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
+        geometry.contains(69.0, 0.0)
 
 
 def test_room_index_rejects_polygon_over_fallback_cap_as_uncertain() -> None:
