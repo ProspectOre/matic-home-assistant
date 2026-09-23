@@ -95,7 +95,7 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
 
 
 def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None:
-    """A tall zigzag polygon retains storage proportional to its input size."""
+    """A tall zigzag polygon fails closed before expanding index storage."""
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0]
         for index in range(4_096)
@@ -104,10 +104,6 @@ def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None
     polygon = _IndexedPolygon(boundary)
 
     assert polygon.boundary is boundary
-    assert vars(polygon) == {
-        "boundary": boundary,
-        "minimum_x": 0.0,
-        "maximum_x": 4_095.0,
-        "minimum_y": -10_000.0,
-        "maximum_y": 10_000.0,
-    }
+    assert polygon.overloaded is True
+    assert sum(map(len, polygon.edges_by_bucket.values())) <= polygon._MAX_EDGE_REFERENCES
+    assert polygon.contains(1.0, 0.0, 0.0) is False
