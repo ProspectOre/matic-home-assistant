@@ -621,7 +621,7 @@
       "no_rooms": "Turn on at least one room.",
       "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
       "area_map_changed": "The map changed while the editor was open. Previous marks were cleared; redraw the area on the current map.",
-      "area_geometry_too_complex": "This area contains more geometry than can be safely checked. Reduce the number of marks or redraw it with fewer mapped rooms."
+      "area_geometry_too_complex": "This area exceeds the safe geometry-checking limit. Try fewer marks or redraw it in a simpler part of the map."
     },
     "step": {
       "init": {

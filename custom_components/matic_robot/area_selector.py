@@ -158,8 +158,9 @@ class _IndexedPolygon:
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
-    # Cover the 512-circle limit for eight 256-edge rooms and ten
-    # center/occupancy probes per circle, with a small indexing margin.
+    # This synchronous custom-area query ceiling is separate from decoder
+    # limits. Some decoder-valid maps exceed it; those areas fail closed in
+    # the options flow rather than blocking Home Assistant on unbounded work.
     _MAX_QUERY_WORK = 10_600_000
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
