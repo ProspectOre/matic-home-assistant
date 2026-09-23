@@ -132,6 +132,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._cues_listeners: set[Callable[[MaticCuesEvent], None]] = set()
         self._latest_cues_state: RobotOperationalState | None = None
         self._cues_push_sequence = 0
+        self._cues_states_received = 0
 
     async def async_watch_cues(self) -> None:
         """Keep Cues lifecycle state current between coordinator polls."""
@@ -145,6 +146,8 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 raise
             except MaticError as err:
                 _LOGGER.debug("Matic Cues subscription interrupted: %s", err)
+                if self._cues_states_received > 1:
+                    retry_delay = 1
             await asyncio.sleep(retry_delay)
             retry_delay = min(retry_delay * 2, 60)
 
@@ -188,6 +191,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     await collector
                     return states_received
         finally:
+            self._cues_states_received = states_received
             if not collector.done():
                 collector.cancel()
             await asyncio.gather(collector, return_exceptions=True)
