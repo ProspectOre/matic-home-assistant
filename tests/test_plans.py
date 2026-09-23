@@ -182,7 +182,11 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     """A registered STOP watcher owns the journal until dock confirmation ends."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
-    set_run_id = MagicMock()
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
     watcher_release = asyncio.Event()
 
     async def watcher() -> None:
@@ -190,7 +194,10 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
 
     async def fake_leg(*_args, **_kwargs):
         manager.register_reconciliation_task(
-            "serial", asyncio.create_task(watcher()), dock=True
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
         )
         return True
 
@@ -207,14 +214,59 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
             [_room("Kitchen", "room-kitchen")],
             intelligent=False,
             set_activity_run_id=set_run_id,
+            get_activity_run_id=lambda: scope["run_id"],
         )
 
-    assert set_run_id.call_count == 1
-    assert set_run_id.call_args.args[0]
+    assert scope["run_id"] is not None
     assert manager.dock_reconciliation_active("serial") is True
     watcher_release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert scope["run_id"] is None
+
+
+async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> None:
+    """A delegated journal scope is released even when its watcher is cancelled."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    scope: dict[str, str | None] = {"run_id": None}
+    watcher_started = asyncio.Event()
+
+    async def watcher() -> None:
+        watcher_started.set()
+        await asyncio.Event().wait()
+
+    async def fake_leg(*_args, **_kwargs):
+        manager.register_reconciliation_task(
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
+        )
+        await watcher_started.wait()
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+            set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
+            get_activity_run_id=lambda: scope["run_id"],
+        )
+
+    assert scope["run_id"] is not None
     manager.cancel_reconciliation_tasks("serial")
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert scope["run_id"] is None
 
 
 async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
@@ -6813,6 +6865,25 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
     await asyncio.sleep(0)
     assert manager.dock_reconciliation_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
+
+
+async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
+    """A live dock watcher claims an otherwise-unset activity scope."""
+    manager = CleaningPlanManager(hass)
+    task = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", task, dock=True, run_id="run-1")
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_scope(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    assert manager.defer_activity_scope_cleanup(
+        "serial", "run-1", set_scope, lambda: scope["run_id"]
+    )
+    assert scope["run_id"] == "run-1"
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert scope["run_id"] is None
 
 
 async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:

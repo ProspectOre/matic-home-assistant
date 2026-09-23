@@ -275,6 +275,16 @@ class CleaningPlanManager:
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._dock_reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._dock_reconciliation_run_ids: dict[
+            str, dict[asyncio.Task[None], str | None]
+        ] = {}
+        self._dock_scope_cleanups: dict[
+            str,
+            dict[
+                str,
+                tuple[Callable[[str | None], None], Callable[[], str | None] | None],
+            ],
+        ] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
         self._reconciliation_removal_pending: set[str] = set()
         self._cancellation_reasons: dict[str, str] = {}
@@ -569,13 +579,21 @@ class CleaningPlanManager:
 
     @callback
     def register_reconciliation_task(
-        self, serial_number: str, task: asyncio.Task[None], *, dock: bool = False
+        self,
+        serial_number: str,
+        task: asyncio.Task[None],
+        *,
+        dock: bool = False,
+        run_id: str | None = None,
     ) -> None:
         """Tie a late native-completion watcher to this robot's lifecycle."""
         tasks = self._reconciliation_tasks.setdefault(serial_number, set())
         tasks.add(task)
         if dock:
             self._dock_reconciliation_tasks.setdefault(serial_number, set()).add(task)
+            self._dock_reconciliation_run_ids.setdefault(serial_number, {})[task] = (
+                run_id
+            )
 
         def _discard(done: asyncio.Task[None]) -> None:
             current = self._reconciliation_tasks.get(serial_number)
@@ -588,8 +606,22 @@ class CleaningPlanManager:
                 dock_current = self._dock_reconciliation_tasks.get(serial_number)
                 if dock_current is not None:
                     dock_current.discard(done)
-                    if not dock_current:
-                        self._dock_reconciliation_tasks.pop(serial_number, None)
+                if not dock_current:
+                    self._dock_reconciliation_tasks.pop(serial_number, None)
+                    self._dock_reconciliation_run_ids.pop(serial_number, None)
+                    cleanup = (
+                        self._dock_scope_cleanups.pop(serial_number, {}).get(run_id)
+                        if run_id is not None
+                        else None
+                    )
+                    if cleanup is not None:
+                        set_scope, get_scope = cleanup
+                        if get_scope is None or get_scope() == run_id:
+                            set_scope(None)
+                else:
+                    run_ids = self._dock_reconciliation_run_ids.get(serial_number)
+                    if run_ids is not None:
+                        run_ids.pop(done, None)
 
         task.add_done_callback(_discard)
 
@@ -599,11 +631,48 @@ class CleaningPlanManager:
         return bool(self._dock_reconciliation_tasks.get(serial_number))
 
     @callback
+    def defer_activity_scope_cleanup(
+        self,
+        serial_number: str,
+        run_id: str,
+        set_run_id: Callable[[str | None], None],
+        get_run_id: Callable[[], str | None] | None,
+    ) -> bool:
+        """Release a run scope when its specific dock watcher terminates."""
+        run_ids = self._dock_reconciliation_run_ids.get(serial_number, {})
+        tasks = tuple(
+            task
+            for task in self._dock_reconciliation_tasks.get(serial_number, ())
+            if run_ids.get(task) == run_id
+        )
+        if not tasks or (get_run_id is not None and get_run_id() not in {None, run_id}):
+            return False
+        if get_run_id is not None and get_run_id() is None:
+            set_run_id(run_id)
+
+        remaining = set(tasks)
+
+        def _release(done: asyncio.Task[None]) -> None:
+            remaining.discard(done)
+            if not remaining and (get_run_id is None or get_run_id() == run_id):
+                set_run_id(None)
+
+        for task in tasks:
+            task.add_done_callback(_release)
+        self._dock_scope_cleanups.setdefault(serial_number, {})[run_id] = (
+            set_run_id,
+            get_run_id,
+        )
+        return True
+
+    @callback
     def cancel_reconciliation_tasks(self, serial_number: str) -> None:
         """Cancel obsolete late-completion watchers without blocking."""
         for task in tuple(self._reconciliation_tasks.pop(serial_number, set())):
             task.cancel()
         self._dock_reconciliation_tasks.pop(serial_number, None)
+        self._dock_reconciliation_run_ids.pop(serial_number, None)
+        self._dock_scope_cleanups.pop(serial_number, None)
 
     def cancellation_reason(self, serial_number: str) -> str | None:
         """Return the lifecycle reason attached to the current cancellation."""
