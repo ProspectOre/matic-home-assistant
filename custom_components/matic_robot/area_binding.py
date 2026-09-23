@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any
@@ -486,7 +486,7 @@ def _bounded_hash_only_area_geometry_fingerprint(
             x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
             y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
         )
-        segments: set[_LocalSegment] = set()
+        segments: Counter[_LocalSegment] = Counter()
         for room in floor_plan.rooms:
             boundary = room.boundary
             for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
@@ -504,11 +504,11 @@ def _bounded_hash_only_area_geometry_fingerprint(
                 )
                 if second < first:
                     first, second = second, first
-                segments.add((*first, *second))
+                segments[(*first, *second)] += 1
         room_geometry.charge_query_work(len(segments))
-        digest.update(struct.pack(">I", len(segments)))
-        for segment in sorted(segments):
-            digest.update(struct.pack(">qqqq", *segment))
+        digest.update(struct.pack(">I", sum(segments.values())))
+        for segment, multiplicity in sorted(segments.items()):
+            digest.update(struct.pack(">qqqqI", *segment, multiplicity))
     return digest.hexdigest()
 
 

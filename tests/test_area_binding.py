@@ -240,6 +240,21 @@ def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None
         )
         is AreaBindingStatus.CURRENT
     )
+    duplicated_boundary = replace(
+        base,
+        rooms=(*base.rooms, _room("duplicate", "Duplicate", edge)),
+    )
+    assert (
+        area_binding_status(
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "circles": circles,
+                "map_binding": binding,
+            },
+            duplicated_boundary,
+        )
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_dense_hash_verification_accepts_saved_center_boundary_tolerance(
