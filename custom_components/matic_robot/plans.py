@@ -268,6 +268,7 @@ class CleaningPlanManager:
         self._data: dict[str, Any] = self._empty_data()
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._native_history_locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
@@ -403,6 +404,10 @@ class CleaningPlanManager:
     def lock(self, serial_number: str) -> asyncio.Lock:
         """Return the single-flight plan lock for one robot."""
         return self._locks.setdefault(serial_number, asyncio.Lock())
+
+    def native_history_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize native-history persistence without claiming plan ownership."""
+        return self._native_history_locks.setdefault(serial_number, asyncio.Lock())
 
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
@@ -732,7 +737,11 @@ class CleaningPlanManager:
         for done in tuple(self._native_history_saves.get(serial_number, ())):
             await done.wait()
 
-        async with self.lock(serial_number), self.command_lock(serial_number):
+        async with (
+            self.native_history_lock(serial_number),
+            self.lock(serial_number),
+            self.command_lock(serial_number),
+        ):
             robots = self._data.get("robots")
             if isinstance(robots, dict):
                 removed = robots.pop(serial_number, None)
@@ -914,9 +923,9 @@ class CleaningPlanManager:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
             return False
-        # Keep removal serialization through the save, while allowing a new
-        # motion command to proceed once the history mutation is committed.
-        async with self.lock(serial_number):
+        # Serialize removal with history persistence without making the
+        # managed-run lock appear occupied while storage is slow.
+        async with self.native_history_lock(serial_number):
             async with self.command_lock(serial_number):
                 if serial_number in self._removed_robots or (
                     generation is not None

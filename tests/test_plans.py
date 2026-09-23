@@ -2508,6 +2508,8 @@ async def test_replacement_waits_for_reconciliation_persistence(
         else manager.async_import_native_history("serial", floor_plan, records)
     )
     await entered.wait()
+    if not live_reconciliation:
+        assert manager.has_managed_task("serial") is False
 
     async def replace():
         if replacement == "direct":
