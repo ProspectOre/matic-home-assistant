@@ -21,6 +21,10 @@ class MaticAreaSelectorConfig(TypedDict):
     scene_url: NotRequired[str]
 
 
+class GeometryTooComplex(ValueError):
+    """The bounded fallback budget cannot prove containment."""
+
+
 POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
 ROOM_SCHEMA = vol.Schema(
     {
@@ -158,9 +162,9 @@ class _RoomGeometryIndex:
                 if edge_count > polygon._MAX_FALLBACK_EDGES:
                     continue
                 if len(overloaded) > 1 and edge_count > fair_share:
-                    continue
+                    raise GeometryTooComplex("room geometry fallback budget exhausted")
                 if len(overloaded) <= 1 and edge_count > self._fallback_work_remaining:
-                    continue
+                    raise GeometryTooComplex("room geometry fallback budget exhausted")
                 self._fallback_work_remaining -= edge_count
             if polygon.contains(x, y, tolerance):
                 if len(overloaded) > 1:
@@ -306,7 +310,13 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
             circle = dict(schema(item))
             if not all(math.isfinite(value) for value in circle.values()):
                 raise vol.Invalid("Area circle values must be finite")
-            if not geometry.contains(circle["x"], circle["y"], center_tolerance):
+            try:
+                contained = geometry.contains(
+                    circle["x"], circle["y"], center_tolerance
+                )
+            except GeometryTooComplex as err:
+                raise vol.Invalid(str(err)) from err
+            if not contained:
                 raise vol.Invalid("Area circle centers must be inside a mapped room")
             circles.append(circle)
         return circles

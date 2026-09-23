@@ -153,10 +153,16 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     )
 
     for _ in range(geometry._MAX_FALLBACK_WORK // len(boundary) + 1):
-        geometry.contains(128.5, 0.0)
+        try:
+            geometry.contains(128.5, 0.0)
+        except ValueError:
+            break
+    else:
+        pytest.fail("fallback budget was not exhausted")
 
     assert geometry._fallback_work_remaining < len(boundary)
-    assert geometry.contains(128.5, 0.0) is False
+    with pytest.raises(ValueError, match="fallback budget exhausted"):
+        geometry.contains(128.5, 0.0)
 
 
 def test_room_index_fair_fallback_does_not_depend_on_room_order() -> None:
@@ -173,6 +179,29 @@ def test_room_index_fair_fallback_does_not_depend_on_room_order() -> None:
 
     assert forward.contains(120.5, 0.0) is True
     assert reverse.contains(120.5, 0.0) is True
+
+
+def test_room_index_does_not_false_negative_late_candidate_after_budget() -> None:
+    """Budget exhaustion reports uncertainty instead of rejecting a late room."""
+    outside = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(244)
+    ]
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": str(index), "name": "Room", "boundary": outside}
+            for index in range(255)
+        ]
+        + [{"room_id": "last", "name": "Room", "boundary": outside}]
+    )
+
+    for _ in range(geometry._MAX_FALLBACK_WORK // 244 + 1):
+        try:
+            geometry.contains(120.0, 0.0)
+        except ValueError as err:
+            assert "fallback budget exhausted" in str(err)
+            break
+    else:
+        pytest.fail("fallback budget was not exhausted")
 
 
 def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
