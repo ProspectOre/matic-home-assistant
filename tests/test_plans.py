@@ -3464,6 +3464,22 @@ async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) ->
     manager._store.async_save.assert_awaited_once_with(manager._data)
 
 
+async def test_saved_plan_zero_capacity_rejects_creation(hass, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.plans.MAX_SAVED_PLANS_PER_ROBOT", 0
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+
+    with pytest.raises(SavedPlanLimitError, match="at most 0 saved plans"):
+        await manager.async_save_plan(
+            "serial", "first-plan", {"name": "First plan", "rooms": []}
+        )
+
+    assert manager._robot("serial")["plans"] == {}
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_room_execution_uses_its_individual_settings() -> None:
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
