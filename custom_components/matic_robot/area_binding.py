@@ -6,7 +6,7 @@ import hashlib
 import math
 import struct
 from collections import deque
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any
 
@@ -14,7 +14,7 @@ import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
-from .area_selector import MaticAreaSelector, _RoomGeometryIndex
+from .area_selector import GeometryTooComplex, MaticAreaSelector, _RoomGeometryIndex
 from .client.models import FloorPlan
 from .const import DOMAIN
 
@@ -50,6 +50,9 @@ _GUARD_MARGIN_MILLIMETERS = math.ceil(
 )
 _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
+_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 4_096
+_MAX_LOCAL_SEGMENT_MATCH_PAIRS = 16_384
+_MAX_LOCAL_SEGMENT_MATCH_WORK = 10_600_000
 _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 _MIN_SIGNED_64 = -(1 << 63)
@@ -629,6 +632,7 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
 
     try:
+        room_geometry = room_geometry or _room_geometry_index(floor_plan)
         shape, occupancy, segments = _area_geometry_components(
             floor_plan,
             area["circles"],
@@ -644,20 +648,26 @@ def area_binding_status(
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])
-    segment_matches = _local_segment_correspondence(saved_segments, segments, shape)
-    if segment_matches is not None and (
-        saved_occupancy == occupancy
-        or _occupancy_changes_are_explained(
-            saved_occupancy,
-            occupancy,
-            saved_segments,
-            segments,
-            shape,
-            area["circles"],
-            segment_matches,
+    try:
+        segment_matches = _local_segment_correspondence(
+            saved_segments, segments, shape, room_geometry=room_geometry
         )
-    ):
-        return AreaBindingStatus.CURRENT
+        if segment_matches is not None and (
+            saved_occupancy == occupancy
+            or _occupancy_changes_are_explained(
+                saved_occupancy,
+                occupancy,
+                saved_segments,
+                segments,
+                shape,
+                area["circles"],
+                segment_matches,
+                room_geometry=room_geometry,
+            )
+        ):
+            return AreaBindingStatus.CURRENT
+    except GeometryTooComplex:
+        return AreaBindingStatus.INVALID
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
     return AreaBindingStatus.INVALID
@@ -826,6 +836,8 @@ def _local_segment_correspondence(
     saved: Sequence[_LocalSegment],
     current: Sequence[_LocalSegment],
     shape: _AreaShape,
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> tuple[_SegmentMatch, ...] | None:
     """Find a tolerant one-to-one match for all semantically local segments.
 
@@ -834,12 +846,24 @@ def _local_segment_correspondence(
     neighborhood must be covered. Minimum-cost maximum matching avoids a
     first-fit choice consuming the wrong nearby segment.
     """
-    saved_contexts = tuple(_segment_context(segment, shape) for segment in saved)
-    current_contexts = tuple(_segment_context(segment, shape) for segment in current)
+    charge_work = _segment_matching_work_charger(room_geometry)
+    if (
+        len(saved) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+        or len(current) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+    ):
+        raise GeometryTooComplex("too many local segments to match")
+    charge_work(len(saved) + len(current))
+    saved_contexts = tuple(
+        _segment_context(segment, shape, charge_work=charge_work) for segment in saved
+    )
+    current_contexts = tuple(
+        _segment_context(segment, shape, charge_work=charge_work) for segment in current
+    )
     saved_local = tuple(bool(context[0]) for context in saved_contexts)
     current_local = tuple(bool(context[0]) for context in current_contexts)
     current_by_cell: dict[tuple[int, int], list[int]] = {}
     for current_index, context in enumerate(current_contexts):
+        charge_work(len(context[3]))
         for cell in context[3]:
             current_by_cell.setdefault(cell, []).append(current_index)
 
@@ -848,14 +872,17 @@ def _local_segment_correspondence(
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
-        candidates = {
-            current_index
-            for cell_x, cell_y in saved_context[3]
-            for neighbor_x in range(cell_x - 1, cell_x + 2)
-            for neighbor_y in range(cell_y - 1, cell_y + 2)
-            for current_index in current_by_cell.get((neighbor_x, neighbor_y), ())
-        }
-        for current_index in candidates:
+        candidates: set[int] = set()
+        for cell_x, cell_y in saved_context[3]:
+            for neighbor_x in range(cell_x - 1, cell_x + 2):
+                for neighbor_y in range(cell_y - 1, cell_y + 2):
+                    charge_work(1)
+                    cell_candidates = current_by_cell.get((neighbor_x, neighbor_y), ())
+                    charge_work(len(cell_candidates))
+                    candidates.update(cell_candidates)
+        charge_work(len(candidates))
+        for current_index in sorted(candidates):
+            charge_work(1)
             if _local_segment_contexts_match(
                 saved_segment,
                 saved_context,
@@ -864,6 +891,9 @@ def _local_segment_correspondence(
                 shape,
             ):
                 pair_cost = _segment_pair_cost(saved_segment, current[current_index])
+                if len(compatible) >= _MAX_LOCAL_SEGMENT_MATCH_PAIRS:
+                    raise GeometryTooComplex("too many compatible local segments")
+                charge_work(1)
                 compatible.append((saved_index, current_index, pair_cost))
                 maximum_pair_cost = max(maximum_pair_cost, pair_cost)
 
@@ -871,13 +901,17 @@ def _local_segment_correspondence(
     source = node_count - 2
     sink = node_count - 1
     graph: list[list[list[int]]] = [[] for _ in range(node_count)]
+    charge_work(node_count)
     local_reward = maximum_pair_cost * (min(len(saved), len(current)) + 1) + 1
 
     for index, is_local in enumerate(saved_local):
+        charge_work(1)
         _add_flow_edge(graph, source, index, -local_reward * int(is_local))
     for saved_index, current_index, pair_cost in compatible:
+        charge_work(1)
         _add_flow_edge(graph, saved_index, len(saved) + current_index, pair_cost)
     for index, is_local in enumerate(current_local):
+        charge_work(1)
         _add_flow_edge(
             graph,
             len(saved) + index,
@@ -885,19 +919,45 @@ def _local_segment_correspondence(
             -local_reward * int(is_local),
         )
 
-    _minimum_cost_maximum_flow(graph, source, sink, stop_at_nonnegative=True)
-    matches = tuple(
-        (saved_index, edge[0] - len(saved))
-        for saved_index in range(len(saved))
-        for edge in graph[saved_index]
-        if len(saved) <= edge[0] < len(saved) + len(current) and edge[2] == 0
+    _minimum_cost_maximum_flow(
+        graph,
+        source,
+        sink,
+        stop_at_nonnegative=True,
+        charge_work=charge_work,
     )
+    matches_list = []
+    for saved_index in range(len(saved)):
+        for edge in graph[saved_index]:
+            charge_work(1)
+            if len(saved) <= edge[0] < len(saved) + len(current) and edge[2] == 0:
+                matches_list.append((saved_index, edge[0] - len(saved)))
+    matches = tuple(matches_list)
     required_score = sum(saved_local) + sum(current_local)
+    charge_work(len(matches))
     matched_score = sum(
         int(saved_local[saved_index]) + int(current_local[current_index])
         for saved_index, current_index in matches
     )
     return matches if matched_score == required_score else None
+
+
+def _segment_matching_work_charger(
+    room_geometry: _RoomGeometryIndex | None,
+) -> Callable[[int], None]:
+    """Bound matching work locally and charge the shared request budget."""
+    remaining = _MAX_LOCAL_SEGMENT_MATCH_WORK
+
+    def charge(work: int = 1) -> None:
+        nonlocal remaining
+        if work > remaining:
+            remaining = 0
+            raise GeometryTooComplex("local segment matching work budget exhausted")
+        remaining -= work
+        if room_geometry is not None:
+            room_geometry.charge_query_work(work)
+
+    return charge
 
 
 def _segment_pair_cost(saved: _LocalSegment, current: _LocalSegment) -> int:
@@ -916,8 +976,12 @@ def _occupancy_changes_are_explained(
     shape: _AreaShape,
     circles: Sequence[Mapping[str, Any]],
     segment_matches: Sequence[_SegmentMatch] | None = None,
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> bool:
     """Return whether every changed probe is explained by a moving wall pair."""
+    charge_work = _segment_matching_work_charger(room_geometry)
+    charge_work(len(circles))
     ordered_circles = sorted(
         (
             float(circle["x"]),
@@ -933,15 +997,18 @@ def _occupancy_changes_are_explained(
     ):
         return False
 
+    charge_work(len(saved_segments) + len(current_segments))
     saved_contexts = tuple(
-        _segment_context(segment, shape) for segment in saved_segments
+        _segment_context(segment, shape, charge_work=charge_work)
+        for segment in saved_segments
     )
     current_contexts = tuple(
-        _segment_context(segment, shape) for segment in current_segments
+        _segment_context(segment, shape, charge_work=charge_work)
+        for segment in current_segments
     )
     if segment_matches is None:
         segment_matches = _local_segment_correspondence(
-            saved_segments, current_segments, shape
+            saved_segments, current_segments, shape, room_geometry=room_geometry
         )
         if segment_matches is None:
             return False
@@ -949,6 +1016,7 @@ def _occupancy_changes_are_explained(
     for match in segment_matches:
         saved_index, current_index = match
         cells = saved_contexts[saved_index][3] | current_contexts[current_index][3]
+        charge_work(len(cells))
         for cell in cells:
             matches_by_cell.setdefault(cell, set()).add(match)
 
@@ -969,23 +1037,28 @@ def _occupancy_changes_are_explained(
                 continue
             probe_cell_x = math.floor(probe[0] / _SPATIAL_INDEX_CELL_MILLIMETERS)
             probe_cell_y = math.floor(probe[1] / _SPATIAL_INDEX_CELL_MILLIMETERS)
-            candidates = {
-                match
-                for cell_x in range(probe_cell_x - 1, probe_cell_x + 2)
-                for cell_y in range(probe_cell_y - 1, probe_cell_y + 2)
-                for match in matches_by_cell.get((cell_x, cell_y), ())
-            }
-            if not any(
-                _wall_pair_explains_probe(
+            candidates: set[_SegmentMatch] = set()
+            for cell_x in range(probe_cell_x - 1, probe_cell_x + 2):
+                for cell_y in range(probe_cell_y - 1, probe_cell_y + 2):
+                    charge_work(1)
+                    cell_candidates = matches_by_cell.get((cell_x, cell_y), ())
+                    charge_work(len(cell_candidates))
+                    candidates.update(cell_candidates)
+            charge_work(len(candidates))
+            explained = False
+            for saved_index, current_index in candidates:
+                charge_work(1)
+                if _wall_pair_explains_probe(
                     saved_segments[saved_index],
                     saved_contexts[saved_index],
                     current_segments[current_index],
                     current_contexts[current_index],
                     probe,
                     shape,
-                )
-                for saved_index, current_index in candidates
-            ):
+                ):
+                    explained = True
+                    break
+            if not explained:
                 return False
     return True
 
@@ -1039,7 +1112,12 @@ def _signed_distance_to_supporting_line(
     return (delta_x * (point[1] - start_y) - delta_y * (point[0] - start_x)) / length
 
 
-def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
+def _segment_context(
+    segment: _LocalSegment,
+    shape: _AreaShape,
+    *,
+    charge_work: Callable[[int], None] | None = None,
+) -> _SegmentContext:
     """Precompute the local neighborhoods and endpoints for one source wall."""
     start = (segment[0], segment[1])
     end = (segment[2], segment[3])
@@ -1048,6 +1126,8 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
     guard_pieces: list[tuple[tuple[float, float], tuple[float, float]]] = []
     local_endpoints: set[tuple[int, int]] = set()
     for index, (center_x, center_y, radius) in enumerate(shape):
+        if charge_work is not None:
+            charge_work(1)
         semantic_bounds = (
             center_x - radius - _SEMANTIC_MARGIN_MILLIMETERS,
             center_y - radius - _SEMANTIC_MARGIN_MILLIMETERS,
@@ -1076,7 +1156,7 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
         frozenset(semantic),
         frozenset(guard),
         tuple(sorted(local_endpoints)),
-        _segment_spatial_cells(start, end, guard_pieces),
+        _segment_spatial_cells(start, end, guard_pieces, charge_work=charge_work),
     )
 
 
@@ -1084,6 +1164,8 @@ def _segment_spatial_cells(
     start: tuple[int, int],
     end: tuple[int, int],
     pieces: Sequence[tuple[tuple[float, float], tuple[float, float]]],
+    *,
+    charge_work: Callable[[int], None] | None = None,
 ) -> frozenset[tuple[int, int]]:
     """Index the union of guard-clipped wall intervals into fixed cells."""
     delta_x = end[0] - start[0]
@@ -1101,6 +1183,8 @@ def _segment_spatial_cells(
             else set()
         )
 
+    if charge_work is not None:
+        charge_work(len(pieces))
     intervals = sorted(
         (
             ((piece[0][0] - start[0]) * delta_x + (piece[0][1] - start[1]) * delta_y)
@@ -1127,6 +1211,8 @@ def _segment_spatial_cells(
             ),
         )
         for step in range(steps + 1):
+            if charge_work is not None:
+                charge_work(1)
             ratio = lower + (upper - lower) * step / steps
             cells.add(
                 (
@@ -1282,10 +1368,13 @@ def _minimum_cost_maximum_flow(
     sink: int,
     *,
     stop_at_nonnegative: bool = False,
+    charge_work: Callable[[int], None] | None = None,
 ) -> int:
     """Return the cost of a unit-capacity minimum-cost maximum flow."""
     total_cost = 0
     while True:
+        if charge_work is not None:
+            charge_work(len(graph) * 4)
         distances: list[int | None] = [None] * len(graph)
         previous_nodes = [-1] * len(graph)
         previous_edges = [-1] * len(graph)
@@ -1294,11 +1383,15 @@ def _minimum_cost_maximum_flow(
         queued = [False] * len(graph)
         queued[source] = True
         while queue:
+            if charge_work is not None:
+                charge_work(1)
             node = queue.popleft()
             queued[node] = False
             distance = distances[node]
             assert distance is not None
             for edge_index, edge in enumerate(graph[node]):
+                if charge_work is not None:
+                    charge_work(1)
                 target, _reverse, capacity, cost = edge
                 candidate = distance + cost
                 target_distance = distances[target]
@@ -1320,6 +1413,8 @@ def _minimum_cost_maximum_flow(
 
         node = sink
         while node != source:
+            if charge_work is not None:
+                charge_work(1)
             previous = previous_nodes[node]
             edge = graph[previous][previous_edges[node]]
             edge[2] = 0

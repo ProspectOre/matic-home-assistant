@@ -14,10 +14,12 @@ from custom_components.matic_robot.area_binding import (
     MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
+    _add_flow_edge,
     _hash_only_area_geometry_fingerprint,
     _local_segment_correspondence,
     _local_segment_geometries_match,
     _local_segments_match,
+    _minimum_cost_maximum_flow,
     _occupancy_changes_are_explained,
     _point_near_segment,
     _segment_context,
@@ -33,7 +35,10 @@ from custom_components.matic_robot.area_binding import (
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
 )
-from custom_components.matic_robot.area_selector import _RoomGeometryIndex
+from custom_components.matic_robot.area_selector import (
+    GeometryTooComplex,
+    _RoomGeometryIndex,
+)
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
 
@@ -930,6 +935,85 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
     current = ((0, 1, 100, 1), (1, -10, 101, -10))
 
     assert _local_segments_match(saved, current, ((50, 0, 0),))
+
+
+def test_local_segment_correspondence_charges_candidate_generation() -> None:
+    geometry = area_binding_module._room_geometry_index(_floor_plan())
+    geometry._query_work_remaining = 5
+    context = (frozenset({0}), frozenset({0}), (), frozenset({(1, 1)}))
+
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_local_segment_contexts_match") as match,
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(
+            ((0, 0, 100, 0),),
+            ((0, 0, 100, 0),),
+            ((50, 0, 0),),
+            room_geometry=geometry,
+        )
+
+    assert geometry._query_work_remaining == 0
+    match.assert_not_called()
+
+
+def test_local_segment_correspondence_caps_segment_count() -> None:
+    segments = tuple((index, 0, index + 1, 0) for index in range(4_097))
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(segments, (), ((0, 0, 0),))
+
+
+def test_local_segment_correspondence_caps_compatible_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 20_000
+    )
+    segments = tuple((index * 1_000, 0, index * 1_000, 1) for index in range(16_385))
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(segments, segments, ((0, 0, 20_000_000),))
+
+
+def test_local_segment_correspondence_caps_fallback_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_WORK", 2)
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(
+            ((0, 0, 100, 0),), ((0, 0, 100, 0),), ((50, 0, 0),)
+        )
+
+
+def test_minimum_cost_flow_rejects_nonnegative_path() -> None:
+    graph: list[list[list[int]]] = [[], []]
+    _add_flow_edge(graph, 0, 1, 0)
+
+    assert _minimum_cost_maximum_flow(graph, 0, 1, stop_at_nonnegative=True) == 0
+    assert graph[0][0][2] == 1
+
+
+def test_area_binding_fails_closed_when_segment_matching_exhausts_budget() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.5, "y": 0.75, "radius": 0.2}]
+    area = _scoped_area(floor_plan, circles)
+
+    with (
+        patch.object(
+            area_binding_module,
+            "_local_geometry_fingerprint",
+            return_value="0" * 64,
+        ),
+        patch.object(
+            area_binding_module,
+            "_local_segment_correspondence",
+            side_effect=GeometryTooComplex("test budget exhausted"),
+        ),
+    ):
+        assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
 
 
 def test_local_segment_matching_restricts_spatial_candidates() -> None:
