@@ -134,6 +134,8 @@ def test_local_segment_correspondence_enforces_work_limits() -> None:
     segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))
     shape = ((500, 0, 100),)
 
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1):
+        assert _local_segment_correspondence(segments, segments, shape) is None
     with patch.object(area_binding_module, "_MAX_SEGMENT_CANDIDATE_CHECKS", 1):
         assert _local_segment_correspondence(segments, segments, shape) is None
     with patch.object(area_binding_module, "_MAX_COMPATIBLE_SEGMENT_EDGES", 1):
