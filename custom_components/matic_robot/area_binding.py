@@ -686,7 +686,7 @@ def area_binding_status(
         if (
             "translation_invariant_geometry_sha256" in saved
             and saved_geometry != current["geometry_sha256"]
-            and saved["translation_invariant_geometry_sha256"]
+            and saved["translation_invariant_geometry_sha256"].casefold()
             == translation_invariant_geometry_fingerprint(floor_plan)
         ):
             return AreaBindingStatus.GEOMETRY_CHANGED

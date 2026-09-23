@@ -2034,3 +2034,28 @@ def test_scoped_binding_rejects_unknown_binding_field() -> None:
     binding["unexpected"] = True
     area["map_binding"] = binding
     assert area_binding_status(area, _floor_plan()) is AreaBindingStatus.INVALID
+
+
+def test_scoped_binding_casefolds_translation_invariant_digest() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("room", "Room", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    binding = dict(area["map_binding"])
+    binding["translation_invariant_geometry_sha256"] = str(
+        binding["translation_invariant_geometry_sha256"]
+    ).upper()
+    area["map_binding"] = binding
+    translated = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 2.0), (11.0, 2.0), (11.0, 12.0), (1.0, 12.0)),
+            ),
+        ),
+    )
+    assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
