@@ -37,7 +37,7 @@ from .area_binding import (
     binding_for_area,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
-from .const import DOMAIN, EVENT_PLAN_DOCKED
+from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 5
@@ -268,6 +268,9 @@ class CleaningPlanManager:
         self._data: dict[str, Any] = self._empty_data()
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._native_history_locks: dict[str, asyncio.Lock] = {}
+        self._state_locks: dict[str, asyncio.Lock] = {}
+        self._store_lock = asyncio.Lock()
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
@@ -288,6 +291,8 @@ class CleaningPlanManager:
         ] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
         self._reconciliation_removal_pending: set[str] = set()
+        self._removed_robots: set[str] = set()
+        self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
         self._stop_fences: dict[str, float] = {}
 
@@ -396,11 +401,20 @@ class CleaningPlanManager:
             ):
                 recovered = True
         if recovered:
-            await self._store.async_save(self._data)
+            async with self._store_lock:
+                await self._store.async_save(self._data)
 
     def lock(self, serial_number: str) -> asyncio.Lock:
         """Return the single-flight plan lock for one robot."""
         return self._locks.setdefault(serial_number, asyncio.Lock())
+
+    def native_history_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize native-history persistence without claiming plan ownership."""
+        return self._native_history_locks.setdefault(serial_number, asyncio.Lock())
+
+    def state_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize persisted state changes with robot removal."""
+        return self._state_locks.setdefault(serial_number, asyncio.Lock())
 
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
@@ -711,6 +725,46 @@ class CleaningPlanManager:
         if reconciliation_tasks:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
+    @callback
+    def activate_robot(self, serial_number: str) -> int:
+        """Clear removal state when a config entry activates this robot."""
+        self._removed_robots.discard(serial_number)
+        generation = self._robot_generations.get(serial_number, 0) + 1
+        self._robot_generations[serial_number] = generation
+        return generation
+
+    def robot_generation(self, serial_number: str) -> int:
+        """Return the current config-entry generation for a robot."""
+        return self._robot_generations.get(serial_number, 0)
+
+    async def async_remove_robot(self, serial_number: str) -> None:
+        """Cancel work and erase one robot's private persisted planning data."""
+        self._removed_robots.add(serial_number)
+        await self.async_cancel_and_wait(serial_number)
+        for done in tuple(self._native_history_saves.get(serial_number, ())):
+            await done.wait()
+
+        async with (
+            self.native_history_lock(serial_number),
+            self.lock(serial_number),
+            self.command_lock(serial_number),
+            self.state_lock(serial_number),
+        ):
+            async with self._store_lock:
+                robots = self._data.get("robots")
+                if isinstance(robots, dict):
+                    removed = robots.pop(serial_number, None)
+                    if removed is not None:
+                        try:
+                            await self._store.async_save(self._data)
+                        except BaseException:
+                            robots[serial_number] = removed
+                            raise
+
+        self._listeners.pop(serial_number, None)
+        self._stop_fences.pop(serial_number, None)
+        self._reconciliation_removal_pending.discard(serial_number)
+
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
         """Replace a managed run and serialize one independent command."""
@@ -872,24 +926,42 @@ class CleaningPlanManager:
         serial_number: str,
         floor_plan: FloorPlan | None,
         records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None = None,
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
             return False
-        robot = self._robot(serial_number)
-        before = deepcopy(robot)
-        records = tuple(records)
-        changed = _import_native_room_activity(robot, floor_plan, records)
-        reconciled: list[dict[str, str]] = []
-        changed = (
-            _reconcile_pending_native_history(
-                robot, floor_plan, records, on_reconciled=reconciled.append
-            )
-            or changed
-        )
-        if not changed:
-            return False
-        await self._async_save_native_history(serial_number, before)
+        # Serialize removal with history persistence without making the
+        # managed-run lock appear occupied while storage is slow.
+        async with self.native_history_lock(serial_number):
+            async with self.command_lock(serial_number):
+                if serial_number in self._removed_robots or (
+                    generation is not None
+                    and generation != self.robot_generation(serial_number)
+                ):
+                    return False
+                robot = self._robot(serial_number)
+                before = deepcopy(robot)
+                records = tuple(records)
+                changed = _import_native_room_activity(robot, floor_plan, records)
+                reconciled: list[dict[str, str]] = []
+                changed = (
+                    _reconcile_pending_native_history(
+                        robot, floor_plan, records, on_reconciled=reconciled.append
+                    )
+                    or changed
+                )
+                if (
+                    not changed
+                    or serial_number in self._removed_robots
+                    or (
+                        generation is not None
+                        and generation != self.robot_generation(serial_number)
+                    )
+                ):
+                    return False
+            await self._async_save_native_history(serial_number, before)
         for marker in reconciled:
             entity_id = er.async_get(self.hass).async_get_entity_id(
                 "vacuum", DOMAIN, f"{serial_number}_vacuum"
@@ -2091,7 +2163,8 @@ class CleaningPlanManager:
         robot_value = robots.get(serial_number)
         if not isinstance(robot_value, dict):
             robot_value = {}
-            robots[serial_number] = robot_value
+            if serial_number not in self._removed_robots:
+                robots[serial_number] = robot_value
         robot = cast(dict[str, Any], robot_value)
         self._normalize_robot(robot)
         return robot
@@ -2245,7 +2318,11 @@ class CleaningPlanManager:
         return cast(dict[str, Any], record)
 
     async def _async_save_and_notify(self, serial_number: str) -> None:
-        await self._store.async_save(self._data)
+        async with self.state_lock(serial_number):
+            if serial_number in self._removed_robots:
+                return
+            async with self._store_lock:
+                await self._store.async_save(self._data)
         self._notify_listeners(serial_number)
 
     def _notify_listeners(self, serial_number: str) -> None:
@@ -2263,7 +2340,8 @@ class CleaningPlanManager:
         saves = self._native_history_saves.setdefault(serial_number, set())
         saves.add(done)
         try:
-            await self._store.async_save(self._data)
+            async with self._store_lock:
+                await self._store.async_save(self._data)
         except Exception, asyncio.CancelledError:
             if self.motion_generation(serial_number) != generation:
                 # Replacement must persist removal after this rollback finishes.
@@ -2970,3 +3048,26 @@ def resolve_rooms(
             )
         )
     return rooms
+
+
+async def async_get_plan_manager(
+    hass: HomeAssistant,
+    *,
+    manager_factory: Callable[[HomeAssistant], CleaningPlanManager] | None = None,
+) -> CleaningPlanManager:
+    """Return the shared plan manager, publishing it before storage load awaits."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    lock = domain_data.setdefault("_plan_manager_init_lock", asyncio.Lock())
+    async with lock:
+        manager = domain_data.get(DATA_PLAN_MANAGER)
+        if manager is not None:
+            return cast(CleaningPlanManager, manager)
+        manager = (manager_factory or CleaningPlanManager)(hass)
+        domain_data[DATA_PLAN_MANAGER] = manager
+        try:
+            await manager.async_load()
+        except BaseException:
+            if domain_data.get(DATA_PLAN_MANAGER) is manager:
+                domain_data.pop(DATA_PLAN_MANAGER, None)
+            raise
+        return manager
