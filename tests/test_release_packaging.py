@@ -373,6 +373,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "review-request:v2 head=$head_sha base=$base_sha" in audit
     assert 'source: "request_reaction"' in audit
     assert '(.created_at // "") >= $request_updated_at' in audit
+    assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in audit
+    assert 'reactions?per_page=100" --paginate --slurp' in audit
+    assert "[flatten[]" in audit
     assert '"review-gate-request"' in audit
     assert (
         '"review-request-comment:" + $id + "; base:" + $base + "; created:" + $created'
@@ -402,6 +405,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "review-request:v2 head=$head_sha base=$base_sha" in review_gate
     assert 'source: "request_reaction"' in review_gate
     assert '(.created_at // "") >= $request_updated_at' in review_gate
+    assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in review_gate
+    assert 'reactions?per_page=100" --paginate --slurp' in review_gate
+    assert "[flatten[]" in review_gate
+    assert 'or ($latest_delivery.source == "request_reaction"' in review_gate
     assert '"review-gate-request"' in review_gate
     assert (
         '"review-request-comment:" + $id + "; base:" + $base + "; created:" + $created'
