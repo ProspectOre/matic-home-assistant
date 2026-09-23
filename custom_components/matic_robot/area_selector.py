@@ -134,9 +134,17 @@ class _RoomGeometryIndex:
         for polygon in self.polygons:
             if polygon.overloaded:
                 edge_count = len(polygon.boundary)
+                if not (
+                    polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
+                    and polygon.minimum_y - tolerance
+                    <= y
+                    <= polygon.maximum_y + tolerance
+                ):
+                    continue
+                if edge_count > polygon._MAX_FALLBACK_EDGES:
+                    continue
                 if edge_count > self._fallback_work_remaining:
-                    self._fallback_work_remaining = 0
-                    return False
+                    continue
                 self._fallback_work_remaining -= edge_count
             if polygon.contains(x, y, tolerance):
                 return True

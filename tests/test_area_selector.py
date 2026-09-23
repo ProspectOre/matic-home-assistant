@@ -155,5 +155,5 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     for _ in range(geometry._MAX_FALLBACK_WORK // len(boundary) + 1):
         geometry.contains(128.5, 0.0)
 
-    assert geometry._fallback_work_remaining == 0
+    assert geometry._fallback_work_remaining < len(boundary)
     assert geometry.contains(128.5, 0.0) is False
