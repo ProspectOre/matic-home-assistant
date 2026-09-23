@@ -24,11 +24,12 @@ from .area_binding import (
     AREA_SCHEMA_VERSION,
     AreaBindingStatus,
     area_binding_allows_review,
+    area_binding_needs_geometry_index,
     area_binding_status,
     binding_for_area,
 )
 from .area_outline import validate_outline
-from .area_selector import MaticAreaSelector
+from .area_selector import MaticAreaSelector, _RoomGeometryIndex
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
@@ -986,9 +987,21 @@ class MaticAreasView(HomeAssistantView):
             )
         serial_number = str(runtime.coordinator.data.info.serial_number)
         areas = []
+        room_geometry = None
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
-            status = area_binding_status(area, floor_plan)
-            can_rebind = area_binding_allows_review(area, floor_plan, status=status)
+            uses_indexed_binding = area_binding_needs_geometry_index(area)
+            if uses_indexed_binding and room_geometry is None:
+                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+            status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+            if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
+                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+            can_rebind = area_binding_allows_review(
+                area,
+                floor_plan,
+                status=status,
+                room_geometry=room_geometry,
+                circles_already_validated=uses_indexed_binding,
+            )
             areas.append(
                 {
                     "id": area_id,

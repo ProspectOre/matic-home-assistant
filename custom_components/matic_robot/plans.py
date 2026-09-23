@@ -32,6 +32,7 @@ from .area_binding import (
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     AreaBindingStatus,
+    _room_geometry_index,
     area_binding_status,
     binding_for_area,
 )
@@ -919,6 +920,7 @@ class CleaningPlanManager:
         """Upgrade exactly current whole-map area bindings to scoped bindings."""
         upgraded = 0
         pending = False
+        room_geometry = None
         for area in self._robot(serial_number)["areas"].values():
             if not isinstance(area, MutableMapping):
                 continue
@@ -939,15 +941,28 @@ class CleaningPlanManager:
             if floor_plan is None:
                 pending = True
                 continue
-            status = area_binding_status(area, floor_plan)
+            if version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+                if room_geometry is None:
+                    room_geometry = _room_geometry_index(floor_plan)
+                status = area_binding_status(
+                    area, floor_plan, room_geometry=room_geometry
+                )
+            else:
+                # Whole-map bindings can reject mission, partition, or map
+                # changes without constructing any polygon geometry index.
+                status = area_binding_status(area, floor_plan)
             if status is not AreaBindingStatus.CURRENT:
                 pending = pending or status in {
                     AreaBindingStatus.GEOMETRY_CHANGED,
                     AreaBindingStatus.INVALID,
                 }
                 continue
+            if room_geometry is None:
+                room_geometry = _room_geometry_index(floor_plan)
             try:
-                area["map_binding"] = binding_for_area(floor_plan, circles)
+                area["map_binding"] = binding_for_area(
+                    floor_plan, circles, room_geometry=room_geometry
+                )
             except KeyError, TypeError, ValueError:
                 continue
             upgraded += 1

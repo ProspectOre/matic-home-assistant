@@ -13,11 +13,13 @@ from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     _hash_only_area_geometry_fingerprint,
+    area_binding_status,
     binding_for_area,
     binding_for_floor_plan,
 )
@@ -1370,6 +1372,97 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
     ) == AreaBindingUpgradeResult(0, True)
     manager._store.async_save.assert_not_awaited()
     listener.assert_not_called()
+
+
+async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room("left", "Left", "left", b"left", ((0, 0), (2, 0), (0, 2))),
+            Room("right", "Right", "right", b"right", ((3, 0), (5, 0), (3, 2))),
+        ),
+    )
+    robot = manager._robot("serial")
+    robot["areas"] = {}
+    for area_id, circle in (
+        ("left", {"x": 0.5, "y": 0.5, "radius": 0.2}),
+        ("right", {"x": 3.5, "y": 0.5, "radius": 0.2}),
+    ):
+        circles = [circle]
+        robot["areas"][area_id] = {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": {
+                **binding_for_floor_plan(floor_plan),
+                "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                    floor_plan, circles
+                ),
+            },
+        }
+
+    original_index_factory = plans_module._room_geometry_index
+    statuses = []
+
+    def check_status(*args, **kwargs):
+        status = area_binding_status(*args, **kwargs)
+        statuses.append(status)
+        return status
+
+    with (
+        patch.object(
+            plans_module,
+            "_room_geometry_index",
+            side_effect=original_index_factory,
+        ) as index_factory,
+        patch.object(
+            plans_module, "area_binding_status", side_effect=check_status
+        ) as status_check,
+        patch.object(
+            plans_module, "binding_for_area", wraps=binding_for_area
+        ) as bind_area,
+    ):
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(2, False), statuses
+
+    assert index_factory.call_count == 1
+    geometry_indexes = [
+        call.kwargs["room_geometry"]
+        for call in (*status_check.call_args_list, *bind_area.call_args_list)
+    ]
+    assert len(geometry_indexes) == 4
+    assert all(index is geometry_indexes[0] for index in geometry_indexes)
+
+
+async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    floor_plan = FloorPlan(
+        43,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "room", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    manager._robot("serial")["areas"] = {
+        "old": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.2}],
+            "map_binding": binding_for_floor_plan(replace(floor_plan, mission_id=42)),
+        }
+    }
+
+    with patch.object(
+        plans_module,
+        "_room_geometry_index",
+        side_effect=AssertionError("unneeded room index built"),
+    ):
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(0, False)
 
 
 async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
