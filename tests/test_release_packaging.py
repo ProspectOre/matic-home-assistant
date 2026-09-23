@@ -148,6 +148,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     claude_responder = (ROOT / ".github" / "workflows" / "claude.yml").read_text()
     assert "github_token: ${{ github.token }}" in claude_responder
     assert "id-token: write" not in claude_responder
+    assert "Bash(gh run list:*)" in claude_responder
+    assert "Bash(gh run view:*)" in claude_responder
+    assert "Bash(gh pr merge:*)" not in claude_responder
+    assert "Bash(gh run cancel:*)" not in claude_responder
 
     assert "name: Route Regular Codex Review Events" in regular_review
     assert "pull_request_review:" in regular_review
