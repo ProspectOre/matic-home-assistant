@@ -246,8 +246,17 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
-    assert regular_comment.count("def exact_full_head:") == 2
-    assert "$prefix" not in regular_comment
+    assert "def exact_reviewed_head:" in regular_comment
+    regular_routing = regular_comment[
+        regular_comment.index("body_is_regular_comment()") : regular_comment.index(
+            "body_is_clean_comment()"
+        )
+    ]
+    clean_validation = regular_comment[
+        regular_comment.index("body_is_clean_comment()") :
+    ]
+    assert "$prefix" in regular_routing
+    assert "$prefix" not in clean_validation
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "Trusted review-gate evaluator is not installed" in regular_comment
