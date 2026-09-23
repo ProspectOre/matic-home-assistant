@@ -1557,22 +1557,27 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 errors["name"] = "duplicate_area"
             else:
                 floor_plan, _binding = context
-                self._area_id = area_id
-                await self._manager.async_save_area(
-                    self._serial_number,
-                    area_id,
-                    {
-                        "schema_version": AREA_SCHEMA_VERSION,
-                        "name": user_input["name"],
-                        "circles": user_input["area_editor"],
-                        "cleaning_mode": user_input["cleaning_mode"],
-                        "coverage_setting": user_input["coverage_setting"],
-                        "map_binding": binding_for_area(
-                            floor_plan, user_input["area_editor"]
-                        ),
-                    },
-                )
-                return await self.async_step_area_menu()
+                try:
+                    map_binding = binding_for_area(
+                        floor_plan, user_input["area_editor"]
+                    )
+                except ValueError:
+                    errors["base"] = "invalid_area"
+                else:
+                    self._area_id = area_id
+                    await self._manager.async_save_area(
+                        self._serial_number,
+                        area_id,
+                        {
+                            "schema_version": AREA_SCHEMA_VERSION,
+                            "name": user_input["name"],
+                            "circles": user_input["area_editor"],
+                            "cleaning_mode": user_input["cleaning_mode"],
+                            "coverage_setting": user_input["coverage_setting"],
+                            "map_binding": map_binding,
+                        },
+                    )
+                    return await self.async_step_area_menu()
         return self._show_area_form("add_area", user_input or {}, errors=errors)
 
     async def async_step_edit_area(
@@ -1598,6 +1603,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     status=AREA_STATUS_REDRAW_REQUIRED,
                 )
             floor_plan, _binding = context
+            try:
+                map_binding = binding_for_area(floor_plan, user_input["area_editor"])
+            except ValueError:
+                return self._show_area_form(
+                    "edit_area", user_input, errors={"base": "invalid_area"}
+                )
             await self._manager.async_save_area(
                 self._serial_number,
                 self._area_id,
@@ -1607,9 +1618,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     "circles": user_input["area_editor"],
                     "cleaning_mode": user_input["cleaning_mode"],
                     "coverage_setting": user_input["coverage_setting"],
-                    "map_binding": binding_for_area(
-                        floor_plan, user_input["area_editor"]
-                    ),
+                    "map_binding": map_binding,
                 },
             )
             return await self.async_step_area_menu()
