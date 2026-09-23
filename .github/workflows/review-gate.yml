@@ -303,7 +303,7 @@ jobs:
             request_reaction_records="$(
               request_binding_statuses="$(
                 gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-                  | jq -cs --arg context "review-gate-request" \
+                  | jq -c --arg context "review-gate-request" \
                       '[.[][] | select(.context == $context) | select((.creator.login // "") == "github-actions[bot]")]'
               )"
               # The bot positive reaction is tied to this exact request

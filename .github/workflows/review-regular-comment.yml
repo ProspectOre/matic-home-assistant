@@ -101,9 +101,10 @@ jobs:
           if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
             request_marker="<!-- review-request:v2 head=$head_sha base=$base_sha -->"
             if [[ "$EVENT_ACTION" == "created" \
-              && "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ \
-              && "$EVENT_COMMENT_BODY" == "@codex review"* \
-              && "$EVENT_COMMENT_BODY" == *"$request_marker"* ]]; then
+              && "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] \
+              && printf '%s' "$EVENT_COMMENT_BODY" \
+                | jq -e -R -s 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' >/dev/null \
+              && [[ "$EVENT_COMMENT_BODY" == *"$request_marker"* ]]; then
               {
                 echo "regular=true"
                 echo "head_sha=$head_sha"
