@@ -253,7 +253,7 @@ def test_area_selector_rejects_geometry_budget_exhaustion() -> None:
         selector.validate([{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=geometry)
 
 
-def test_room_index_skips_polygon_over_fallback_cap() -> None:
+def test_room_index_rejects_polygon_over_fallback_cap_as_uncertain() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0]
         for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
@@ -261,7 +261,7 @@ def test_room_index_skips_polygon_over_fallback_cap() -> None:
     geometry = _RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
-    remaining = geometry._fallback_work_remaining
+    assert len(boundary) > _IndexedPolygon._MAX_FALLBACK_EDGES
 
-    assert geometry.contains(128.5, 0.0) is False
-    assert geometry._fallback_work_remaining == remaining
+    with pytest.raises(GeometryTooComplex, match="fallback edge limit"):
+        geometry.contains(128.5, 0.0)

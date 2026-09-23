@@ -160,7 +160,9 @@ class _RoomGeometryIndex:
                 ):
                     continue
                 if edge_count > polygon._MAX_FALLBACK_EDGES:
-                    continue
+                    raise GeometryTooComplex(
+                        "room geometry exceeds the fallback edge limit"
+                    )
                 if len(overloaded) > 1 and edge_count > fair_share:
                     raise GeometryTooComplex("room geometry fallback budget exhausted")
                 if len(overloaded) <= 1 and edge_count > self._fallback_work_remaining:
