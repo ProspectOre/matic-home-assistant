@@ -333,7 +333,7 @@ jobs:
           stamp_pending "$REVIEW_GATE_CONTEXT" "Regular issue-comment verdict; evaluating review"
           if [[ "$CLEAN" != "true" ]]; then
             stamp_pending "$REVIEW_COMMENT_CONTEXT" \
-              "Regular issue-comment invalidated at $current_comment_at; require a newer clean normal verdict"
+              "Regular issue-comment invalidated at $current_comment_at; comment:$EVENT_COMMENT_ID; require a newer clean normal verdict"
           fi
           if ! gh api \
             "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" \

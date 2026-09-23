@@ -111,11 +111,15 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert '"|" + $prefix' not in clean_envelope
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
-    assert "latest_regular_issue_comment_at" in review_gate
+    assert "latest_regular_issue_comment" in review_gate
     assert "latest_regular_review_invalidation_at" in review_gate
     assert "latest_finding_at" in review_gate
     assert "base_change_marker_exists" in review_gate
     assert "Regular review invalidated at $latest_finding_at" in review_gate
+    assert (
+        "comment:$EVENT_COMMENT_ID; require a newer clean normal verdict"
+        in regular_comment
+    )
     assert "shared_open_head_count" in review_gate
     assert "shared_open_head_owner" in review_gate
     assert "$pr.state" in review_gate
@@ -414,7 +418,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in review_gate
     assert 'reactions?per_page=100" --paginate --slurp' in review_gate
     assert "[flatten[]" in review_gate
-    assert 'or ($latest_delivery.source == "request_reaction"' in review_gate
+    assert '"request-reaction:" + $issue_comment_id' in review_gate
+    assert "$reaction_clears_own_invalidation" in review_gate
+    assert "and $latest_delivery.at > $latest_finding_at" in review_gate
     assert (
         'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'
         in review_gate
