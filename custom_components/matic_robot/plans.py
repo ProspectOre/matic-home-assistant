@@ -275,6 +275,7 @@ class CleaningPlanManager:
         self._run_tasks: dict[str, asyncio.Task[None]] = {}
         self._reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
         self._dock_reconciliation_tasks: dict[str, set[asyncio.Task[None]]] = {}
+        self._dock_reconciliation_run_ids: dict[str, dict[asyncio.Task[None], str | None]] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
         self._reconciliation_removal_pending: set[str] = set()
         self._cancellation_reasons: dict[str, str] = {}
@@ -569,13 +570,19 @@ class CleaningPlanManager:
 
     @callback
     def register_reconciliation_task(
-        self, serial_number: str, task: asyncio.Task[None], *, dock: bool = False
+        self,
+        serial_number: str,
+        task: asyncio.Task[None],
+        *,
+        dock: bool = False,
+        run_id: str | None = None,
     ) -> None:
         """Tie a late native-completion watcher to this robot's lifecycle."""
         tasks = self._reconciliation_tasks.setdefault(serial_number, set())
         tasks.add(task)
         if dock:
             self._dock_reconciliation_tasks.setdefault(serial_number, set()).add(task)
+            self._dock_reconciliation_run_ids.setdefault(serial_number, {})[task] = run_id
 
         def _discard(done: asyncio.Task[None]) -> None:
             current = self._reconciliation_tasks.get(serial_number)
@@ -588,8 +595,13 @@ class CleaningPlanManager:
                 dock_current = self._dock_reconciliation_tasks.get(serial_number)
                 if dock_current is not None:
                     dock_current.discard(done)
-                    if not dock_current:
-                        self._dock_reconciliation_tasks.pop(serial_number, None)
+                if not dock_current:
+                    self._dock_reconciliation_tasks.pop(serial_number, None)
+                    self._dock_reconciliation_run_ids.pop(serial_number, None)
+                else:
+                    run_ids = self._dock_reconciliation_run_ids.get(serial_number)
+                    if run_ids is not None:
+                        run_ids.pop(done, None)
 
         task.add_done_callback(_discard)
 
@@ -607,7 +619,12 @@ class CleaningPlanManager:
         get_run_id: Callable[[], str | None] | None,
     ) -> bool:
         """Release a run scope when its specific dock watcher terminates."""
-        tasks = tuple(self._dock_reconciliation_tasks.get(serial_number, ()))
+        run_ids = self._dock_reconciliation_run_ids.get(serial_number, {})
+        tasks = tuple(
+            task
+            for task in self._dock_reconciliation_tasks.get(serial_number, ())
+            if run_ids.get(task) == run_id
+        )
         if not tasks or (get_run_id is not None and get_run_id() != run_id):
             return False
 
@@ -628,6 +645,7 @@ class CleaningPlanManager:
         for task in tuple(self._reconciliation_tasks.pop(serial_number, set())):
             task.cancel()
         self._dock_reconciliation_tasks.pop(serial_number, None)
+        self._dock_reconciliation_run_ids.pop(serial_number, None)
 
     def cancellation_reason(self, serial_number: str) -> str | None:
         """Return the lifecycle reason attached to the current cancellation."""
