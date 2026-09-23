@@ -36,6 +36,7 @@ class _IndexedPolygon:
 
     _BUCKET_COUNT = 256
     _MAX_EDGE_REFERENCES = 16_384
+    _MAX_FALLBACK_EDGES = 65_536
 
     def __init__(self, boundary: list[list[float]]) -> None:
         self.boundary = boundary
@@ -77,11 +78,15 @@ class _IndexedPolygon:
             and self.minimum_y - tolerance <= y <= self.maximum_y + tolerance
         ):
             return False
-        # Fail closed for hostile geometry whose bounded index cannot be built. This
-        # keeps coordinator listeners bounded even when the robot supplies a huge,
-        # highly oscillating polygon.
         if self.overloaded:
-            return False
+            # A valid polygon can exceed the index reference budget without being
+            # unbounded. Preserve containment with a bounded linear fallback, while
+            # still rejecting hostile plans that exceed the explicit work cap.
+            if len(self.boundary) > self._MAX_FALLBACK_EDGES:
+                return False
+            return MaticAreaSelector._point_in_or_near_polygon(
+                x, y, self.boundary, tolerance
+            )
         edge_values = {
             (id(start), id(end)): (start, end)
             for bucket in range(
