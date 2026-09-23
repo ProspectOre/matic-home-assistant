@@ -3453,6 +3453,7 @@ async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) ->
         )
 
     assert "new-plan" not in plans
+    assert len(plans) == MAX_SAVED_PLANS_PER_ROBOT
     manager._store.async_save.assert_not_awaited()
 
     await manager.async_save_plan(
