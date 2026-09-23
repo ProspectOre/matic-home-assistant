@@ -319,12 +319,15 @@ def _register_slam_map_floor_plan_sync(
 
     async def _async_wait_for_identity_change(
         wake_on_identity_change: asyncio.Event, delay: int
-    ) -> None:
+    ) -> bool:
         sleep_task = asyncio.create_task(asyncio.sleep(delay))
         identity_task = asyncio.create_task(wake_on_identity_change.wait())
         tasks = (sleep_task, identity_task)
         try:
-            await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            done, _pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            return identity_task in done
         finally:
             for task in tasks:
                 if not task.done():
@@ -376,9 +379,16 @@ def _register_slam_map_floor_plan_sync(
             # an unrelated identity or restart changes the state.
             recovery_delay = FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS
             while True:
-                await _async_wait_for_identity_change(
+                identity_woke = await _async_wait_for_identity_change(
                     wake_on_identity_change, recovery_delay
                 )
+                if identity_woke:
+                    # This worker is tied to the old recovery attempt. Even if
+                    # the identity is later reverified with equal value, the
+                    # latched wake belongs to this worker and must not be reused
+                    # to spin through the recovery loop.
+                    wake_on_identity_change.clear()
+                    return
                 if slam_map.mission_identity != identity or not getattr(
                     slam_map, "live_session_verified", True
                 ):
