@@ -4,6 +4,7 @@ import pytest
 import voluptuous as vol
 
 from custom_components.matic_robot.area_selector import (
+    GeometryTooComplex,
     MaticAreaSelector,
     _IndexedPolygon,
     _RoomGeometryIndex,
@@ -215,6 +216,41 @@ def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
 
     assert geometry.contains(-1.0, 0.0) is False
     assert geometry._fallback_work_remaining == remaining
+
+
+def test_room_index_reports_exhausted_single_polygon_fallback_budget() -> None:
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(256)
+    ]
+    geometry = _RoomGeometryIndex(
+        [{"room_id": "room", "name": "Room", "boundary": boundary}]
+    )
+    geometry._fallback_work_remaining = len(boundary) - 1
+
+    with pytest.raises(GeometryTooComplex, match="fallback budget exhausted"):
+        geometry.contains(128.5, 0.0)
+
+
+def test_area_selector_rejects_geometry_budget_exhaustion() -> None:
+    selector = MaticAreaSelector(
+        {
+            "rooms": [
+                {
+                    "room_id": "room",
+                    "name": "Room",
+                    "boundary": [
+                        [float(index), -10_000.0 if index % 2 else 10_000.0]
+                        for index in range(256)
+                    ],
+                }
+            ]
+        }
+    )
+    geometry = _RoomGeometryIndex(selector.config["rooms"])
+    geometry._fallback_work_remaining = 0
+
+    with pytest.raises(vol.Invalid, match="fallback budget exhausted"):
+        selector.validate([{"x": 128.5, "y": 0.0, "radius": 0.3}], geometry=geometry)
 
 
 def test_room_index_skips_polygon_over_fallback_cap() -> None:
