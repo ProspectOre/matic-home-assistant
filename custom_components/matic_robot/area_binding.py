@@ -640,14 +640,6 @@ def area_binding_status(
             return AreaBindingStatus.CURRENT
         return AreaBindingStatus.INVALID
 
-    # An interior area with no nearby boundary has no positional anchor. Its
-    # occupancy signature can survive a map-coordinate translation, so only
-    # exact whole-floor geometry can establish that its coordinates are safe.
-    if not saved["local_segments_mm"] and (
-        saved_geometry != current["geometry_sha256"]
-    ):
-        return AreaBindingStatus.GEOMETRY_CHANGED
-
     try:
         room_geometry = room_geometry or _room_geometry_index(floor_plan)
         shape, occupancy, segments = _area_geometry_components(
@@ -660,6 +652,15 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
+    # An interior area with no nearby boundary has no positional anchor. Its
+    # occupancy signature can survive a map-coordinate translation, so only
+    # exact whole-floor geometry can establish that its coordinates are safe.
+    # Validate the immutable saved shape first so edited coordinates cannot
+    # use this fallback to appear merely translated.
+    if not saved["local_segments_mm"] and (
+        saved_geometry != current["geometry_sha256"]
+    ):
+        return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         return AreaBindingStatus.CURRENT
