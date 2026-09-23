@@ -13,11 +13,13 @@ from homeassistant.core import ServiceCall, callback
 from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.util import dt as dt_util
 
+import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     _hash_only_area_geometry_fingerprint,
+    area_binding_status,
     binding_for_area,
     binding_for_floor_plan,
 )
@@ -182,7 +184,11 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     """A registered STOP watcher owns the journal until dock confirmation ends."""
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
-    set_run_id = MagicMock()
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_run_id(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
     watcher_release = asyncio.Event()
 
     async def watcher() -> None:
@@ -190,7 +196,10 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
 
     async def fake_leg(*_args, **_kwargs):
         manager.register_reconciliation_task(
-            "serial", asyncio.create_task(watcher()), dock=True
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
         )
         return True
 
@@ -207,14 +216,59 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
             [_room("Kitchen", "room-kitchen")],
             intelligent=False,
             set_activity_run_id=set_run_id,
+            get_activity_run_id=lambda: scope["run_id"],
         )
 
-    assert set_run_id.call_count == 1
-    assert set_run_id.call_args.args[0]
+    assert scope["run_id"] is not None
     assert manager.dock_reconciliation_active("serial") is True
     watcher_release.set()
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert scope["run_id"] is None
+
+
+async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> None:
+    """A delegated journal scope is released even when its watcher is cancelled."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    scope: dict[str, str | None] = {"run_id": None}
+    watcher_started = asyncio.Event()
+
+    async def watcher() -> None:
+        watcher_started.set()
+        await asyncio.Event().wait()
+
+    async def fake_leg(*_args, **_kwargs):
+        manager.register_reconciliation_task(
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
+        )
+        await watcher_started.wait()
+        return True
+
+    with patch(
+        "custom_components.matic_robot.services._async_run_leg",
+        AsyncMock(side_effect=fake_leg),
+    ):
+        await _async_execute_rooms(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [_room("Kitchen", "room-kitchen")],
+            intelligent=False,
+            set_activity_run_id=lambda run_id: scope.__setitem__("run_id", run_id),
+            get_activity_run_id=lambda: scope["run_id"],
+        )
+
+    assert scope["run_id"] is not None
     manager.cancel_reconciliation_tasks("serial")
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
+    assert scope["run_id"] is None
 
 
 async def test_run_finalizer_clears_scope_owned_by_another_run(hass) -> None:
@@ -1318,6 +1372,97 @@ async def test_current_v1_area_bindings_upgrade_automatically(hass) -> None:
     ) == AreaBindingUpgradeResult(0, True)
     manager._store.async_save.assert_not_awaited()
     listener.assert_not_called()
+
+
+async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            Room("left", "Left", "left", b"left", ((0, 0), (2, 0), (0, 2))),
+            Room("right", "Right", "right", b"right", ((3, 0), (5, 0), (3, 2))),
+        ),
+    )
+    robot = manager._robot("serial")
+    robot["areas"] = {}
+    for area_id, circle in (
+        ("left", {"x": 0.5, "y": 0.5, "radius": 0.2}),
+        ("right", {"x": 3.5, "y": 0.5, "radius": 0.2}),
+    ):
+        circles = [circle]
+        robot["areas"][area_id] = {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": {
+                **binding_for_floor_plan(floor_plan),
+                "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                    floor_plan, circles
+                ),
+            },
+        }
+
+    original_index_factory = plans_module._room_geometry_index
+    statuses = []
+
+    def check_status(*args, **kwargs):
+        status = area_binding_status(*args, **kwargs)
+        statuses.append(status)
+        return status
+
+    with (
+        patch.object(
+            plans_module,
+            "_room_geometry_index",
+            side_effect=original_index_factory,
+        ) as index_factory,
+        patch.object(
+            plans_module, "area_binding_status", side_effect=check_status
+        ) as status_check,
+        patch.object(
+            plans_module, "binding_for_area", wraps=binding_for_area
+        ) as bind_area,
+    ):
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(2, False), statuses
+
+    assert index_factory.call_count == 1
+    geometry_indexes = [
+        call.kwargs["room_geometry"]
+        for call in (*status_check.call_args_list, *bind_area.call_args_list)
+    ]
+    assert len(geometry_indexes) == 4
+    assert all(index is geometry_indexes[0] for index in geometry_indexes)
+
+
+async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    floor_plan = FloorPlan(
+        43,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "room", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    manager._robot("serial")["areas"] = {
+        "old": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.2}],
+            "map_binding": binding_for_floor_plan(replace(floor_plan, mission_id=42)),
+        }
+    }
+
+    with patch.object(
+        plans_module,
+        "_room_geometry_index",
+        side_effect=AssertionError("unneeded room index built"),
+    ):
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(0, False)
 
 
 async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
@@ -6869,6 +7014,25 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
     await asyncio.sleep(0)
     assert manager.dock_reconciliation_active("serial") is False
     assert "serial" not in manager._reconciliation_tasks
+
+
+async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
+    """A live dock watcher claims an otherwise-unset activity scope."""
+    manager = CleaningPlanManager(hass)
+    task = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", task, dock=True, run_id="run-1")
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_scope(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    assert manager.defer_activity_scope_cleanup(
+        "serial", "run-1", set_scope, lambda: scope["run_id"]
+    )
+    assert scope["run_id"] == "run-1"
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert scope["run_id"] is None
 
 
 async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:

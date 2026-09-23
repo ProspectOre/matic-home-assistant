@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.components import frontend
@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS,
     FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
@@ -144,7 +145,6 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     listener()
     assert len(scheduled) == 1
 
-    slam_map.floor_plan_is_current.return_value = False
     slam_map.mission_identity = None
     listener()
     assert len(scheduled) == 1
@@ -217,9 +217,92 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_wait(
         async_request_floor_plan_refresh=AsyncMock(),
     )
 
+    recovery_wait_started = asyncio.Event()
+    never_timeout = asyncio.Event()
+
     async def sleep(delay: int) -> None:
         if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
-            slam_map.mission_identity = second_identity
+            recovery_wait_started.set()
+            await never_timeout.wait()
+
+    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+        first_task = asyncio.create_task(scheduled[0])
+        await recovery_wait_started.wait()
+        slam_map.mission_identity = second_identity
+        slam_map.async_add_listener.call_args.args[0]()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+        await first_task
+
+    assert coordinator.async_request_floor_plan_refresh.await_count == 4
+    assert len(scheduled) == 2
+    scheduled[1].close()
+
+
+async def test_slam_map_transition_cancelled_recovery_suppresses_duplicate_sync(
+    hass,
+) -> None:
+    """Cancellation leaves the attempted identity fenced from duplicate sync."""
+    entry = _entry()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        mission_identity=SlamMapIdentity("00" * 32, 43),
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
+        ),
+        async_request_floor_plan_refresh=AsyncMock(),
+    )
+
+    async def sleep(delay: int) -> None:
+        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
+            started.set()
+            await blocked.wait()
+
+    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+        task = asyncio.create_task(scheduled[0])
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert coordinator.async_request_floor_plan_refresh.await_count == 4
+    assert len(scheduled) == 1
+
+
+async def test_slam_map_transition_drops_identity_changed_without_wake(hass) -> None:
+    """A changed identity is discarded even when the wait times out normally."""
+    entry = _entry()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    first_identity = SlamMapIdentity("00" * 32, 43)
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        mission_identity=first_identity,
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
+        ),
+        async_request_floor_plan_refresh=AsyncMock(),
+    )
+
+    async def sleep(delay: int) -> None:
+        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
+            slam_map.mission_identity = SlamMapIdentity("11" * 32, 44)
 
     with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
         _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
@@ -933,7 +1016,15 @@ async def test_setup_refreshes_before_forwarding_platforms(
         )
     )
     plans.async_import_native_history = AsyncMock(return_value=False)
+    scheduled_state_flushes = []
+
+    def capture_state_flush(delay, callback):
+        handle = SimpleNamespace(cancel=MagicMock(), callback=callback, delay=delay)
+        scheduled_state_flushes.append(handle)
+        return handle
+
     hass = SimpleNamespace(
+        loop=SimpleNamespace(call_later=capture_state_flush),
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
         bus=SimpleNamespace(
@@ -1043,11 +1134,62 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
-        client_factory.call_args.kwargs["observation_callback"]({"kind": "started"})
-        hass.bus.async_fire.assert_called_with(
-            "matic_robot_activity_observed",
-            {"entry_id": entry.entry_id, "kind": "started"},
-        )
+        observe = client_factory.call_args.kwargs["observation_callback"]
+        observe({"kind": "started"})
+        with patch(
+            "custom_components.matic_robot.monotonic",
+            side_effect=[100.0, 100.5, 100.75, 101.5, 102.0, 103.0, 103.1],
+        ):
+            observe({"kind": "state", "state_codes": [106]})
+            observe({"kind": "state", "state_codes": [107]})
+            scheduled_state_flushes[0].callback()
+            observe({"kind": "state", "state_codes": [108]})
+            scheduled_state_flushes[1].callback()
+            observe({"kind": "state", "state_codes": [109]})
+            scheduled_state_flushes[2].callback()
+            observe({"kind": "state", "state_codes": [110]})
+            entry.async_on_unload.call_args_list[0].args[0]()
+        assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
+        assert hass.bus.async_fire.call_args_list[-5:] == [
+            call(
+                "matic_robot_activity_observed",
+                {"entry_id": entry.entry_id, "kind": "started"},
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [106],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [108],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [109],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [110],
+                },
+            ),
+        ]
+        assert len(scheduled_state_flushes) == 4
+        scheduled_state_flushes[3].cancel.assert_called_once_with()
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 

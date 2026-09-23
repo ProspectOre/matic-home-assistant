@@ -143,17 +143,67 @@ jobs:
                   def availability_notice:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-                  def exact_head:
+                  def exact_reviewed_head:
                     test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                  def exact_full_head:
+                    test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60" + $head + "\\x60");
                   [.[][]
                    | select((.user.login // "") == $bot)
                    | (.body // "") as $body
                    | select($body | regular_heading)
                    | select(($body | security_heading) | not)
                    | select(($body | availability_notice) | not)
-                   | select($body | exact_head)
+                   | select($body | exact_reviewed_head)
                    | {id: ("issue-comment:" + (.id | tostring)),
-                      at: (.updated_at // .created_at)}]'
+                      at: (.updated_at // .created_at),
+                      source: "issue_comment",
+                      full_head: ($body | exact_full_head)}]'
+          }
+
+          current_request_reaction_records() {
+            local head_sha="$1"
+            local base_sha request_comment_ids request_binding_statuses
+            base_sha="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.sha')"
+            [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || {
+              echo '[]'
+              return 0
+            }
+            request_binding_statuses="$(
+              # gh --slurp emits one outer array of paginated response pages;
+              # flatten the page arrays from this single jq input once.
+              gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+                | jq -c '[flatten[] | select(.context == "review-gate-request") | select((.creator.login // "") == "github-actions[bot]")]'
+            )"
+            request_comment_ids="$(
+              gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
+                | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
+                      [.[][]
+                       | select((.user.login // "") != $bot)
+                       | select((.body // "") | contains($marker))
+                       | select((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))
+                       | select(.created_at == .updated_at)
+                       | [.id, .created_at, .updated_at]]
+                      | .[] | @tsv'
+            )"
+            while IFS=$'\t' read -r request_comment_id request_created_at request_updated_at; do
+              [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
+              gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" --paginate --slurp \
+                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" \
+                    --arg base "$base_sha" --arg created "$request_created_at" \
+                    --argjson bindings "$request_binding_statuses" '
+                    [flatten[]
+                     | select((.user.login // "") == $bot)
+                     | select((.content // "") == "+1")
+                     | select((.created_at // "") >= $request_updated_at)
+                     | select(any($bindings[];
+                         .state == "success"
+                         and .description == ("review-request-comment:" + $id + "; base:" + $base + "; created:" + $created)))
+                     | {id: ("request-reaction:" + $id),
+                        at: .created_at,
+                        source: "request_reaction"}]'
+            done <<< "$request_comment_ids" | jq -s 'add // []'
           }
 
           current_regular_review_records() {
@@ -250,15 +300,16 @@ jobs:
           gate_updated_at="$(jq -r '.updated_at // empty' <<< "$gate_snapshot")"
           gate_description="$(jq -r '.description // empty' <<< "$gate_snapshot")"
           comment_records="$(current_regular_comment_records "$head_sha")"
+          request_reaction_records="$(current_request_reaction_records "$head_sha")"
           review_records="$(current_regular_review_records "$head_sha")"
-          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reviews "$review_records" '$comments + $reviews')"
+          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reactions "$request_reaction_records" --argjson reviews "$review_records" '$comments + $reactions + $reviews')"
           latest_evidence_at="$(jq -r '[.[].at] | max // empty' <<< "$evidence_records")"
           evidence_ids="$(jq -c '[.[].id]' <<< "$evidence_records")"
           evidence_marker="$(
             jq -r '
               (.description // "") as $description
-              | if ($description | test("; evidence (review|issue-comment):[1-9][0-9]*$")) then
-                  ($description | capture("; evidence (?<id>(?:review|issue-comment):[1-9][0-9]*)$").id)
+              | if ($description | test("; evidence (review|issue-comment|request-reaction):[1-9][0-9]*$")) then
+                  ($description | capture("; evidence (?<id>(?:review|issue-comment|request-reaction):[1-9][0-9]*)$").id)
                 else
                   ""
                 end' <<< "$gate_snapshot"
@@ -276,6 +327,9 @@ jobs:
           elif [[ "$gate_state" == "pending" ]] && is_reconciliation_pending "$gate_description"; then
             needs_reconciliation=true
             reconciliation_reason="a pending normal review evaluation"
+          elif [[ "$gate_state" == "success" && "$evidence_marker" == issue-comment:* ]] && jq -e --arg evidence "$evidence_marker" 'any(.[]; .id == $evidence and .source == "issue_comment" and (.full_head | not))' <<< "$evidence_records" >/dev/null; then
+            needs_reconciliation=true
+            reconciliation_reason="legacy short-SHA clean issue-comment evidence must be revalidated"
           elif [[ "$gate_state" == "success" && -n "$evidence_marker" ]] && ! jq -e --arg evidence "$evidence_marker" 'index($evidence) != null' <<< "$evidence_ids" >/dev/null; then
             needs_reconciliation=true
             reconciliation_reason="clean normal evidence that is no longer current"

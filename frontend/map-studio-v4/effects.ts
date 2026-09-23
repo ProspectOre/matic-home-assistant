@@ -478,16 +478,22 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
-    // A missing live ordinal means revalidation, not proof of another floor.
+    // Missing live map identity means revalidation, not proof of another floor.
     // Keep the last verified draft owner through that gap and compare it only
-    // with a positively verified replacement floor.
+    // with a positively verified replacement coordinate frame.
     const previousDraftFloor = previousState.draftFloorOrdinal
       ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
         ? previousEntry.mapFloorOrdinal : null);
+    const previousDraftSession = previousState.draftMapSessionKey
+      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
+        ? previousEntry.mapSessionKey : null);
     const verifiedFloor = coherent ? entry.mapFloorOrdinal : null;
+    const verifiedSession = coherent ? entry.mapSessionKey : null;
     const resetDrafts = (previousEntry !== null && previousEntry.entryId !== entry.entryId)
       || (previousDraftFloor !== null && verifiedFloor !== null
-        && previousDraftFloor !== verifiedFloor);
+        && previousDraftFloor !== verifiedFloor)
+      || (previousDraftSession !== null && verifiedSession !== null
+        && previousDraftSession !== verifiedSession);
     if (resetDrafts) this.#invalidateMotion();
     const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
@@ -505,6 +511,7 @@ export class EffectController {
         notice: { tone: "info" as const, text: "The active map changed. Choose a task on this map." },
       } : {}),
       draftFloorOrdinal: verifiedFloor ?? previousDraftFloor,
+      draftMapSessionKey: verifiedSession ?? previousDraftSession,
       managedLock: entryManagedLock(entry),
       generation: stamp.generation,
       coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",

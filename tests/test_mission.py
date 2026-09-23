@@ -144,3 +144,38 @@ def test_decode_mission_state_rejects_invalid_label_wrapper() -> None:
     malformed = _bfield(1, _mission(42)) + _bfield(2, _bfield(1, b"Main"))
     with pytest.raises(DecodeError, match=r"floor label.*shape"):
         decode_mission_client_state(_state(active=malformed, canonical=(malformed,)))
+
+
+def test_decode_mission_state_rejects_oversized_payload_before_parsing(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(mission_module, "MAX_MISSION_CLIENT_STATE_BYTES", 3)
+    with pytest.raises(DecodeError, match="byte limit"):
+        decode_mission_client_state(b"\x08\x00" * 2)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"\x08\x00" * 5,
+        _bfield(6, b"\x08\x00" * 5),
+        _state(active=_labeled(42, b"Main"), canonical=(b"\x08\x00" * 5,)),
+        _state(
+            active=b"\x08\x00" * 5,
+            canonical=(_labeled(42, b"Main"),),
+        ),
+    ],
+)
+def test_decode_mission_state_bounds_every_message_field_count(
+    monkeypatch, payload: bytes
+) -> None:
+    monkeypatch.setattr(mission_module, "MAX_MISSION_MESSAGE_FIELDS", 4)
+    with pytest.raises(DecodeError, match="field limit"):
+        decode_mission_client_state(payload)
+
+
+def test_decode_mission_state_bounds_nested_identity_size(monkeypatch) -> None:
+    floor = _labeled(42, b"Main")
+    monkeypatch.setattr(mission_module, "MAX_MISSION_IDENTITY_BYTES", 4)
+    with pytest.raises(DecodeError, match="invalid identity"):
+        decode_mission_client_state(_state(active=floor, canonical=(floor,)))

@@ -14,6 +14,9 @@ from .wire import WireField, decode_fields
 MAX_MAPPED_FLOORS = 64
 MAX_FLOOR_LABEL_BYTES = 256
 MAX_FLOOR_LABEL_CHARACTERS = 128
+MAX_MISSION_CLIENT_STATE_BYTES = 256 * 1024
+MAX_MISSION_MESSAGE_FIELDS = 256
+MAX_MISSION_IDENTITY_BYTES = 64
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +36,15 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
     exact labeled-mission shape; another variant leaves the active floor
     unknown so callers fail closed instead of guessing.
     """
-    fields = decode_fields(payload)
+    if len(payload) > MAX_MISSION_CLIENT_STATE_BYTES:
+        raise DecodeError("mission client state exceeds its byte limit")
+    fields = _decode_bounded_fields(payload)
     active_values = _bytes_values(fields, 5)
     canonical_values = _bytes_values(fields, 6)
     if len(active_values) > 1 or len(canonical_values) != 1:
         raise DecodeError("mission client state has an invalid root shape")
 
-    canonical_entries = _bytes_values(decode_fields(canonical_values[0]), 1)
+    canonical_entries = _bytes_values(_decode_bounded_fields(canonical_values[0]), 1)
     if not canonical_entries or len(canonical_entries) > MAX_MAPPED_FLOORS:
         raise DecodeError("mission client state has an invalid floor count")
     mapped_floors = tuple(_decode_labeled_mission(value) for value in canonical_entries)
@@ -49,7 +54,7 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
 
     active_floor: MappedFloor | None = None
     if active_values:
-        active_fields = decode_fields(active_values[0])
+        active_fields = _decode_bounded_fields(active_values[0])
         if (
             len(active_fields) == 1
             and active_fields[0].number == 4
@@ -69,14 +74,18 @@ def decode_mission_client_state(payload: bytes) -> MissionClientState:
 
 def _decode_labeled_mission(payload: bytes) -> MappedFloor:
     try:
-        fields = decode_fields(payload)
+        fields = _decode_bounded_fields(payload)
     except DecodeError as err:
+        if "field limit" in str(err):
+            raise DecodeError("labeled mission exceeds its field limit") from err
         raise DecodeError("labeled mission has an invalid shape") from err
     mission_values = _bytes_values(fields, 1)
     label_values = _bytes_values(fields, 2)
     if len(fields) != 2 or len(mission_values) != 1 or len(label_values) != 1:
         raise DecodeError("labeled mission has an invalid shape")
     mission = mission_values[0]
+    if len(mission) > MAX_MISSION_IDENTITY_BYTES:
+        raise DecodeError("labeled mission has an invalid identity")
     mission_id = decode_slam_mission_id(mission)
     if mission_id is None:
         raise DecodeError("labeled mission has an invalid identity")
@@ -85,7 +94,7 @@ def _decode_labeled_mission(payload: bytes) -> MappedFloor:
 
 
 def _decode_floor_label(payload: bytes) -> str:
-    fields = decode_fields(payload)
+    fields = _decode_bounded_fields(payload)
     values = _bytes_values(fields, 2)
     if len(fields) != 1 or len(values) != 1:
         raise DecodeError("floor label has an invalid shape")
@@ -113,3 +122,8 @@ def _bytes_values(fields: tuple[WireField, ...], number: int) -> tuple[bytes, ..
         and field.wire_type == 2
         and isinstance(field.value, bytes)
     )
+
+
+def _decode_bounded_fields(payload: bytes) -> tuple[WireField, ...]:
+    """Decode one mission message without allowing field amplification."""
+    return decode_fields(payload, max_fields=MAX_MISSION_MESSAGE_FIELDS)
