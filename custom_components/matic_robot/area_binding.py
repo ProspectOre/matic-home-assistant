@@ -292,6 +292,26 @@ def binding_for_floor_plan(floor_plan: FloorPlan) -> MapBinding:
     }
 
 
+def translation_invariant_geometry_fingerprint(floor_plan: FloorPlan) -> str:
+    """Fingerprint room geometry after removing one global coordinate offset."""
+    polygons = sorted(_canonical_polygon(room.boundary) for room in floor_plan.rooms)
+    if not polygons:
+        raise ValueError("floor plan has no room geometry")
+    origin_x = min(point[0] for polygon in polygons for point in polygon)
+    origin_y = min(point[1] for polygon in polygons for point in polygon)
+    normalized = [
+        tuple((x - origin_x, y - origin_y) for x, y in polygon) for polygon in polygons
+    ]
+    digest = hashlib.sha256()
+    digest.update(b"matic-translation-invariant-floor-v1\0")
+    digest.update(struct.pack(">I", len(normalized)))
+    for polygon in normalized:
+        digest.update(struct.pack(">I", len(polygon)))
+        for x, y in polygon:
+            digest.update(struct.pack(">qq", x, y))
+    return digest.hexdigest()
+
+
 def binding_for_area(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -305,6 +325,9 @@ def binding_for_area(
     return {
         "version": SCOPED_MAP_BINDING_VERSION,
         **_floor_plan_binding(floor_plan),
+        "translation_invariant_geometry_sha256": (
+            translation_invariant_geometry_fingerprint(floor_plan)
+        ),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -660,6 +683,13 @@ def area_binding_status(
         return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
+        if (
+            "translation_invariant_geometry_sha256" in saved
+            and saved_geometry != current["geometry_sha256"]
+            and saved["translation_invariant_geometry_sha256"]
+            == translation_invariant_geometry_fingerprint(floor_plan)
+        ):
+            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])
@@ -735,8 +765,13 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
             "local_geometry_sha256",
             "local_occupancy",
             "local_segments_mm",
+            "translation_invariant_geometry_sha256",
         }
-    if set(binding) != expected_fields:
+    if version == SCOPED_MAP_BINDING_VERSION:
+        legacy_fields = expected_fields - {"translation_invariant_geometry_sha256"}
+        if set(binding) not in (expected_fields, legacy_fields):
+            return False
+    elif set(binding) != expected_fields:
         return False
     mission_id = binding["mission_id"]
     partition_id = binding["partition_id"]
@@ -768,6 +803,10 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                 and _valid_digest(binding["local_geometry_sha256"])
                 and _valid_local_occupancy(binding["local_occupancy"])
                 and _valid_local_segments(binding["local_segments_mm"])
+                and (
+                    "translation_invariant_geometry_sha256" not in binding
+                    or _valid_digest(binding["translation_invariant_geometry_sha256"])
+                )
                 and _stored_local_geometry_is_intact(binding)
             )
         )

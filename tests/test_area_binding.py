@@ -329,6 +329,9 @@ def test_scoped_binding_contains_private_local_geometry_signature() -> None:
         "mission_id": 42,
         "partition_id": "synthetic-partition",
         "geometry_sha256": floor_plan_geometry_fingerprint(floor_plan),
+        "translation_invariant_geometry_sha256": (
+            binding["translation_invariant_geometry_sha256"]
+        ),
         "area_shape_sha256": binding["area_shape_sha256"],
         "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
         "local_occupancy": [511, 511],
@@ -1965,3 +1968,27 @@ def test_delete_custom_area_issue_withdraws_floor_scoped_keys() -> None:
         (hass, DOMAIN, legacy_id),
         (hass, DOMAIN, scoped_id),
     }
+
+
+def test_scoped_binding_rejects_translated_two_room_map_with_invariant_fingerprint():
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("left", "Left", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "right", "Right", ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0))
+            ),
+        ),
+    )
+    circles = [{"x": 5.0, "y": 5.0, "radius": 0.2}]
+    area = _scoped_area(floor_plan, circles)
+    translated = replace(
+        floor_plan,
+        rooms=tuple(
+            replace(room, boundary=tuple((x + 1.0, y + 2.0) for x, y in room.boundary))
+            for room in floor_plan.rooms
+        ),
+    )
+    assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
