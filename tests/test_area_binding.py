@@ -10,6 +10,7 @@ import pytest
 import custom_components.matic_robot.area_binding as area_binding_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
@@ -196,7 +197,7 @@ def test_large_local_geometry_uses_hash_only_binding() -> None:
         floor_plan, rooms=(replace(floor_plan.rooms[0], boundary=tuple(boundary)),)
     )
     binding = binding_for_area(floor_plan, circles)
-    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,
@@ -224,7 +225,7 @@ def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None
     ]
     monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
     binding = binding_for_area(base, circles)
-    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
 
     gap = _room("gap", "Gap", ((9.5, 0.5), (10.5, 0.5), (10.5, 1.5), (9.5, 1.5)))
     changed = replace(base, rooms=(*base.rooms, gap))

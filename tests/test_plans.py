@@ -16,6 +16,7 @@ from homeassistant.util import dt as dt_util
 import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     _hash_only_area_geometry_fingerprint,
@@ -1541,7 +1542,7 @@ async def test_dense_hash_only_area_upgrade_is_a_noop(hass) -> None:
     )
     circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
     binding = binding_for_area(floor_plan, circles)
-    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
     area = {
         "schema_version": AREA_SCHEMA_VERSION,
         "circles": circles,

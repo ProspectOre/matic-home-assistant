@@ -23,6 +23,7 @@ AREA_SCHEMA_VERSION = 1
 MAP_BINDING_VERSION = 1
 HASH_ONLY_SCOPED_MAP_BINDING_VERSION = 2
 SCOPED_MAP_BINDING_VERSION = 3
+BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION = 4
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
 _SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 _AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
@@ -301,14 +302,15 @@ def binding_for_area(
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
     shape, occupancy, segments = _area_geometry_components(
         floor_plan, circles, room_geometry=room_geometry
     )
     if len(segments) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS:
         return {
-            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            "version": BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
             **_floor_plan_binding(floor_plan),
-            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+            "local_geometry_sha256": _bounded_hash_only_area_geometry_fingerprint(
                 floor_plan, circles, room_geometry=room_geometry
             ),
         }
@@ -357,13 +359,13 @@ def area_geometry_fingerprint(
     return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
 
 
-def _hash_only_area_geometry_fingerprint(
+def _legacy_hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> str:
-    """Reproduce the short-lived hash-only v2 signature for safe migration."""
+    """Reproduce the persisted hash-only v2 signature for safe migration."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
     normalized = _validate_area_circles(
         floor_plan, circles, room_geometry=room_geometry
@@ -376,6 +378,33 @@ def _hash_only_area_geometry_fingerprint(
         )
         for circle in normalized
     )
+    neighborhood = (
+        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
+    )
+    segments: set[_LocalSegment] = set()
+    for room in floor_plan.rooms:
+        boundary = room.boundary
+        for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            room_geometry.charge_query_work()
+            clipped = _clip_segment(start, end, neighborhood)
+            if clipped is None:
+                continue
+            first = (
+                _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+            )
+            second = (
+                _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+            )
+            if second < first:
+                first, second = second, first
+            segments.add((*first, *second))
+    room_geometry.charge_query_work(len(segments))
+
     digest = hashlib.sha256()
     digest.update(_SCOPED_FINGERPRINT_DOMAIN)
     digest.update(struct.pack(">H", HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
@@ -395,9 +424,58 @@ def _hash_only_area_geometry_fingerprint(
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         digest.update(struct.pack(">H", occupancy))
-        # Keep separated circles spatially separate in the fingerprint. A
-        # single enclosing rectangle would make unrelated geometry between
-        # them invalidate an otherwise unchanged area.
+    digest.update(struct.pack(">I", len(segments)))
+    for segment in sorted(segments):
+        digest.update(struct.pack(">qqqq", *segment))
+    return digest.hexdigest()
+
+
+def _hash_only_area_geometry_fingerprint(
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
+) -> str:
+    """Keep the v2 helper name bound to its original serialization."""
+    return _legacy_hash_only_area_geometry_fingerprint(
+        floor_plan, circles, room_geometry=room_geometry
+    )
+
+
+def _bounded_hash_only_area_geometry_fingerprint(
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
+) -> str:
+    """Return the per-circle union-scoped v4 hash-only geometry signature."""
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    normalized = _validate_area_circles(
+        floor_plan, circles, room_geometry=room_geometry
+    )
+    ordered = sorted(
+        (float(circle["x"]), float(circle["y"]), float(circle["radius"]))
+        for circle in normalized
+    )
+    digest = hashlib.sha256()
+    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+    digest.update(struct.pack(">H", BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
+    digest.update(struct.pack(">I", len(ordered)))
+    for x, y, radius in ordered:
+        digest.update(
+            struct.pack(
+                ">qqq",
+                _quantize_coordinate(x),
+                _quantize_coordinate(y),
+                _quantize_coordinate(radius),
+            )
+        )
+        probes = _occupancy_probes(x, y, radius)
+        occupancy = sum(
+            int(room_geometry.contains(probe_x, probe_y)) << index
+            for index, (probe_x, probe_y) in enumerate(probes)
+        )
+        digest.update(struct.pack(">H", occupancy))
         neighborhood = (
             x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
             y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
@@ -637,9 +715,17 @@ def area_binding_status(
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
-    if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+    if saved["version"] in {
+        HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+        BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+    }:
         try:
-            local_geometry = _hash_only_area_geometry_fingerprint(
+            fingerprint = (
+                _legacy_hash_only_area_geometry_fingerprint
+                if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                else _bounded_hash_only_area_geometry_fingerprint
+            )
+            local_geometry = fingerprint(
                 floor_plan, area["circles"], room_geometry=room_geometry
             )
         except KeyError, OverflowError, TypeError, ValueError:
@@ -730,7 +816,10 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         return False
     if version == MAP_BINDING_VERSION:
         expected_fields = base_fields
-    elif version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+    elif version in {
+        HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+        BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+    }:
         expected_fields = {*base_fields, "local_geometry_sha256"}
     else:
         expected_fields = {
@@ -750,6 +839,7 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         in {
             MAP_BINDING_VERSION,
             HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
             SCOPED_MAP_BINDING_VERSION,
         }
         and not isinstance(mission_id, bool)
@@ -763,7 +853,11 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         and (
             version == MAP_BINDING_VERSION
             or (
-                version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                version
+                in {
+                    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                }
                 and _valid_digest(binding["local_geometry_sha256"])
             )
             or (
@@ -788,7 +882,11 @@ def area_binding_needs_geometry_index(area: Mapping[str, Any]) -> bool:
         and isinstance(binding, Mapping)
         and _valid_saved_binding(binding)
         and binding["version"]
-        in {HASH_ONLY_SCOPED_MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION}
+        in {
+            HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            SCOPED_MAP_BINDING_VERSION,
+        }
     )
 
 
