@@ -239,6 +239,73 @@ jobs:
             echo "clean=true" >> "$GITHUB_OUTPUT"
           fi
 
+  bind-request:
+    name: bind-exact-head-review-request
+    needs: classify
+    if: needs.classify.outputs.request_id != ''
+    runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    steps:
+      - name: Persist the request binding outside the cancellable gate lock
+        env:
+          EVENT_ACTION: ${{ github.event.action }}
+          EVENT_COMMENT_AUTHOR: ${{ github.event.comment.user.login }}
+          EVENT_COMMENT_BODY: ${{ github.event.comment.body }}
+          EVENT_COMMENT_CREATED_AT: ${{ github.event.comment.created_at }}
+          EVENT_COMMENT_ID: ${{ github.event.comment.id }}
+          EVENT_COMMENT_UPDATED_AT: ${{ github.event.comment.updated_at }}
+          GH_TOKEN: ${{ github.token }}
+          HEAD_SHA: ${{ needs.classify.outputs.head_sha }}
+          PR_NUMBER: ${{ github.event.issue.number }}
+          REPO: ${{ github.repository }}
+          REQUEST_BASE_SHA: ${{ needs.classify.outputs.request_base_sha }}
+          REQUEST_CREATED_AT: ${{ needs.classify.outputs.request_created_at }}
+          REQUEST_ID: ${{ needs.classify.outputs.request_id }}
+          REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && vars.CLAUDE_REVIEW_BOT_EVENT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && 'chatgpt-codex-connector[bot]' }}
+          REVIEW_REQUEST_CONTEXT: review-gate-request
+          WORKFLOW_REF: ${{ github.event.repository.default_branch }}
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          if [[ "$EVENT_ACTION" != "created" || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ \
+            || "$REQUEST_ID" != "$EVENT_COMMENT_ID" || "$EVENT_COMMENT_AUTHOR" == "$REVIEW_BOT_EVENT_LOGIN" \
+            || ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ \
+            || ! "$REQUEST_BASE_SHA" =~ ^[0-9a-f]{40}$ || ! "$REQUEST_CREATED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
+            || "$REQUEST_CREATED_AT" != "$EVENT_COMMENT_CREATED_AT" || "$EVENT_COMMENT_CREATED_AT" != "$EVENT_COMMENT_UPDATED_AT" ]]; then
+            echo "The review request event is not a valid unedited exact-head request." >&2
+            exit 1
+          fi
+          request_marker="<!-- review-request:v2 head=$HEAD_SHA base=$REQUEST_BASE_SHA -->"
+          if [[ "$EVENT_COMMENT_BODY" != *"$request_marker"* ]] \
+            || ! printf '%s' "$EVENT_COMMENT_BODY" \
+              | jq -e -R -s 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' >/dev/null; then
+            echo "The request body does not contain the exact-head review marker and mention." >&2
+            exit 1
+          fi
+          current_comment="$(gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID")"
+          current_comment_state="$(jq -er '[.user.login, .created_at, .updated_at, ((.body // "") | @base64)] | @tsv' <<< "$current_comment")"
+          IFS=$'\t' read -r current_author current_created_at current_updated_at current_body_b64 <<< "$current_comment_state"
+          event_body_b64="$(jq -rn --arg body "$EVENT_COMMENT_BODY" '$body | @base64')"
+          if [[ "$current_author" != "$EVENT_COMMENT_AUTHOR" || "$current_created_at" != "$REQUEST_CREATED_AT" \
+            || "$current_updated_at" != "$REQUEST_CREATED_AT" || "$current_body_b64" != "$event_body_b64" ]]; then
+            echo "The request comment changed before its immutable binding was written." >&2
+            exit 1
+          fi
+          current_pr_state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" | jq -er '[.head.sha, .base.sha] | @tsv')"
+          IFS=$'\t' read -r current_head current_base <<< "$current_pr_state"
+          if [[ "$current_head" != "$HEAD_SHA" || "$current_base" != "$REQUEST_BASE_SHA" ]]; then
+            echo "The PR head or base changed before the request was bound." >&2
+            exit 1
+          fi
+          gh api "repos/$REPO/statuses/$HEAD_SHA" --silent \
+            -f state=success \
+            -f context="$REVIEW_REQUEST_CONTEXT" \
+            -f description="review-request-comment:$REQUEST_ID; base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" \
+            -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+          echo "Bound exact-head review request $REQUEST_ID outside the cancellable gate lock."
+          if gh api "repos/$REPO/contents/.github/workflows/review-gate.yml?ref=$WORKFLOW_REF" --silent >/dev/null 2>&1; then
+            gh workflow run review-gate.yml --repo "$REPO" --ref "$WORKFLOW_REF" -f pull_request="$PR_NUMBER"
+          fi
+
   invalidate:
     name: invalidate-on-regular-comment
     needs: classify

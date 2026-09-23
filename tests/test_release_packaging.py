@@ -280,6 +280,24 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "availability_notice | not" in regular_comment
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
     assert "name: classify-regular-comment" in regular_comment
+    bind_request_job = regular_comment[
+        regular_comment.index("  bind-request:") : regular_comment.index(
+            "  invalidate:"
+        )
+    ]
+    assert "name: bind-exact-head-review-request" in bind_request_job
+    assert "needs: classify" in bind_request_job
+    assert "if: needs.classify.outputs.request_id != ''" in bind_request_job
+    assert "concurrency:" not in bind_request_job
+    assert (
+        "Persist the request binding outside the cancellable gate lock"
+        in bind_request_job
+    )
+    assert (
+        "review-request-comment:$REQUEST_ID; "
+        "base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" in bind_request_job
+    )
+    assert "gh workflow run review-gate.yml" in bind_request_job
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
     assert "request_id: ${{ steps.classify.outputs.request_id }}" in regular_comment
