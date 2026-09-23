@@ -609,8 +609,10 @@ class CleaningPlanManager:
                 if not dock_current:
                     self._dock_reconciliation_tasks.pop(serial_number, None)
                     self._dock_reconciliation_run_ids.pop(serial_number, None)
-                    cleanup = self._dock_scope_cleanups.pop(serial_number, {}).get(
-                        run_id
+                    cleanup = (
+                        self._dock_scope_cleanups.pop(serial_number, {}).get(run_id)
+                        if run_id is not None
+                        else None
                     )
                     if cleanup is not None:
                         set_scope, get_scope = cleanup
