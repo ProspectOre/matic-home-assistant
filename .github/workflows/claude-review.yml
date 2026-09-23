@@ -5,7 +5,10 @@ name: Claude Review
 # satisfies the gate, so switching providers is one variable flip with the
 # Codex flow as the unset default.
 on:
-  pull_request:
+  # Run the workflow definition from the protected default branch. A
+  # same-repository contributor must not be able to edit the workflow that
+  # receives the dedicated review publisher credential.
+  pull_request_target:
     types: [opened, reopened, synchronize, ready_for_review]
 
 concurrency:
@@ -14,7 +17,7 @@ concurrency:
 
 permissions:
   contents: read
-  pull-requests: write
+  pull-requests: read
   id-token: write
   # Needed to dispatch the review gate once a verdict is published.
   actions: write
@@ -25,11 +28,15 @@ jobs:
     if: >-
       vars.REVIEW_PROVIDER == 'claude'
       && github.event.pull_request.draft == false
+      && github.event.pull_request.base.ref == github.event.repository.default_branch
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 1
+          # Never load configuration from a non-default target branch in this
+          # credential-bearing job. The job condition also rejects such PRs.
+          ref: ${{ github.event.repository.default_branch }}
       - uses: anthropics/claude-code-action@5ee796a55f92566ecd7e39d70dd613abcbea0d7c # v1
         id: review
         with:
@@ -79,17 +86,15 @@ jobs:
             does not begin with that heading, and nothing will be published.
 
       # The reviewer holds no write tools, so publish its verdict here instead.
-      # This step is the trusted publisher: it posts under the workflow's own
-      # token, having checked the verdict shape, and names the head straight
-      # from the event context. review-gate.yml therefore looks for
-      # github-actions[bot] as the reviewing identity for this provider.
-      # Skipped when the action itself did not run, which is what happens on
-      # any pull request that edits this workflow file. A run that did happen
-      # but produced no usable verdict still fails below.
+      # This step is the trusted publisher. CLAUDE_REVIEW_TOKEN must belong to
+      # the dedicated account configured by CLAUDE_REVIEW_BOT_LOGIN and
+      # CLAUDE_REVIEW_BOT_EVENT_LOGIN; a repository GITHUB_TOKEN is shared by
+      # every workflow and cannot prove which workflow produced a review.
       - name: Publish the review verdict
         if: steps.review.outputs.execution_file != ''
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
+          PUBLISH_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}
           EXECUTION_FILE: ${{ steps.review.outputs.execution_file }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           REPO: ${{ github.repository }}
@@ -143,7 +148,7 @@ jobs:
           fi
           # Take the reviewed commit straight from the trusted event context,
           # so the evidence can only ever name this pull request's exact head.
-          gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
+          GH_TOKEN="$PUBLISH_TOKEN" gh api "repos/$REPO/pulls/$PR_NUMBER/reviews" \
             -f commit_id=${{ github.event.pull_request.head.sha }} \
             -f event=COMMENT \
             -f body="$body"

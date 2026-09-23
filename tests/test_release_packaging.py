@@ -51,7 +51,8 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
 
 SWITCHABLE_REVIEW_BOT = (
     "REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && "
-    "'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}"
+    "vars.CLAUDE_REVIEW_BOT_EVENT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && "
+    "'chatgpt-codex-connector[bot]' }}"
 )
 
 
@@ -124,6 +125,19 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "vars.REVIEW_PROVIDER == 'claude'" in claude_review
     assert "anthropics/claude-code-action@" in claude_review
     assert "claude_code_oauth_token" in claude_review
+    assert "pull_request_target:" in claude_review
+    assert "  pull_request:" not in claude_review
+    assert "pull-requests: read" in claude_review
+    assert "pull-requests: write" not in claude_review
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in claude_review
+    assert (
+        "github.event.pull_request.base.ref == github.event.repository.default_branch"
+        in claude_review
+    )
+    assert "ref: ${{ github.event.repository.default_branch }}" in claude_review
+    assert "PUBLISH_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}" in claude_review
+    assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" not in claude_review
+    assert 'GH_TOKEN="$PUBLISH_TOKEN" gh api' in claude_review
     assert "-f commit_id=${{ github.event.pull_request.head.sha }}" in claude_review
     assert "## Review result: No issues found." in claude_review
     assert "## Review result: findings" in claude_review
