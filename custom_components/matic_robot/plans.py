@@ -270,6 +270,7 @@ class CleaningPlanManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._native_history_locks: dict[str, asyncio.Lock] = {}
         self._state_locks: dict[str, asyncio.Lock] = {}
+        self._store_lock = asyncio.Lock()
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
@@ -400,7 +401,8 @@ class CleaningPlanManager:
             ):
                 recovered = True
         if recovered:
-            await self._store.async_save(self._data)
+            async with self._store_lock:
+                await self._store.async_save(self._data)
 
     def lock(self, serial_number: str) -> asyncio.Lock:
         """Return the single-flight plan lock for one robot."""
@@ -748,15 +750,16 @@ class CleaningPlanManager:
             self.command_lock(serial_number),
             self.state_lock(serial_number),
         ):
-            robots = self._data.get("robots")
-            if isinstance(robots, dict):
-                removed = robots.pop(serial_number, None)
-                if removed is not None:
-                    try:
-                        await self._store.async_save(self._data)
-                    except BaseException:
-                        robots[serial_number] = removed
-                        raise
+            async with self._store_lock:
+                robots = self._data.get("robots")
+                if isinstance(robots, dict):
+                    removed = robots.pop(serial_number, None)
+                    if removed is not None:
+                        try:
+                            await self._store.async_save(self._data)
+                        except BaseException:
+                            robots[serial_number] = removed
+                            raise
 
         self._listeners.pop(serial_number, None)
         self._stop_fences.pop(serial_number, None)
@@ -2318,7 +2321,8 @@ class CleaningPlanManager:
         async with self.state_lock(serial_number):
             if serial_number in self._removed_robots:
                 return
-            await self._store.async_save(self._data)
+            async with self._store_lock:
+                await self._store.async_save(self._data)
         self._notify_listeners(serial_number)
 
     def _notify_listeners(self, serial_number: str) -> None:
@@ -2336,7 +2340,8 @@ class CleaningPlanManager:
         saves = self._native_history_saves.setdefault(serial_number, set())
         saves.add(done)
         try:
-            await self._store.async_save(self._data)
+            async with self._store_lock:
+                await self._store.async_save(self._data)
         except Exception, asyncio.CancelledError:
             if self.motion_generation(serial_number) != generation:
                 # Replacement must persist removal after this rollback finishes.
