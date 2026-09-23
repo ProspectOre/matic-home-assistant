@@ -404,9 +404,11 @@ jobs:
             )"
             jq -cn --argjson reviews "$review_records" \
               --argjson issue_comments "$issue_comment_records" \
-              --argjson request_reactions "$request_reaction_records" '
+              --argjson request_reactions "$request_reaction_records" \
+              --argjson request_bindings "$request_binding_statuses" '
               {deliveries: ($reviews + $issue_comments + $request_reactions),
-               review_ids: [$reviews[].id]}'
+               review_ids: [$reviews[].id],
+               request_bindings: $request_bindings}'
           }
 
           regular_review_thread_summary() {
@@ -457,16 +459,17 @@ jobs:
           }
 
           read_gate_snapshot() {
-            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_records review_invalidation_at
+            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_records request_bindings review_invalidation_at
             evidence="$(regular_evidence)"
             deliveries="$(jq -c '.deliveries' <<< "$evidence")"
             reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
             review_ids="$(jq -c '.review_ids' <<< "$evidence")"
+            request_bindings="$(jq -c '.request_bindings' <<< "$evidence")"
             thread_summary="$(regular_review_thread_summary "$review_ids")"
             verdict_selection="$(
               issue_comment_records="$(latest_regular_issue_comment)"
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
-              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --argjson issue_comment_records "$issue_comment_records" --arg review_invalidation_at "$review_invalidation_at" '
+              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --argjson issue_comment_records "$issue_comment_records" --argjson request_bindings "$request_bindings" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
                 | ($deliveries
                    | sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])
@@ -482,11 +485,26 @@ jobs:
                    then ($latest_delivery.id | sub("^(request-reaction-|issue-comment-)"; ""))
                    else ""
                    end) as $cleared_comment_id
+                | (if $latest_delivery.source == "issue_comment" and $latest_delivery.clean
+                   then ([$request_bindings[]
+                     | (.description // "")
+                     | try capture("^review-request-comment:(?<id>[1-9][0-9]*); base:[0-9a-f]{40}; created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$") catch {}
+                     | select(.created == $latest_delivery.at)
+                     | .id] | unique)
+                   else []
+                   end) as $tied_request_comment_ids
                 | ([$issue_comment_records[]
-                    | select($cleared_comment_id == ""
-                        or .comment_id != $cleared_comment_id
-                        or ($latest_delivery.source == "issue_comment"
-                          and $latest_delivery.at != .at))
+                    | .comment_id as $invalidated_comment_id
+                    | select(
+                        if $latest_delivery.source == "request_reaction" then
+                          $invalidated_comment_id != $cleared_comment_id
+                        elif $latest_delivery.source == "issue_comment" and $latest_delivery.clean then
+                          ((($invalidated_comment_id == $cleared_comment_id)
+                             or (($tied_request_comment_ids | index($invalidated_comment_id)) != null))
+                           and .at == $latest_delivery.at) | not
+                        else
+                          true
+                        end)
                     | .at]) as $other_issue_comment_invalidations
                 | (([$deliveries[] | select(.clean | not) | .at]
                    + [$reviews[]

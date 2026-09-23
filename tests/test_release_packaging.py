@@ -464,8 +464,11 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "[flatten[]" in review_gate
     assert 'startswith("request-reaction-")' in review_gate
     assert "$issue_comment_records[]" in review_gate
-    assert '$cleared_comment_id == ""' in review_gate
-    assert ".comment_id != $cleared_comment_id" in review_gate
+    assert ".comment_id as $invalidated_comment_id" in review_gate
+    assert "$tied_request_comment_ids" in review_gate
+    assert ".created == $latest_delivery.at" in review_gate
+    assert "and .at == $latest_delivery.at" in review_gate
+    assert "request_bindings: $request_bindings" in review_gate
     assert "and $latest_delivery.at > $latest_finding_at" in review_gate
     assert (
         'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'
