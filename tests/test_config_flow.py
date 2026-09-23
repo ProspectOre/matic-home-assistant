@@ -1377,6 +1377,74 @@ async def test_custom_area_editor_blocks_map_changes_and_rebinds_after_redraw(
     )
 
 
+async def test_custom_area_add_reports_geometry_budget_exhaustion(
+    hass, monkeypatch
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    await flow.async_step_add_area()
+    monkeypatch.setattr(
+        flow_module,
+        "binding_for_area",
+        MagicMock(side_effect=ValueError("geometry budget exhausted")),
+    )
+
+    result = await flow.async_step_add_area(
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+    )
+
+    assert result["step_id"] == "add_area"
+    assert result["errors"] == {"base": "area_geometry_too_complex"}
+    assert manager.areas("synthetic-serial") == {}
+
+
+async def test_custom_area_edit_reports_geometry_budget_exhaustion(
+    hass, monkeypatch
+) -> None:
+    entry, manager = await _options_entry(hass)
+    floor_plan = entry.runtime_data.coordinator.data.floor_plan
+    await manager.async_save_area(
+        "synthetic-serial",
+        "litter_box",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Litter box",
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
+    )
+    flow = _direct_options_flow(hass, entry)
+    flow._area_id = "litter_box"
+    await flow.async_step_edit_area()
+    monkeypatch.setattr(
+        flow_module,
+        "binding_for_area",
+        MagicMock(side_effect=ValueError("geometry budget exhausted")),
+    )
+
+    result = await flow.async_step_edit_area(
+        {
+            "name": "Litter box",
+            "area_editor": [{"x": 0.6, "y": 0.5, "radius": 0.4}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+    )
+
+    assert result["step_id"] == "edit_area"
+    assert result["errors"] == {"base": "area_geometry_too_complex"}
+    assert manager.area("synthetic-serial", "litter_box")["circles"] == [
+        {"x": 0.5, "y": 0.5, "radius": 0.35}
+    ]
+
+
 async def test_custom_area_editor_requires_a_live_drawable_map(hass) -> None:
     entry, manager = await _options_entry(hass)
     entry.runtime_data.coordinator.data.floor_plan = None

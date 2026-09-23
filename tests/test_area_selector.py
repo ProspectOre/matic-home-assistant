@@ -222,6 +222,14 @@ def test_room_index_budgets_indexed_candidate_references() -> None:
         geometry.contains(2_048.5, 0.0005)
 
 
+def test_room_query_budget_covers_all_circle_probes_for_eight_rooms() -> None:
+    """The aggregate cap covers the editor maximum at the reviewed room size."""
+    maximum_circle_probes = 512 * 10
+    reviewed_room_work = maximum_circle_probes * 8 * 256
+
+    assert _RoomGeometryIndex._MAX_QUERY_WORK >= reviewed_room_work
+
+
 def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     """Overlapping hostile rooms cannot multiply linear fallback work forever."""
     boundary = [
