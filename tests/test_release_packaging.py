@@ -448,8 +448,11 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in review_gate
     assert 'reactions?per_page=100" --paginate --slurp' in review_gate
     assert "[flatten[]" in review_gate
-    assert '"request-reaction-" + $issue_comment_id' in review_gate
-    assert "$reaction_clears_own_invalidation" in review_gate
+    assert 'startswith("request-reaction-")' in review_gate
+    assert "$issue_comment_records[]" in review_gate
+    assert (
+        '$request_comment_id == "" or .comment_id != $request_comment_id' in review_gate
+    )
     assert "and $latest_delivery.at > $latest_finding_at" in review_gate
     assert (
         'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'

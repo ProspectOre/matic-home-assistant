@@ -231,7 +231,7 @@ jobs:
                            then ($description | capture("^Regular issue-comment invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
                            else .updated_at end),
                       comment_id: (try ($description | capture("; comment:(?<id>[1-9][0-9]*);").id) catch "") }]
-                  | max_by(.at) // {at: "", comment_id: ""}'
+                  | sort_by(.at)'
           }
 
           latest_regular_review_invalidation_at() {
@@ -430,34 +430,36 @@ jobs:
           }
 
           read_gate_snapshot() {
-            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_at review_invalidation_at
+            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_records review_invalidation_at
             evidence="$(regular_evidence)"
             deliveries="$(jq -c '.deliveries' <<< "$evidence")"
             reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
             review_ids="$(jq -c '.review_ids' <<< "$evidence")"
             thread_summary="$(regular_review_thread_summary "$review_ids")"
             verdict_selection="$(
-              issue_comment_record="$(latest_regular_issue_comment)"
-              issue_comment_at="$(jq -r '.at // empty' <<< "$issue_comment_record")"
-              issue_comment_id="$(jq -r '.comment_id // empty' <<< "$issue_comment_record")"
+              issue_comment_records="$(latest_regular_issue_comment)"
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
-              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg issue_comment_id "$issue_comment_id" --arg review_invalidation_at "$review_invalidation_at" '
+              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --argjson issue_comment_records "$issue_comment_records" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
                 | ($deliveries
                    | sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])
                    | last) as $latest_delivery
                 | (($latest_delivery != null
                     and $latest_delivery.source == "request_reaction"
-                    and ($latest_delivery.id == ("request-reaction-" + $issue_comment_id)))
-                   ) as $reaction_clears_own_invalidation
+                    and ($latest_delivery.id | startswith("request-reaction-")))
+                   ) as $is_request_reaction
+                | (if $is_request_reaction
+                   then ($latest_delivery.id | sub("^request-reaction-"; ""))
+                   else ""
+                   end) as $request_comment_id
+                | ([$issue_comment_records[]
+                    | select($request_comment_id == "" or .comment_id != $request_comment_id)
+                    | .at]) as $other_issue_comment_invalidations
                 | (([$deliveries[] | select(.clean | not) | .at]
-                    + [$reviews[]
-                       | select(.id as $id | ($finding_ids | index($id)) != null)
-                       | .at]
-                    + (if $issue_comment_at == "" or $reaction_clears_own_invalidation
-                       then []
-                       else [$issue_comment_at]
-                       end)
+                   + [$reviews[]
+                      | select(.id as $id | ($finding_ids | index($id)) != null)
+                      | .at]
+                    + $other_issue_comment_invalidations
                     + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
                    | max // "") as $latest_finding_at
                 | {verdict:
