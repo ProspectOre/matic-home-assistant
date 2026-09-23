@@ -103,7 +103,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def availability_notice:" in review_gate
     assert "availability_notice) | not" in review_gate
     assert 'source == "issue_comment"' in review_gate
-    assert "def exact_full_head:" in review_gate
+    assert "def exact_reviewed_head:" in review_gate
+    assert '"|" + $prefix' in review_gate
+    clean_envelope = review_gate[
+        review_gate.index("def stock_clean_issue_comment_envelope:") :
+    ]
+    assert '"|" + $prefix' not in clean_envelope
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
     assert "latest_regular_issue_comment_at" in review_gate
@@ -331,7 +336,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def availability_notice:" in audit
     assert "availability_notice) | not" in audit
     assert "current_regular_comment_records" in audit
-    assert "def exact_full_head:" in audit
+    assert "def exact_reviewed_head:" in audit
+    assert '"|" + $prefix' in audit
     assert "current_regular_review_records" in audit
     assert "databaseId state submittedAt updatedAt" in audit
     assert 'select((.state // "") != "DISMISSED")' in audit
