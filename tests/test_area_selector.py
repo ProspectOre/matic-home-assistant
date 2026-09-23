@@ -95,6 +95,12 @@ def test_indexed_room_geometry_matches_reference_polygon(tolerance: float) -> No
         )
 
 
+def test_point_in_polygon_accepts_a_boundary_point() -> None:
+    boundary = [[0.0, 0.0], [2.0, 0.0], [0.0, 2.0]]
+
+    assert MaticAreaSelector._point_in_polygon(1.0, 0.0, boundary) is True
+
+
 def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None:
     """A tall zigzag polygon uses the bounded fallback."""
     boundary = [
