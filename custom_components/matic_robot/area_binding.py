@@ -57,6 +57,7 @@ _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
+_MAX_TRANSLATION_ROOM_ANCHORS = 256
 _AREA_REPAIR_LEARN_MORE_URL = (
     "https://github.com/ProspectOre/matic-home-assistant/"
     "blob/main/docs/automation.md#drawn-custom-areas"
@@ -322,6 +323,34 @@ def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+def _translation_room_anchors(floor_plan: FloorPlan) -> list[dict[str, Any]]:
+    """Persist bounded per-room shape and absolute bounds as frame anchors."""
+    if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
+        raise ValueError("too many rooms for scoped area frame anchors")
+    anchors = []
+    for room in floor_plan.rooms:
+        polygon = _canonical_polygon(room.boundary)
+        origin_x = min(x for x, _y in polygon)
+        origin_y = min(y for _x, y in polygon)
+        digest = hashlib.sha256()
+        digest.update(b"matic-room-frame-anchor-v1\0")
+        digest.update(struct.pack(">I", len(polygon)))
+        for x, y in polygon:
+            digest.update(struct.pack(">qq", x - origin_x, y - origin_y))
+        anchors.append(
+            {
+                "fingerprint": digest.hexdigest(),
+                "bounds": [
+                    min(x for x, _y in polygon),
+                    min(y for _x, y in polygon),
+                    max(x for _x, y in polygon),
+                    max(y for _x, y in polygon),
+                ],
+            }
+        )
+    return anchors
+
+
 def binding_for_area(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -339,6 +368,7 @@ def binding_for_area(
             translation_invariant_geometry_fingerprint(floor_plan)
         ),
         "translation_frame_bounds": translation_frame_bounds(floor_plan),
+        "translation_room_anchors": _translation_room_anchors(floor_plan),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -686,12 +716,38 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
-    if (
-        not saved["local_segments_mm"]
-        and "translation_invariant_geometry_sha256" not in saved
-        and saved_geometry != current["geometry_sha256"]
-    ):
-        return AreaBindingStatus.GEOMETRY_CHANGED
+    # Areas with no nearby wall have no coordinate anchor. If any whole-map
+    # geometry changed, local occupancy and extrema can both remain plausible
+    # after relocalization. Match unchanged room shapes in their absolute
+    # frame so edits to distant room extrema do not hide a shifted room.
+    if not saved["local_segments_mm"] and saved_geometry != current["geometry_sha256"]:
+        saved_anchors = saved.get("translation_room_anchors")
+        if isinstance(saved_anchors, list):
+            current_anchors = _translation_room_anchors(floor_plan)
+            current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
+            for anchor in current_anchors:
+                current_bounds_by_fingerprint.setdefault(
+                    anchor["fingerprint"], []
+                ).append(anchor["bounds"])
+            for anchor in saved_anchors:
+                old_bounds = anchor["bounds"]
+                if not any(
+                    old_bounds[0]
+                    <= _quantize_coordinate(float(circle["x"]))
+                    <= old_bounds[2]
+                    and old_bounds[1]
+                    <= _quantize_coordinate(float(circle["y"]))
+                    <= old_bounds[3]
+                    for circle in area["circles"]
+                ):
+                    continue
+                for new_bounds in current_bounds_by_fingerprint.get(
+                    anchor["fingerprint"], ()
+                ):
+                    if any(
+                        new_bounds[index] - old_bounds[index] != 0 for index in range(4)
+                    ):
+                        return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         if (
@@ -788,11 +844,13 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
             "local_segments_mm",
             "translation_invariant_geometry_sha256",
             "translation_frame_bounds",
+            "translation_room_anchors",
         }
     if version == SCOPED_MAP_BINDING_VERSION:
         legacy_fields = expected_fields - {
             "translation_invariant_geometry_sha256",
             "translation_frame_bounds",
+            "translation_room_anchors",
         }
         if not set(binding).issubset(expected_fields) or not legacy_fields.issubset(
             set(binding)
@@ -847,6 +905,12 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                     "translation_invariant_geometry_sha256" not in binding
                     or _valid_digest(binding["translation_invariant_geometry_sha256"])
                 )
+                and (
+                    "translation_room_anchors" not in binding
+                    or _valid_translation_room_anchors(
+                        binding["translation_room_anchors"]
+                    )
+                )
                 and _stored_local_geometry_is_intact(binding)
             )
         )
@@ -873,6 +937,28 @@ def _valid_digest(value: Any) -> bool:
         isinstance(value, str)
         and len(value) == 64
         and all(character in "0123456789abcdefABCDEF" for character in value)
+    )
+
+
+def _valid_translation_room_anchors(value: Any) -> bool:
+    """Validate the bounded optional absolute-frame room evidence."""
+    return (
+        isinstance(value, list)
+        and len(value) <= _MAX_TRANSLATION_ROOM_ANCHORS
+        and all(
+            isinstance(anchor, Mapping)
+            and set(anchor) == {"fingerprint", "bounds"}
+            and _valid_digest(anchor["fingerprint"])
+            and isinstance(anchor["bounds"], list)
+            and len(anchor["bounds"]) == 4
+            and all(
+                isinstance(coordinate, int)
+                and not isinstance(coordinate, bool)
+                and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
+                for coordinate in anchor["bounds"]
+            )
+            for anchor in value
+        )
     )
 
 

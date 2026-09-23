@@ -335,6 +335,7 @@ def test_scoped_binding_contains_private_local_geometry_signature() -> None:
             binding["translation_invariant_geometry_sha256"]
         ),
         "translation_frame_bounds": binding["translation_frame_bounds"],
+        "translation_room_anchors": binding["translation_room_anchors"],
         "area_shape_sha256": binding["area_shape_sha256"],
         "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
         "local_occupancy": [511, 511],
@@ -2013,6 +2014,7 @@ def test_legacy_scoped_binding_rejects_translated_unanchored_multi_room_map() ->
     area = _scoped_area(floor_plan, circles)
     legacy_binding = dict(area["map_binding"])
     legacy_binding.pop("translation_invariant_geometry_sha256")
+    legacy_binding.pop("translation_room_anchors")
     area["map_binding"] = legacy_binding
     translated = replace(
         floor_plan,
@@ -2050,6 +2052,7 @@ def test_scoped_binding_casefolds_translation_invariant_digest() -> None:
     binding["translation_invariant_geometry_sha256"] = str(
         binding["translation_invariant_geometry_sha256"]
     ).upper()
+    binding.pop("translation_room_anchors")
     area["map_binding"] = binding
     translated = replace(
         floor_plan,
@@ -2076,6 +2079,9 @@ def test_scoped_binding_rejects_translation_with_remote_interior_edit() -> None:
         ),
     )
     area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    legacy_binding = dict(area["map_binding"])
+    legacy_binding.pop("translation_room_anchors")
+    area["map_binding"] = legacy_binding
     translated = replace(
         floor_plan,
         rooms=(
@@ -2108,7 +2114,50 @@ def test_scoped_binding_rejects_translation_with_remote_interior_edit() -> None:
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
 
 
+def test_unanchored_area_fails_closed_when_all_frame_extrema_change() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("left", "Left", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "right", "Right", ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0))
+            ),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    edited = replace(
+        floor_plan,
+        rooms=(
+            *(
+                replace(
+                    room,
+                    boundary=tuple((x + 1.0, y + 2.0) for x, y in room.boundary),
+                )
+                for room in floor_plan.rooms[:1]
+            ),
+            replace(
+                floor_plan.rooms[1],
+                boundary=((22.0, 1.0), (32.0, 1.0), (32.0, 13.0), (22.0, 13.0)),
+            ),
+        ),
+    )
+
+    assert not area["map_binding"]["local_segments_mm"]
+    assert area_binding_status(area, edited) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_translation_frame_bounds_rejects_empty_floor_plan() -> None:
     floor_plan = FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
     with pytest.raises(ValueError, match="no room geometry"):
         translation_frame_bounds(floor_plan)
+
+
+def test_translation_room_anchor_count_is_bounded() -> None:
+    floor_plan = _floor_plan()
+    with patch.object(area_binding_module, "_MAX_TRANSLATION_ROOM_ANCHORS", 0):
+        with pytest.raises(
+            ValueError, match="too many rooms for scoped area frame anchors"
+        ):
+            binding_for_area(floor_plan, [{"x": 0.5, "y": 0.5, "radius": 0.1}])
