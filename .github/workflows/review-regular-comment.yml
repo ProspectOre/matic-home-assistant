@@ -91,6 +91,7 @@ jobs:
             echo "Could not resolve the current pull request head."
             exit 1
           fi
+          head_prefix="${head_sha:0:10}"
           body_is_regular_comment() {
             local comment_body="$1"
             printf '%s' "$comment_body" \
