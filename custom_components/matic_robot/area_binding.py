@@ -821,13 +821,16 @@ def _local_segment_correspondence(
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
-        candidates = {
-            current_index
-            for cell_x, cell_y in saved_context[3]
-            for neighbor_x in range(cell_x - 1, cell_x + 2)
-            for neighbor_y in range(cell_y - 1, cell_y + 2)
-            for current_index in current_by_cell.get((neighbor_x, neighbor_y), ())
-        }
+        candidates: set[int] = set()
+        for cell_x, cell_y in saved_context[3]:
+            for neighbor_x in range(cell_x - 1, cell_x + 2):
+                for neighbor_y in range(cell_y - 1, cell_y + 2):
+                    for current_index in current_by_cell.get(
+                        (neighbor_x, neighbor_y), ()
+                    ):
+                        candidates.add(current_index)
+                        if len(candidates) > _MAX_SEGMENT_CANDIDATE_CHECKS:
+                            return None
         for current_index in candidates:
             candidate_checks += 1
             if candidate_checks > _MAX_SEGMENT_CANDIDATE_CHECKS:

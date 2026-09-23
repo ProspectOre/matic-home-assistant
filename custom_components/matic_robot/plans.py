@@ -878,9 +878,12 @@ class CleaningPlanManager:
                 }
                 continue
             try:
-                area["map_binding"] = binding_for_area(floor_plan, circles)
+                upgraded_binding = binding_for_area(floor_plan, circles)
             except KeyError, TypeError, ValueError:
                 continue
+            if upgraded_binding.get("version") == version:
+                continue
+            area["map_binding"] = upgraded_binding
             upgraded += 1
         if upgraded:
             await self._async_save_and_notify(serial_number)
