@@ -33,6 +33,7 @@ from custom_components.matic_robot.area_binding import (
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
 )
+from custom_components.matic_robot.area_selector import _RoomGeometryIndex
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
 
@@ -533,7 +534,27 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
         area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
     )
     assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
-    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    geometry = _RoomGeometryIndex(
+        [
+            {
+                "room_id": str(index),
+                "name": room.name,
+                "boundary": [list(point) for point in room.boundary],
+            }
+            for index, room in enumerate(changed.rooms)
+        ]
+    )
+    status = area_binding_status(area, changed, room_geometry=geometry)
+    assert status is AreaBindingStatus.GEOMETRY_CHANGED
+    remaining = geometry._query_work_remaining
+    assert area_binding_allows_review(
+        area,
+        changed,
+        status=status,
+        room_geometry=geometry,
+        circles_already_validated=True,
+    )
+    assert geometry._query_work_remaining == remaining
     assert area_binding_allows_review(area, changed)
 
 

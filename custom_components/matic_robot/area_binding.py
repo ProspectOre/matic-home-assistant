@@ -642,6 +642,7 @@ def area_binding_allows_review(
     *,
     status: AreaBindingStatus | None = None,
     room_geometry: _RoomGeometryIndex | None = None,
+    circles_already_validated: bool = False,
 ) -> bool:
     """Return whether stale coordinates can be shown for local confirmation."""
     binding_status = (
@@ -651,6 +652,8 @@ def area_binding_allows_review(
     )
     if binding_status is not AreaBindingStatus.GEOMETRY_CHANGED:
         return False
+    if circles_already_validated:
+        return True
     try:
         _validate_area_circles(floor_plan, area["circles"], room_geometry=room_geometry)
     except KeyError, TypeError, ValueError:

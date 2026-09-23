@@ -1004,7 +1004,11 @@ class MaticAreasView(HomeAssistantView):
             if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
                 room_geometry = _RoomGeometryIndex(self._rooms(runtime))
             can_rebind = area_binding_allows_review(
-                area, floor_plan, status=status, room_geometry=room_geometry
+                area,
+                floor_plan,
+                status=status,
+                room_geometry=room_geometry,
+                circles_already_validated=uses_indexed_binding,
             )
             areas.append(
                 {
