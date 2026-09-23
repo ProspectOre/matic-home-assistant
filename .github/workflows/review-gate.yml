@@ -441,7 +441,9 @@ jobs:
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
               jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
-                | ($deliveries | sort_by(.at) | last) as $latest_delivery
+                | ($deliveries
+                   | sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])
+                   | last) as $latest_delivery
                 | (([$deliveries[] | select(.clean | not) | .at]
                     + [$reviews[]
                        | select(.id as $id | ($finding_ids | index($id)) != null)

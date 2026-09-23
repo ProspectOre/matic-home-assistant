@@ -245,6 +245,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     )
     assert "body_has_request_for_current_head" in regular_comment
     assert "body_has_regular_review_mention" in regular_comment
+    assert "request_binding_exists_for_comment" in regular_comment
+    assert '"review-gate-request"' in regular_comment
+    assert (
+        "Revoking review evidence for an edited or deleted bound request comment."
+        in regular_comment
+    )
     assert (
         "Revoking review evidence for an edited or deleted exact-head request."
         in regular_comment
@@ -409,6 +415,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert 'reactions?per_page=100" --paginate --slurp' in review_gate
     assert "[flatten[]" in review_gate
     assert 'or ($latest_delivery.source == "request_reaction"' in review_gate
+    assert (
+        'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'
+        in review_gate
+    )
     assert '"review-gate-request"' in review_gate
     assert (
         '"review-request-comment:" + $id + "; base:" + $base + "; created:" + $created'

@@ -114,9 +114,32 @@ jobs:
               | jq -e -R -s 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' \
               >/dev/null
           }
+          request_binding_exists_for_comment() {
+            local comment_id="$1"
+            gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+              | jq -e --arg id "$comment_id" --arg base "$base_sha" '
+                  any(flatten[];
+                    .context == "review-gate-request"
+                    and .state == "success"
+                    and (.creator.login // "") == "github-actions[bot]"
+                    and ((.description // "") | test(
+                      "^review-request-comment:" + $id
+                      + "; base:" + $base
+                      + "; created:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                  )' >/dev/null
+          }
           if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
             request_marker="<!-- review-request:v2 head=$head_sha base=$base_sha -->"
             if [[ "$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted" ]]; then
+              if [[ "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] \
+                && request_binding_exists_for_comment "$EVENT_COMMENT_ID"; then
+                {
+                  echo "regular=true"
+                  echo "head_sha=$head_sha"
+                } >> "$GITHUB_OUTPUT"
+                echo "Revoking review evidence for an edited or deleted bound request comment."
+                exit 0
+              fi
               if { body_has_request_for_current_head "$EVENT_COMMENT_BODY" \
                 || body_has_request_for_current_head "$EVENT_PREVIOUS_COMMENT_BODY"; } \
                 && { body_has_regular_review_mention "$EVENT_COMMENT_BODY" \
