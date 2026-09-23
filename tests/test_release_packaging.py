@@ -117,8 +117,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
             review_gate.index("def stock_clean_requested_issue_comment_envelope:") :
         ]
     )
-    assert 'capture("; created:' in review_gate
-    assert ").value) <= $at" in review_gate
+    assert "def bound_request_precedes($current_base; $comment_at):" in review_gate
+    assert ".created <= $comment_at" in review_gate
     assert "and any($bindings[];" in review_gate
     assert "== $base" in review_gate
     assert '$latest_delivery.source == "issue_comment"' in review_gate

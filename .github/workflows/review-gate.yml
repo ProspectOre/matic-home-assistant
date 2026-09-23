@@ -345,7 +345,13 @@ jobs:
                       test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
                       or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*$");
                     def stock_clean_requested_issue_comment_envelope:
-                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github");
+                    def bound_request_precedes($current_base; $comment_at):
+                      select(.state == "success")
+                      | (.description // "") as $description
+                      | select($description | test("^review-request-comment:[1-9][0-9]*; base:[0-9a-f]{40}; created:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                      | ($description | capture("^review-request-comment:[1-9][0-9]*; base:(?<base>[0-9a-f]{40}); created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"))
+                      | .base == $current_base and .created <= $comment_at;
                     [.[][]
                      | select((.user.login // "") == $bot)
                      | (.body // "") as $body
@@ -357,15 +363,12 @@ jobs:
                      | {at: $at,
                         id: ("issue-comment-" + (.id | tostring)),
                         source: "issue_comment",
-                        clean: ((($body | stock_clean_issue_comment_envelope)
+                        clean: (
+                          (($body | stock_clean_issue_comment_envelope)
                             and ($body | exact_full_head))
                           or (($body | stock_clean_requested_issue_comment_envelope)
-                            and any($bindings[];
-                              .state == "success"
-                              and .description as $description
-                              | ($description | test("^review-request-comment:[1-9][0-9]*; base:[0-9a-f]{40}; created:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
-                              and ($description | capture("; base:(?<value>[0-9a-f]{40});").value) == $base
-                              and ($description | capture("; created:(?<value>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$").value) <= $at)))}]'
+                            and any($bindings[]; bound_request_precedes($base; $at)))
+                        )}]'
             )"
             request_reaction_records="$(
               # The bot positive reaction is tied to this exact request
