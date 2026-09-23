@@ -352,7 +352,7 @@ jobs:
                       | select($description | test("^review-request-comment:[1-9][0-9]*; base:[0-9a-f]{40}; created:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
                       | ($description | capture("^review-request-comment:[1-9][0-9]*; base:(?<base>[0-9a-f]{40}); created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"))
                       | .base == $current_base and .created <= $comment_at;
-                    [.[][]
+                    [.[]
                      | select((.user.login // "") == $bot)
                      | (.body // "") as $body
                      | select($body | regular_heading)

@@ -123,6 +123,16 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "== $base" in review_gate
     assert '$latest_delivery.source == "issue_comment"' in review_gate
     assert "as $cleared_comment_id" in review_gate
+    issue_comment_reader = review_gate[
+        review_gate.index('issue_comment_records="$(') : review_gate.index(
+            'request_reaction_records="$('
+        )
+    ]
+    assert (
+        '[.[]\n                     | select((.user.login // "") == $bot)'
+        in issue_comment_reader
+    )
+    assert "[.[][]" not in issue_comment_reader
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
     assert "latest_regular_issue_comment" in review_gate
