@@ -82,7 +82,7 @@ class _IndexedPolygon:
         # highly oscillating polygon.
         if self.overloaded:
             return False
-        edges = {
+        edge_values = {
             (id(start), id(end)): (start, end)
             for bucket in range(
                 self._bucket(y - tolerance - 1e-8),
@@ -90,7 +90,7 @@ class _IndexedPolygon:
             )
             for start, end in self.edges_by_bucket.get(bucket, ())
         }.values()
-        edges = tuple(edges)
+        edges = tuple(edge_values)
         if any(
             MaticAreaSelector._point_on_segment(x, y, start, end)
             for start, end in edges
