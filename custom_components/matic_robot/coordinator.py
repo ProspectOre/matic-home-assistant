@@ -185,6 +185,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                 state = pending
                 pending = None
                 self.async_process_cues_state(state)
+                # A collector may have signalled while the rate-limit sleep
+                # was in progress. Preserve that signal only when it also
+                # delivered a newer pending snapshot; otherwise a stale set
+                # event would make the next iteration await the long-lived
+                # collector instead of waiting for the next snapshot.
+                if pending is None:
+                    pending_available.clear()
                 next_update_at = monotonic() + CUES_UPDATE_INTERVAL_SECONDS
 
                 if collector.done() and pending is None:

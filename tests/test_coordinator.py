@@ -472,6 +472,7 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
         yield latest
         burst_sent.set()
         await keep_open.wait()
+        yield first
 
     client.async_subscribe_state = subscription
     processed: list[RobotOperationalState] = []
@@ -495,6 +496,9 @@ async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
         assert processed == [first]
         await asyncio.sleep(0.02)
         assert processed == [first, latest]
+        keep_open.set()
+        await asyncio.sleep(0.02)
+        assert processed == [first, latest, first]
 
         watcher.cancel()
         with pytest.raises(asyncio.CancelledError):
