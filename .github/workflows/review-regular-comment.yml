@@ -331,10 +331,6 @@ jobs:
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && vars.CLAUDE_REVIEW_BOT_EVENT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && 'chatgpt-codex-connector[bot]' }}
-          REQUEST_ID: ${{ needs.classify.outputs.request_id }}
-          REQUEST_BASE_SHA: ${{ needs.classify.outputs.request_base_sha }}
-          REQUEST_CREATED_AT: ${{ needs.classify.outputs.request_created_at }}
-          REVIEW_REQUEST_CONTEXT: review-gate-request
           WORKFLOW_REF: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
@@ -354,8 +350,8 @@ jobs:
               echo "Ignoring a stale comment delivery for missing comment $EVENT_COMMENT_ID."
               exit 0
             fi
-            current_comment_state="$(jq -er '[.user.login, ((.body // "") | @base64), .created_at] | @tsv' <<< "$current_comment")"
-            IFS=$'\t' read -r current_author current_body_b64 current_comment_created_at <<< "$current_comment_state"
+            current_comment_state="$(jq -er '[.user.login, ((.body // "") | @base64)] | @tsv' <<< "$current_comment")"
+            IFS=$'\t' read -r current_author current_body_b64 <<< "$current_comment_state"
             current_comment_at="$(jq -er '.updated_at // .created_at' <<< "$current_comment")"
             event_body_b64="$(jq -rn --arg body "$EVENT_COMMENT_BODY" '$body | @base64')"
             if [[ "$current_author" != "$EVENT_COMMENT_AUTHOR" || "$current_body_b64" != "$event_body_b64" ]]; then
@@ -366,35 +362,6 @@ jobs:
           if [[ ! "$current_comment_at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ ]]; then
             echo "Could not resolve the current regular-comment timestamp." >&2
             exit 1
-          fi
-          if [[ -n "$REQUEST_ID" ]]; then
-            if [[ "$EVENT_ACTION" != "created" || "$REQUEST_ID" != "$EVENT_COMMENT_ID" \
-              || "$EVENT_COMMENT_AUTHOR" == "$REVIEW_BOT_EVENT_LOGIN" \
-              || ! "$REQUEST_BASE_SHA" =~ ^[0-9a-f]{40}$ \
-              || ! "$REQUEST_CREATED_AT" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$ \
-              || "$EVENT_COMMENT_CREATED_AT" != "$REQUEST_CREATED_AT" \
-              || "$current_comment_created_at" != "$REQUEST_CREATED_AT" \
-              || "$current_comment_at" != "$REQUEST_CREATED_AT" ]]; then
-              echo "The exact-head review request binding is malformed." >&2
-              exit 1
-            fi
-            request_marker="<!-- review-request:v2 head=$HEAD_SHA base=$REQUEST_BASE_SHA -->"
-            if [[ "$EVENT_COMMENT_BODY" != *"$request_marker"* ]]; then
-              echo "The request marker does not bind the current head and base." >&2
-              exit 1
-            fi
-            current_pr_state="$(gh api "repos/$REPO/pulls/$PR_NUMBER" | jq -er '[.head.sha, .base.sha] | @tsv')"
-            IFS=$'\t' read -r current_pr_head current_pr_base <<< "$current_pr_state"
-            if [[ "$current_pr_head" != "$HEAD_SHA" || "$current_pr_base" != "$REQUEST_BASE_SHA" ]]; then
-              echo "The PR head or base changed before the request was bound." >&2
-              exit 1
-            fi
-            gh api "repos/$REPO/statuses/$HEAD_SHA" --silent \
-              -f state=success \
-              -f context="$REVIEW_REQUEST_CONTEXT" \
-              -f description="review-request-comment:$REQUEST_ID; base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" \
-              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
-            echo "Bound request comment $REQUEST_ID to the exact head and base."
           fi
           stamp_pending() {
             local context="$1"

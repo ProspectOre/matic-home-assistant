@@ -298,6 +298,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" in bind_request_job
     )
     assert "gh workflow run review-gate.yml" in bind_request_job
+    invalidate_job = regular_comment[regular_comment.index("  invalidate:") :]
+    assert "REQUEST_ID" not in invalidate_job
+    assert "review-gate-request" not in invalidate_job
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
     assert "request_id: ${{ steps.classify.outputs.request_id }}" in regular_comment
@@ -311,7 +314,6 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         "review-request-comment:$REQUEST_ID; "
         "base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" in regular_comment
     )
-    assert '"$current_comment_at" != "$REQUEST_CREATED_AT"' in regular_comment
     assert "| jq -er '[.head.sha, .base.sha] | @tsv'" in regular_comment
     assert 'head_prefix="${head_sha:0:10}"' in regular_comment
     assert (
