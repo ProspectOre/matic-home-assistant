@@ -399,6 +399,8 @@ class SlamMapStore:
         if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()
         self._invalidate_live_session()
+        if not candidate.blocks_active:
+            self._schedule_candidate_refresh()
         self._enforce_candidate_bounds(candidate)
         # A newer observed mission is authoritative until it is classified.
         # Do not promote an older candidate merely because its delayed layer

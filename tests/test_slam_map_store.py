@@ -298,16 +298,21 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
     assert candidate_token in store._candidates
     assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
+    store._collection_client = SimpleNamespace()
 
     # Repeated pages from the classified alternative remain contrary live
     # evidence. Each one must fail closed, while fresh proof from both active
     # layers may still recover the floor between those observations.
-    with patch(
-        "custom_components.matic_robot.slam_map_store.monotonic",
-        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+    with (
+        patch.object(store, "_schedule_candidate_refresh") as schedule_refresh,
+        patch(
+            "custom_components.matic_robot.slam_map_store.monotonic",
+            return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+        ),
     ):
         for _ in range(10):
             await store.async_add(candidate)
+            schedule_refresh.assert_called()
             assert not store.floor_plan_is_current(active_plan)
             await store.async_add(synthetic_slam_entry(page_x=8))
             await store.async_add_structure(synthetic_structure_entry(page_x=8))
