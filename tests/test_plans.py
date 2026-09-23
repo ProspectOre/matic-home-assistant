@@ -6867,6 +6867,25 @@ async def test_reconciliation_tasks_are_lifecycle_bound(hass) -> None:
     assert "serial" not in manager._reconciliation_tasks
 
 
+async def test_dock_scope_cleanup_claims_unset_run_id(hass) -> None:
+    """A live dock watcher claims an otherwise-unset activity scope."""
+    manager = CleaningPlanManager(hass)
+    task = asyncio.create_task(asyncio.Event().wait())
+    manager.register_reconciliation_task("serial", task, dock=True, run_id="run-1")
+    scope: dict[str, str | None] = {"run_id": None}
+
+    def set_scope(run_id: str | None) -> None:
+        scope["run_id"] = run_id
+
+    assert manager.defer_activity_scope_cleanup(
+        "serial", "run-1", set_scope, lambda: scope["run_id"]
+    )
+    assert scope["run_id"] == "run-1"
+    task.cancel()
+    await asyncio.gather(task, return_exceptions=True)
+    assert scope["run_id"] is None
+
+
 async def test_replacing_motion_cancels_obsolete_reconciliation(hass) -> None:
     manager = CleaningPlanManager(hass)
     task = asyncio.create_task(asyncio.Event().wait())
