@@ -129,7 +129,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "  pull_request:" not in claude_review
     assert "pull-requests: read" in claude_review
     assert "pull-requests: write" not in claude_review
-    assert "ref: ${{ github.event.pull_request.head.sha }}" in claude_review
+    assert "ref: ${{ github.event.pull_request.head.sha }}" not in claude_review
+    assert "default ref is the protected base" in claude_review
     assert "PUBLISH_TOKEN: ${{ secrets.CLAUDE_REVIEW_TOKEN }}" in claude_review
     assert "GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}" not in claude_review
     assert 'GH_TOKEN="$PUBLISH_TOKEN" gh api' in claude_review
