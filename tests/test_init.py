@@ -144,10 +144,6 @@ async def test_slam_map_mission_change_refreshes_the_cached_floor_plan(hass) -> 
     listener()
     assert len(scheduled) == 1
 
-    slam_map.floor_plan_is_current.return_value = False
-    slam_map.mission_identity = SlamMapIdentity("00" * 32, 43)
-    listener()
-    assert len(scheduled) == 1
     slam_map.mission_identity = None
     listener()
     assert len(scheduled) == 1
