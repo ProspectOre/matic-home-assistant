@@ -378,6 +378,73 @@ async def test_cues_watcher_backs_off_after_initial_snapshots(hass) -> None:
     assert [args.args for args in sleep.await_args_list] == [(1,), (2,), (1,)]
 
 
+async def test_cues_subscription_resets_burst_backoff_when_stream_completes(
+    hass,
+) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def subscription():
+        yield client.async_get_state.return_value
+        yield client.async_get_state.return_value
+
+    client.async_subscribe_state = subscription
+
+    assert await coordinator._async_consume_cues_subscription() == 2
+
+
+async def test_cues_subscription_returns_after_collector_finishes(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def subscription():
+        if False:
+            yield client.async_get_state.return_value
+
+    client.async_subscribe_state = subscription
+
+    assert await coordinator._async_consume_cues_subscription() == 0
+
+
+async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+
+    async def subscription():
+        yield client.async_get_state.return_value
+        yield client.async_get_state.return_value
+
+    client.async_subscribe_state = subscription
+    with (
+        patch(
+            "custom_components.matic_robot.coordinator.asyncio.sleep",
+            AsyncMock(side_effect=asyncio.CancelledError),
+        ) as sleep,
+        pytest.raises(asyncio.CancelledError),
+    ):
+        await coordinator.async_watch_cues()
+
+    assert sleep.await_args.args == (1,)
+
+
+async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    started = asyncio.Event()
+
+    async def subscription():
+        started.set()
+        await asyncio.Event().wait()
+        yield client.async_get_state.return_value
+
+    client.async_subscribe_state = subscription
+    consumer = asyncio.create_task(coordinator._async_consume_cues_subscription())
+    await started.wait()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+
 async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
@@ -401,6 +468,59 @@ async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
         coordinator.data.operational.cues_voice_status
         is CuesVoiceStatus.LISTENING_FOR_INTENT
     )
+
+
+async def test_cues_watcher_rate_limits_and_coalesces_bursts(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    initial = client.async_get_state.return_value
+    first = replace(initial, cues_voice_status=CuesVoiceStatus.LISTENING_FOR_WAKE_WORD)
+    superseded = replace(
+        initial, cues_voice_status=CuesVoiceStatus.LISTENING_FOR_INTENT
+    )
+    latest = replace(initial, cues_voice_status=CuesVoiceStatus.THINKING_FOR_INTENT)
+    release_burst = asyncio.Event()
+    burst_sent = asyncio.Event()
+    keep_open = asyncio.Event()
+
+    async def subscription():
+        yield first
+        await release_burst.wait()
+        yield superseded
+        yield latest
+        burst_sent.set()
+        await keep_open.wait()
+        yield first
+
+    client.async_subscribe_state = subscription
+    processed: list[RobotOperationalState] = []
+    first_processed = asyncio.Event()
+
+    def process(state: RobotOperationalState) -> None:
+        processed.append(state)
+        first_processed.set()
+
+    coordinator.async_process_cues_state = process
+
+    with patch(
+        "custom_components.matic_robot.coordinator.CUES_UPDATE_INTERVAL_SECONDS",
+        0.01,
+    ):
+        watcher = asyncio.create_task(coordinator.async_watch_cues())
+        await first_processed.wait()
+        release_burst.set()
+        await burst_sent.wait()
+
+        assert processed == [first]
+        await asyncio.sleep(0.02)
+        assert processed == [first, latest]
+        keep_open.set()
+        await asyncio.sleep(0.02)
+        assert processed == [first, latest, first]
+
+        watcher.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await watcher
 
 
 async def test_floor_watcher_refreshes_changed_mission_and_labels(
