@@ -280,6 +280,14 @@ def binding_for_area(
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
     shape, occupancy, segments = _area_geometry_components(floor_plan, circles)
+    if len(segments) > _MAX_LOCAL_SEGMENTS:
+        return {
+            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            **_floor_plan_binding(floor_plan),
+            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                floor_plan, circles
+            ),
+        }
     return {
         "version": SCOPED_MAP_BINDING_VERSION,
         **_floor_plan_binding(floor_plan),
@@ -738,20 +746,16 @@ def _valid_local_occupancy(value: Any) -> bool:
 
 def _valid_local_segments(value: Any) -> bool:
     """Return whether saved millimeter segments have a bounded numeric shape."""
-    return (
-        isinstance(value, list)
-        and len(value) <= _MAX_LOCAL_SEGMENTS
+    return isinstance(value, list) and all(
+        isinstance(segment, list)
+        and len(segment) == 4
         and all(
-            isinstance(segment, list)
-            and len(segment) == 4
-            and all(
-                not isinstance(coordinate, bool)
-                and isinstance(coordinate, int)
-                and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
-                for coordinate in segment
-            )
-            for segment in value
+            not isinstance(coordinate, bool)
+            and isinstance(coordinate, int)
+            and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
+            for coordinate in segment
         )
+        for segment in value
     )
 
 

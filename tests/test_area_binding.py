@@ -144,9 +144,31 @@ def test_local_segment_correspondence_enforces_work_limits() -> None:
         assert _local_segment_correspondence(segments[:1], segments[:1], shape) is None
 
 
-def test_saved_local_segments_have_a_cardinality_limit() -> None:
-    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1):
-        assert not area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 2)
+def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
+    assert area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 257)
+    assert not area_binding_module._valid_local_segments([[0, 0, 1, "bad"]])
+
+
+def test_large_local_geometry_uses_hash_only_binding() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    segments = tuple((index, 0, index + 1, 1) for index in range(257))
+    components = (((500, 0, 100),), (511,), segments)
+    with patch.object(
+        area_binding_module, "_area_geometry_components", return_value=components
+    ):
+        binding = binding_for_area(floor_plan, circles)
+    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+
+    with patch.object(
+        area_binding_module, "_area_geometry_components", return_value=components
+    ):
+        area = {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": circles,
+            "map_binding": binding,
+        }
+        assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
