@@ -141,6 +141,44 @@ def test_overloaded_index_rejects_boundary_larger_than_fallback_cap() -> None:
     assert polygon.contains(1.0, 0.5, 0.0) is False
 
 
+def test_room_index_charges_only_the_fallback_work_it_performs() -> None:
+    """Several eligible overloaded rooms do not reserve the whole budget."""
+    boundary = [[0.0, 0.0], [0.0, 10_000.0]]
+    for tooth in range(68):
+        x = float(tooth + 1)
+        boundary.extend([[x, 10_000.0], [x, 0.0]])
+    boundary.extend([[69.0, 0.0], [69.0, 10_000.0]])
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": str(index), "name": "Room", "boundary": boundary}
+            for index in range(2)
+        ]
+    )
+    initial_budget = geometry._fallback_work_remaining
+
+    assert geometry.contains(68.5, 5_000.0) is True
+    assert geometry._fallback_work_remaining < initial_budget
+    assert geometry._fallback_work_remaining > 0
+    assert geometry.contains(68.5, 5_000.0) is True
+
+
+def test_room_index_checks_indexed_rooms_before_oversized_fallbacks() -> None:
+    """An uncertain overloaded room cannot hide a known containing room."""
+    oversized = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0]
+        for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
+    ]
+    rectangle = [[120.0, -1.0], [130.0, -1.0], [130.0, 1.0], [120.0, 1.0]]
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": "oversized", "name": "Room", "boundary": oversized},
+            {"room_id": "known", "name": "Room", "boundary": rectangle},
+        ]
+    )
+
+    assert geometry.contains(128.5, 0.0) is True
+
+
 def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     """Overlapping hostile rooms cannot multiply linear fallback work forever."""
     boundary = [
@@ -152,8 +190,9 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
             for index in range(256)
         ]
     )
+    geometry._fallback_work_remaining = len(boundary) * 2
 
-    for _ in range(geometry._MAX_FALLBACK_WORK // len(boundary) + 1):
+    for _ in range(4):
         try:
             geometry.contains(128.5, 0.0)
         except ValueError:
@@ -225,7 +264,7 @@ def test_room_index_reports_exhausted_single_polygon_fallback_budget() -> None:
     geometry = _RoomGeometryIndex(
         [{"room_id": "room", "name": "Room", "boundary": boundary}]
     )
-    geometry._fallback_work_remaining = len(boundary) - 1
+    geometry._fallback_work_remaining = 1
 
     with pytest.raises(GeometryTooComplex, match="fallback budget exhausted"):
         geometry.contains(128.5, 0.0)

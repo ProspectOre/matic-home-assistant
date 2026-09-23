@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any, NotRequired, TypedDict
 
@@ -52,6 +53,20 @@ class _IndexedPolygon:
         self.maximum_x = max(xs)
         self.minimum_y = min(ys)
         self.maximum_y = max(ys)
+        fingerprint = hashlib.blake2b(digest_size=8)
+        for point in boundary:
+            fingerprint.update(float(point[0]).hex().encode("ascii"))
+            fingerprint.update(b",")
+            fingerprint.update(float(point[1]).hex().encode("ascii"))
+            fingerprint.update(b";")
+        self.fallback_order_key = (
+            len(boundary),
+            self.minimum_x,
+            self.minimum_y,
+            self.maximum_x,
+            self.maximum_y,
+            fingerprint.digest(),
+        )
         span = self.maximum_y - self.minimum_y
         self.bucket_height = max(span / self._BUCKET_COUNT, 1e-8)
         buckets: dict[int, list[tuple[list[float], list[float]]]] = {}
@@ -135,45 +150,38 @@ class _RoomGeometryIndex:
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
-        overloaded = [
-            polygon
-            for polygon in self.polygons
-            if polygon.overloaded
-            and polygon._MAX_FALLBACK_EDGES >= len(polygon.boundary)
-            and polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
-            and polygon.minimum_y - tolerance <= y <= polygon.maximum_y + tolerance
-        ]
-        # Give every eligible overloaded room a deterministic share of the
-        # remaining work for this probe. Otherwise an earlier room can consume
-        # the aggregate budget and make the answer depend on room order.
-        fair_share = (
-            self._fallback_work_remaining // len(overloaded) if overloaded else 0
-        )
+        # Indexed rooms have a fixed reference cap, so check them before any
+        # fallback that may need to fail closed for excessive geometry.
         for polygon in self.polygons:
-            if polygon.overloaded:
-                edge_count = len(polygon.boundary)
-                if not (
-                    polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
-                    and polygon.minimum_y - tolerance
-                    <= y
-                    <= polygon.maximum_y + tolerance
-                ):
-                    continue
-                if edge_count > polygon._MAX_FALLBACK_EDGES:
-                    raise GeometryTooComplex(
-                        "room geometry exceeds the fallback edge limit"
-                    )
-                if len(overloaded) > 1 and edge_count > fair_share:
-                    raise GeometryTooComplex("room geometry fallback budget exhausted")
-                if len(overloaded) <= 1 and edge_count > self._fallback_work_remaining:
-                    raise GeometryTooComplex("room geometry fallback budget exhausted")
-                self._fallback_work_remaining -= edge_count
-            if polygon.contains(x, y, tolerance):
-                if len(overloaded) > 1:
-                    self._fallback_work_remaining = max(
-                        0,
-                        self._fallback_work_remaining - fair_share * len(overloaded),
-                    )
+            if not polygon.overloaded and polygon.contains(x, y, tolerance):
+                return True
+
+        overloaded = sorted(
+            (
+                polygon
+                for polygon in self.polygons
+                if polygon.overloaded
+                and polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
+                and polygon.minimum_y - tolerance <= y <= polygon.maximum_y + tolerance
+            ),
+            key=lambda polygon: polygon.fallback_order_key,
+        )
+        for polygon in overloaded:
+            if len(polygon.boundary) > polygon._MAX_FALLBACK_EDGES:
+                raise GeometryTooComplex(
+                    "room geometry exceeds the fallback edge limit"
+                )
+            contained, work = (
+                MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+                    x,
+                    y,
+                    polygon.boundary,
+                    tolerance,
+                    self._fallback_work_remaining,
+                )
+            )
+            self._fallback_work_remaining -= work
+            if contained:
                 return True
         return False
 
@@ -268,16 +276,54 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
         tolerance: float,
     ) -> bool:
         """Return whether a point is inside or tolerably near a polygon."""
-        if cls._point_in_polygon(x, y, boundary):
-            return True
-        if not tolerance:
-            return False
-        return any(
-            cls._point_near_segment(x, y, previous, current, tolerance)
-            for previous, current in zip(
-                (boundary[-1], *boundary[:-1]), boundary, strict=True
-            )
+        contained, _ = cls._point_in_or_near_polygon_with_work_limit(
+            x, y, boundary, tolerance, None
         )
+        return contained
+
+    @classmethod
+    def _point_in_or_near_polygon_with_work_limit(
+        cls,
+        x: float,
+        y: float,
+        boundary: list[list[float]],
+        tolerance: float,
+        work_limit: int | None,
+    ) -> tuple[bool, int]:
+        """Check a polygon while counting edge work against a shared budget."""
+        work = 0
+
+        def charge_edge() -> None:
+            nonlocal work
+            work += 1
+            if work_limit is not None and work > work_limit:
+                raise GeometryTooComplex("room geometry fallback budget exhausted")
+
+        inside = False
+        previous = boundary[-1]
+        for current in boundary:
+            charge_edge()
+            if cls._point_on_segment(x, y, previous, current):
+                return True, work
+            current_x, current_y = (float(value) for value in current)
+            previous_x, previous_y = (float(value) for value in previous)
+            if (current_y > y) != (previous_y > y) and x < (
+                (previous_x - current_x) * (y - current_y) / (previous_y - current_y)
+                + current_x
+            ):
+                inside = not inside
+            previous = current
+        if inside:
+            return True, work
+        if not tolerance:
+            return False, work
+        for previous, current in zip(
+            (boundary[-1], *boundary[:-1]), boundary, strict=True
+        ):
+            charge_edge()
+            if cls._point_near_segment(x, y, previous, current, tolerance):
+                return True, work
+        return False, work
 
     def __call__(self, data: Any) -> list[dict[str, float]]:
         """Validate and canonicalize drawn circles without exposing them."""
