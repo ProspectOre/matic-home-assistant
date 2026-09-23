@@ -169,6 +169,8 @@ jobs:
               return 0
             }
             request_binding_statuses="$(
+              # gh --slurp emits one outer array of paginated response pages;
+              # use one jq input with .[][] rather than slurping again.
               gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
                 | jq -c '[.[][] | select(.context == "review-gate-request") | select((.creator.login // "") == "github-actions[bot]")]'
             )"
@@ -180,22 +182,24 @@ jobs:
                        | select((.user.login // "") != $bot)
                        | select((.body // "") | contains($marker))
                        | select((.body // "") | test("(?mi)^@codex review([[:space:]:]|$)"))
-                       | [.id, (.updated_at // .created_at)]]
+                       | select(.created_at == .updated_at)
+                       | [.id, .created_at, .updated_at]]
                       | .[] | @tsv'
             )"
-            while IFS=$'\t' read -r request_comment_id request_updated_at; do
+            while IFS=$'\t' read -r request_comment_id request_created_at request_updated_at; do
               [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
               gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" \
                 | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
                     --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" \
-                    --arg base "$base_sha" --argjson bindings "$request_binding_statuses" '
+                    --arg base "$base_sha" --arg created "$request_created_at" \
+                    --argjson bindings "$request_binding_statuses" '
                     [.[]
                      | select((.user.login // "") == $bot)
                      | select((.content // "") == "+1")
-                     | select((.created_at // "") > $request_updated_at)
+                     | select((.created_at // "") >= $request_updated_at)
                      | select(any($bindings[];
                          .state == "success"
-                         and .description == ("review-request-comment:" + $id + "; base:" + $base)))
+                         and .description == ("review-request-comment:" + $id + "; base:" + $base + "; created:" + $created)))
                      | {id: ("request-reaction:" + $id),
                         at: .created_at,
                         source: "request_reaction"}]'
