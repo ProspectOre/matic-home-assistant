@@ -9,6 +9,7 @@ import math
 import socket
 import ssl
 import struct
+from collections import Counter
 from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
@@ -36,6 +37,10 @@ from .commands import (
     encode_mixed_coverage_commands,
     encode_user_command,
     encode_user_data,
+)
+from .coverage_goals import (
+    coverage_command_goal_signatures,
+    coverage_plan_goal_signatures,
 )
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
@@ -127,6 +132,8 @@ _SCHEDULE_MAX_DEPTH = 4
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
+_MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
+_MIXED_COVERAGE_READBACK_INTERVAL = 0.5
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -1246,6 +1253,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             settings=settings,
             modes=modes,
         )
+        expected_goals = Counter(coverage_command_goal_signatures(commands.update))
         require_current()
         if await self.async_get_cleaning_session_identity() != b"":
             raise MaticError("Mixed coverage requires an idle native session")
@@ -1299,6 +1307,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 )
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed after coverage update")
+                await self._async_wait_for_mixed_coverage_readback(
+                    expected_goals,
+                    require_current=require_current,
+                    expected_identity=identity,
+                )
         except Exception, asyncio.CancelledError:
             # Reconnection/read failure must not turn into an unowned STOP.
             try:
@@ -1345,6 +1358,46 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     "Mixed coverage recovery could not confirm safe ownership"
                 )
             raise
+
+    async def _async_wait_for_mixed_coverage_readback(
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        *,
+        require_current: Callable[[], None],
+        expected_identity: bytes,
+    ) -> None:
+        """Require the acknowledged update to appear intact in the live plan."""
+        deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
+        async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
+            while True:
+                require_current()
+                try:
+                    actual_goals = Counter(
+                        coverage_plan_goal_signatures(
+                            await self.async_get_property("coverage_plan")
+                        )
+                    )
+                except DecodeError:
+                    actual_goals = Counter()
+                if actual_goals == expected_goals:
+                    if (
+                        await self.async_get_cleaning_session_identity()
+                        != expected_identity
+                    ):
+                        raise MaticError(
+                            "Native mission changed during coverage readback"
+                        )
+                    return
+                if monotonic() >= deadline:
+                    raise MaticError(
+                        "Robot did not retain all requested mixed coverage goals"
+                    )
+                if (
+                    await self.async_get_cleaning_session_identity()
+                    != expected_identity
+                ):
+                    raise MaticError("Native mission changed during coverage readback")
+                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_start_custom_coverage(
         self,
