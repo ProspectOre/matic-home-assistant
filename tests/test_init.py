@@ -1639,7 +1639,14 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     slam_map = SimpleNamespace(async_remove=AsyncMock())
     slam_history = SimpleNamespace(async_remove=AsyncMock())
 
+    temporary_plans = SimpleNamespace(
+        async_load=AsyncMock(), async_remove_robot=AsyncMock()
+    )
     with (
+        patch(
+            "custom_components.matic_robot.CleaningPlanManager",
+            return_value=temporary_plans,
+        ) as plan_manager_factory,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
@@ -1653,7 +1660,12 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
 
     tracker.async_remove_robot.assert_awaited_once_with("entry")
     if with_plans:
+        plan_manager_factory.assert_not_called()
         plans.async_remove_robot.assert_awaited_once_with("serial")
+    else:
+        plan_manager_factory.assert_called_once_with(hass)
+        temporary_plans.async_load.assert_awaited_once()
+        temporary_plans.async_remove_robot.assert_awaited_once_with("serial")
     scene_view.clear_entry.assert_called_once_with("entry")
     pose_view.clear_entry.assert_called_once_with("entry")
     slam_map.async_remove.assert_awaited_once()
@@ -1661,7 +1673,12 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     delete_area_issue.assert_called_once_with(hass, "entry")
 
     bare = SimpleNamespace(data={})
+    bare_plans = SimpleNamespace(async_load=AsyncMock(), async_remove_robot=AsyncMock())
     with (
+        patch(
+            "custom_components.matic_robot.CleaningPlanManager",
+            return_value=bare_plans,
+        ) as bare_factory,
         patch("custom_components.matic_robot.SlamMapStore", return_value=slam_map),
         patch(
             "custom_components.matic_robot.SlamHistoryStore",
@@ -1673,6 +1690,9 @@ async def test_remove_entry_erases_firmware_history(with_plans) -> None:
     ):
         await async_remove_entry(bare, entry)
 
+    bare_factory.assert_called_once_with(bare)
+    bare_plans.async_load.assert_awaited_once()
+    bare_plans.async_remove_robot.assert_awaited_once_with("serial")
     delete_bare_area_issue.assert_called_once_with(bare, "entry")
 
 
