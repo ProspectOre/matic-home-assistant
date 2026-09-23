@@ -170,9 +170,9 @@ jobs:
             }
             request_binding_statuses="$(
               # gh --slurp emits one outer array of paginated response pages;
-              # use one jq input with .[][] rather than slurping again.
+              # flatten the page arrays from this single jq input once.
               gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-                | jq -c '[.[][] | select(.context == "review-gate-request") | select((.creator.login // "") == "github-actions[bot]")]'
+                | jq -c '[flatten[] | select(.context == "review-gate-request") | select((.creator.login // "") == "github-actions[bot]")]'
             )"
             request_comment_ids="$(
               gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \

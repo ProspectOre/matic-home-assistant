@@ -379,7 +379,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         in audit
     )
     assert ".created_at == .updated_at" in audit
-    assert 'jq -c \'[.[][] | select(.context == "review-gate-request")' in audit
+    assert 'jq -c \'[flatten[] | select(.context == "review-gate-request")' in audit
     assert '"github-actions[bot]"' in audit
     assert '"|" + $prefix' in audit
     assert "full_head: ($body | exact_full_head)" in audit
@@ -409,6 +409,13 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     )
     assert ".created_at == .updated_at" in review_gate
     assert 'jq -c --arg context "review-gate-request"' in review_gate
+    request_status_lookup = review_gate[
+        review_gate.index("request_binding_statuses=") : review_gate.index(
+            "request_comment_ids=", review_gate.index("request_binding_statuses=")
+        )
+    ]
+    assert "flatten[]" in request_status_lookup
+    assert "jq -s" not in request_status_lookup
     assert '"github-actions[bot]"' in review_gate
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
