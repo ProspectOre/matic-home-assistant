@@ -161,6 +161,39 @@ async def test_remove_robot_restores_data_when_persist_fails(hass) -> None:
     assert "removed" in manager._data["robots"]
 
 
+async def test_late_plan_save_cannot_recreate_robot_during_removal(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"removed": {"plans": {}}}}
+    manager.async_cancel_and_wait = AsyncMock()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    save_count = 0
+
+    async def save(_data) -> None:
+        nonlocal save_count
+        save_count += 1
+        save_started.set()
+        await release_save.wait()
+
+    manager._store = SimpleNamespace(async_save=save)
+    removal = asyncio.create_task(manager.async_remove_robot("removed"))
+    await save_started.wait()
+
+    late_save = asyncio.create_task(
+        manager.async_save_plan("removed", "late", {"name": "Late"})
+    )
+    await asyncio.sleep(0)
+    assert not late_save.done()
+    assert "removed" not in manager._data["robots"]
+
+    release_save.set()
+    await removal
+    await late_save
+
+    assert "removed" not in manager._data["robots"]
+    assert save_count == 1
+
+
 async def test_removed_entry_generation_stays_fenced_after_reactivation(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._data = {"robots": {"serial": {}}}

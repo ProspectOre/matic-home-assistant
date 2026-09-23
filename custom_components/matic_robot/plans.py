@@ -269,6 +269,7 @@ class CleaningPlanManager:
         self._listeners: dict[str, set[Callable[[], None]]] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._native_history_locks: dict[str, asyncio.Lock] = {}
+        self._state_locks: dict[str, asyncio.Lock] = {}
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
         self._command_locks: dict[str, asyncio.Lock] = {}
@@ -408,6 +409,10 @@ class CleaningPlanManager:
     def native_history_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize native-history persistence without claiming plan ownership."""
         return self._native_history_locks.setdefault(serial_number, asyncio.Lock())
+
+    def state_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize persisted state changes with robot removal."""
+        return self._state_locks.setdefault(serial_number, asyncio.Lock())
 
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
@@ -741,6 +746,7 @@ class CleaningPlanManager:
             self.native_history_lock(serial_number),
             self.lock(serial_number),
             self.command_lock(serial_number),
+            self.state_lock(serial_number),
         ):
             robots = self._data.get("robots")
             if isinstance(robots, dict):
@@ -2154,7 +2160,8 @@ class CleaningPlanManager:
         robot_value = robots.get(serial_number)
         if not isinstance(robot_value, dict):
             robot_value = {}
-            robots[serial_number] = robot_value
+            if serial_number not in self._removed_robots:
+                robots[serial_number] = robot_value
         robot = cast(dict[str, Any], robot_value)
         self._normalize_robot(robot)
         return robot
@@ -2308,7 +2315,10 @@ class CleaningPlanManager:
         return cast(dict[str, Any], record)
 
     async def _async_save_and_notify(self, serial_number: str) -> None:
-        await self._store.async_save(self._data)
+        async with self.state_lock(serial_number):
+            if serial_number in self._removed_robots:
+                return
+            await self._store.async_save(self._data)
         self._notify_listeners(serial_number)
 
     def _notify_listeners(self, serial_number: str) -> None:
