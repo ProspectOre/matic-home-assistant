@@ -252,7 +252,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "name: classify-regular-comment" in regular_comment
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
-    assert "| jq -er '.head.sha'" in regular_comment
+    assert "| jq -er '[.head.sha, .base.sha] | @tsv'" in regular_comment
     assert 'head_prefix="${head_sha:0:10}"' in regular_comment
     assert (
         "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_comment
@@ -261,6 +261,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
     assert "def exact_reviewed_head:" in regular_comment
+    assert "review-request:v2 head=$head_sha base=$base_sha" in regular_comment
     regular_routing = regular_comment[
         regular_comment.index("body_is_regular_comment()") : regular_comment.index(
             "body_is_clean_comment()"
@@ -270,7 +271,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         regular_comment.index("body_is_clean_comment()") :
     ]
     assert "$prefix" in regular_routing
-    assert "$prefix" not in clean_validation
+    assert "$prefix" in clean_validation
+    assert "($request_at < $comment_at)" in clean_validation
     assert '--arg prefix "$head_prefix"' in regular_routing
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
