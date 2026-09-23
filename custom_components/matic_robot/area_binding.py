@@ -709,6 +709,21 @@ def area_binding_status(
     if saved["partition_id"] != current["partition_id"]:
         return AreaBindingStatus.PARTITION_CHANGED
     saved_geometry = str(saved["geometry_sha256"]).casefold()
+    if (
+        saved["version"] == SCOPED_MAP_BINDING_VERSION
+        and saved_geometry != current["geometry_sha256"]
+        and not any(
+            field in saved
+            for field in (
+                "translation_invariant_geometry_sha256",
+                "translation_frame_bounds",
+                "translation_room_anchors",
+            )
+        )
+    ):
+        # Early v3 bindings can lack every coordinate-frame signal. Their
+        # unchanged local digest cannot rule out a translated containing room.
+        return AreaBindingStatus.GEOMETRY_CHANGED
     if saved["version"] == MAP_BINDING_VERSION:
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
@@ -749,9 +764,12 @@ def area_binding_status(
     if not saved["local_segments_mm"] and saved_geometry != current["geometry_sha256"]:
         saved_anchors = saved.get("translation_room_anchors")
         if isinstance(saved_anchors, list):
-            current_anchors = _translation_room_anchors(
-                floor_plan, area["circles"], room_geometry=room_geometry
-            )
+            try:
+                current_anchors = _translation_room_anchors(
+                    floor_plan, area["circles"], room_geometry=room_geometry
+                )
+            except GeometryTooComplex, OverflowError, TypeError, ValueError:
+                return AreaBindingStatus.INVALID
             current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
             for anchor in current_anchors:
                 current_bounds_by_fingerprint.setdefault(
@@ -766,22 +784,19 @@ def area_binding_status(
                     if matching_bounds[0] != old_bounds:
                         return AreaBindingStatus.GEOMETRY_CHANGED
                 elif not matching_bounds:
-                    # When the shape fingerprint changed, retain a bounded
-                    # translation check: a containing room whose two x or y
-                    # bounds moved by the same nonzero amount still signals a
-                    # changed absolute frame, even if another vertex changed.
-                    for current_anchor in current_anchors:
-                        new_bounds = current_anchor["bounds"]
-                        if (
-                            new_bounds[0] - old_bounds[0]
-                            == new_bounds[2] - old_bounds[2]
-                            != 0
-                        ) or (
-                            new_bounds[1] - old_bounds[1]
-                            == new_bounds[3] - old_bounds[3]
-                            != 0
-                        ):
-                            return AreaBindingStatus.GEOMETRY_CHANGED
+                    bounds_within_tolerance = any(
+                        all(
+                            abs(new - old) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+                            for old, new in zip(
+                                old_bounds, anchor["bounds"], strict=True
+                            )
+                        )
+                        for anchor in current_anchors
+                    )
+                    if not bounds_within_tolerance:
+                        # A changed containing-room shape cannot prove that
+                        # saved coordinates remain in the same absolute frame.
+                        return AreaBindingStatus.GEOMETRY_CHANGED
                 elif len(matching_bounds) > 1 and all(
                     new_bounds != old_bounds for new_bounds in matching_bounds
                 ):

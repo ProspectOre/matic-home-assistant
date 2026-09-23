@@ -348,7 +348,7 @@ def test_scoped_binding_contains_private_local_geometry_signature() -> None:
     )
 
 
-def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> None:
+def test_scoped_binding_fails_closed_when_unanchored_containing_room_changes() -> None:
     floor_plan = _floor_plan()
     area = _scoped_area(floor_plan)
     kitchen, study = floor_plan.rooms
@@ -369,7 +369,10 @@ def test_scoped_binding_automatically_accepts_unrelated_geometry_changes() -> No
     assert floor_plan_geometry_fingerprint(changed_elsewhere) != (
         floor_plan_geometry_fingerprint(floor_plan)
     )
-    assert area_binding_status(area, changed_elsewhere) is AreaBindingStatus.CURRENT
+    assert (
+        area_binding_status(area, changed_elsewhere)
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_rejects_translated_map_without_local_boundary_anchor() -> None:
@@ -399,6 +402,19 @@ def test_scoped_binding_rejects_translated_map_without_local_boundary_anchor() -
         floor_plan_geometry_fingerprint(floor_plan)
     )
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
+
+    legacy_binding = dict(area["map_binding"])
+    for field in (
+        "translation_invariant_geometry_sha256",
+        "translation_frame_bounds",
+        "translation_room_anchors",
+    ):
+        legacy_binding.pop(field)
+    legacy_area = {**area, "map_binding": legacy_binding}
+    assert (
+        area_binding_status(legacy_area, translated)
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_rejects_altered_circles_before_map_drift_fallback() -> None:
@@ -2150,7 +2166,7 @@ def test_unanchored_area_fails_closed_when_all_frame_extrema_change() -> None:
     assert area_binding_status(area, edited) is AreaBindingStatus.GEOMETRY_CHANGED
 
 
-def test_unanchored_area_fails_closed_when_containing_room_shape_changes() -> None:
+def test_unanchored_area_fails_closed_when_all_containing_room_extrema_change() -> None:
     floor_plan = FloorPlan(
         42,
         "synthetic-partition",
@@ -2172,11 +2188,11 @@ def test_unanchored_area_fails_closed_when_containing_room_shape_changes() -> No
                 floor_plan.rooms[0],
                 boundary=(
                     (1.0, 2.0),
-                    (11.0, 2.0),
-                    (11.0, 12.0),
-                    (9.0, 12.0),
-                    (10.0, 11.0),
-                    (1.0, 12.0),
+                    (12.0, 2.0),
+                    (12.0, 13.0),
+                    (9.0, 13.0),
+                    (10.0, 12.0),
+                    (1.0, 13.0),
                 ),
             ),
             floor_plan.rooms[1],
@@ -2185,6 +2201,35 @@ def test_unanchored_area_fails_closed_when_containing_room_shape_changes() -> No
 
     assert not area["map_binding"]["local_segments_mm"]
     assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_unanchored_anchor_recomputation_budget_exhaustion_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("home", "Home", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    moved = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 0.0), (11.0, 0.0), (11.0, 10.0), (1.0, 10.0)),
+            ),
+        ),
+    )
+
+    def exhaust_budget(*args, **kwargs):
+        raise GeometryTooComplex("synthetic anchor query exhaustion")
+
+    monkeypatch.setattr(
+        area_binding_module, "_translation_room_anchors", exhaust_budget
+    )
+    assert area_binding_status(area, moved) is AreaBindingStatus.INVALID
 
 
 def test_room_anchor_containment_uses_the_shared_geometry_budget() -> None:
