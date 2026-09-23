@@ -882,7 +882,7 @@ def _local_segment_correspondence(
                     candidates.update(cell_candidates)
         charge_work(len(candidates))
         for current_index in sorted(candidates):
-            charge_work(1)
+            charge_work(max(1, len(shape)))
             if _local_segment_contexts_match(
                 saved_segment,
                 saved_context,
@@ -1047,7 +1047,7 @@ def _occupancy_changes_are_explained(
             charge_work(len(candidates))
             explained = False
             for saved_index, current_index in candidates:
-                charge_work(1)
+                charge_work(max(1, len(shape)))
                 if _wall_pair_explains_probe(
                     saved_segments[saved_index],
                     saved_contexts[saved_index],

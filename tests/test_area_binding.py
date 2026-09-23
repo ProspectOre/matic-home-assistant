@@ -1048,7 +1048,7 @@ def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
     assert matches.call_count < len(segments) ** 2 // 8
 
 
-def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
+def test_occupancy_explanation_caps_overlapping_neighborhood_work() -> None:
     shape = ((0, 0, 2500),) * 512
     circles = ({"x": 0.0, "y": 0.0, "radius": 2.5},) * len(shape)
     saved = tuple((center, -2500, center, 2500) for center in range(-2550, 2551, 20))
@@ -1059,14 +1059,15 @@ def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
         "_wall_pair_explains_probe",
         wraps=area_binding_module._wall_pair_explains_probe,
     ) as explains:
-        assert not _occupancy_changes_are_explained(
-            (0,) * len(shape),
-            (1, *(0 for _ in shape[1:])),
-            saved,
-            current,
-            shape,
-            circles,
-        )
+        with pytest.raises(GeometryTooComplex):
+            _occupancy_changes_are_explained(
+                (0,) * len(shape),
+                (1, *(0 for _ in shape[1:])),
+                saved,
+                current,
+                shape,
+                circles,
+            )
 
     assert explains.call_count < len(saved) * len(current) // 8
 
@@ -1118,6 +1119,19 @@ def test_occupancy_explanation_uses_one_to_one_wall_correspondence() -> None:
         shape,
         circles,
     )
+
+
+def test_occupancy_explanation_rejects_incomplete_segment_correspondence() -> None:
+    shape = ((0, 0, 100),)
+    circles = ({"x": 0.0, "y": 0.0, "radius": 0.1},)
+    segments = ((345, -100, 345, 100),)
+
+    with patch.object(
+        area_binding_module, "_local_segment_correspondence", return_value=None
+    ):
+        assert not _occupancy_changes_are_explained(
+            (0,), (4,), segments, segments, shape, circles
+        )
 
 
 @pytest.mark.parametrize(
