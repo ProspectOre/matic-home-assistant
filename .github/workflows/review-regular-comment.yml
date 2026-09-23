@@ -116,18 +116,18 @@ jobs:
           }
           if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
             request_marker="<!-- review-request:v2 head=$head_sha base=$base_sha -->"
-            if [[ "$EVENT_ACTION" != "created" \
-              && ( "$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted" ) ]] \
-              && { body_has_request_for_current_head "$EVENT_COMMENT_BODY" \
+            if [[ "$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted" ]]; then
+              if { body_has_request_for_current_head "$EVENT_COMMENT_BODY" \
                 || body_has_request_for_current_head "$EVENT_PREVIOUS_COMMENT_BODY"; } \
-              && { body_has_regular_review_mention "$EVENT_COMMENT_BODY" \
-                || body_has_regular_review_mention "$EVENT_PREVIOUS_COMMENT_BODY"; }; then
-              {
-                echo "regular=true"
-                echo "head_sha=$head_sha"
-              } >> "$GITHUB_OUTPUT"
-              echo "Revoking review evidence for an edited or deleted exact-head request."
-              exit 0
+                && { body_has_regular_review_mention "$EVENT_COMMENT_BODY" \
+                  || body_has_regular_review_mention "$EVENT_PREVIOUS_COMMENT_BODY"; }; then
+                {
+                  echo "regular=true"
+                  echo "head_sha=$head_sha"
+                } >> "$GITHUB_OUTPUT"
+                echo "Revoking review evidence for an edited or deleted exact-head request."
+                exit 0
+              fi
             fi
             if [[ "$EVENT_ACTION" == "created" \
               && "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] \
