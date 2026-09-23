@@ -656,16 +656,6 @@ def area_binding_status(
     if saved["version"] == MAP_BINDING_VERSION:
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
-        if (
-            "translation_frame_bounds" in saved
-            and saved_geometry != current["geometry_sha256"]
-        ):
-            old = saved["translation_frame_bounds"]
-            new = translation_frame_bounds(floor_plan)
-            if (new[0] - old[0] == new[2] - old[2] != 0) or (
-                new[1] - old[1] == new[3] - old[3] != 0
-            ):
-                return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
         # V2 did not persist the local boundary evidence, so its digest cannot
@@ -711,6 +701,16 @@ def area_binding_status(
             == translation_invariant_geometry_fingerprint(floor_plan)
         ):
             return AreaBindingStatus.GEOMETRY_CHANGED
+        if (
+            "translation_frame_bounds" in saved
+            and saved_geometry != current["geometry_sha256"]
+        ):
+            old = saved["translation_frame_bounds"]
+            new = translation_frame_bounds(floor_plan)
+            if (new[0] - old[0] == new[2] - old[2] != 0) or (
+                new[1] - old[1] == new[3] - old[3] != 0
+            ):
+                return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])
@@ -836,7 +836,9 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                         isinstance(binding["translation_frame_bounds"], list)
                         and len(binding["translation_frame_bounds"]) == 4
                         and all(
-                            isinstance(value, int) and not isinstance(value, bool)
+                            isinstance(value, int)
+                            and not isinstance(value, bool)
+                            and -(1 << 63) <= value < (1 << 63)
                             for value in binding["translation_frame_bounds"]
                         )
                     )

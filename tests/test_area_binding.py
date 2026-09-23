@@ -2060,3 +2060,42 @@ def test_scoped_binding_casefolds_translation_invariant_digest() -> None:
         ),
     )
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_scoped_binding_rejects_translation_with_remote_interior_edit() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("left", "Left", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "right", "Right", ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0))
+            ),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    translated = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 2.0), (11.0, 2.0), (11.0, 12.0), (1.0, 12.0)),
+            ),
+            replace(
+                floor_plan.rooms[1],
+                boundary=((21.0, 2.0), (31.0, 2.0), (31.0, 12.0), (21.0, 12.0)),
+            ),
+        ),
+    )
+    translated = replace(
+        translated,
+        rooms=(
+            translated.rooms[0],
+            replace(
+                translated.rooms[1],
+                boundary=((21.0, 2.0), (31.5, 2.0), (31.5, 12.0), (21.0, 12.0)),
+            ),
+        ),
+    )
+    assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
