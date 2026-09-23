@@ -822,15 +822,17 @@ def _local_segment_correspondence(
         zip(saved, saved_contexts, strict=True)
     ):
         candidates: set[int] = set()
+        reference_visits = 0
         for cell_x, cell_y in saved_context[3]:
             for neighbor_x in range(cell_x - 1, cell_x + 2):
                 for neighbor_y in range(cell_y - 1, cell_y + 2):
                     for current_index in current_by_cell.get(
                         (neighbor_x, neighbor_y), ()
                     ):
-                        candidates.add(current_index)
-                        if len(candidates) > _MAX_SEGMENT_CANDIDATE_CHECKS:
+                        reference_visits += 1
+                        if reference_visits > _MAX_SEGMENT_CANDIDATE_CHECKS:
                             return None
+                        candidates.add(current_index)
         for current_index in candidates:
             candidate_checks += 1
             if candidate_checks > _MAX_SEGMENT_CANDIDATE_CHECKS:
