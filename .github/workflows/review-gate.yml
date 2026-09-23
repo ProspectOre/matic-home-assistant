@@ -262,18 +262,17 @@ jobs:
                         source: "review",
                         clean: ($body | stock_clean_envelope)}]'
             )"
+            exact_head_request_at="$(
+              gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+                | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
+                      [.[][]
+                       | select((.user.login // "") != $bot)
+                       | select((.body // "") | contains($marker))
+                       | (.updated_at // .created_at)]
+                      | max // empty'
+            )"
             issue_comment_records="$(
-              local exact_head_request_at
-              exact_head_request_at="$(
-                gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-                  | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
-                      --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
-                        [.[][]
-                         | select((.user.login // "") != $bot)
-                         | select((.body // "") | contains($marker))
-                         | (.updated_at // .created_at)]
-                        | max // empty'
-              )"
               gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
                 | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" \
                     --arg prefix "$head_prefix" --arg request_at "$exact_head_request_at" '
