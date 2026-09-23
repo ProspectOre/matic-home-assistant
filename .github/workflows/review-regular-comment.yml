@@ -94,7 +94,7 @@ jobs:
           body_is_regular_comment() {
             local comment_body="$1"
             printf '%s' "$comment_body" \
-              | jq -e -R -s --arg head "$head_sha" '
+              | jq -e -R -s --arg head "$head_sha" --arg prefix "$head_prefix" '
                   def regular_heading:
                     ascii_downcase
                     | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");

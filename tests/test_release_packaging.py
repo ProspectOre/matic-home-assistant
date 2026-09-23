@@ -257,6 +257,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     ]
     assert "$prefix" in regular_routing
     assert "$prefix" not in clean_validation
+    assert '--arg prefix "$head_prefix"' in regular_routing
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
     assert "Trusted review-gate evaluator is not installed" in regular_comment
