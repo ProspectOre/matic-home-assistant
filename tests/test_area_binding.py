@@ -1992,3 +1992,30 @@ def test_scoped_binding_rejects_translated_two_room_map_with_invariant_fingerpri
         ),
     )
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_legacy_scoped_binding_rejects_translated_unanchored_multi_room_map() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("left", "Left", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "right", "Right", ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0))
+            ),
+        ),
+    )
+    circles = [{"x": 5.0, "y": 5.0, "radius": 0.2}]
+    area = _scoped_area(floor_plan, circles)
+    legacy_binding = dict(area["map_binding"])
+    legacy_binding.pop("translation_invariant_geometry_sha256")
+    area["map_binding"] = legacy_binding
+    translated = replace(
+        floor_plan,
+        rooms=tuple(
+            replace(room, boundary=tuple((x + 1.0, y + 2.0) for x, y in room.boundary))
+            for room in floor_plan.rooms
+        ),
+    )
+    assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED

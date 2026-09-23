@@ -677,7 +677,7 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if (
         not saved["local_segments_mm"]
-        and len(floor_plan.rooms) == 1
+        and "translation_invariant_geometry_sha256" not in saved
         and (saved_geometry != current["geometry_sha256"])
     ):
         return AreaBindingStatus.GEOMETRY_CHANGED
