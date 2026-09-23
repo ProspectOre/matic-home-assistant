@@ -1722,3 +1722,39 @@ async def test_finished_session_sync_survives_an_unreadable_robot(hass) -> None:
     await hass.async_block_till_done()
 
     plans.async_import_native_history.assert_not_awaited()
+
+
+async def test_finished_session_sync_keeps_removed_entry_generation(hass) -> None:
+    """An old event callback keeps its generation across a robot re-add."""
+    from custom_components.matic_robot.const import EVENT_CLEANING_FINISHED
+
+    entry = MagicMock()
+    entry.entry_id = "entry-1"
+    entry.async_on_unload = MagicMock()
+    records_ready = asyncio.Event()
+    release_records = asyncio.Event()
+
+    async def get_records():
+        records_ready.set()
+        await release_records.wait()
+        return ("record",)
+
+    client = SimpleNamespace(async_get_cleaning_session_records=get_records)
+    generation = 1
+    plans = SimpleNamespace(
+        robot_generation=MagicMock(side_effect=lambda _serial: generation),
+        async_import_native_history=AsyncMock(return_value=True),
+    )
+    coordinator = SimpleNamespace(data=SimpleNamespace(floor_plan="floor-plan"))
+
+    _register_native_history_sync(hass, entry, client, coordinator, plans, "serial")
+    hass.bus.async_fire(EVENT_CLEANING_FINISHED, {"entry_id": "entry-1"})
+    await records_ready.wait()
+
+    generation = 2
+    release_records.set()
+    await hass.async_block_till_done()
+
+    plans.async_import_native_history.assert_awaited_once_with(
+        "serial", "floor-plan", ("record",), generation=1
+    )

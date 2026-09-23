@@ -218,6 +218,13 @@ async def test_native_history_rechecks_removal_after_waiting_for_lock(hass) -> N
     assert await manager.async_import_native_history("serial", floor_plan, ()) is False
 
 
+async def test_native_history_lock_does_not_claim_managed_plan(hass) -> None:
+    manager = CleaningPlanManager(hass)
+
+    async with manager.native_history_lock("serial"):
+        assert manager.has_managed_task("serial") is False
+
+
 async def test_remove_robot_waits_for_pending_native_history_save(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
