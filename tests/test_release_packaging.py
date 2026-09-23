@@ -106,9 +106,23 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def exact_reviewed_head:" in review_gate
     assert '"|" + $prefix' in review_gate
     clean_envelope = review_gate[
-        review_gate.index("def stock_clean_issue_comment_envelope:") :
+        review_gate.index(
+            "def stock_clean_issue_comment_envelope:"
+        ) : review_gate.index("def stock_clean_requested_issue_comment_envelope:")
     ]
     assert '"|" + $prefix' not in clean_envelope
+    assert (
+        '"|" + $prefix'
+        in review_gate[
+            review_gate.index("def stock_clean_requested_issue_comment_envelope:") :
+        ]
+    )
+    assert 'capture("; created:' in review_gate
+    assert ").value) <= $at" in review_gate
+    assert "and any($bindings[];" in review_gate
+    assert "== $base" in review_gate
+    assert '$latest_delivery.source == "issue_comment"' in review_gate
+    assert "as $cleared_comment_id" in review_gate
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
     assert "latest_regular_issue_comment" in review_gate
@@ -450,9 +464,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "[flatten[]" in review_gate
     assert 'startswith("request-reaction-")' in review_gate
     assert "$issue_comment_records[]" in review_gate
-    assert (
-        '$request_comment_id == "" or .comment_id != $request_comment_id' in review_gate
-    )
+    assert '$cleared_comment_id == ""' in review_gate
+    assert ".comment_id != $cleared_comment_id" in review_gate
     assert "and $latest_delivery.at > $latest_finding_at" in review_gate
     assert (
         'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'
