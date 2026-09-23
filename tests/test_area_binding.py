@@ -242,6 +242,40 @@ def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None
     )
 
 
+def test_dense_hash_verification_accepts_saved_center_boundary_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (_room("main", "Main", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    circles = [{"x": 0.005, "y": 5.0, "radius": 0.2}]
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
+    binding = binding_for_area(floor_plan, circles)
+    boundary_moved_inward = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.01, 0.0), (10.0, 0.0), (10.0, 10.0), (0.01, 10.0)),
+            ),
+        ),
+    )
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert (
+        area_binding_status(area, boundary_moved_inward)
+        is not AreaBindingStatus.INVALID
+    )
+
+
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
     return {
         "schema_version": AREA_SCHEMA_VERSION,

@@ -446,12 +446,16 @@ def _bounded_hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
+    center_tolerance: float = 0.0,
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> str:
     """Return the per-circle union-scoped v4 hash-only geometry signature."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
     normalized = _validate_area_circles(
-        floor_plan, circles, room_geometry=room_geometry
+        floor_plan,
+        circles,
+        center_tolerance=center_tolerance,
+        room_geometry=room_geometry,
     )
     ordered = sorted(
         (float(circle["x"]), float(circle["y"]), float(circle["radius"]))
@@ -725,9 +729,17 @@ def area_binding_status(
                 if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
                 else _bounded_hash_only_area_geometry_fingerprint
             )
-            local_geometry = fingerprint(
-                floor_plan, area["circles"], room_geometry=room_geometry
-            )
+            if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+                local_geometry = fingerprint(
+                    floor_plan, area["circles"], room_geometry=room_geometry
+                )
+            else:
+                local_geometry = _bounded_hash_only_area_geometry_fingerprint(
+                    floor_plan,
+                    area["circles"],
+                    center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
+                    room_geometry=room_geometry,
+                )
         except KeyError, OverflowError, TypeError, ValueError:
             return AreaBindingStatus.INVALID
         if str(saved["local_geometry_sha256"]).casefold() == local_geometry:

@@ -29,7 +29,6 @@ from homeassistant.helpers.storage import Store
 from homeassistant.util import dt as dt_util
 
 from .area_binding import (
-    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     AreaBindingStatus,
@@ -1006,7 +1005,6 @@ class CleaningPlanManager:
             if version not in {
                 MAP_BINDING_VERSION,
                 HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
             }:
                 continue
             circles = area.get("circles")
@@ -1015,10 +1013,7 @@ class CleaningPlanManager:
             if floor_plan is None:
                 pending = True
                 continue
-            if version in {
-                HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-                BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
-            }:
+            if version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
                 if room_geometry is None:
                     room_geometry = _room_geometry_index(floor_plan)
                 status = area_binding_status(
@@ -1041,8 +1036,6 @@ class CleaningPlanManager:
                     floor_plan, circles, room_geometry=room_geometry
                 )
             except KeyError, TypeError, ValueError:
-                continue
-            if upgraded_binding.get("version") == version:
                 continue
             area["map_binding"] = upgraded_binding
             upgraded += 1
