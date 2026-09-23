@@ -8,7 +8,7 @@ import struct
 from collections import deque
 from collections.abc import Mapping, Sequence
 from enum import StrEnum
-from typing import Any
+from typing import Any, overload
 
 import voluptuous as vol
 from homeassistant.core import HomeAssistant, callback
@@ -59,7 +59,7 @@ _MAX_LOCAL_SEGMENTS = 256
 _MAX_STORED_LOCAL_SEGMENTS = MAX_FLOOR_PLAN_BOUNDARY_POINTS
 _MAX_SEGMENT_CANDIDATE_CHECKS = 16_384
 _MAX_COMPATIBLE_SEGMENT_EDGES = 4_096
-_MAX_SEGMENT_MATCHING_WORK = 262_144
+_MAX_SEGMENT_MATCHING_WORK = 524_288
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _AREA_REPAIR_LEARN_MORE_URL = (
@@ -814,8 +814,21 @@ def _local_segment_correspondence(
     """
     if len(saved) > _MAX_LOCAL_SEGMENTS or len(current) > _MAX_LOCAL_SEGMENTS:
         return None
-    saved_contexts = tuple(_segment_context(segment, shape) for segment in saved)
-    current_contexts = tuple(_segment_context(segment, shape) for segment in current)
+    work_budget = [0]
+    saved_contexts_list = []
+    for segment in saved:
+        context = _segment_context(segment, shape, work_budget=work_budget)
+        if context is None:
+            return None
+        saved_contexts_list.append(context)
+    current_contexts_list = []
+    for segment in current:
+        context = _segment_context(segment, shape, work_budget=work_budget)
+        if context is None:
+            return None
+        current_contexts_list.append(context)
+    saved_contexts = tuple(saved_contexts_list)
+    current_contexts = tuple(current_contexts_list)
     saved_local = tuple(bool(context[0]) for context in saved_contexts)
     current_local = tuple(bool(context[0]) for context in current_contexts)
     current_by_cell: dict[tuple[int, int], list[int]] = {}
@@ -839,8 +852,14 @@ def _local_segment_correspondence(
                         reference_visits += 1
                         if reference_visits > _MAX_SEGMENT_CANDIDATE_CHECKS:
                             return None
+                        work_budget[0] += 1
+                        if work_budget[0] > _MAX_SEGMENT_MATCHING_WORK:
+                            return None
                         candidates.add(current_index)
         for current_index in candidates:
+            work_budget[0] += len(shape)
+            if work_budget[0] > _MAX_SEGMENT_MATCHING_WORK:
+                return None
             if _local_segment_contexts_match(
                 saved_segment,
                 saved_context,
@@ -858,7 +877,10 @@ def _local_segment_correspondence(
     # rather than relying only on the number of materialized compatible edges.
     maximum_augmentations = min(len(saved), len(current))
     flow_edge_count = len(compatible) + len(saved) + len(current)
-    if flow_edge_count * maximum_augmentations > _MAX_SEGMENT_MATCHING_WORK:
+    if (
+        work_budget[0] + flow_edge_count * maximum_augmentations
+        > _MAX_SEGMENT_MATCHING_WORK
+    ):
         return None
 
     node_count = len(saved) + len(current) + 2
@@ -1033,7 +1055,25 @@ def _signed_distance_to_supporting_line(
     return (delta_x * (point[1] - start_y) - delta_y * (point[0] - start_x)) / length
 
 
-def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext:
+@overload
+def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentContext: ...
+
+
+@overload
+def _segment_context(
+    segment: _LocalSegment,
+    shape: _AreaShape,
+    *,
+    work_budget: list[int],
+) -> _SegmentContext | None: ...
+
+
+def _segment_context(
+    segment: _LocalSegment,
+    shape: _AreaShape,
+    *,
+    work_budget: list[int] | None = None,
+) -> _SegmentContext | None:
     """Precompute the local neighborhoods and endpoints for one source wall."""
     start = (segment[0], segment[1])
     end = (segment[2], segment[3])
@@ -1042,6 +1082,10 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
     guard_pieces: list[tuple[tuple[float, float], tuple[float, float]]] = []
     local_endpoints: set[tuple[int, int]] = set()
     for index, (center_x, center_y, radius) in enumerate(shape):
+        if work_budget is not None:
+            work_budget[0] += 1
+            if work_budget[0] > _MAX_SEGMENT_MATCHING_WORK:
+                return None
         semantic_bounds = (
             center_x - radius - _SEMANTIC_MARGIN_MILLIMETERS,
             center_y - radius - _SEMANTIC_MARGIN_MILLIMETERS,
@@ -1066,11 +1110,16 @@ def _segment_context(segment: _LocalSegment, shape: _AreaShape) -> _SegmentConte
         if guard_piece is not None:
             guard.add(index)
             guard_pieces.append(guard_piece)
+    spatial_cells = _segment_spatial_cells(
+        start, end, guard_pieces, work_budget=work_budget
+    )
+    if spatial_cells is None:
+        return None
     return (
         frozenset(semantic),
         frozenset(guard),
         tuple(sorted(local_endpoints)),
-        _segment_spatial_cells(start, end, guard_pieces),
+        spatial_cells,
     )
 
 
@@ -1078,7 +1127,9 @@ def _segment_spatial_cells(
     start: tuple[int, int],
     end: tuple[int, int],
     pieces: Sequence[tuple[tuple[float, float], tuple[float, float]]],
-) -> frozenset[tuple[int, int]]:
+    *,
+    work_budget: list[int] | None = None,
+) -> frozenset[tuple[int, int]] | None:
     """Index the union of guard-clipped wall intervals into fixed cells."""
     delta_x = end[0] - start[0]
     delta_y = end[1] - start[1]
@@ -1121,6 +1172,10 @@ def _segment_spatial_cells(
             ),
         )
         for step in range(steps + 1):
+            if work_budget is not None:
+                work_budget[0] += 1
+                if work_budget[0] > _MAX_SEGMENT_MATCHING_WORK:
+                    return None
             ratio = lower + (upper - lower) * step / steps
             cells.add(
                 (

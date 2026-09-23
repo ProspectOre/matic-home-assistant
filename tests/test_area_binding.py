@@ -168,6 +168,60 @@ def test_local_segment_matching_reference_budget_is_scan_wide() -> None:
         assert _local_segment_correspondence(saved, current, ((50, 0, 1),)) is None
 
 
+def test_local_segment_context_construction_has_a_work_budget() -> None:
+    shape = ((5000, 0, 5000),)
+    with patch.object(area_binding_module, "_MAX_SEGMENT_MATCHING_WORK", 0):
+        assert (
+            area_binding_module._segment_context(
+                (0, 0, 10000, 0), shape, work_budget=[0]
+            )
+            is None
+        )
+
+
+def test_local_segment_matching_enforces_work_during_current_contexts() -> None:
+    context = (True, 0, 0, ())
+    with patch.object(
+        area_binding_module, "_segment_context", side_effect=(context, None)
+    ):
+        assert (
+            _local_segment_correspondence(
+                ((0, 0, 100, 0),), ((0, 0, 100, 0),), ((50, 0, 1),)
+            )
+            is None
+        )
+
+
+def test_local_segment_matching_enforces_candidate_comparison_work() -> None:
+    context = (True, 0, 0, ((0, 0),))
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_MAX_SEGMENT_MATCHING_WORK", 0),
+    ):
+        assert (
+            _local_segment_correspondence(
+                ((0, 0, 100, 0),), ((0, 0, 100, 0),), ((50, 0, 1),)
+            )
+            is None
+        )
+
+
+def test_local_segment_matching_enforces_flow_estimate_work() -> None:
+    context = (False, 0, 0, ())
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_MAX_SEGMENT_MATCHING_WORK", 3),
+    ):
+        assert (
+            _local_segment_correspondence(
+                ((0, 0, 100, 0), (0, 1, 100, 1)),
+                ((0, 0, 100, 0), (0, 1, 100, 1)),
+                ((50, 0, 1),),
+            )
+            is None
+        )
+
+
 def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
     assert area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 257)
     assert not area_binding_module._valid_local_segments([[0, 0, 1, "bad"]])
