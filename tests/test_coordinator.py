@@ -427,6 +427,24 @@ async def test_cues_watcher_resets_delay_after_successful_burst(hass) -> None:
     assert sleep.await_args.args == (1,)
 
 
+async def test_cues_subscription_cancels_collector_on_shutdown(hass) -> None:
+    client = _client()
+    coordinator = _coordinator(hass, client)
+    started = asyncio.Event()
+
+    async def subscription():
+        started.set()
+        await asyncio.Event().wait()
+        yield client.async_get_state.return_value
+
+    client.async_subscribe_state = subscription
+    consumer = asyncio.create_task(coordinator._async_consume_cues_subscription())
+    await started.wait()
+    consumer.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await consumer
+
+
 async def test_cues_watcher_applies_updates_and_propagates_cancel(hass) -> None:
     client = _client()
     coordinator = _coordinator(hass, client)
