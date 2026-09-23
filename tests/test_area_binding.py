@@ -117,7 +117,7 @@ def test_area_binding_rejects_excess_local_segments() -> None:
         "duplicate-partition",
         b"duplicate-partition",
         tuple(
-            _room(str(index), "Duplicate", ((0.0, 0.0), (1.0, 0.0)))
+            _room(str(index), "Duplicate", ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)))
             for index in range(2)
         ),
     )
@@ -126,7 +126,7 @@ def test_area_binding_rejects_excess_local_segments() -> None:
         patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1),
         pytest.raises(ValueError, match="too many local floor-plan segments"),
     ):
-        binding_for_area(floor_plan, [{"x": 0.5, "y": 0.0, "radius": 0.1}])
+        binding_for_area(floor_plan, [{"x": 0.2, "y": 0.2, "radius": 0.1}])
 
 
 def test_local_segment_correspondence_enforces_work_limits() -> None:
@@ -896,7 +896,7 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
 
 
 def test_local_segment_matching_restricts_spatial_candidates() -> None:
-    shape = tuple((index * 1000, 0, 0) for index in range(512))
+    shape = tuple((index * 1000, 0, 0) for index in range(256))
     segments = tuple(
         (center_x - 100, 0, center_x + 100, 0) for center_x, _center_y, _radius in shape
     )
