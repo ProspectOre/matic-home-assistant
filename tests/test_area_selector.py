@@ -157,3 +157,30 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
 
     assert geometry._fallback_work_remaining < len(boundary)
     assert geometry.contains(128.5, 0.0) is False
+
+
+def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)
+    ]
+    geometry = _RoomGeometryIndex(
+        [{"room_id": "room", "name": "Room", "boundary": boundary}]
+    )
+    remaining = geometry._fallback_work_remaining
+
+    assert geometry.contains(-1.0, 0.0) is False
+    assert geometry._fallback_work_remaining == remaining
+
+
+def test_room_index_skips_polygon_over_fallback_cap() -> None:
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0]
+        for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
+    ]
+    geometry = _RoomGeometryIndex(
+        [{"room_id": "room", "name": "Room", "boundary": boundary}]
+    )
+    remaining = geometry._fallback_work_remaining
+
+    assert geometry.contains(128.5, 0.0) is False
+    assert geometry._fallback_work_remaining == remaining
