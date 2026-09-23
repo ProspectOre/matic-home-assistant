@@ -289,6 +289,7 @@ class CleaningPlanManager:
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
         self._reconciliation_removal_pending: set[str] = set()
         self._removed_robots: set[str] = set()
+        self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
         self._stop_fences: dict[str, float] = {}
 
@@ -713,9 +714,16 @@ class CleaningPlanManager:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
     @callback
-    def activate_robot(self, serial_number: str) -> None:
+    def activate_robot(self, serial_number: str) -> int:
         """Clear removal state when a config entry activates this robot."""
         self._removed_robots.discard(serial_number)
+        generation = self._robot_generations.get(serial_number, 0) + 1
+        self._robot_generations[serial_number] = generation
+        return generation
+
+    def robot_generation(self, serial_number: str) -> int:
+        """Return the current config-entry generation for a robot."""
+        return self._robot_generations.get(serial_number, 0)
 
     async def async_remove_robot(self, serial_number: str) -> None:
         """Cancel work and erase one robot's private persisted planning data."""
@@ -726,8 +734,14 @@ class CleaningPlanManager:
 
         async with self.lock(serial_number), self.command_lock(serial_number):
             robots = self._data.get("robots")
-            if isinstance(robots, dict) and robots.pop(serial_number, None) is not None:
-                await self._store.async_save(self._data)
+            if isinstance(robots, dict):
+                removed = robots.pop(serial_number, None)
+                if removed is not None:
+                    try:
+                        await self._store.async_save(self._data)
+                    except BaseException:
+                        robots[serial_number] = removed
+                        raise
 
         self._listeners.pop(serial_number, None)
         self._stop_fences.pop(serial_number, None)
@@ -894,6 +908,8 @@ class CleaningPlanManager:
         serial_number: str,
         floor_plan: FloorPlan | None,
         records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None = None,
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
@@ -902,7 +918,10 @@ class CleaningPlanManager:
         # motion command to proceed once the history mutation is committed.
         async with self.lock(serial_number):
             async with self.command_lock(serial_number):
-                if serial_number in self._removed_robots:
+                if serial_number in self._removed_robots or (
+                    generation is not None
+                    and generation != self.robot_generation(serial_number)
+                ):
                     return False
                 robot = self._robot(serial_number)
                 before = deepcopy(robot)
@@ -915,7 +934,14 @@ class CleaningPlanManager:
                     )
                     or changed
                 )
-                if not changed or serial_number in self._removed_robots:
+                if (
+                    not changed
+                    or serial_number in self._removed_robots
+                    or (
+                        generation is not None
+                        and generation != self.robot_generation(serial_number)
+                    )
+                ):
                     return False
             await self._async_save_native_history(serial_number, before)
         for marker in reconciled:

@@ -202,7 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
-        plans.activate_robot(serial_number)
+        robot_generation = plans.activate_robot(serial_number)
         area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )
@@ -214,10 +214,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         except MaticError as err:
             _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
         else:
+            kwargs = (
+                {"generation": robot_generation}
+                if isinstance(robot_generation, int)
+                else {}
+            )
             await plans.async_import_native_history(
-                serial_number,
-                coordinator.data.floor_plan,
-                native_history,
+                serial_number, coordinator.data.floor_plan, native_history, **kwargs
             )
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
@@ -530,6 +533,11 @@ def _register_native_history_sync(
     it as each session ends keeps rotation fairness current without ever
     claiming a completion; see ``_import_native_room_activity``.
     """
+    generation = (
+        plans.robot_generation(serial_number)
+        if hasattr(plans, "robot_generation")
+        else None
+    )
 
     async def _async_sync(event: Event) -> None:
         if event.data.get("entry_id") != entry.entry_id:
@@ -539,10 +547,9 @@ def _register_native_history_sync(
         except MaticError as err:
             _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
             return
+        kwargs = {} if generation is None else {"generation": generation}
         await plans.async_import_native_history(
-            serial_number,
-            coordinator.data.floor_plan,
-            records,
+            serial_number, coordinator.data.floor_plan, records, **kwargs
         )
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_CLEANING_FINISHED, _async_sync))
