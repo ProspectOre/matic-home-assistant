@@ -6,6 +6,7 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, cast
 
 from homeassistant.config_entries import ConfigEntry, ConfigEntryState
@@ -67,6 +68,7 @@ FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
 FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
+ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -107,11 +109,65 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Set up an unofficial Matic robot integration from a config entry."""
 
-    @callback
-    def _async_observe_activity(observation: dict[str, Any]) -> None:
+    next_state_event_at = 0.0
+    pending_state_observation: dict[str, Any] | None = None
+    pending_state_timer: asyncio.TimerHandle | None = None
+
+    def _async_flush_pending_state() -> None:
+        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
+        pending_state_timer = None
+        observation = pending_state_observation
+        pending_state_observation = None
+        if observation is None:
+            return
+        now = monotonic()
+        if now < next_state_event_at:
+            _schedule_pending_state_flush(next_state_event_at - now)
+            pending_state_observation = observation
+            return
+        next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
         hass.bus.async_fire(
             EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
         )
+
+    def _schedule_pending_state_flush(delay: float) -> None:
+        nonlocal pending_state_timer
+        loop = getattr(hass, "loop", None)
+        if loop is not None:
+            pending_state_timer = loop.call_later(delay, _async_flush_pending_state)
+
+    @callback
+    def _async_observe_activity(observation: dict[str, Any]) -> None:
+        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
+        if observation.get("kind") == "state":
+            now = monotonic()
+            if now < next_state_event_at:
+                pending_state_observation = dict(observation)
+                if pending_state_timer is None:
+                    _schedule_pending_state_flush(next_state_event_at - now)
+                return
+            next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
+            if pending_state_timer is not None:
+                pending_state_timer.cancel()
+                pending_state_timer = None
+            pending_state_observation = None
+        hass.bus.async_fire(
+            EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+        )
+
+    def _cancel_pending_state_timer() -> None:
+        nonlocal pending_state_observation, pending_state_timer
+        if pending_state_timer is not None:
+            pending_state_timer.cancel()
+            pending_state_timer = None
+        observation = pending_state_observation
+        pending_state_observation = None
+        if observation is not None:
+            hass.bus.async_fire(
+                EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+            )
+
+    entry.async_on_unload(_cancel_pending_state_timer)
 
     offset = dt_util.now().utcoffset()
     client = MaticHermesClient(

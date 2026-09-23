@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, call, patch
 
 import pytest
 from homeassistant.components import frontend
@@ -13,6 +13,7 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed
 
 from custom_components.matic_robot import (
+    ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS,
     FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS,
     FLOOR_PLAN_TRANSITION_REFRESH_RETRY_SECONDS,
@@ -1015,7 +1016,15 @@ async def test_setup_refreshes_before_forwarding_platforms(
         )
     )
     plans.async_import_native_history = AsyncMock(return_value=False)
+    scheduled_state_flushes = []
+
+    def capture_state_flush(delay, callback):
+        handle = SimpleNamespace(cancel=MagicMock(), callback=callback, delay=delay)
+        scheduled_state_flushes.append(handle)
+        return handle
+
     hass = SimpleNamespace(
+        loop=SimpleNamespace(call_later=capture_state_flush),
         config=SimpleNamespace(time_zone="America/Los_Angeles"),
         config_entries=SimpleNamespace(async_forward_entry_setups=AsyncMock()),
         bus=SimpleNamespace(
@@ -1125,11 +1134,62 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
-        client_factory.call_args.kwargs["observation_callback"]({"kind": "started"})
-        hass.bus.async_fire.assert_called_with(
-            "matic_robot_activity_observed",
-            {"entry_id": entry.entry_id, "kind": "started"},
-        )
+        observe = client_factory.call_args.kwargs["observation_callback"]
+        observe({"kind": "started"})
+        with patch(
+            "custom_components.matic_robot.monotonic",
+            side_effect=[100.0, 100.5, 100.75, 101.5, 102.0, 103.0, 103.1],
+        ):
+            observe({"kind": "state", "state_codes": [106]})
+            observe({"kind": "state", "state_codes": [107]})
+            scheduled_state_flushes[0].callback()
+            observe({"kind": "state", "state_codes": [108]})
+            scheduled_state_flushes[1].callback()
+            observe({"kind": "state", "state_codes": [109]})
+            scheduled_state_flushes[2].callback()
+            observe({"kind": "state", "state_codes": [110]})
+            entry.async_on_unload.call_args_list[0].args[0]()
+        assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
+        assert hass.bus.async_fire.call_args_list[-5:] == [
+            call(
+                "matic_robot_activity_observed",
+                {"entry_id": entry.entry_id, "kind": "started"},
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [106],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [108],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [109],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [110],
+                },
+            ),
+        ]
+        assert len(scheduled_state_flushes) == 4
+        scheduled_state_flushes[3].cancel.assert_called_once_with()
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 
