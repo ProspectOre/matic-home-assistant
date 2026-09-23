@@ -298,15 +298,24 @@ async def test_slam_map_store_expires_one_sided_candidate_before_recovery(
     assert candidate_token in store._candidates
     assert not store._candidates[candidate_token].blocks_active
     assert candidate_token not in store._retired_missions
+    store._collection_client = SimpleNamespace()
 
-    # Repeated pages from the already-classified layer must not repeatedly
-    # disable every floor-bound button while the active robot is idle.
-    with patch(
-        "custom_components.matic_robot.slam_map_store.monotonic",
-        return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+    # Repeated pages from the classified alternative remain contrary live
+    # evidence. Each one must fail closed, while fresh proof from both active
+    # layers may still recover the floor between those observations.
+    with (
+        patch.object(store, "_schedule_candidate_refresh") as schedule_refresh,
+        patch(
+            "custom_components.matic_robot.slam_map_store.monotonic",
+            return_value=CANDIDATE_CLASSIFICATION_SECONDS + 2,
+        ),
     ):
         for _ in range(10):
             await store.async_add(candidate)
+            schedule_refresh.assert_called()
+            assert not store.floor_plan_is_current(active_plan)
+            await store.async_add(synthetic_slam_entry(page_x=8))
+            await store.async_add_structure(synthetic_structure_entry(page_x=8))
             assert store.floor_plan_is_current(active_plan)
             assert not store._candidates[candidate_token].blocks_active
 
@@ -337,6 +346,11 @@ async def test_expired_candidate_reblocks_on_fresh_floor_return(
         assert store.live_session_verified
         # Opaque wire metadata alone is still an unchanged page replay.
         await add(replace(first, value=first.value + b"\x98\x06\x01"))
+        assert not store.live_session_verified
+        # Re-establish independent active-layer proof before testing that fresh
+        # candidate evidence blocks it again.
+        await store.async_add(synthetic_slam_entry(mission_id=1))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=1))
         assert store.live_session_verified
         if change == "page":
             fresh = fixture(mission_id=2, page_x=3)
