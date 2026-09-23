@@ -13,6 +13,10 @@ on:
         description: Pull request number
         required: true
         type: string
+      request_comment_id:
+        description: Optional exact-head review request comment to bind after a missed create event
+        required: false
+        type: string
 
 # The latest state-changing PR event wins. Dedicated routers classify review and
 # issue-comment events before dispatching here, so ignored security activity
@@ -40,6 +44,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
+          INPUT_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
@@ -142,6 +147,33 @@ jobs:
           if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
             echo "The event head changed before evaluation; the newer PR event will re-evaluate it."
             exit 0
+          fi
+          if [[ -n "${INPUT_REQUEST_COMMENT_ID:-}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" \
+              || ! "$INPUT_REQUEST_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "A request-comment binding requires a workflow dispatch and a valid comment ID." >&2
+              exit 1
+            fi
+            request_comment="$(gh api "repos/$REPO/issues/comments/$INPUT_REQUEST_COMMENT_ID")"
+            if ! jq -e \
+              --arg id "$INPUT_REQUEST_COMMENT_ID" \
+              --arg issue_url "${GITHUB_API_URL:-https://api.github.com}/repos/$REPO/issues/$pr_number" \
+              --arg head "$head_sha" \
+              --arg base "$base_sha" \
+              --arg bot "$REVIEW_BOT_EVENT_LOGIN" '
+                .id == ($id | tonumber)
+                and .issue_url == $issue_url
+                and (.user.login // "") != $bot
+                and .created_at == .updated_at
+                and ((.body // "") | contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->"))
+                and ((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))
+              ' <<< "$request_comment" >/dev/null; then
+              echo "The supplied comment is not an unedited exact-head review request for this pull request." >&2
+              exit 1
+            fi
+            stamp_status_for_sha "$head_sha" "review-gate-request" success \
+              "review-request-comment:$INPUT_REQUEST_COMMENT_ID; base:$base_sha"
+            echo "Bound the unedited exact-head review request comment $INPUT_REQUEST_COMMENT_ID."
           fi
           head_prefix="$(printf '%.10s' "$head_sha")"
           base_marker_description="Base changed for PR #$pr_number at base $base_sha at $(date -u +%Y-%m-%dT%H:%M:%SZ); push a new head for a fresh review"

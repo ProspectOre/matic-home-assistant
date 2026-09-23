@@ -382,6 +382,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "didn.t find any major issues" in audit
     assert "request_reaction_records" in review_gate
+    assert "request_comment_id:" in review_gate
+    assert "INPUT_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}" in review_gate
+    assert '"${GITHUB_EVENT_NAME:-}" != "workflow_dispatch"' in review_gate
+    assert ".created_at == .updated_at" in review_gate
+    assert ".issue_url == $issue_url" in review_gate
+    assert "Bound the unedited exact-head review request" in review_gate
     assert "review-request:v2 head=$head_sha base=$base_sha" in review_gate
     assert 'source: "request_reaction"' in review_gate
     assert '(.created_at // "") > $request_updated_at' in review_gate
