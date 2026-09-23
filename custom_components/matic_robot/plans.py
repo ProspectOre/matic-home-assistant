@@ -898,22 +898,25 @@ class CleaningPlanManager:
         """Import native activity and reconcile only the matching pending room."""
         if floor_plan is None:
             return False
-        async with self.command_lock(serial_number):
-            if serial_number in self._removed_robots:
-                return False
-            robot = self._robot(serial_number)
-            before = deepcopy(robot)
-            records = tuple(records)
-            changed = _import_native_room_activity(robot, floor_plan, records)
-            reconciled: list[dict[str, str]] = []
-            changed = (
-                _reconcile_pending_native_history(
-                    robot, floor_plan, records, on_reconciled=reconciled.append
+        # Keep removal serialization through the save, while allowing a new
+        # motion command to proceed once the history mutation is committed.
+        async with self.lock(serial_number):
+            async with self.command_lock(serial_number):
+                if serial_number in self._removed_robots:
+                    return False
+                robot = self._robot(serial_number)
+                before = deepcopy(robot)
+                records = tuple(records)
+                changed = _import_native_room_activity(robot, floor_plan, records)
+                reconciled: list[dict[str, str]] = []
+                changed = (
+                    _reconcile_pending_native_history(
+                        robot, floor_plan, records, on_reconciled=reconciled.append
+                    )
+                    or changed
                 )
-                or changed
-            )
-            if not changed or serial_number in self._removed_robots:
-                return False
+                if not changed or serial_number in self._removed_robots:
+                    return False
             await self._async_save_native_history(serial_number, before)
         for marker in reconciled:
             entity_id = er.async_get(self.hass).async_get_entity_id(

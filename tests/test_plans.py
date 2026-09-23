@@ -162,6 +162,33 @@ async def test_native_history_after_robot_removal_cannot_recreate_data(hass) -> 
     assert "removed" not in manager._data["robots"]
 
 
+async def test_robot_activation_clears_removal_tombstone(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._removed_robots.add("serial")
+
+    manager.activate_robot("serial")
+
+    assert "serial" not in manager._removed_robots
+
+
+async def test_native_history_rechecks_removal_after_waiting_for_lock(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"serial": {}}}
+
+    class MarkRemoved:
+        async def __aenter__(self):
+            manager._removed_robots.add("serial")
+
+        async def __aexit__(self, *args):
+            return None
+
+    manager.lock = lambda _serial: MarkRemoved()
+
+    floor_plan = FloorPlan(1, "partition", b"partition", ())
+
+    assert await manager.async_import_native_history("serial", floor_plan, ()) is False
+
+
 async def test_remove_robot_waits_for_pending_native_history_save(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
