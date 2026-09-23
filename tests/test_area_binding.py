@@ -333,6 +333,7 @@ def test_scoped_binding_contains_private_local_geometry_signature() -> None:
         "translation_invariant_geometry_sha256": (
             binding["translation_invariant_geometry_sha256"]
         ),
+        "translation_frame_bounds": binding["translation_frame_bounds"],
         "area_shape_sha256": binding["area_shape_sha256"],
         "local_geometry_sha256": area_geometry_fingerprint(floor_plan, circles),
         "local_occupancy": [511, 511],

@@ -312,6 +312,16 @@ def translation_invariant_geometry_fingerprint(floor_plan: FloorPlan) -> str:
     return digest.hexdigest()
 
 
+def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
+    """Return quantized global bounds used to confirm rigid translation."""
+    points = [point for room in floor_plan.rooms for point in room.boundary]
+    if not points:
+        raise ValueError("floor plan has no room geometry")
+    xs = [round(x * 1000) for x, _ in points]
+    ys = [round(y * 1000) for _, y in points]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
 def binding_for_area(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -328,6 +338,7 @@ def binding_for_area(
         "translation_invariant_geometry_sha256": (
             translation_invariant_geometry_fingerprint(floor_plan)
         ),
+        "translation_frame_bounds": translation_frame_bounds(floor_plan),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -645,6 +656,16 @@ def area_binding_status(
     if saved["version"] == MAP_BINDING_VERSION:
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
+        if (
+            "translation_frame_bounds" in saved
+            and saved_geometry != current["geometry_sha256"]
+        ):
+            old = saved["translation_frame_bounds"]
+            new = translation_frame_bounds(floor_plan)
+            if (new[0] - old[0] == new[2] - old[2] != 0) or (
+                new[1] - old[1] == new[3] - old[3] != 0
+            ):
+                return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
         # V2 did not persist the local boundary evidence, so its digest cannot
@@ -766,10 +787,16 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
             "local_occupancy",
             "local_segments_mm",
             "translation_invariant_geometry_sha256",
+            "translation_frame_bounds",
         }
     if version == SCOPED_MAP_BINDING_VERSION:
-        legacy_fields = expected_fields - {"translation_invariant_geometry_sha256"}
-        if set(binding) not in (expected_fields, legacy_fields):
+        legacy_fields = expected_fields - {
+            "translation_invariant_geometry_sha256",
+            "translation_frame_bounds",
+        }
+        if not set(binding).issubset(expected_fields) or not legacy_fields.issubset(
+            set(binding)
+        ):
             return False
     elif set(binding) != expected_fields:
         return False
@@ -803,6 +830,17 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                 and _valid_digest(binding["local_geometry_sha256"])
                 and _valid_local_occupancy(binding["local_occupancy"])
                 and _valid_local_segments(binding["local_segments_mm"])
+                and (
+                    "translation_frame_bounds" not in binding
+                    or (
+                        isinstance(binding["translation_frame_bounds"], list)
+                        and len(binding["translation_frame_bounds"]) == 4
+                        and all(
+                            isinstance(value, int) and not isinstance(value, bool)
+                            for value in binding["translation_frame_bounds"]
+                        )
+                    )
+                )
                 and (
                     "translation_invariant_geometry_sha256" not in binding
                     or _valid_digest(binding["translation_invariant_geometry_sha256"])
