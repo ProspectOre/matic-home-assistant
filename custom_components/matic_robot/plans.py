@@ -288,6 +288,7 @@ class CleaningPlanManager:
         ] = {}
         self._native_history_saves: dict[str, set[asyncio.Event]] = {}
         self._reconciliation_removal_pending: set[str] = set()
+        self._removed_robots: set[str] = set()
         self._cancellation_reasons: dict[str, str] = {}
         self._stop_fences: dict[str, float] = {}
 
@@ -713,6 +714,7 @@ class CleaningPlanManager:
 
     async def async_remove_robot(self, serial_number: str) -> None:
         """Cancel work and erase one robot's private persisted planning data."""
+        self._removed_robots.add(serial_number)
         await self.async_cancel_and_wait(serial_number)
         for done in tuple(self._native_history_saves.get(serial_number, ())):
             await done.wait()
@@ -889,6 +891,8 @@ class CleaningPlanManager:
         records: Iterable[CleaningSessionRecord],
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
+        if serial_number in self._removed_robots:
+            return False
         if floor_plan is None:
             return False
         robot = self._robot(serial_number)

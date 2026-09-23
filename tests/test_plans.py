@@ -149,6 +149,19 @@ async def test_remove_robot_erases_only_its_persisted_data(hass) -> None:
     manager._store.async_save.assert_awaited_once_with(manager._data)
 
 
+async def test_native_history_after_robot_removal_cannot_recreate_data(hass) -> None:
+    """A late cleaning-finished callback must stay fenced after unload."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {"robots": {"removed": {"plans": {"private": {}}}}}
+    manager.async_cancel_and_wait = AsyncMock()
+
+    await manager.async_remove_robot("removed")
+
+    assert (await manager.async_import_native_history("removed", None, ())) is False
+    assert "removed" not in manager._data["robots"]
+
+
 async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
     manager = CleaningPlanManager(hass)
