@@ -34,6 +34,7 @@ from custom_components.matic_robot.area_binding import (
     binding_for_floor_plan,
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
+    translation_invariant_geometry_fingerprint,
 )
 from custom_components.matic_robot.area_selector import (
     GeometryTooComplex,
@@ -2019,3 +2020,17 @@ def test_legacy_scoped_binding_rejects_translated_unanchored_multi_room_map() ->
         ),
     )
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_translation_invariant_fingerprint_rejects_empty_floor_plan() -> None:
+    floor_plan = FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
+    with pytest.raises(ValueError, match="no room geometry"):
+        translation_invariant_geometry_fingerprint(floor_plan)
+
+
+def test_scoped_binding_rejects_unknown_binding_field() -> None:
+    area = _scoped_area()
+    binding = dict(area["map_binding"])
+    binding["unexpected"] = True
+    area["map_binding"] = binding
+    assert area_binding_status(area, _floor_plan()) is AreaBindingStatus.INVALID
