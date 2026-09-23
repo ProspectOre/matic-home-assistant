@@ -259,6 +259,14 @@ class _RoomGeometryIndex:
             self._query_work_remaining = 0
             raise
 
+    def containing_indices(self, x: float, y: float) -> tuple[int, ...]:
+        """Return indexed room positions containing one point."""
+        return tuple(
+            index
+            for index, polygon in enumerate(self.polygons)
+            if polygon.contains(x, y, 0.0)
+        )
+
 
 @SELECTORS.register("matic-area")
 class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):

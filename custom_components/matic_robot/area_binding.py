@@ -323,12 +323,32 @@ def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
-def _translation_room_anchors(floor_plan: FloorPlan) -> list[dict[str, Any]]:
-    """Persist bounded per-room shape and absolute bounds as frame anchors."""
+def _translation_room_anchors(
+    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+) -> list[dict[str, Any]]:
+    """Persist frame anchors only for rooms containing saved circle centers."""
     if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
         raise ValueError("too many rooms for scoped area frame anchors")
+    rooms = [
+        {
+            "room_id": room.id,
+            "name": room.name,
+            "boundary": [list(point) for point in room.boundary],
+        }
+        for room in floor_plan.rooms
+    ]
+    room_geometry = _RoomGeometryIndex(rooms)
+    containing_rooms = {
+        index
+        for circle in circles
+        for index in room_geometry.containing_indices(
+            float(circle["x"]), float(circle["y"])
+        )
+    }
     anchors = []
-    for room in floor_plan.rooms:
+    for index, room in enumerate(floor_plan.rooms):
+        if index not in containing_rooms:
+            continue
         polygon = _canonical_polygon(room.boundary)
         origin_x = min(x for x, _y in polygon)
         origin_y = min(y for _x, y in polygon)
@@ -368,7 +388,7 @@ def binding_for_area(
             translation_invariant_geometry_fingerprint(floor_plan)
         ),
         "translation_frame_bounds": translation_frame_bounds(floor_plan),
-        "translation_room_anchors": _translation_room_anchors(floor_plan),
+        "translation_room_anchors": _translation_room_anchors(floor_plan, circles),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -723,7 +743,7 @@ def area_binding_status(
     if not saved["local_segments_mm"] and saved_geometry != current["geometry_sha256"]:
         saved_anchors = saved.get("translation_room_anchors")
         if isinstance(saved_anchors, list):
-            current_anchors = _translation_room_anchors(floor_plan)
+            current_anchors = _translation_room_anchors(floor_plan, area["circles"])
             current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
             for anchor in current_anchors:
                 current_bounds_by_fingerprint.setdefault(
@@ -731,23 +751,16 @@ def area_binding_status(
                 ).append(anchor["bounds"])
             for anchor in saved_anchors:
                 old_bounds = anchor["bounds"]
-                if not any(
-                    old_bounds[0]
-                    <= _quantize_coordinate(float(circle["x"]))
-                    <= old_bounds[2]
-                    and old_bounds[1]
-                    <= _quantize_coordinate(float(circle["y"]))
-                    <= old_bounds[3]
-                    for circle in area["circles"]
-                ):
-                    continue
-                for new_bounds in current_bounds_by_fingerprint.get(
+                matching_bounds = current_bounds_by_fingerprint.get(
                     anchor["fingerprint"], ()
-                ):
-                    if any(
-                        new_bounds[index] - old_bounds[index] != 0 for index in range(4)
-                    ):
+                )
+                if len(matching_bounds) == 1:
+                    if matching_bounds[0] != old_bounds:
                         return AreaBindingStatus.GEOMETRY_CHANGED
+                elif len(matching_bounds) > 1 and all(
+                    new_bounds != old_bounds for new_bounds in matching_bounds
+                ):
+                    return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         if (
@@ -758,7 +771,8 @@ def area_binding_status(
         ):
             return AreaBindingStatus.GEOMETRY_CHANGED
         if (
-            "translation_frame_bounds" in saved
+            "translation_room_anchors" not in saved
+            and "translation_frame_bounds" in saved
             and saved_geometry != current["geometry_sha256"]
         ):
             old = saved["translation_frame_bounds"]

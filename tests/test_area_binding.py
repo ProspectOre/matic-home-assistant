@@ -2148,6 +2148,99 @@ def test_unanchored_area_fails_closed_when_all_frame_extrema_change() -> None:
     assert area_binding_status(area, edited) is AreaBindingStatus.GEOMETRY_CHANGED
 
 
+def test_unanchored_area_ignores_moved_remote_duplicate_room() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("home", "Home", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "remote",
+                "Remote",
+                ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0)),
+            ),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    changed = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=((21.0, 0.0), (31.0, 0.0), (31.0, 10.0), (21.0, 10.0)),
+            ),
+        ),
+    )
+
+    assert len(area["map_binding"]["translation_room_anchors"]) == 1
+    assert area_binding_status(area, changed) is AreaBindingStatus.CURRENT
+
+
+def test_unanchored_area_fails_closed_for_ambiguous_moved_duplicate_rooms() -> None:
+    boundary = ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("first", "First", boundary),
+            _room("second", "Second", boundary),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    shifted = replace(
+        floor_plan,
+        rooms=tuple(
+            replace(
+                room,
+                boundary=tuple((x + 1.0, y + 2.0) for x, y in room.boundary),
+            )
+            for room in floor_plan.rooms
+        ),
+    )
+
+    assert len(area["map_binding"]["translation_room_anchors"]) == 2
+    assert area_binding_status(area, shifted) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_unanchored_area_ignores_coincident_remote_extrema_edits() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "left",
+                "Left",
+                ((-20.0, 0.0), (-10.0, 0.0), (-10.0, 10.0), (-20.0, 10.0)),
+            ),
+            _room("home", "Home", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),
+            _room(
+                "right", "Right", ((20.0, 0.0), (30.0, 0.0), (30.0, 10.0), (20.0, 10.0))
+            ),
+        ),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((-19.0, 0.0), (-9.0, 0.0), (-9.0, 10.0), (-19.0, 10.0)),
+            ),
+            floor_plan.rooms[1],
+            replace(
+                floor_plan.rooms[2],
+                boundary=((21.0, 0.0), (31.0, 0.0), (31.0, 10.0), (21.0, 10.0)),
+            ),
+        ),
+    )
+
+    assert area_binding_status(area, changed) is AreaBindingStatus.CURRENT
+
+
 def test_translation_frame_bounds_rejects_empty_floor_plan() -> None:
     floor_plan = FloorPlan(42, "synthetic-partition", b"synthetic-partition", ())
     with pytest.raises(ValueError, match="no room geometry"):
