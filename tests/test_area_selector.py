@@ -159,6 +159,22 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     assert geometry.contains(128.5, 0.0) is False
 
 
+def test_room_index_fair_fallback_does_not_depend_on_room_order() -> None:
+    """A probe in the last overloaded room is found regardless of ordering."""
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(244)
+    ]
+    rooms = [
+        {"room_id": str(index), "name": "Room", "boundary": boundary}
+        for index in range(256)
+    ]
+    forward = _RoomGeometryIndex(rooms)
+    reverse = _RoomGeometryIndex(list(reversed(rooms)))
+
+    assert forward.contains(120.5, 0.0) is True
+    assert reverse.contains(120.5, 0.0) is True
+
+
 def test_room_index_skips_overloaded_polygon_outside_bounds() -> None:
     boundary = [
         [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(140)

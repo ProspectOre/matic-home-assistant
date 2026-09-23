@@ -131,6 +131,20 @@ class _RoomGeometryIndex:
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
+        overloaded = [
+            polygon
+            for polygon in self.polygons
+            if polygon.overloaded
+            and polygon._MAX_FALLBACK_EDGES >= len(polygon.boundary)
+            and polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
+            and polygon.minimum_y - tolerance <= y <= polygon.maximum_y + tolerance
+        ]
+        # Give every eligible overloaded room a deterministic share of the
+        # remaining work for this probe. Otherwise an earlier room can consume
+        # the aggregate budget and make the answer depend on room order.
+        fair_share = (
+            self._fallback_work_remaining // len(overloaded) if overloaded else 0
+        )
         for polygon in self.polygons:
             if polygon.overloaded:
                 edge_count = len(polygon.boundary)
@@ -143,10 +157,17 @@ class _RoomGeometryIndex:
                     continue
                 if edge_count > polygon._MAX_FALLBACK_EDGES:
                     continue
-                if edge_count > self._fallback_work_remaining:
+                if len(overloaded) > 1 and edge_count > fair_share:
+                    continue
+                if len(overloaded) <= 1 and edge_count > self._fallback_work_remaining:
                     continue
                 self._fallback_work_remaining -= edge_count
             if polygon.contains(x, y, tolerance):
+                if len(overloaded) > 1:
+                    self._fallback_work_remaining = max(
+                        0,
+                        self._fallback_work_remaining - fair_share * len(overloaded),
+                    )
                 return True
         return False
 
