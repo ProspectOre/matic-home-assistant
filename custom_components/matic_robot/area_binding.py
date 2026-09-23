@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
 from .area_selector import MaticAreaSelector, _RoomGeometryIndex
+from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
 from .client.models import FloorPlan
 from .const import DOMAIN
 
@@ -55,6 +56,7 @@ _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 # Keep robot-controlled local evidence and the tolerant bipartite matcher small
 # enough to run synchronously on Home Assistant's event loop.
 _MAX_LOCAL_SEGMENTS = 256
+_MAX_STORED_LOCAL_SEGMENTS = MAX_FLOOR_PLAN_BOUNDARY_POINTS
 _MAX_SEGMENT_CANDIDATE_CHECKS = 16_384
 _MAX_COMPATIBLE_SEGMENT_EDGES = 4_096
 _MAX_SEGMENT_MATCHING_WORK = 262_144
@@ -507,7 +509,7 @@ def _area_geometry_components(
             if second < first:
                 first, second = second, first
             segments.append((*first, *second))
-            if len(segments) > _MAX_LOCAL_SEGMENTS:
+            if len(segments) > _MAX_STORED_LOCAL_SEGMENTS:
                 raise ValueError("too many local floor-plan segments")
 
     occupancy_values = []
@@ -738,9 +740,13 @@ def _valid_digest(value: Any) -> bool:
 
 def _valid_local_occupancy(value: Any) -> bool:
     """Return whether saved occupancy probes have their bounded list shape."""
-    return isinstance(value, list) and all(
-        not isinstance(item, bool) and isinstance(item, int) and 0 <= item < 1 << 9
-        for item in value
+    return (
+        isinstance(value, list)
+        and len(value) <= _MAX_STORED_LOCAL_SEGMENTS
+        and all(
+            not isinstance(item, bool) and isinstance(item, int) and 0 <= item < 1 << 9
+            for item in value
+        )
     )
 
 

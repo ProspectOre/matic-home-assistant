@@ -123,7 +123,7 @@ def test_area_binding_rejects_excess_local_segments() -> None:
     )
 
     with (
-        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENTS", 1),
+        patch.object(area_binding_module, "_MAX_STORED_LOCAL_SEGMENTS", 1),
         pytest.raises(ValueError, match="too many local floor-plan segments"),
     ):
         binding_for_area(floor_plan, [{"x": 0.2, "y": 0.2, "radius": 0.1}])
@@ -151,24 +151,29 @@ def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
 
 def test_large_local_geometry_uses_hash_only_binding() -> None:
     floor_plan = _floor_plan()
-    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
-    segments = tuple((index, 0, index + 1, 1) for index in range(257))
-    components = (((500, 0, 100),), (511,), segments)
-    with patch.object(
-        area_binding_module, "_area_geometry_components", return_value=components
-    ):
-        binding = binding_for_area(floor_plan, circles)
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
+    boundary = [
+        *((index / 75, 0.0) for index in range(75)),
+        *((1.0, index / 75) for index in range(75)),
+        *((1.0 - index / 75, 1.0) for index in range(75)),
+        *((0.0, 1.0 - index / 75) for index in range(75)),
+    ]
+    floor_plan = replace(
+        floor_plan, rooms=(replace(floor_plan.rooms[0], boundary=tuple(boundary)),)
+    )
+    binding = binding_for_area(floor_plan, circles)
     assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
-
-    with patch.object(
-        area_binding_module, "_area_geometry_components", return_value=components
-    ):
-        area = {
-            "schema_version": AREA_SCHEMA_VERSION,
-            "circles": circles,
-            "map_binding": binding,
-        }
-        assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+    assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=(*boundary[:-1], (0.0, 0.9))),),
+    )
+    assert area_binding_status(area, changed) is not AreaBindingStatus.CURRENT
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
