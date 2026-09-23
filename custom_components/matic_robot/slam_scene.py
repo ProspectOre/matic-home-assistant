@@ -28,7 +28,7 @@ from .area_binding import (
     binding_for_area,
 )
 from .area_outline import validate_outline
-from .area_selector import MaticAreaSelector
+from .area_selector import MaticAreaSelector, _RoomGeometryIndex
 from .client.commands import CleaningMode, CoverageSetting
 from .client.exceptions import MaticError
 from .client.floor_plan import resolve_robot_map_position, robot_location_source
@@ -986,9 +986,12 @@ class MaticAreasView(HomeAssistantView):
             )
         serial_number = str(runtime.coordinator.data.info.serial_number)
         areas = []
+        room_geometry = _RoomGeometryIndex(self._rooms(runtime))
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
-            status = area_binding_status(area, floor_plan)
-            can_rebind = area_binding_allows_review(area, floor_plan, status=status)
+            status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+            can_rebind = area_binding_allows_review(
+                area, floor_plan, status=status, room_geometry=room_geometry
+            )
             areas.append(
                 {
                     "id": area_id,

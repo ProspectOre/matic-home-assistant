@@ -390,6 +390,7 @@ def _area_geometry_components(
     circles: Sequence[Mapping[str, Any]],
     *,
     center_tolerance: float = 0.0,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
     rooms = [
@@ -400,7 +401,7 @@ def _area_geometry_components(
         }
         for room in floor_plan.rooms
     ]
-    room_geometry = _RoomGeometryIndex(rooms)
+    room_geometry = room_geometry or _RoomGeometryIndex(rooms)
     normalized = _validate_area_circles(
         floor_plan,
         circles,
@@ -554,7 +555,10 @@ def _local_geometry_fingerprint(
 
 
 def area_binding_status(
-    area: Mapping[str, Any], floor_plan: FloorPlan
+    area: Mapping[str, Any],
+    floor_plan: FloorPlan,
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> AreaBindingStatus:
     """Compare one saved area with the current floor plan without guessing."""
     schema_version = area.get("schema_version")
@@ -602,6 +606,7 @@ def area_binding_status(
             floor_plan,
             area["circles"],
             center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
+            room_geometry=room_geometry,
         )
     except KeyError, OverflowError, TypeError, ValueError:
         return AreaBindingStatus.INVALID
@@ -636,15 +641,18 @@ def area_binding_allows_review(
     floor_plan: FloorPlan,
     *,
     status: AreaBindingStatus | None = None,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> bool:
     """Return whether stale coordinates can be shown for local confirmation."""
     binding_status = (
-        status if status is not None else area_binding_status(area, floor_plan)
+        status
+        if status is not None
+        else area_binding_status(area, floor_plan, room_geometry=room_geometry)
     )
     if binding_status is not AreaBindingStatus.GEOMETRY_CHANGED:
         return False
     try:
-        _validate_area_circles(floor_plan, area["circles"])
+        _validate_area_circles(floor_plan, area["circles"], room_geometry=room_geometry)
     except KeyError, TypeError, ValueError:
         return False
     return True

@@ -1146,11 +1146,13 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
 
 async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     runtime = _runtime()
-    current_binding = binding_for_floor_plan(runtime.coordinator.data.floor_plan)
+    circle = {"x": 0.1, "y": 0.1, "radius": 0.2}
+    review_circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
+    current_binding = binding_for_area(runtime.coordinator.data.floor_plan, [circle])
     runtime.cleaning_plans.areas.return_value = {
         "table": {
             "name": "Table",
-            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "circles": [circle],
             "cleaning_mode": "vacuum",
             "coverage_setting": "quick",
             "map_binding": current_binding,
@@ -1158,7 +1160,7 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         },
         "review": {
             "name": "Review",
-            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.1}],
+            "circles": [review_circle],
             "cleaning_mode": "vacuum_and_mop",
             "coverage_setting": "standard",
             "map_binding": binding_for_floor_plan(
@@ -1191,6 +1193,12 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
         response = await view.get(_request(hass), "entry")
 
     assert classify.call_count == 3
+    room_geometry = classify.call_args_list[0].kwargs["room_geometry"]
+    assert all(
+        call.kwargs["room_geometry"] is room_geometry
+        for call in classify.call_args_list
+    )
+    assert room_geometry._query_work_remaining < room_geometry._MAX_QUERY_WORK
 
     assert json.loads(response.body) == {
         "scene_url": "/api/matic_robot/slam_scene/entry",
