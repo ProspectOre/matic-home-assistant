@@ -98,8 +98,34 @@ jobs:
             exit 1
           fi
           head_prefix="${head_sha:0:10}"
+          body_has_request_for_current_head() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s --arg head "$head_sha" '
+                  test("(?s)<!-- review-request:v2 head=" + $head + " base=[0-9a-f]{40} -->")' \
+              >/dev/null
+          }
+          body_has_regular_review_mention() {
+            local comment_body="$1"
+            printf '%s' "$comment_body" \
+              | jq -e -R -s 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' \
+              >/dev/null
+          }
           if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" ]]; then
             request_marker="<!-- review-request:v2 head=$head_sha base=$base_sha -->"
+            if [[ "$EVENT_ACTION" != "created" \
+              && ( "$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted" ) ]] \
+              && { body_has_request_for_current_head "$EVENT_COMMENT_BODY" \
+                || body_has_request_for_current_head "$EVENT_PREVIOUS_COMMENT_BODY"; } \
+              && { body_has_regular_review_mention "$EVENT_COMMENT_BODY" \
+                || body_has_regular_review_mention "$EVENT_PREVIOUS_COMMENT_BODY"; }; then
+              {
+                echo "regular=true"
+                echo "head_sha=$head_sha"
+              } >> "$GITHUB_OUTPUT"
+              echo "Revoking review evidence for an edited or deleted exact-head request."
+              exit 0
+            fi
             if [[ "$EVENT_ACTION" == "created" \
               && "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ ]] \
               && printf '%s' "$EVENT_COMMENT_BODY" \

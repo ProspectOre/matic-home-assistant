@@ -240,6 +240,15 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel-in-progress: false" not in regular_comment
     assert SWITCHABLE_REVIEW_BOT in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
+    assert (
+        '"$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted"' in regular_comment
+    )
+    assert "body_has_request_for_current_head" in regular_comment
+    assert "body_has_regular_review_mention" in regular_comment
+    assert (
+        "Revoking review evidence for an edited or deleted exact-head request."
+        in regular_comment
+    )
     assert "body_could_be_regular_comment" in regular_comment
     assert "@codex review([[:space:]:]|$)" in regular_comment
     assert "before the pull request lookup" in regular_comment
