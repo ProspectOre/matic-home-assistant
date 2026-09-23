@@ -194,7 +194,10 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
 
     async def fake_leg(*_args, **_kwargs):
         manager.register_reconciliation_task(
-            "serial", asyncio.create_task(watcher()), dock=True, run_id="run-1"
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
         )
         return True
 
@@ -218,6 +221,7 @@ async def test_run_finalizer_preserves_scope_for_stop_watcher(hass) -> None:
     assert manager.dock_reconciliation_active("serial") is True
     watcher_release.set()
     await asyncio.sleep(0)
+    await asyncio.sleep(0)
     assert scope["run_id"] is None
 
 
@@ -234,7 +238,10 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
 
     async def fake_leg(*_args, **_kwargs):
         manager.register_reconciliation_task(
-            "serial", asyncio.create_task(watcher()), dock=True, run_id="run-1"
+            "serial",
+            asyncio.create_task(watcher()),
+            dock=True,
+            run_id=_kwargs["run_id"],
         )
         await watcher_started.wait()
         return True
@@ -257,6 +264,7 @@ async def test_run_finalizer_clears_scope_after_cancelled_stop_watcher(hass) -> 
 
     assert scope["run_id"] is not None
     manager.cancel_reconciliation_tasks("serial")
+    await asyncio.sleep(0)
     await asyncio.sleep(0)
     assert scope["run_id"] is None
 
