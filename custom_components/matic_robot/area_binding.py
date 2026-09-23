@@ -376,33 +376,6 @@ def _hash_only_area_geometry_fingerprint(
         )
         for circle in normalized
     )
-    neighborhood = (
-        min(x - radius for x, _y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-        max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-    )
-    segments: set[_LocalSegment] = set()
-    for room in floor_plan.rooms:
-        boundary = room.boundary
-        for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
-            room_geometry.charge_query_work()
-            clipped = _clip_segment(start, end, neighborhood)
-            if clipped is None:
-                continue
-            first = (
-                _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
-            )
-            second = (
-                _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
-            )
-            if second < first:
-                first, second = second, first
-            segments.add((*first, *second))
-    room_geometry.charge_query_work(len(segments))
-
     digest = hashlib.sha256()
     digest.update(_SCOPED_FINGERPRINT_DOMAIN)
     digest.update(struct.pack(">H", HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
@@ -422,9 +395,38 @@ def _hash_only_area_geometry_fingerprint(
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         digest.update(struct.pack(">H", occupancy))
-    digest.update(struct.pack(">I", len(segments)))
-    for segment in sorted(segments):
-        digest.update(struct.pack(">qqqq", *segment))
+        # Keep separated circles spatially separate in the fingerprint. A
+        # single enclosing rectangle would make unrelated geometry between
+        # them invalidate an otherwise unchanged area.
+        neighborhood = (
+            x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+            y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+            x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+            y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+        )
+        segments: set[_LocalSegment] = set()
+        for room in floor_plan.rooms:
+            boundary = room.boundary
+            for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+                room_geometry.charge_query_work()
+                clipped = _clip_segment(start, end, neighborhood)
+                if clipped is None:
+                    continue
+                first = (
+                    _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                    _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                )
+                second = (
+                    _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                    _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                )
+                if second < first:
+                    first, second = second, first
+                segments.add((*first, *second))
+        room_geometry.charge_query_work(len(segments))
+        digest.update(struct.pack(">I", len(segments)))
+        for segment in sorted(segments):
+            digest.update(struct.pack(">qqqq", *segment))
     return digest.hexdigest()
 
 

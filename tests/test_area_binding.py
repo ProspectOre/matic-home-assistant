@@ -210,6 +210,37 @@ def test_large_local_geometry_uses_hash_only_binding() -> None:
     assert area_binding_status(area, changed) is not AreaBindingStatus.CURRENT
 
 
+def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None:
+    edge = tuple(
+        [(index / 200 * 20, 0.0) for index in range(201)]
+        + [(20.0, index / 100 * 2) for index in range(101)]
+        + [(20 - index / 200 * 20, 2.0) for index in range(201)]
+        + [(0.0, 2 - index / 100 * 2) for index in range(101)]
+    )
+    base = FloorPlan(1, "partition", b"partition", (_room("main", "Main", edge),))
+    circles = [
+        {"x": 1.0, "y": 0.3, "radius": 0.2},
+        {"x": 19.0, "y": 0.3, "radius": 0.2},
+    ]
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+    binding = binding_for_area(base, circles)
+    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+
+    gap = _room("gap", "Gap", ((9.5, 0.5), (10.5, 0.5), (10.5, 1.5), (9.5, 1.5)))
+    changed = replace(base, rooms=(*base.rooms, gap))
+    assert (
+        area_binding_status(
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "circles": circles,
+                "map_binding": binding,
+            },
+            changed,
+        )
+        is AreaBindingStatus.CURRENT
+    )
+
+
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
     return {
         "schema_version": AREA_SCHEMA_VERSION,
