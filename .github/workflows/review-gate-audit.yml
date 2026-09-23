@@ -162,12 +162,16 @@ jobs:
 
           current_request_reaction_records() {
             local head_sha="$1"
-            local base_sha request_comment_ids
+            local base_sha request_comment_ids request_binding_statuses
             base_sha="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.sha')"
             [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || {
               echo '[]'
               return 0
             }
+            request_binding_statuses="$(
+              gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+                | jq -cs '[.[][] | select(.context == "review-gate-request") | select((.creator.login // "") == "github-actions[bot]")]'
+            )"
             request_comment_ids="$(
               gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
                 | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
@@ -183,11 +187,15 @@ jobs:
               [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
               gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" \
                 | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
-                    --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" '
+                    --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" \
+                    --arg base "$base_sha" --argjson bindings "$request_binding_statuses" '
                     [.[]
                      | select((.user.login // "") == $bot)
                      | select((.content // "") == "+1")
                      | select((.created_at // "") > $request_updated_at)
+                     | select(any($bindings[];
+                         .state == "success"
+                         and .description == ("review-request-comment:" + $id + "; base:" + $base)))
                      | {id: ("request-reaction:" + $id),
                         at: .created_at,
                         source: "request_reaction"}]'

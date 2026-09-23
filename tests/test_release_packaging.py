@@ -241,6 +241,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert SWITCHABLE_REVIEW_BOT in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
     assert "body_could_be_regular_comment" in regular_comment
+    assert "@codex review([[:space:]:]|$)" in regular_comment
     assert "before the pull request lookup" in regular_comment
     assert "body_is_regular_comment" in regular_comment
     assert "body_is_clean_comment" in regular_comment
@@ -252,6 +253,12 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "name: classify-regular-comment" in regular_comment
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
+    assert "request_id: ${{ steps.classify.outputs.request_id }}" in regular_comment
+    assert "review-request:v2 head=$head_sha base=$base_sha" in regular_comment
+    assert 'context="$REVIEW_REQUEST_CONTEXT"' in regular_comment
+    assert (
+        "review-request-comment:$REQUEST_ID; base:$REQUEST_BASE_SHA" in regular_comment
+    )
     assert "| jq -er '[.head.sha, .base.sha] | @tsv'" in regular_comment
     assert 'head_prefix="${head_sha:0:10}"' in regular_comment
     assert (
@@ -351,6 +358,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "review-request:v2 head=$head_sha base=$base_sha" in audit
     assert 'source: "request_reaction"' in audit
     assert '(.created_at // "") > $request_updated_at' in audit
+    assert '"review-gate-request"' in audit
+    assert '"review-request-comment:" + $id + "; base:" + $base' in audit
+    assert '"github-actions[bot]"' in audit
     assert '"|" + $prefix' in audit
     assert "full_head: ($body | exact_full_head)" in audit
     assert "legacy short-SHA clean issue-comment evidence must be revalidated" in audit
@@ -366,6 +376,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "review-request:v2 head=$head_sha base=$base_sha" in review_gate
     assert 'source: "request_reaction"' in review_gate
     assert '(.created_at // "") > $request_updated_at' in review_gate
+    assert '"review-gate-request"' in review_gate
+    assert '"review-request-comment:" + $id + "; base:" + $base' in review_gate
+    assert '"github-actions[bot]"' in review_gate
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "allow_auto_merge" in rollout

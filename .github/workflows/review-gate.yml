@@ -301,6 +301,11 @@ jobs:
                           and ($body | exact_full_head))}]'
             )"
             request_reaction_records="$(
+              request_binding_statuses="$(
+                gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+                  | jq -cs --arg context "review-gate-request" \
+                      '[.[][] | select(.context == $context) | select((.creator.login // "") == "github-actions[bot]")]'
+              )"
               # The bot positive reaction is tied to this exact request
               # comment. Reject it if the author edited that request later.
               request_comment_ids="$(
@@ -318,11 +323,16 @@ jobs:
                 [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
                 gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" \
                   | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
-                      --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" '
+                      --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" \
+                      --arg base "$base_sha" \
+                      --argjson bindings "$request_binding_statuses" '
                       [.[]
                        | select((.user.login // "") == $bot)
                        | select((.content // "") == "+1")
                        | select((.created_at // "") > $request_updated_at)
+                       | select(any($bindings[];
+                           .state == "success"
+                           and .description == ("review-request-comment:" + $id + "; base:" + $base)))
                        | {at: .created_at,
                           id: ("request-reaction-" + $id),
                           source: "request_reaction",
