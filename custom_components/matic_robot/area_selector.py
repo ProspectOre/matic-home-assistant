@@ -40,6 +40,7 @@ class _IndexedPolygon:
     """Answer point-in-polygon queries with bounded storage and work."""
 
     _BUCKET_COUNT = 256
+    _MAX_BUCKET_QUERY_SPAN = 4_096
     _MAX_EDGE_REFERENCES = 16_384
     # Match the room-boundary limit enforced by the protocol decoder. Charge
     # every fallback edge check to the shared query budget.
@@ -123,11 +124,20 @@ class _IndexedPolygon:
                 x, y, self.boundary, tolerance, work_limit
             )
 
+        first_bucket = self._bucket(y - tolerance - 1e-8)
+        last_bucket = self._bucket(y + tolerance + 1e-8)
+        if last_bucket - first_bucket + 1 > self._MAX_BUCKET_QUERY_SPAN:
+            if len(self.boundary) > self._MAX_FALLBACK_EDGES:
+                raise GeometryTooComplex(
+                    "room geometry exceeds the fallback edge limit"
+                )
+            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+                x, y, self.boundary, tolerance, work_limit
+            )
+
         edge_values: dict[tuple[int, int], tuple[list[float], list[float]]] = {}
-        for bucket in range(
-            self._bucket(y - tolerance - 1e-8),
-            self._bucket(y + tolerance + 1e-8) + 1,
-        ):
+        for bucket in range(first_bucket, last_bucket + 1):
+            charge_edge()
             for start, end in self.edges_by_bucket.get(bucket, ()):
                 charge_edge()
                 edge_values[(id(start), id(end))] = (start, end)

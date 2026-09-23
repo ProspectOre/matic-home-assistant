@@ -222,6 +222,24 @@ def test_room_index_budgets_indexed_candidate_references() -> None:
         geometry.contains(2_048.5, 0.0005)
 
 
+def test_indexed_polygon_uses_bounded_fallback_for_tiny_vertical_span() -> None:
+    polygon = _IndexedPolygon([[0.0, 0.0], [1.0, 0.0], [1.0, 1e-6], [0.0, 1e-6]])
+
+    assert polygon.overloaded is False
+    contained, work = polygon.contains_with_work_limit(0.5, 0.5e-6, 0.01, 100)
+
+    assert contained is True
+    assert work < 100
+
+
+def test_indexed_polygon_rejects_wide_bucket_span_over_fallback_edge_limit() -> None:
+    polygon = _IndexedPolygon([[float(index), 0.0] for index in range(4_097)])
+
+    assert polygon.overloaded is False
+    with pytest.raises(GeometryTooComplex, match="fallback edge limit"):
+        polygon.contains(2_048.0, 0.0, 0.01)
+
+
 def test_room_query_budget_covers_all_circle_probes_for_eight_rooms() -> None:
     """The aggregate cap covers the editor maximum at the reviewed room size."""
     maximum_circle_probes = 512 * 10
