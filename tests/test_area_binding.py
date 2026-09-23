@@ -1063,6 +1063,24 @@ def test_local_segment_correspondence_charges_candidate_generation() -> None:
     match.assert_not_called()
 
 
+def test_segment_context_stops_before_materializing_excessive_cells() -> None:
+    remaining = 8
+
+    def charge(work: int = 1) -> None:
+        nonlocal remaining
+        if work > remaining:
+            remaining = 0
+            raise GeometryTooComplex("local segment matching work budget exhausted")
+        remaining -= work
+
+    with pytest.raises(GeometryTooComplex):
+        area_binding_module._segment_context(
+            (0, 0, 10_000_000, 0), ((5_000_000, 0, 5_000_000),), charge_work=charge
+        )
+
+    assert remaining == 0
+
+
 def test_local_segment_correspondence_caps_segment_count() -> None:
     segments = tuple((index, 0, index + 1, 0) for index in range(4_097))
 
