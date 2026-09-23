@@ -339,7 +339,18 @@ def _hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
 ) -> str:
     """Reproduce the short-lived hash-only v2 signature for safe migration."""
-    normalized = _validate_area_circles(floor_plan, circles)
+    rooms = [
+        {
+            "room_id": room.id,
+            "name": room.name,
+            "boundary": [list(point) for point in room.boundary],
+        }
+        for room in floor_plan.rooms
+    ]
+    room_geometry = _RoomGeometryIndex(rooms)
+    normalized = _validate_area_circles(
+        floor_plan, circles, room_geometry=room_geometry
+    )
     ordered = sorted(
         (
             float(circle["x"]),
@@ -353,9 +364,6 @@ def _hash_only_area_geometry_fingerprint(
         min(y - radius for _x, y, radius in ordered) - _LOCAL_GEOMETRY_MARGIN_METERS,
         max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
         max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
-    )
-    room_boundaries = tuple(
-        [list(point) for point in room.boundary] for room in floor_plan.rooms
     )
     segments: set[_LocalSegment] = set()
     for room in floor_plan.rooms:
@@ -391,7 +399,7 @@ def _hash_only_area_geometry_fingerprint(
         )
         probes = _occupancy_probes(x, y, radius)
         occupancy = sum(
-            int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
+            int(room_geometry.contains(probe_x, probe_y)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         digest.update(struct.pack(">H", occupancy))
@@ -817,12 +825,11 @@ def _local_segment_correspondence(
 
     compatible: list[tuple[int, int, int]] = []
     maximum_pair_cost = 0
-    candidate_checks = 0
+    reference_visits = 0
     for saved_index, (saved_segment, saved_context) in enumerate(
         zip(saved, saved_contexts, strict=True)
     ):
         candidates: set[int] = set()
-        reference_visits = 0
         for cell_x, cell_y in saved_context[3]:
             for neighbor_x in range(cell_x - 1, cell_x + 2):
                 for neighbor_y in range(cell_y - 1, cell_y + 2):
@@ -834,9 +841,6 @@ def _local_segment_correspondence(
                             return None
                         candidates.add(current_index)
         for current_index in candidates:
-            candidate_checks += 1
-            if candidate_checks > _MAX_SEGMENT_CANDIDATE_CHECKS:
-                return None
             if _local_segment_contexts_match(
                 saved_segment,
                 saved_context,
@@ -1342,16 +1346,6 @@ def _validate_area_circles(
         )
     except vol.Invalid as err:
         raise ValueError("area circles are invalid for the mapped floor") from err
-
-
-def _point_in_floor(
-    x: float, y: float, room_boundaries: Sequence[list[list[float]]]
-) -> bool:
-    """Return whether one probe lies in any mapped room."""
-    return any(
-        MaticAreaSelector._point_in_polygon(x, y, boundary)
-        for boundary in room_boundaries
-    )
 
 
 def _clip_segment(

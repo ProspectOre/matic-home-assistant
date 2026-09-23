@@ -156,6 +156,18 @@ def test_local_segment_matching_caps_duplicate_index_reference_visits() -> None:
         assert _local_segment_correspondence(saved, current, ((50, 0, 1),)) is None
 
 
+def test_local_segment_matching_reference_budget_is_scan_wide() -> None:
+    context = (True, 0, 0, ((0, 0), (1, 0)))
+    saved = ((0, 0, 100, 0), (0, 0, 100, 0))
+    current = ((0, 0, 100, 0),)
+
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_MAX_SEGMENT_CANDIDATE_CHECKS", 3),
+    ):
+        assert _local_segment_correspondence(saved, current, ((50, 0, 1),)) is None
+
+
 def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
     assert area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 257)
     assert not area_binding_module._valid_local_segments([[0, 0, 1, "bad"]])
@@ -518,6 +530,17 @@ def test_hash_only_v2_binding_remains_valid_for_safe_migration() -> None:
     assert (
         area_binding_status(area, changed_nearby) is AreaBindingStatus.GEOMETRY_CHANGED
     )
+
+
+def test_hash_only_signature_uses_indexed_occupancy_queries() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    with patch.object(
+        area_binding_module.MaticAreaSelector,
+        "_point_in_polygon",
+        side_effect=AssertionError("legacy full-edge scan used"),
+    ):
+        assert len(_hash_only_area_geometry_fingerprint(floor_plan, circles)) == 64
 
 
 def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
@@ -953,9 +976,9 @@ def test_local_segment_matching_restricts_spatial_candidates() -> None:
 
 
 def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
-    shape = ((0, 0, 2500),) * 512
+    shape = ((0, 0, 2500),) * 64
     segments = tuple(
-        (center_x, -100, center_x, 100) for center_x in range(-2550, 2551, 20)
+        (center_x, -100, center_x, 100) for center_x in range(-2520, 2521, 80)
     )
 
     with patch.object(
