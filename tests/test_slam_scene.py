@@ -23,6 +23,7 @@ from custom_components.matic_robot.area_binding import (
     binding_for_area,
     binding_for_floor_plan,
 )
+from custom_components.matic_robot.area_selector import _RoomGeometryIndex
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -1242,6 +1243,56 @@ async def test_area_workspace_lists_current_and_stale_private_areas() -> None:
     assert areas_api_url("entry") == AREAS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):
         await view.get(_request(hass, admin=False), "entry")
+
+
+async def test_area_workspace_does_not_index_geometry_without_saved_areas() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.areas.return_value = {}
+    hass = _hass(_entry(runtime))
+    view = MaticAreasView()
+
+    with patch("custom_components.matic_robot.slam_scene._RoomGeometryIndex") as index:
+        response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.OK
+    assert json.loads(response.body)["areas"] == []
+    index.assert_not_called()
+
+
+async def test_area_workspace_lazily_indexes_stale_area_for_rebinding() -> None:
+    runtime = _runtime()
+    circle = {"x": 0.1, "y": 0.1, "radius": 0.1}
+    changed_floor = replace(
+        runtime.coordinator.data.floor_plan,
+        rooms=(
+            replace(
+                runtime.coordinator.data.floor_plan.rooms[0],
+                boundary=((0.01, 0.0), (0.3, 0.0), (0.3, 0.3), (0.0, 0.3)),
+            ),
+        ),
+    )
+    runtime.cleaning_plans.areas.return_value = {
+        "review": {
+            "name": "Review",
+            "circles": [circle],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "quick",
+            "map_binding": binding_for_floor_plan(changed_floor),
+            "schema_version": AREA_SCHEMA_VERSION,
+        }
+    }
+    hass = _hass(_entry(runtime))
+
+    with patch(
+        "custom_components.matic_robot.slam_scene._RoomGeometryIndex",
+        wraps=_RoomGeometryIndex,
+    ) as index:
+        response = await MaticAreasView().get(_request(hass), "entry")
+
+    area = json.loads(response.body)["areas"][0]
+    assert area["status"] == "geometry_changed"
+    assert area["can_rebind"] is True
+    index.assert_called_once()
 
 
 async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:

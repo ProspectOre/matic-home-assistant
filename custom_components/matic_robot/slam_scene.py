@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections import deque
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import partial
 from hashlib import sha256
@@ -22,6 +23,7 @@ from homeassistant.util import slugify
 
 from .area_binding import (
     AREA_SCHEMA_VERSION,
+    SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
     area_binding_allows_review,
     area_binding_status,
@@ -986,9 +988,21 @@ class MaticAreasView(HomeAssistantView):
             )
         serial_number = str(runtime.coordinator.data.info.serial_number)
         areas = []
-        room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+        room_geometry = None
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
+            saved_binding = area.get("map_binding")
+            uses_indexed_binding = (
+                type(area.get("schema_version")) is int
+                and area.get("schema_version") == AREA_SCHEMA_VERSION
+                and isinstance(saved_binding, Mapping)
+                and type(saved_binding.get("version")) is int
+                and saved_binding.get("version") == SCOPED_MAP_BINDING_VERSION
+            )
+            if uses_indexed_binding and room_geometry is None:
+                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+            if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
+                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
             can_rebind = area_binding_allows_review(
                 area, floor_plan, status=status, room_geometry=room_geometry
             )
