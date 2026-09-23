@@ -394,6 +394,28 @@ def test_scoped_binding_rejects_translated_map_without_local_boundary_anchor() -
     assert area_binding_status(area, translated) is AreaBindingStatus.GEOMETRY_CHANGED
 
 
+def test_scoped_binding_rejects_altered_circles_before_map_drift_fallback() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("room", "Room", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.35}])
+    altered = {**area, "circles": [{"x": 5.5, "y": 5.0, "radius": 0.35}]}
+    translated = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 0.0), (11.0, 0.0), (11.0, 10.0), (1.0, 10.0)),
+            ),
+        ),
+    )
+
+    assert area_binding_status(altered, translated) is AreaBindingStatus.INVALID
+
+
 def test_scoped_binding_uses_union_of_separated_mark_neighborhoods() -> None:
     floor_plan = FloorPlan(
         42,
