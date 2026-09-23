@@ -9,8 +9,9 @@ plan completed or that a person caused a stop.
 1. **Managed outcomes.** Every managed run gets one local `run_id` and emits a
    `matic_robot_plan_finished` event when its runner exits. Its terminal
    `outcome` is `completed`, `stopped_docked`, `recharge_suspended`,
-   `cancelled`, `failed`, or `unverified`; `reason_code`, `cause`, and verified
-   room counts and `room_outcomes` (`completed`, `partial`, or `unattempted`) explain the result. A later `matic_robot_plan_docked` event
+   `cancelled`, `failed`, or `unverified`; `reason_code`, `cause`, and aggregate
+   verified room counts explain the result without exposing the saved room list.
+   A later `matic_robot_plan_docked` event
    upgrades a cancelled or unverified stop to `stopped_docked` only after the
    correlated final DOCK is accepted. `room_completed` is emitted only after
    the existing native completion guard passes.

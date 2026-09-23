@@ -28,7 +28,6 @@ from .services import (
     _async_verify_leg_completion,
     _async_wait_for_settled_leg_handoff,
     _PreparedRoomDispatch,
-    _room_outcomes,
     _schedule_managed_dock_after_stop,
     _shutdown_suspends_run,
 )
@@ -665,14 +664,6 @@ async def async_recover_managed_run(
                         **summary,
                         "entity_id": checkpoint.get("entity_id"),
                         "terminal_activity": terminal_activity,
-                        "room_outcomes": _room_outcomes(
-                            manager,
-                            serial_number,
-                            run["plan_id"],
-                            run["run_id"],
-                            rooms,
-                            set(checkpoint.get("completed_room_ids", [])),
-                        ),
                     },
                 )
         shutdown_suspended = _shutdown_suspends_run(hass, manager, serial_number)
