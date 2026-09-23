@@ -263,8 +263,20 @@ jobs:
                         clean: ($body | stock_clean_envelope)}]'
             )"
             issue_comment_records="$(
+              local exact_head_request_at
+              exact_head_request_at="$(
+                gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+                  | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                      --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
+                        [.[][]
+                         | select((.user.login // "") != $bot)
+                         | select((.body // "") | contains($marker))
+                         | (.updated_at // .created_at)]
+                        | max // empty'
+              )"
               gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" \
+                    --arg prefix "$head_prefix" --arg request_at "$exact_head_request_at" '
                     def regular_heading:
                       ascii_downcase
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -274,10 +286,12 @@ jobs:
                     def availability_notice:
                       ascii_downcase
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-                    # Findings may use the router short SHA footer. Clean
-                    # evidence still requires the complete head SHA.
+                    # A short footer can prove a clean verdict only when a
+                    # preceding request binds it to the full current head and base.
                     def exact_reviewed_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                    def exact_full_head:
+                      test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60" + $head + "\\x60");
                     # An issue comment has no review-thread metadata. A generic
                     # suggestions envelope therefore cannot prove a clean verdict.
                     def stock_clean_issue_comment_envelope:
@@ -290,10 +304,13 @@ jobs:
                      | select(($body | security_heading) | not)
                      | select(($body | availability_notice) | not)
                      | select($body | exact_reviewed_head)
-                     | {at: (.updated_at // .created_at),
+                     | (.updated_at // .created_at) as $at
+                     | {at: $at,
                         id: ("issue-comment-" + (.id | tostring)),
                         source: "issue_comment",
-                        clean: ($body | stock_clean_issue_comment_envelope)}]'
+                        clean: (($body | stock_clean_issue_comment_envelope)
+                          and (($body | exact_full_head)
+                            or ($request_at != "" and $request_at < $at)))}]'
             )"
             jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
               {deliveries: ($reviews + $issue_comments),
@@ -359,14 +376,21 @@ jobs:
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
               jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
+                | ($deliveries | sort_by(.at) | last) as $latest_delivery
                 | (([$deliveries[] | select(.clean | not) | .at]
                     + [$reviews[]
                        | select(.id as $id | ($finding_ids | index($id)) != null)
                        | .at]
-                    + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
+                    + (if $issue_comment_at == ""
+                         or ($latest_delivery != null
+                           and $latest_delivery.source == "issue_comment"
+                           and $latest_delivery.clean
+                           and $latest_delivery.at >= $issue_comment_at)
+                       then []
+                       else [$issue_comment_at]
+                       end)
                     + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
                    | max // "") as $latest_finding_at
-                | ($deliveries | sort_by(.at) | last) as $latest_delivery
                 | {verdict:
                      (if $latest_delivery != null
                            and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
