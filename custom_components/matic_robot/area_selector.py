@@ -42,11 +42,14 @@ class _IndexedPolygon:
     _BUCKET_COUNT = 256
     _MAX_BUCKET_QUERY_SPAN = 4_096
     _MAX_EDGE_REFERENCES = 16_384
+    _MAX_TOTAL_EDGE_REFERENCES = 262_144
     # Match the room-boundary limit enforced by the protocol decoder. Charge
     # every fallback edge check to the shared query budget.
     _MAX_FALLBACK_EDGES = 4_096
 
-    def __init__(self, boundary: list[list[float]]) -> None:
+    def __init__(
+        self, boundary: list[list[float]], reference_limit: int | None = None
+    ) -> None:
         self.boundary = boundary
         xs = [float(point[0]) for point in boundary]
         ys = [float(point[1]) for point in boundary]
@@ -72,19 +75,30 @@ class _IndexedPolygon:
         self.bucket_height = max(span / self._BUCKET_COUNT, 1e-8)
         buckets: dict[int, list[tuple[list[float], list[float]]]] = {}
         references = 0
-        overloaded = False
+        remaining_references = (
+            self._MAX_EDGE_REFERENCES
+            if reference_limit is None
+            else min(self._MAX_EDGE_REFERENCES, reference_limit)
+        )
+        overloaded = remaining_references <= 0
         previous = boundary[-1]
-        for current in boundary:
-            first = self._bucket(min(float(previous[1]), float(current[1])) - 1e-8)
-            last = self._bucket(max(float(previous[1]), float(current[1])) + 1e-8)
-            count = last - first + 1
-            if references + count > self._MAX_EDGE_REFERENCES:
-                overloaded = True
-                break
-            for bucket in range(first, last + 1):
-                buckets.setdefault(bucket, []).append((previous, current))
-            references += count
-            previous = current
+        if not overloaded:
+            for current in boundary:
+                first = self._bucket(min(float(previous[1]), float(current[1])) - 1e-8)
+                last = self._bucket(max(float(previous[1]), float(current[1])) + 1e-8)
+                count = last - first + 1
+                if references + count > remaining_references:
+                    overloaded = True
+                    break
+                for bucket in range(first, last + 1):
+                    buckets.setdefault(bucket, []).append((previous, current))
+                references += count
+                previous = current
+        if overloaded:
+            # Fallback queries use the original boundary, so retaining partial
+            # references only wastes memory after the cap has been reached.
+            buckets.clear()
+        self.edge_reference_count = references
         self.edges_by_bucket = {
             bucket: tuple(edges) for bucket, edges in buckets.items()
         }
@@ -172,9 +186,18 @@ class _RoomGeometryIndex:
     # limits. Some decoder-valid maps exceed it; those areas fail closed in
     # the options flow rather than blocking Home Assistant on unbounded work.
     _MAX_QUERY_WORK = 10_600_000
+    # Bound retained index storage across the complete floor plan, not only
+    # independently inside each room polygon.
+    _MAX_TOTAL_EDGE_REFERENCES = 262_144
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
-        self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)
+        polygons = []
+        remaining_references = self._MAX_TOTAL_EDGE_REFERENCES
+        for room in rooms:
+            polygon = _IndexedPolygon(room["boundary"], remaining_references)
+            polygons.append(polygon)
+            remaining_references -= polygon.edge_reference_count
+        self.polygons = tuple(polygons)
         self.indexed_polygons = tuple(
             polygon for polygon in self.polygons if not polygon.overloaded
         )

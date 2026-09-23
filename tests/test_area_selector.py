@@ -255,6 +255,38 @@ def test_room_query_budget_covers_all_circle_probes_for_eight_rooms() -> None:
     assert _RoomGeometryIndex._MAX_QUERY_WORK >= reviewed_room_work
 
 
+def test_room_index_caps_edge_references_across_the_floor_plan(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cap = 600
+    monkeypatch.setattr(_RoomGeometryIndex, "_MAX_TOTAL_EDGE_REFERENCES", cap)
+    rooms = [
+        {
+            "room_id": str(index),
+            "name": "Room",
+            "boundary": [
+                [float(index), 0.0],
+                [float(index) + 0.3, 0.0],
+                [float(index) + 0.3, 0.3],
+                [float(index), 0.3],
+            ],
+        }
+        for index in range(3)
+    ]
+
+    geometry = _RoomGeometryIndex(rooms)
+    retained_references = sum(
+        len(edges)
+        for polygon in geometry.polygons
+        for edges in polygon.edges_by_bucket.values()
+    )
+
+    assert retained_references <= cap
+    assert sum(polygon.edge_reference_count for polygon in geometry.polygons) <= cap
+    assert any(polygon.overloaded for polygon in geometry.polygons)
+    assert geometry.contains(2.15, 0.15) is True
+
+
 def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     """Overlapping hostile rooms cannot multiply linear fallback work forever."""
     boundary = [

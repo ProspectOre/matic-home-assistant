@@ -591,6 +591,26 @@ def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> No
     assert charge_work.call_count >= (2 * boundary_edge_count) + 3
 
 
+def test_area_geometry_charges_neighborhood_index_cell_visits() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    indexed_geometry = area_binding_module._room_geometry_index(floor_plan)
+    fallback_geometry = area_binding_module._room_geometry_index(floor_plan)
+
+    with patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 4_096):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=indexed_geometry
+        )
+    with patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=fallback_geometry
+        )
+
+    assert (
+        indexed_geometry._query_work_remaining < fallback_geometry._query_work_remaining
+    )
+
+
 def test_occupancy_explanation_rejects_malformed_evidence() -> None:
     assert not _occupancy_changes_are_explained(
         (),

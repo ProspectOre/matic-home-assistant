@@ -496,6 +496,7 @@ def _area_geometry_components(
                 candidates: set[int] = set()
                 for cell_x in range(first_x, last_x + 1):
                     for cell_y in range(first_y, last_y + 1):
+                        room_geometry.charge_query_work()
                         for index in neighborhood_index.get((cell_x, cell_y), ()):
                             room_geometry.charge_query_work()
                             candidates.add(index)
