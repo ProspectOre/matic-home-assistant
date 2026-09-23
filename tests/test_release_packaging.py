@@ -338,6 +338,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "current_regular_comment_records" in audit
     assert "def exact_reviewed_head:" in audit
     assert '"|" + $prefix' in audit
+    assert "full_head: ($body | exact_full_head)" in audit
+    assert "legacy short-SHA clean issue-comment evidence must be revalidated" in audit
     assert "current_regular_review_records" in audit
     assert "databaseId state submittedAt updatedAt" in audit
     assert 'select((.state // "") != "DISMISSED")' in audit
