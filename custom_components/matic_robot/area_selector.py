@@ -36,7 +36,9 @@ class _IndexedPolygon:
 
     _BUCKET_COUNT = 256
     _MAX_EDGE_REFERENCES = 16_384
-    _MAX_FALLBACK_EDGES = 65_536
+    # Keep the exceptional linear path small enough that repeated circle and
+    # occupancy probes cannot turn one room into an event-loop pause.
+    _MAX_FALLBACK_EDGES = 256
 
     def __init__(self, boundary: list[list[float]]) -> None:
         self.boundary = boundary

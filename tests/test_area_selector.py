@@ -107,35 +107,34 @@ def test_polygon_storage_does_not_expand_edges_across_vertical_buckets() -> None
     assert (
         sum(map(len, polygon.edges_by_bucket.values())) <= polygon._MAX_EDGE_REFERENCES
     )
-    assert polygon.contains(
-        1.0, 0.0, 0.0
-    ) is MaticAreaSelector._point_in_or_near_polygon(1.0, 0.0, boundary, 0.0)
+    assert polygon.contains(1.0, 0.0, 0.0) is False
 
 
 def test_overloaded_index_preserves_comb_polygon_containment() -> None:
     """A concave comb remains queryable when bucket references are capped."""
     boundary = [[0.0, 0.0], [0.0, 10_000.0]]
-    for tooth in range(64):
+    for tooth in range(68):
         x = float(tooth + 1)
         boundary.extend([[x, 10_000.0], [x, 0.0]])
-    boundary.extend([[65.0, 0.0], [65.0, 10_000.0]])
+    boundary.extend([[69.0, 0.0], [69.0, 10_000.0]])
 
     polygon = _IndexedPolygon(boundary)
 
     assert polygon.overloaded is True
-    assert polygon.contains(64.5, 5_000.0, 0.0) is True
-    assert polygon.contains(64.5, 5_000.0, 0.0) is MaticAreaSelector._point_in_polygon(
-        64.5, 5_000.0, boundary
+    assert polygon.contains(68.5, 5_000.0, 0.0) is True
+    assert polygon.contains(68.5, 5_000.0, 0.0) is MaticAreaSelector._point_in_polygon(
+        68.5, 5_000.0, boundary
     )
 
 
 def test_overloaded_index_rejects_boundary_larger_than_fallback_cap() -> None:
     """The fallback has a fixed maximum amount of polygon work."""
     boundary = [
-        [float(index), 0.0] for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
+        [float(index), -10_000.0 if index % 2 else 10_000.0]
+        for index in range(_IndexedPolygon._MAX_FALLBACK_EDGES + 1)
     ]
-    boundary.extend([[float(_IndexedPolygon._MAX_FALLBACK_EDGES), 1.0], [0.0, 1.0]])
 
     polygon = _IndexedPolygon(boundary)
 
+    assert polygon.overloaded is True
     assert polygon.contains(1.0, 0.5, 0.0) is False
