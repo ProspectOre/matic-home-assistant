@@ -341,6 +341,11 @@ async def test_expired_candidate_reblocks_on_fresh_floor_return(
         assert store.live_session_verified
         # Opaque wire metadata alone is still an unchanged page replay.
         await add(replace(first, value=first.value + b"\x98\x06\x01"))
+        assert not store.live_session_verified
+        # Re-establish independent active-layer proof before testing that fresh
+        # candidate evidence blocks it again.
+        await store.async_add(synthetic_slam_entry(mission_id=1))
+        await store.async_add_structure(synthetic_structure_entry(mission_id=1))
         assert store.live_session_verified
         if change == "page":
             fresh = fixture(mission_id=2, page_x=3)
