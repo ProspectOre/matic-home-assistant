@@ -575,6 +575,11 @@ def _schedule_native_reconciliation_recovery(
             plans,
             serial_number,
             pending,
+            generation=(
+                plans.robot_generation(serial_number)
+                if hasattr(plans, "robot_generation")
+                else None
+            ),
         ),
         f"{DOMAIN} native stop recovery",
     )
@@ -588,6 +593,8 @@ async def _async_resume_native_reconciliation(
     plans: CleaningPlanManager,
     serial_number: str,
     pending: dict[str, str],
+    *,
+    generation: int | None = None,
 ) -> None:
     """Poll native history for only a retained marker's remaining window."""
     dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
@@ -613,10 +620,12 @@ async def _async_resume_native_reconciliation(
                 )
             else:
                 if plans.pending_native_reconciliation(serial_number) == pending:
+                    kwargs = {} if generation is None else {"generation": generation}
                     await plans.async_import_native_history(
                         serial_number,
                         coordinator.data.floor_plan,
                         native_history,
+                        **kwargs,
                     )
 
 
