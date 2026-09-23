@@ -246,6 +246,46 @@ async def test_slam_map_transition_drops_changed_identity_during_recovery_wait(
     scheduled[1].close()
 
 
+async def test_slam_map_transition_cancelled_recovery_suppresses_duplicate_sync(
+    hass,
+) -> None:
+    """Cancellation leaves the attempted identity fenced from duplicate sync."""
+    entry = _entry()
+    scheduled: list[object] = []
+    entry.async_create_background_task.side_effect = lambda _hass, target, _name: (
+        scheduled.append(target)
+    )
+    started = asyncio.Event()
+    blocked = asyncio.Event()
+    slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False),
+        mission_identity=SlamMapIdentity("00" * 32, 43),
+        async_add_listener=MagicMock(return_value=MagicMock()),
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(
+            floor_plan=FloorPlan(42, "synthetic-partition", b"partition", ())
+        ),
+        async_request_floor_plan_refresh=AsyncMock(),
+    )
+
+    async def sleep(delay: int) -> None:
+        if delay == FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS:
+            started.set()
+            await blocked.wait()
+
+    with patch("custom_components.matic_robot.asyncio.sleep", side_effect=sleep):
+        _register_slam_map_floor_plan_sync(hass, entry, slam_map, coordinator)
+        task = asyncio.create_task(scheduled[0])
+        await started.wait()
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    assert coordinator.async_request_floor_plan_refresh.await_count == 4
+    assert len(scheduled) == 1
+
+
 async def test_slam_map_transition_drops_identity_changed_without_wake(hass) -> None:
     """A changed identity is discarded even when the wait times out normally."""
     entry = _entry()
