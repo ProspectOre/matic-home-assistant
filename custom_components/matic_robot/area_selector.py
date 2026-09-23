@@ -41,9 +41,9 @@ class _IndexedPolygon:
 
     _BUCKET_COUNT = 256
     _MAX_EDGE_REFERENCES = 16_384
-    # Keep the exceptional linear path small enough that repeated circle and
-    # occupancy probes cannot turn one room into an event-loop pause.
-    _MAX_FALLBACK_EDGES = 256
+    # Match the room-boundary limit enforced by the protocol decoder. Charge
+    # every fallback edge check to the shared query budget.
+    _MAX_FALLBACK_EDGES = 4_096
 
     def __init__(self, boundary: list[list[float]]) -> None:
         self.boundary = boundary
@@ -94,36 +94,51 @@ class _IndexedPolygon:
 
     def contains(self, x: float, y: float, tolerance: float) -> bool:
         """Return whether a point is inside or tolerably near this polygon."""
+        contained, _ = self.contains_with_work_limit(x, y, tolerance, None)
+        return contained
+
+    def contains_with_work_limit(
+        self, x: float, y: float, tolerance: float, work_limit: int | None
+    ) -> tuple[bool, int]:
+        """Return containment and edge work performed under a shared budget."""
+        work = 0
+
+        def charge_edge() -> None:
+            nonlocal work
+            work += 1
+            if work_limit is not None and work > work_limit:
+                raise GeometryTooComplex("room geometry query budget exhausted")
+
         if not (
             self.minimum_x - tolerance <= x <= self.maximum_x + tolerance
             and self.minimum_y - tolerance <= y <= self.maximum_y + tolerance
         ):
-            return False
+            return False, work
         if self.overloaded:
-            # A valid polygon can exceed the index reference budget without being
-            # unbounded. Preserve containment with a bounded linear fallback, while
-            # still rejecting hostile plans that exceed the explicit work cap.
             if len(self.boundary) > self._MAX_FALLBACK_EDGES:
-                return False
-            return MaticAreaSelector._point_in_or_near_polygon(
-                x, y, self.boundary, tolerance
+                raise GeometryTooComplex(
+                    "room geometry exceeds the fallback edge limit"
+                )
+            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+                x, y, self.boundary, tolerance, work_limit
             )
-        edge_values = {
-            (id(start), id(end)): (start, end)
-            for bucket in range(
-                self._bucket(y - tolerance - 1e-8),
-                self._bucket(y + tolerance + 1e-8) + 1,
-            )
-            for start, end in self.edges_by_bucket.get(bucket, ())
-        }.values()
-        edges = tuple(edge_values)
-        if any(
-            MaticAreaSelector._point_on_segment(x, y, start, end)
-            for start, end in edges
+
+        edge_values: dict[tuple[int, int], tuple[list[float], list[float]]] = {}
+        for bucket in range(
+            self._bucket(y - tolerance - 1e-8),
+            self._bucket(y + tolerance + 1e-8) + 1,
         ):
-            return True
+            for start, end in self.edges_by_bucket.get(bucket, ()):
+                charge_edge()
+                edge_values[(id(start), id(end))] = (start, end)
+        edges = tuple(edge_values.values())
+        for start, end in edges:
+            charge_edge()
+            if MaticAreaSelector._point_on_segment(x, y, start, end):
+                return True, work
         inside = False
         for previous, current in edges:
+            charge_edge()
             current_x, current_y = (float(value) for value in current)
             previous_x, previous_y = (float(value) for value in previous)
             if (current_y > y) != (previous_y > y) and x < (
@@ -132,28 +147,35 @@ class _IndexedPolygon:
             ):
                 inside = not inside
         if inside or not tolerance:
-            return inside
-        return any(
-            MaticAreaSelector._point_near_segment(x, y, start, end, tolerance)
-            for start, end in edges
-        )
+            return inside, work
+        for start, end in edges:
+            charge_edge()
+            if MaticAreaSelector._point_near_segment(x, y, start, end, tolerance):
+                return True, work
+        return False, work
 
 
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
-    _MAX_FALLBACK_WORK = 2_000_000
+    _MAX_QUERY_WORK = 2_500_000
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)
-        self._fallback_work_remaining = self._MAX_FALLBACK_WORK
+        self._query_work_remaining = self._MAX_QUERY_WORK
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
         # Indexed rooms have a fixed reference cap, so check them before any
         # fallback that may need to fail closed for excessive geometry.
         for polygon in self.polygons:
-            if not polygon.overloaded and polygon.contains(x, y, tolerance):
+            if polygon.overloaded:
+                continue
+            contained, work = polygon.contains_with_work_limit(
+                x, y, tolerance, self._query_work_remaining
+            )
+            self._query_work_remaining -= work
+            if contained:
                 return True
 
         overloaded = sorted(
@@ -167,20 +189,10 @@ class _RoomGeometryIndex:
             key=lambda polygon: polygon.fallback_order_key,
         )
         for polygon in overloaded:
-            if len(polygon.boundary) > polygon._MAX_FALLBACK_EDGES:
-                raise GeometryTooComplex(
-                    "room geometry exceeds the fallback edge limit"
-                )
-            contained, work = (
-                MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
-                    x,
-                    y,
-                    polygon.boundary,
-                    tolerance,
-                    self._fallback_work_remaining,
-                )
+            contained, work = polygon.contains_with_work_limit(
+                x, y, tolerance, self._query_work_remaining
             )
-            self._fallback_work_remaining -= work
+            self._query_work_remaining -= work
             if contained:
                 return True
         return False
