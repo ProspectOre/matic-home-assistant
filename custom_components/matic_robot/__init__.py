@@ -202,6 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        plans.activate_robot(serial_number)
         area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )

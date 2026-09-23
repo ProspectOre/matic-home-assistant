@@ -712,6 +712,11 @@ class CleaningPlanManager:
         if reconciliation_tasks:
             await asyncio.gather(*reconciliation_tasks, return_exceptions=True)
 
+    @callback
+    def activate_robot(self, serial_number: str) -> None:
+        """Clear removal state when a config entry activates this robot."""
+        self._removed_robots.discard(serial_number)
+
     async def async_remove_robot(self, serial_number: str) -> None:
         """Cancel work and erase one robot's private persisted planning data."""
         self._removed_robots.add(serial_number)
@@ -891,24 +896,25 @@ class CleaningPlanManager:
         records: Iterable[CleaningSessionRecord],
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
-        if serial_number in self._removed_robots:
-            return False
         if floor_plan is None:
             return False
-        robot = self._robot(serial_number)
-        before = deepcopy(robot)
-        records = tuple(records)
-        changed = _import_native_room_activity(robot, floor_plan, records)
-        reconciled: list[dict[str, str]] = []
-        changed = (
-            _reconcile_pending_native_history(
-                robot, floor_plan, records, on_reconciled=reconciled.append
+        async with self.command_lock(serial_number):
+            if serial_number in self._removed_robots:
+                return False
+            robot = self._robot(serial_number)
+            before = deepcopy(robot)
+            records = tuple(records)
+            changed = _import_native_room_activity(robot, floor_plan, records)
+            reconciled: list[dict[str, str]] = []
+            changed = (
+                _reconcile_pending_native_history(
+                    robot, floor_plan, records, on_reconciled=reconciled.append
+                )
+                or changed
             )
-            or changed
-        )
-        if not changed:
-            return False
-        await self._async_save_native_history(serial_number, before)
+            if not changed or serial_number in self._removed_robots:
+                return False
+            await self._async_save_native_history(serial_number, before)
         for marker in reconciled:
             entity_id = er.async_get(self.hass).async_get_entity_id(
                 "vacuum", DOMAIN, f"{serial_number}_vacuum"
