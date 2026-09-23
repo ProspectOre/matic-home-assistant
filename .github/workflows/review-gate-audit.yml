@@ -160,6 +160,40 @@ jobs:
                       full_head: ($body | exact_full_head)}]'
           }
 
+          current_request_reaction_records() {
+            local head_sha="$1"
+            local base_sha request_comment_ids
+            base_sha="$(gh api "repos/$REPO/pulls/$PR_NUMBER" --jq '.base.sha')"
+            [[ "$base_sha" =~ ^[0-9a-f]{40}$ ]] || {
+              echo '[]'
+              return 0
+            }
+            request_comment_ids="$(
+              gh api "repos/$REPO/issues/$PR_NUMBER/comments?per_page=100" --paginate --slurp \
+                | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
+                      [.[][]
+                       | select((.user.login // "") != $bot)
+                       | select((.body // "") | contains($marker))
+                       | select((.body // "") | test("(?mi)^@codex review([[:space:]:]|$)"))
+                       | [.id, (.updated_at // .created_at)]]
+                      | .[] | @tsv'
+            )"
+            while IFS=$'\t' read -r request_comment_id request_updated_at; do
+              [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
+              gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" \
+                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" '
+                    [.[]
+                     | select((.user.login // "") == $bot)
+                     | select((.content // "") == "+1")
+                     | select((.created_at // "") > $request_updated_at)
+                     | {id: ("request-reaction:" + $id),
+                        at: .created_at,
+                        source: "request_reaction"}]'
+            done <<< "$request_comment_ids" | jq -s 'add // []'
+          }
+
           current_regular_review_records() {
             local head_sha="$1"
             local head_prefix="${head_sha:0:10}"
@@ -254,15 +288,16 @@ jobs:
           gate_updated_at="$(jq -r '.updated_at // empty' <<< "$gate_snapshot")"
           gate_description="$(jq -r '.description // empty' <<< "$gate_snapshot")"
           comment_records="$(current_regular_comment_records "$head_sha")"
+          request_reaction_records="$(current_request_reaction_records "$head_sha")"
           review_records="$(current_regular_review_records "$head_sha")"
-          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reviews "$review_records" '$comments + $reviews')"
+          evidence_records="$(jq -cn --argjson comments "$comment_records" --argjson reactions "$request_reaction_records" --argjson reviews "$review_records" '$comments + $reactions + $reviews')"
           latest_evidence_at="$(jq -r '[.[].at] | max // empty' <<< "$evidence_records")"
           evidence_ids="$(jq -c '[.[].id]' <<< "$evidence_records")"
           evidence_marker="$(
             jq -r '
               (.description // "") as $description
-              | if ($description | test("; evidence (review|issue-comment):[1-9][0-9]*$")) then
-                  ($description | capture("; evidence (?<id>(?:review|issue-comment):[1-9][0-9]*)$").id)
+              | if ($description | test("; evidence (review|issue-comment|request-reaction):[1-9][0-9]*$")) then
+                  ($description | capture("; evidence (?<id>(?:review|issue-comment|request-reaction):[1-9][0-9]*)$").id)
                 else
                   ""
                 end' <<< "$gate_snapshot"

@@ -260,8 +260,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
-    assert "def exact_reviewed_head:" in regular_comment
-    assert "review-request:v2 head=$head_sha base=$base_sha" in regular_comment
+    assert "def exact_full_head:" in regular_comment
     regular_routing = regular_comment[
         regular_comment.index("body_is_regular_comment()") : regular_comment.index(
             "body_is_clean_comment()"
@@ -271,8 +270,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         regular_comment.index("body_is_clean_comment()") :
     ]
     assert "$prefix" in regular_routing
-    assert "$prefix" in clean_validation
-    assert "($request_at < $comment_at)" in clean_validation
+    assert "def exact_reviewed_head:" in regular_routing
+    assert "$prefix" not in clean_validation
+    assert "exact_full_head" in clean_validation
     assert '--arg prefix "$head_prefix"' in regular_routing
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
@@ -347,6 +347,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "availability_notice) | not" in audit
     assert "current_regular_comment_records" in audit
     assert "def exact_reviewed_head:" in audit
+    assert "current_request_reaction_records" in audit
+    assert "review-request:v2 head=$head_sha base=$base_sha" in audit
+    assert 'source: "request_reaction"' in audit
+    assert '(.created_at // "") > $request_updated_at' in audit
     assert '"|" + $prefix' in audit
     assert "full_head: ($body | exact_full_head)" in audit
     assert "legacy short-SHA clean issue-comment evidence must be revalidated" in audit
@@ -358,6 +362,10 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "is_reconciliation_pending" in audit
     assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "didn.t find any major issues" in audit
+    assert "request_reaction_records" in review_gate
+    assert "review-request:v2 head=$head_sha base=$base_sha" in review_gate
+    assert 'source: "request_reaction"' in review_gate
+    assert '(.created_at // "") > $request_updated_at' in review_gate
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "allow_auto_merge" in rollout
