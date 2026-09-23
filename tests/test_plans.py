@@ -127,6 +127,194 @@ def _call(hass, *, return_to_base: bool = False) -> ServiceCall:
     )
 
 
+async def test_remove_robot_erases_only_its_persisted_data(hass) -> None:
+    """Removing an entry must not leave its private data or erase another robot."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {
+        "robots": {
+            "removed": {"plans": {"private": {"name": "Bedroom"}}},
+            "retained": {"plans": {"shared": {"name": "Kitchen"}}},
+        }
+    }
+    manager.async_cancel_and_wait = AsyncMock()
+
+    await manager.async_remove_robot("removed")
+
+    manager.async_cancel_and_wait.assert_awaited_once_with("removed")
+    assert manager._data == {
+        "robots": {
+            "retained": {"plans": {"shared": {"name": "Kitchen"}}},
+        }
+    }
+    manager._store.async_save.assert_awaited_once_with(manager._data)
+
+
+async def test_remove_robot_restores_data_when_persist_fails(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"removed": {"plans": {"private": {}}}}}
+    manager.async_cancel_and_wait = AsyncMock()
+    manager._store = SimpleNamespace(async_save=AsyncMock(side_effect=OSError))
+
+    with pytest.raises(OSError):
+        await manager.async_remove_robot("removed")
+
+    assert "removed" in manager._data["robots"]
+
+
+async def test_late_plan_save_cannot_recreate_robot_during_removal(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"removed": {"plans": {}}}}
+    manager.async_cancel_and_wait = AsyncMock()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    save_count = 0
+
+    async def save(_data) -> None:
+        nonlocal save_count
+        save_count += 1
+        save_started.set()
+        await release_save.wait()
+
+    manager._store = SimpleNamespace(async_save=save)
+    removal = asyncio.create_task(manager.async_remove_robot("removed"))
+    await save_started.wait()
+
+    late_save = asyncio.create_task(
+        manager.async_save_plan("removed", "late", {"name": "Late"})
+    )
+    await asyncio.sleep(0)
+    assert not late_save.done()
+    assert "removed" not in manager._data["robots"]
+
+    release_save.set()
+    await removal
+    await late_save
+
+    assert "removed" not in manager._data["robots"]
+    assert save_count == 1
+
+
+async def test_robot_removal_serializes_store_writes_across_robots(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {
+        "robots": {
+            "removed": {"plans": {"private": {}}},
+            "retained": {"plans": {"shared": {}}},
+        }
+    }
+    manager.async_cancel_and_wait = AsyncMock()
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    completed_saves: list[dict] = []
+    save_count = 0
+
+    async def save(data) -> None:
+        nonlocal save_count
+        save_count += 1
+        snapshot = deepcopy(data)
+        if save_count == 1:
+            save_started.set()
+            await release_save.wait()
+        completed_saves.append(snapshot)
+
+    manager._store = SimpleNamespace(async_save=save)
+    retained_save = asyncio.create_task(manager._async_save_and_notify("retained"))
+    await save_started.wait()
+
+    removal = asyncio.create_task(manager.async_remove_robot("removed"))
+    await asyncio.sleep(0)
+    assert not removal.done()
+    assert "removed" in manager._data["robots"]
+
+    release_save.set()
+    await retained_save
+    await removal
+
+    assert save_count == 2
+    assert "removed" in completed_saves[0]["robots"]
+    assert "removed" not in completed_saves[-1]["robots"]
+
+
+async def test_removed_entry_generation_stays_fenced_after_reactivation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"serial": {}}}
+    old_generation = manager.activate_robot("serial")
+    await manager.async_remove_robot("serial")
+    manager.activate_robot("serial")
+
+    floor_plan = FloorPlan(1, "partition", b"partition", ())
+
+    assert (
+        await manager.async_import_native_history(
+            "serial", floor_plan, (), generation=old_generation
+        )
+        is False
+    )
+
+
+async def test_native_history_after_robot_removal_cannot_recreate_data(hass) -> None:
+    """A late cleaning-finished callback must stay fenced after unload."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {"robots": {"removed": {"plans": {"private": {}}}}}
+    manager.async_cancel_and_wait = AsyncMock()
+
+    await manager.async_remove_robot("removed")
+
+    assert (await manager.async_import_native_history("removed", None, ())) is False
+    assert "removed" not in manager._data["robots"]
+
+
+async def test_robot_activation_clears_removal_tombstone(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._removed_robots.add("serial")
+
+    manager.activate_robot("serial")
+
+    assert "serial" not in manager._removed_robots
+
+
+async def test_native_history_rechecks_removal_after_waiting_for_lock(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._data = {"robots": {"serial": {}}}
+
+    class MarkRemoved:
+        async def __aenter__(self):
+            manager._removed_robots.add("serial")
+
+        async def __aexit__(self, *args):
+            return None
+
+    manager.lock = lambda _serial: MarkRemoved()
+
+    floor_plan = FloorPlan(1, "partition", b"partition", ())
+
+    assert await manager.async_import_native_history("serial", floor_plan, ()) is False
+
+
+async def test_native_history_lock_does_not_claim_managed_plan(hass) -> None:
+    manager = CleaningPlanManager(hass)
+
+    async with manager.native_history_lock("serial"):
+        assert manager.has_managed_task("serial") is False
+
+
+async def test_remove_robot_waits_for_pending_native_history_save(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {"robots": {"removed": {}}}
+    manager.async_cancel_and_wait = AsyncMock()
+    pending = asyncio.Event()
+    manager._native_history_saves["removed"] = {pending}
+
+    removal = asyncio.create_task(manager.async_remove_robot("removed"))
+    await asyncio.sleep(0)
+    assert not removal.done()
+    pending.set()
+    await removal
+
+
 async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
     manager = CleaningPlanManager(hass)
@@ -2441,6 +2629,8 @@ async def test_replacement_waits_for_reconciliation_persistence(
         else manager.async_import_native_history("serial", floor_plan, records)
     )
     await entered.wait()
+    if not live_reconciliation:
+        assert manager.has_managed_task("serial") is False
 
     async def replace():
         if replacement == "direct":
@@ -7683,3 +7873,40 @@ async def test_leg_rejects_ambiguous_normalized_native_room_names():
         )
         is None
     )
+
+
+async def test_plan_manager_initialization_is_shared_before_storage_load(hass) -> None:
+    started = asyncio.Event()
+    finish_load = asyncio.Event()
+
+    async def load_store() -> None:
+        started.set()
+        await finish_load.wait()
+
+    manager = SimpleNamespace(async_load=AsyncMock(side_effect=load_store))
+    with patch.object(
+        plans_module, "CleaningPlanManager", return_value=manager
+    ) as manager_factory:
+        first = asyncio.create_task(plans_module.async_get_plan_manager(hass))
+        await started.wait()
+        second = asyncio.create_task(plans_module.async_get_plan_manager(hass))
+        await asyncio.sleep(0)
+
+        assert manager_factory.call_count == 1
+        assert hass.data[DOMAIN][plans_module.DATA_PLAN_MANAGER] is manager
+
+        finish_load.set()
+        assert await asyncio.gather(first, second) == [manager, manager]
+
+    manager.async_load.assert_awaited_once()
+
+
+async def test_plan_manager_initialization_clears_failed_manager(hass) -> None:
+    manager = SimpleNamespace(async_load=AsyncMock(side_effect=RuntimeError("load")))
+    with (
+        patch.object(plans_module, "CleaningPlanManager", return_value=manager),
+        pytest.raises(RuntimeError, match="load"),
+    ):
+        await plans_module.async_get_plan_manager(hass)
+
+    assert plans_module.DATA_PLAN_MANAGER not in hass.data[DOMAIN]
