@@ -558,6 +558,20 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
     assert area_binding_allows_review(area, changed)
 
 
+def test_hash_only_binding_uses_the_shared_bounded_geometry_index() -> None:
+    floor_plan = _floor_plan()
+    area = _hash_only_scoped_area(floor_plan)
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    remaining = geometry._query_work_remaining
+
+    assert (
+        area_binding_status(area, floor_plan, room_geometry=geometry)
+        is AreaBindingStatus.CURRENT
+    )
+
+    assert geometry._query_work_remaining < remaining
+
+
 def test_occupancy_explanation_rejects_malformed_evidence() -> None:
     assert not _occupancy_changes_are_explained(
         (),
@@ -1389,6 +1403,44 @@ def test_area_issue_sync_deduplicates_updates_and_exposes_only_stale_count() -> 
         assert "circles" not in serialized
     assert create.call_args.kwargs["translation_placeholders"] == {"count": "2"}
     delete.assert_not_called()
+
+
+def test_area_issue_sync_shares_geometry_budget_across_saved_areas() -> None:
+    hass = MagicMock()
+    original = _floor_plan()
+    changed = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.01, 0.0), *original.rooms[0].boundary[1:]),
+            ),
+            original.rooms[1],
+        ),
+    )
+    areas = {f"area-{index}": _scoped_area(original) for index in range(3)}
+
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding._room_geometry_index",
+            wraps=area_binding_module._room_geometry_index,
+        ) as build_geometry,
+        patch(
+            "custom_components.matic_robot.area_binding.area_binding_status",
+            wraps=area_binding_status,
+        ) as classify,
+        patch("custom_components.matic_robot.area_binding.ir.async_create_issue"),
+        patch("custom_components.matic_robot.area_binding.ir.async_delete_issue"),
+    ):
+        async_sync_custom_area_issue(hass, "entry", areas, changed)
+
+    build_geometry.assert_called_once()
+    shared_geometry = classify.call_args_list[0].kwargs["room_geometry"]
+    assert all(
+        call.kwargs["room_geometry"] is shared_geometry
+        for call in classify.call_args_list
+    )
+    assert shared_geometry._query_work_remaining < shared_geometry._MAX_QUERY_WORK
 
 
 def test_area_issue_sync_preserves_unknown_state_and_clears_verified_state() -> None:

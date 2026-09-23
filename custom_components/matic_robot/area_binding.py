@@ -113,13 +113,29 @@ def async_sync_custom_area_issue(
         _area_repair_mission(area, mapped_missions, primary_mission)
         for area in areas.values()
     )
-    stale_count = sum(
-        assigned_mission == floor_plan.mission_id
-        and _area_requires_repair(area, floor_plan)
-        for area, assigned_mission in zip(
-            areas.values(), assigned_missions, strict=True
+    room_geometry = None
+    stale_count = 0
+    for area, assigned_mission in zip(areas.values(), assigned_missions, strict=True):
+        if assigned_mission != floor_plan.mission_id:
+            continue
+        if not isinstance(area, Mapping):
+            stale_count += 1
+            continue
+        uses_query_index = area_binding_needs_geometry_index(area)
+        if uses_query_index and room_geometry is None:
+            room_geometry = _room_geometry_index(floor_plan)
+        status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
+        if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
+            room_geometry = _room_geometry_index(floor_plan)
+        can_review = area_binding_allows_review(
+            area,
+            floor_plan,
+            status=status,
+            room_geometry=room_geometry,
+            circles_already_validated=uses_query_index,
         )
-    )
+        if status is not AreaBindingStatus.CURRENT and not can_review:
+            stale_count += 1
     issue_id = _custom_area_floor_issue_id(
         entry_id, floor_plan.mission_id, primary_mission
     )
@@ -164,13 +180,17 @@ def async_sync_custom_area_issue(
     return stale_count
 
 
-def _area_requires_repair(area: object, floor_plan: FloorPlan) -> bool:
-    """Keep reviewable geometry drift local without changing motion guards."""
-    if not isinstance(area, Mapping):
-        return True
-    status = area_binding_status(area, floor_plan)
-    return status is not AreaBindingStatus.CURRENT and not area_binding_allows_review(
-        area, floor_plan, status=status
+def _room_geometry_index(floor_plan: FloorPlan) -> _RoomGeometryIndex:
+    """Build one bounded index lazily for a callback's area scan."""
+    return _RoomGeometryIndex(
+        [
+            {
+                "room_id": room.id,
+                "name": room.name,
+                "boundary": [list(point) for point in room.boundary],
+            }
+            for room in floor_plan.rooms
+        ]
     )
 
 
@@ -320,10 +340,16 @@ def area_geometry_fingerprint(
 
 
 def _hash_only_area_geometry_fingerprint(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> str:
     """Reproduce the short-lived hash-only v2 signature for safe migration."""
-    normalized = _validate_area_circles(floor_plan, circles)
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    normalized = _validate_area_circles(
+        floor_plan, circles, room_geometry=room_geometry
+    )
     ordered = sorted(
         (
             float(circle["x"]),
@@ -338,13 +364,11 @@ def _hash_only_area_geometry_fingerprint(
         max(x + radius for x, _y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
         max(y + radius for _x, y, radius in ordered) + _LOCAL_GEOMETRY_MARGIN_METERS,
     )
-    room_boundaries = tuple(
-        [list(point) for point in room.boundary] for room in floor_plan.rooms
-    )
     segments: set[_LocalSegment] = set()
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            room_geometry.charge_query_work()
             clipped = _clip_segment(start, end, neighborhood)
             if clipped is None:
                 continue
@@ -359,6 +383,7 @@ def _hash_only_area_geometry_fingerprint(
             if second < first:
                 first, second = second, first
             segments.add((*first, *second))
+    room_geometry.charge_query_work(len(segments))
 
     digest = hashlib.sha256()
     digest.update(_SCOPED_FINGERPRINT_DOMAIN)
@@ -375,7 +400,7 @@ def _hash_only_area_geometry_fingerprint(
         )
         probes = _occupancy_probes(x, y, radius)
         occupancy = sum(
-            int(_point_in_floor(probe_x, probe_y, room_boundaries)) << index
+            int(room_geometry.contains(probe_x, probe_y)) << index
             for index, (probe_x, probe_y) in enumerate(probes)
         )
         digest.update(struct.pack(">H", occupancy))
@@ -393,21 +418,17 @@ def _area_geometry_components(
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> _LocalGeometry:
     """Return canonical private area shape, occupancy, and nearby segments."""
-    rooms = [
-        {
-            "room_id": room.id,
-            "name": room.name,
-            "boundary": [list(point) for point in room.boundary],
-        }
-        for room in floor_plan.rooms
-    ]
-    room_geometry = room_geometry or _RoomGeometryIndex(rooms)
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    room_geometry.charge_query_work(
+        sum(len(room.boundary) for room in floor_plan.rooms)
+    )
     normalized = _validate_area_circles(
         floor_plan,
         circles,
         center_tolerance=center_tolerance,
         room_geometry=room_geometry,
     )
+    room_geometry.charge_query_work(len(normalized))
     ordered_float = sorted(
         (
             float(circle["x"]),
@@ -459,6 +480,7 @@ def _area_geometry_components(
     for room in floor_plan.rooms:
         boundary = room.boundary
         for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
+            room_geometry.charge_query_work()
             first_x = math.floor(
                 min(start[0], end[0]) / _NEIGHBORHOOD_INDEX_CELL_METERS
             )
@@ -494,6 +516,7 @@ def _area_geometry_components(
             if second < first:
                 first, second = second, first
             segments.append((*first, *second))
+    room_geometry.charge_query_work(len(segments))
 
     occupancy_values = []
     for x, y, radius in ordered_float:
@@ -591,7 +614,7 @@ def area_binding_status(
     if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
         try:
             local_geometry = _hash_only_area_geometry_fingerprint(
-                floor_plan, area["circles"]
+                floor_plan, area["circles"], room_geometry=room_geometry
             )
         except KeyError, OverflowError, TypeError, ValueError:
             return AreaBindingStatus.INVALID
@@ -719,6 +742,20 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                 and _stored_local_geometry_is_intact(binding)
             )
         )
+    )
+
+
+def area_binding_needs_geometry_index(area: Mapping[str, Any]) -> bool:
+    """Return whether a valid saved binding performs indexed map queries."""
+    schema_version = area.get("schema_version")
+    binding = area.get("map_binding")
+    return (
+        type(schema_version) is int
+        and schema_version == AREA_SCHEMA_VERSION
+        and isinstance(binding, Mapping)
+        and _valid_saved_binding(binding)
+        and binding["version"]
+        in {HASH_ONLY_SCOPED_MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION}
     )
 
 
@@ -1311,16 +1348,6 @@ def _validate_area_circles(
         )
     except vol.Invalid as err:
         raise ValueError("area circles are invalid for the mapped floor") from err
-
-
-def _point_in_floor(
-    x: float, y: float, room_boundaries: Sequence[list[list[float]]]
-) -> bool:
-    """Return whether one probe lies in any mapped room."""
-    return any(
-        MaticAreaSelector._point_in_polygon(x, y, boundary)
-        for boundary in room_boundaries
-    )
 
 
 def _clip_segment(

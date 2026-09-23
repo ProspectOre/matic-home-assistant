@@ -192,6 +192,10 @@ class _RoomGeometryIndex:
             raise GeometryTooComplex("room geometry query budget exhausted")
         self._query_work_remaining -= work
 
+    def charge_query_work(self, work: int = 1) -> None:
+        """Charge non-containment geometry work to the shared query limit."""
+        self._charge_work(work)
+
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
         if self._query_work_remaining <= 0:
