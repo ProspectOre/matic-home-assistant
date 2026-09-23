@@ -82,7 +82,15 @@ jobs:
                   | select(security_heading | not)
                   | select(availability_notice | not)' >/dev/null
           }
-          if ! body_could_be_regular_comment "$EVENT_COMMENT_BODY" \
+          request_mutation_delivery=false
+          if [[ "$EVENT_COMMENT_AUTHOR" != "$REVIEW_BOT_EVENT_LOGIN" \
+            && "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+            if [[ "$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted" ]]; then
+              request_mutation_delivery=true
+            fi
+          fi
+          if [[ "$request_mutation_delivery" != "true" ]] \
+            && ! body_could_be_regular_comment "$EVENT_COMMENT_BODY" \
             && ! body_could_be_regular_comment "$EVENT_PREVIOUS_COMMENT_BODY"; then
             echo "Ignoring a non-regular issue comment before the pull request lookup."
             exit 0
@@ -264,11 +272,11 @@ jobs:
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
-          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" || -z "$EVENT_COMMENT_UPDATED_AT" ]]; then
+          if [[ ! "$PR_NUMBER" =~ ^[1-9][0-9]*$ || ! "$EVENT_COMMENT_ID" =~ ^[1-9][0-9]*$ || ! "$HEAD_SHA" =~ ^[0-9a-f]{40}$ || -z "$WORKFLOW_REF" || ( -z "$EVENT_COMMENT_UPDATED_AT" && -z "$EVENT_COMMENT_CREATED_AT" ) ]]; then
             echo "The regular issue-comment event did not provide a dispatchable pull request state." >&2
             exit 1
           fi
-          current_comment_at="$EVENT_COMMENT_UPDATED_AT"
+          current_comment_at="${EVENT_COMMENT_UPDATED_AT:-$EVENT_COMMENT_CREATED_AT}"
           if [[ "$EVENT_ACTION" == "deleted" ]]; then
             if gh api "repos/$REPO/issues/comments/$EVENT_COMMENT_ID" --silent >/dev/null 2>&1; then
               echo "Ignoring a stale deleted-comment delivery for comment $EVENT_COMMENT_ID."

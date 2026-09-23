@@ -250,6 +250,8 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "body_has_request_for_current_head" in regular_comment
     assert "body_has_regular_review_mention" in regular_comment
     assert "request_binding_exists_for_comment" in regular_comment
+    assert "request_mutation_delivery=true" in regular_comment
+    assert '"$request_mutation_delivery" != "true"' in regular_comment
     assert '"review-gate-request"' in regular_comment
     assert (
         "Revoking review evidence for an edited or deleted bound request comment."
@@ -257,6 +259,14 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     )
     assert (
         "Revoking review evidence for an edited or deleted exact-head request."
+        in regular_comment
+    )
+    assert (
+        'current_comment_at="${EVENT_COMMENT_UPDATED_AT:-$EVENT_COMMENT_CREATED_AT}"'
+        in regular_comment
+    )
+    assert (
+        '( -z "$EVENT_COMMENT_UPDATED_AT" && -z "$EVENT_COMMENT_CREATED_AT" )'
         in regular_comment
     )
     assert "body_could_be_regular_comment" in regular_comment
@@ -418,7 +428,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in review_gate
     assert 'reactions?per_page=100" --paginate --slurp' in review_gate
     assert "[flatten[]" in review_gate
-    assert '"request-reaction:" + $issue_comment_id' in review_gate
+    assert '"request-reaction-" + $issue_comment_id' in review_gate
     assert "$reaction_clears_own_invalidation" in review_gate
     assert "and $latest_delivery.at > $latest_finding_at" in review_gate
     assert (

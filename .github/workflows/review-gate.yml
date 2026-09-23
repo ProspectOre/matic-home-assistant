@@ -448,7 +448,7 @@ jobs:
                    | last) as $latest_delivery
                 | (($latest_delivery != null
                     and $latest_delivery.source == "request_reaction"
-                    and ($latest_delivery.id == ("request-reaction:" + $issue_comment_id)))
+                    and ($latest_delivery.id == ("request-reaction-" + $issue_comment_id)))
                    ) as $reaction_clears_own_invalidation
                 | (([$deliveries[] | select(.clean | not) | .at]
                     + [$reviews[]
