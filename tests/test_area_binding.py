@@ -2145,7 +2145,27 @@ def test_unanchored_area_fails_closed_when_all_frame_extrema_change() -> None:
     )
 
     assert not area["map_binding"]["local_segments_mm"]
+    anchor = area["map_binding"]["translation_room_anchors"][0]
+    anchor["fingerprint"] = anchor["fingerprint"].upper()
     assert area_binding_status(area, edited) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_room_anchor_containment_uses_the_shared_geometry_budget() -> None:
+    geometry = area_binding_module._room_geometry_index(_floor_plan())
+    geometry._query_work_remaining = 1
+
+    with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
+        geometry.containing_indices(1.0, 0.5)
+
+    assert geometry._query_work_remaining == 0
+
+
+def test_room_anchor_containment_rejects_an_exhausted_shared_budget() -> None:
+    geometry = area_binding_module._room_geometry_index(_floor_plan())
+    geometry._query_work_remaining = 0
+
+    with pytest.raises(GeometryTooComplex, match="budget exhausted"):
+        geometry.containing_indices(1.0, 0.5)
 
 
 def test_unanchored_area_ignores_moved_remote_duplicate_room() -> None:

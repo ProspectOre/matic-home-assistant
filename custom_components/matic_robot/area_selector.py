@@ -260,12 +260,23 @@ class _RoomGeometryIndex:
             raise
 
     def containing_indices(self, x: float, y: float) -> tuple[int, ...]:
-        """Return indexed room positions containing one point."""
-        return tuple(
-            index
-            for index, polygon in enumerate(self.polygons)
-            if polygon.contains(x, y, 0.0)
-        )
+        """Return all containing room positions under the shared work budget."""
+        if self._query_work_remaining <= 0:
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        indices = []
+        try:
+            for index, polygon in enumerate(self.polygons):
+                self._charge_work()
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, 0.0, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    indices.append(index)
+            return tuple(indices)
+        except GeometryTooComplex:
+            self._query_work_remaining = 0
+            raise
 
 
 @SELECTORS.register("matic-area")

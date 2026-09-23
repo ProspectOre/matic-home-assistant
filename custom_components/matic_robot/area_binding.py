@@ -324,7 +324,10 @@ def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
 
 
 def _translation_room_anchors(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> list[dict[str, Any]]:
     """Persist frame anchors only for rooms containing saved circle centers."""
     if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
@@ -337,7 +340,7 @@ def _translation_room_anchors(
         }
         for room in floor_plan.rooms
     ]
-    room_geometry = _RoomGeometryIndex(rooms)
+    room_geometry = room_geometry or _RoomGeometryIndex(rooms)
     containing_rooms = {
         index
         for circle in circles
@@ -378,6 +381,7 @@ def binding_for_area(
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
     shape, occupancy, segments = _area_geometry_components(
         floor_plan, circles, room_geometry=room_geometry
     )
@@ -388,7 +392,9 @@ def binding_for_area(
             translation_invariant_geometry_fingerprint(floor_plan)
         ),
         "translation_frame_bounds": translation_frame_bounds(floor_plan),
-        "translation_room_anchors": _translation_room_anchors(floor_plan, circles),
+        "translation_room_anchors": _translation_room_anchors(
+            floor_plan, circles, room_geometry=room_geometry
+        ),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -743,7 +749,9 @@ def area_binding_status(
     if not saved["local_segments_mm"] and saved_geometry != current["geometry_sha256"]:
         saved_anchors = saved.get("translation_room_anchors")
         if isinstance(saved_anchors, list):
-            current_anchors = _translation_room_anchors(floor_plan, area["circles"])
+            current_anchors = _translation_room_anchors(
+                floor_plan, area["circles"], room_geometry=room_geometry
+            )
             current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
             for anchor in current_anchors:
                 current_bounds_by_fingerprint.setdefault(
@@ -752,7 +760,7 @@ def area_binding_status(
             for anchor in saved_anchors:
                 old_bounds = anchor["bounds"]
                 matching_bounds = current_bounds_by_fingerprint.get(
-                    anchor["fingerprint"], ()
+                    str(anchor["fingerprint"]).casefold(), ()
                 )
                 if len(matching_bounds) == 1:
                     if matching_bounds[0] != old_bounds:
