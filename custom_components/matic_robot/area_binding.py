@@ -652,8 +652,10 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
-    if not saved["local_segments_mm"] and len(floor_plan.rooms) == 1 and (
-        saved_geometry != current["geometry_sha256"]
+    if (
+        not saved["local_segments_mm"]
+        and len(floor_plan.rooms) == 1
+        and (saved_geometry != current["geometry_sha256"])
     ):
         return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
