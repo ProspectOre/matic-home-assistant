@@ -138,3 +138,22 @@ def test_overloaded_index_rejects_boundary_larger_than_fallback_cap() -> None:
 
     assert polygon.overloaded is True
     assert polygon.contains(1.0, 0.5, 0.0) is False
+
+
+def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
+    """Overlapping hostile rooms cannot multiply linear fallback work forever."""
+    boundary = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(256)
+    ]
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": str(index), "name": "Room", "boundary": boundary}
+            for index in range(256)
+        ]
+    )
+
+    for _ in range(geometry._MAX_FALLBACK_WORK // len(boundary) + 1):
+        geometry.contains(128.5, 0.0)
+
+    assert geometry._fallback_work_remaining == 0
+    assert geometry.contains(128.5, 0.0) is False

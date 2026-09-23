@@ -123,12 +123,24 @@ class _IndexedPolygon:
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
+    _MAX_FALLBACK_WORK = 2_000_000
+
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)
+        self._fallback_work_remaining = self._MAX_FALLBACK_WORK
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
-        return any(polygon.contains(x, y, tolerance) for polygon in self.polygons)
+        for polygon in self.polygons:
+            if polygon.overloaded:
+                edge_count = len(polygon.boundary)
+                if edge_count > self._fallback_work_remaining:
+                    self._fallback_work_remaining = 0
+                    return False
+                self._fallback_work_remaining -= edge_count
+            if polygon.contains(x, y, tolerance):
+                return True
+        return False
 
 
 @SELECTORS.register("matic-area")
