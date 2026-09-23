@@ -2081,11 +2081,11 @@ def test_scoped_binding_rejects_translation_with_remote_interior_edit() -> None:
         rooms=(
             replace(
                 floor_plan.rooms[0],
-                boundary=((1.0, 0.0), (11.0, 0.0), (11.0, 10.0), (1.0, 10.0)),
+                boundary=((1.0, 2.0), (11.0, 2.0), (11.0, 12.0), (1.0, 12.0)),
             ),
             replace(
                 floor_plan.rooms[1],
-                boundary=((21.0, 0.0), (31.0, 0.0), (31.0, 10.0), (21.0, 10.0)),
+                boundary=((21.0, 2.0), (31.0, 2.0), (31.0, 12.0), (21.0, 12.0)),
             ),
         ),
     )
@@ -2096,11 +2096,11 @@ def test_scoped_binding_rejects_translation_with_remote_interior_edit() -> None:
             replace(
                 translated.rooms[1],
                 boundary=(
-                    (21.0, 0.0),
-                    (31.0, 0.0),
-                    (31.0, 10.0),
-                    (26.0, 7.0),
-                    (21.0, 10.0),
+                    (21.0, 2.0),
+                    (32.0, 2.0),
+                    (32.0, 12.0),
+                    (26.0, 9.0),
+                    (21.0, 12.0),
                 ),
             ),
         ),

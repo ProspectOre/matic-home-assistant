@@ -689,7 +689,7 @@ def area_binding_status(
     if (
         not saved["local_segments_mm"]
         and "translation_invariant_geometry_sha256" not in saved
-        and (saved_geometry != current["geometry_sha256"])
+        and saved_geometry != current["geometry_sha256"]
     ):
         return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
