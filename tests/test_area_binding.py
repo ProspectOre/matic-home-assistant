@@ -572,6 +572,25 @@ def test_hash_only_binding_uses_the_shared_bounded_geometry_index() -> None:
     assert geometry._query_work_remaining < remaining
 
 
+def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    boundary_edge_count = sum(len(room.boundary) for room in floor_plan.rooms)
+
+    with (
+        patch.object(
+            geometry, "charge_query_work", wraps=geometry.charge_query_work
+        ) as charge_work,
+        patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0),
+    ):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=geometry
+        )
+
+    assert charge_work.call_count >= (2 * boundary_edge_count) + 3
+
+
 def test_occupancy_explanation_rejects_malformed_evidence() -> None:
     assert not _occupancy_changes_are_explained(
         (),

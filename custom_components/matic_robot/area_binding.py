@@ -490,20 +490,23 @@ def _area_geometry_components(
             last_x = math.floor(max(start[0], end[0]) / _NEIGHBORHOOD_INDEX_CELL_METERS)
             last_y = math.floor(max(start[1], end[1]) / _NEIGHBORHOOD_INDEX_CELL_METERS)
             cell_count = (last_x - first_x + 1) * (last_y - first_y + 1)
-            candidate_neighborhoods = (
-                range(len(neighborhoods))
-                if cell_count > _MAX_NEIGHBORHOOD_QUERY_CELLS
-                else {
-                    neighborhood
-                    for cell_x in range(first_x, last_x + 1)
-                    for cell_y in range(first_y, last_y + 1)
-                    for neighborhood in neighborhood_index.get((cell_x, cell_y), ())
-                }
-            )
-            if not any(
-                _clip_segment(start, end, neighborhoods[index]) is not None
-                for index in candidate_neighborhoods
-            ):
+            if cell_count > _MAX_NEIGHBORHOOD_QUERY_CELLS:
+                candidate_neighborhoods = tuple(range(len(neighborhoods)))
+            else:
+                candidates: set[int] = set()
+                for cell_x in range(first_x, last_x + 1):
+                    for cell_y in range(first_y, last_y + 1):
+                        for index in neighborhood_index.get((cell_x, cell_y), ()):
+                            room_geometry.charge_query_work()
+                            candidates.add(index)
+                candidate_neighborhoods = tuple(sorted(candidates))
+            intersects = False
+            for index in candidate_neighborhoods:
+                room_geometry.charge_query_work()
+                if _clip_segment(start, end, neighborhoods[index]) is not None:
+                    intersects = True
+                    break
+            if not intersects:
                 continue
             first = (
                 _quantize_coordinate(start[0]),
