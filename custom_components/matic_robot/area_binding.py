@@ -293,10 +293,15 @@ def binding_for_floor_plan(floor_plan: FloorPlan) -> MapBinding:
 
 
 def binding_for_area(
-    floor_plan: FloorPlan, circles: Sequence[Mapping[str, Any]]
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
-    shape, occupancy, segments = _area_geometry_components(floor_plan, circles)
+    shape, occupancy, segments = _area_geometry_components(
+        floor_plan, circles, room_geometry=room_geometry
+    )
     return {
         "version": SCOPED_MAP_BINDING_VERSION,
         **_floor_plan_binding(floor_plan),
