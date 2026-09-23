@@ -58,7 +58,6 @@ from .client.floor_plan import pose_vector_paths
 from .client.models import CleaningSession, CleaningSessionRecord, FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
-    DATA_PLAN_MANAGER,
     DOMAIN,
     EVENT_PLAN_FINISHED,
 )
@@ -75,6 +74,7 @@ from .plans import (
     CleaningRoom,
     ManagedMotionReplacedError,
     SavedPlanLimitError,
+    async_get_plan_manager,
     leg_groups,
     normalize_run_provenance,
     plan_floor_token,
@@ -358,9 +358,7 @@ def _require_matic_control[ServiceResult](
 async def async_register_services(hass: HomeAssistant) -> None:
     """Register actions before any config entry is loaded."""
 
-    manager = CleaningPlanManager(hass)
-    await manager.async_load()
-    hass.data.setdefault(DOMAIN, {})[DATA_PLAN_MANAGER] = manager
+    manager = await async_get_plan_manager(hass, manager_factory=CleaningPlanManager)
     firmware_tracker = FirmwareTracker(hass)
     await firmware_tracker.async_load()
     hass.data[DOMAIN][DATA_FIRMWARE_TRACKER] = firmware_tracker

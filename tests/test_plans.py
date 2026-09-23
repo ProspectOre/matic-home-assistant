@@ -7816,3 +7816,40 @@ async def test_leg_rejects_ambiguous_normalized_native_room_names():
         )
         is None
     )
+
+
+async def test_plan_manager_initialization_is_shared_before_storage_load(hass) -> None:
+    started = asyncio.Event()
+    finish_load = asyncio.Event()
+
+    async def load_store() -> None:
+        started.set()
+        await finish_load.wait()
+
+    manager = SimpleNamespace(async_load=AsyncMock(side_effect=load_store))
+    with patch.object(
+        plans_module, "CleaningPlanManager", return_value=manager
+    ) as manager_factory:
+        first = asyncio.create_task(plans_module.async_get_plan_manager(hass))
+        await started.wait()
+        second = asyncio.create_task(plans_module.async_get_plan_manager(hass))
+        await asyncio.sleep(0)
+
+        assert manager_factory.call_count == 1
+        assert hass.data[DOMAIN][plans_module.DATA_PLAN_MANAGER] is manager
+
+        finish_load.set()
+        assert await asyncio.gather(first, second) == [manager, manager]
+
+    manager.async_load.assert_awaited_once()
+
+
+async def test_plan_manager_initialization_clears_failed_manager(hass) -> None:
+    manager = SimpleNamespace(async_load=AsyncMock(side_effect=RuntimeError("load")))
+    with (
+        patch.object(plans_module, "CleaningPlanManager", return_value=manager),
+        pytest.raises(RuntimeError, match="load"),
+    ):
+        await plans_module.async_get_plan_manager(hass)
+
+    assert plans_module.DATA_PLAN_MANAGER not in hass.data[DOMAIN]

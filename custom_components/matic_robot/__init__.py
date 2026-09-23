@@ -46,7 +46,7 @@ from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .migrations import async_migrate_entry
-from .plans import CleaningPlanManager
+from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
 from .services import (
     OEM_STOP_RECONCILIATION_POLL_SECONDS,
@@ -692,10 +692,9 @@ async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> No
     """Erase the removed robot's persisted private data."""
     plans: CleaningPlanManager | None = hass.data.get(DOMAIN, {}).get(DATA_PLAN_MANAGER)
     if plans is None:
-        # A disabled entry can be removed before integration setup has created
-        # the shared manager. Load the store so data from a prior run is erased.
-        plans = CleaningPlanManager(hass)
-        await plans.async_load()
+        # Use the shared initializer so pre-setup removals and service setup
+        # cannot load independent snapshots of the same store.
+        plans = await async_get_plan_manager(hass)
     serial_number = str(entry.data[CONF_SERIAL_NUMBER])
     await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)

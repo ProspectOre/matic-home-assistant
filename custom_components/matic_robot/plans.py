@@ -37,7 +37,7 @@ from .area_binding import (
     binding_for_area,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
-from .const import DOMAIN, EVENT_PLAN_DOCKED
+from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
 
 STORAGE_VERSION = 1
 STORAGE_MINOR_VERSION = 5
@@ -3048,3 +3048,26 @@ def resolve_rooms(
             )
         )
     return rooms
+
+
+async def async_get_plan_manager(
+    hass: HomeAssistant,
+    *,
+    manager_factory: Callable[[HomeAssistant], CleaningPlanManager] | None = None,
+) -> CleaningPlanManager:
+    """Return the shared plan manager, publishing it before storage load awaits."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    lock = domain_data.setdefault("_plan_manager_init_lock", asyncio.Lock())
+    async with lock:
+        manager = domain_data.get(DATA_PLAN_MANAGER)
+        if manager is not None:
+            return cast(CleaningPlanManager, manager)
+        manager = (manager_factory or CleaningPlanManager)(hass)
+        domain_data[DATA_PLAN_MANAGER] = manager
+        try:
+            await manager.async_load()
+        except BaseException:
+            if domain_data.get(DATA_PLAN_MANAGER) is manager:
+                domain_data.pop(DATA_PLAN_MANAGER, None)
+            raise
+        return manager
