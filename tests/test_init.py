@@ -1068,7 +1068,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             observe({"kind": "state", "state_codes": [110]})
             entry.async_on_unload.call_args_list[0].args[0]()
         assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
-        assert hass.bus.async_fire.call_args_list[-4:] == [
+        assert hass.bus.async_fire.call_args_list[-5:] == [
             call(
                 "matic_robot_activity_observed",
                 {"entry_id": entry.entry_id, "kind": "started"},
@@ -1095,6 +1095,14 @@ async def test_setup_refreshes_before_forwarding_platforms(
                     "entry_id": entry.entry_id,
                     "kind": "state",
                     "state_codes": [109],
+                },
+            ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [110],
                 },
             ),
         ]

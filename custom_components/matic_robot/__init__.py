@@ -156,8 +156,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         )
 
     def _cancel_pending_state_timer() -> None:
+        nonlocal pending_state_observation, pending_state_timer
         if pending_state_timer is not None:
             pending_state_timer.cancel()
+            pending_state_timer = None
+        observation = pending_state_observation
+        pending_state_observation = None
+        if observation is not None:
+            hass.bus.async_fire(
+                EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+            )
 
     entry.async_on_unload(_cancel_pending_state_timer)
 
