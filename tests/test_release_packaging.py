@@ -106,16 +106,44 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "def exact_reviewed_head:" in review_gate
     assert '"|" + $prefix' in review_gate
     clean_envelope = review_gate[
-        review_gate.index("def stock_clean_issue_comment_envelope:") :
+        review_gate.index(
+            "def stock_clean_issue_comment_envelope:"
+        ) : review_gate.index("def stock_clean_requested_issue_comment_envelope:")
     ]
     assert '"|" + $prefix' not in clean_envelope
+    assert (
+        '"|" + $prefix'
+        in review_gate[
+            review_gate.index("def stock_clean_requested_issue_comment_envelope:") :
+        ]
+    )
+    assert "def bound_request_precedes($current_base; $comment_at):" in review_gate
+    assert ".created <= $comment_at" in review_gate
+    assert "and any($bindings[];" in review_gate
+    assert "== $base" in review_gate
+    assert '$latest_delivery.source == "issue_comment"' in review_gate
+    assert "as $cleared_comment_id" in review_gate
+    issue_comment_reader = review_gate[
+        review_gate.index('issue_comment_records="$(') : review_gate.index(
+            'request_reaction_records="$('
+        )
+    ]
+    assert (
+        '[.[]\n                     | select((.user.login // "") == $bot)'
+        in issue_comment_reader
+    )
+    assert "[.[][]" not in issue_comment_reader
     assert "total_count" in review_gate
     assert '(.originalCommit.oid // .commit.oid // "") == $head' in review_gate
-    assert "latest_regular_issue_comment_at" in review_gate
+    assert "latest_regular_issue_comment" in review_gate
     assert "latest_regular_review_invalidation_at" in review_gate
     assert "latest_finding_at" in review_gate
     assert "base_change_marker_exists" in review_gate
     assert "Regular review invalidated at $latest_finding_at" in review_gate
+    assert (
+        "comment:$EVENT_COMMENT_ID; require a newer clean normal verdict"
+        in regular_comment
+    )
     assert "shared_open_head_count" in review_gate
     assert "shared_open_head_owner" in review_gate
     assert "$pr.state" in review_gate
@@ -240,7 +268,33 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "cancel-in-progress: false" not in regular_comment
     assert SWITCHABLE_REVIEW_BOT in regular_comment
     assert "EVENT_PREVIOUS_COMMENT_BODY" in regular_comment
+    assert (
+        '"$EVENT_ACTION" == "edited" || "$EVENT_ACTION" == "deleted"' in regular_comment
+    )
+    assert "body_has_request_for_current_head" in regular_comment
+    assert "body_has_regular_review_mention" in regular_comment
+    assert "request_binding_exists_for_comment" in regular_comment
+    assert "request_mutation_delivery=true" in regular_comment
+    assert '"$request_mutation_delivery" != "true"' in regular_comment
+    assert '"review-gate-request"' in regular_comment
+    assert (
+        "Revoking review evidence for an edited or deleted bound request comment."
+        in regular_comment
+    )
+    assert (
+        "Revoking review evidence for an edited or deleted exact-head request."
+        in regular_comment
+    )
+    assert (
+        'current_comment_at="${EVENT_COMMENT_UPDATED_AT:-$EVENT_COMMENT_CREATED_AT}"'
+        in regular_comment
+    )
+    assert (
+        '( -z "$EVENT_COMMENT_UPDATED_AT" && -z "$EVENT_COMMENT_CREATED_AT" )'
+        in regular_comment
+    )
     assert "body_could_be_regular_comment" in regular_comment
+    assert "@codex review([[:space:]:]|$)" in regular_comment
     assert "before the pull request lookup" in regular_comment
     assert "body_is_regular_comment" in regular_comment
     assert "body_is_clean_comment" in regular_comment
@@ -250,9 +304,41 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "availability_notice | not" in regular_comment
     assert "REVIEW_COMMENT_CONTEXT: review-gate-regular-comment" in regular_comment
     assert "name: classify-regular-comment" in regular_comment
+    bind_request_job = regular_comment[
+        regular_comment.index("  bind-request:") : regular_comment.index(
+            "  invalidate:"
+        )
+    ]
+    assert "name: bind-exact-head-review-request" in bind_request_job
+    assert "needs: classify" in bind_request_job
+    assert "if: needs.classify.outputs.request_id != ''" in bind_request_job
+    assert "concurrency:" not in bind_request_job
+    assert (
+        "Persist the request binding outside the cancellable gate lock"
+        in bind_request_job
+    )
+    assert (
+        "review-request-comment:$REQUEST_ID; "
+        "base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" in bind_request_job
+    )
+    assert "gh workflow run review-gate.yml" in bind_request_job
+    invalidate_job = regular_comment[regular_comment.index("  invalidate:") :]
+    assert "REQUEST_ID" not in invalidate_job
+    assert "review-gate-request" not in invalidate_job
     assert "needs: classify" in regular_comment
     assert "if: needs.classify.outputs.regular == 'true'" in regular_comment
-    assert "| jq -er '.head.sha'" in regular_comment
+    assert "request_id: ${{ steps.classify.outputs.request_id }}" in regular_comment
+    assert (
+        "request_created_at: ${{ steps.classify.outputs.request_created_at }}"
+        in regular_comment
+    )
+    assert "review-request:v2 head=$head_sha base=$base_sha" in regular_comment
+    assert 'context="$REVIEW_REQUEST_CONTEXT"' in regular_comment
+    assert (
+        "review-request-comment:$REQUEST_ID; "
+        "base:$REQUEST_BASE_SHA; created:$REQUEST_CREATED_AT" in regular_comment
+    )
+    assert "| jq -er '[.head.sha, .base.sha] | @tsv'" in regular_comment
     assert 'head_prefix="${head_sha:0:10}"' in regular_comment
     assert (
         "WORKFLOW_REF: ${{ github.event.repository.default_branch }}" in regular_comment
@@ -260,7 +346,7 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "contents: read" in regular_comment
     assert "group: review-gate-${{ github.event.issue.number }}" in regular_comment
     assert "stock_clean_issue_comment_envelope" in regular_comment
-    assert "def exact_reviewed_head:" in regular_comment
+    assert "def exact_full_head:" in regular_comment
     regular_routing = regular_comment[
         regular_comment.index("body_is_regular_comment()") : regular_comment.index(
             "body_is_clean_comment()"
@@ -270,7 +356,9 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
         regular_comment.index("body_is_clean_comment()") :
     ]
     assert "$prefix" in regular_routing
+    assert "def exact_reviewed_head:" in regular_routing
     assert "$prefix" not in clean_validation
+    assert "exact_full_head" in clean_validation
     assert '--arg prefix "$head_prefix"' in regular_routing
     assert '--ref "$WORKFLOW_REF"' in regular_comment
     assert "gh workflow run review-gate.yml" in regular_comment
@@ -345,6 +433,21 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "availability_notice) | not" in audit
     assert "current_regular_comment_records" in audit
     assert "def exact_reviewed_head:" in audit
+    assert "current_request_reaction_records" in audit
+    assert "review-request:v2 head=$head_sha base=$base_sha" in audit
+    assert 'source: "request_reaction"' in audit
+    assert '(.created_at // "") >= $request_updated_at' in audit
+    assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in audit
+    assert 'reactions?per_page=100" --paginate --slurp' in audit
+    assert "[flatten[]" in audit
+    assert '"review-gate-request"' in audit
+    assert (
+        '"review-request-comment:" + $id + "; base:" + $base + "; created:" + $created'
+        in audit
+    )
+    assert ".created_at == .updated_at" in audit
+    assert 'jq -c \'[flatten[] | select(.context == "review-gate-request")' in audit
+    assert '"github-actions[bot]"' in audit
     assert '"|" + $prefix' in audit
     assert "full_head: ($body | exact_full_head)" in audit
     assert "legacy short-SHA clean issue-comment evidence must be revalidated" in audit
@@ -356,6 +459,58 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
     assert "is_reconciliation_pending" in audit
     assert "Reconcile every head through the trusted default-branch workflow" in audit
     assert "didn.t find any major issues" in audit
+    assert "request_reaction_records" in review_gate
+    assert "request_comment_id:" in review_gate
+    assert "INPUT_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}" in review_gate
+    assert '"${GITHUB_EVENT_NAME:-}" != "workflow_dispatch"' in review_gate
+    assert ".created_at == .updated_at" in review_gate
+    assert ".issue_url == $issue_url" in review_gate
+    assert "Bound the unedited exact-head review request" in review_gate
+    assert "review-request:v2 head=$head_sha base=$base_sha" in review_gate
+    assert 'source: "request_reaction"' in review_gate
+    assert '(.created_at // "") >= $request_updated_at' in review_gate
+    assert 'test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)")' in review_gate
+    assert 'reactions?per_page=100" --paginate --slurp' in review_gate
+    assert "[flatten[]" in review_gate
+    assert 'startswith("request-reaction-")' in review_gate
+    assert "$issue_comment_records[]" in review_gate
+    assert ".comment_id as $invalidated_comment_id" in review_gate
+    assert "$tied_request_comment_ids" in review_gate
+    assert ".created == $latest_delivery.at" in review_gate
+    assert "and .at == $latest_delivery.at" in review_gate
+    assert "request_bindings: $request_bindings" in review_gate
+    assert "and $latest_delivery.at > $latest_finding_at" in review_gate
+    assert (
+        'sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])'
+        in review_gate
+    )
+    assert '"review-gate-request"' in review_gate
+    assert (
+        '"review-request-comment:" + $id + "; base:" + $base + "; created:" + $created'
+        in review_gate
+    )
+    assert ".created_at == .updated_at" in review_gate
+    assert 'jq -c --arg context "review-gate-request"' in review_gate
+    request_status_lookup = review_gate[
+        review_gate.index("request_binding_statuses=") : review_gate.index(
+            "request_comment_ids=", review_gate.index("request_binding_statuses=")
+        )
+    ]
+    request_binding_validation = review_gate[
+        review_gate.index("request_binding_statuses=") : review_gate.index(
+            "issue_comment_records=", review_gate.index("request_binding_statuses=")
+        )
+    ]
+    assert "flatten[]" in request_status_lookup
+    assert "jq -s" not in request_status_lookup
+    assert '(.user.type // "") == "User"' in request_binding_validation
+    assert ".created_at == $binding.created" in request_binding_validation
+    assert ".updated_at == $binding.created" in request_binding_validation
+    assert (
+        'contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->")'
+        in request_binding_validation
+    )
+    assert '"github-actions[bot]"' in review_gate
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout
     assert "allow_auto_merge" in rollout
