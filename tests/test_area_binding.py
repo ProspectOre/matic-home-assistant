@@ -144,6 +144,18 @@ def test_local_segment_correspondence_enforces_work_limits() -> None:
         assert _local_segment_correspondence(segments[:1], segments[:1], shape) is None
 
 
+def test_local_segment_matching_caps_duplicate_index_reference_visits() -> None:
+    context = (True, 0, 0, ((0, 0), (0, 0)))
+    saved = ((0, 0, 100, 0),)
+    current = ((0, 0, 100, 0),)
+
+    with (
+        patch.object(area_binding_module, "_MAX_SEGMENT_CANDIDATE_CHECKS", 1),
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+    ):
+        assert _local_segment_correspondence(saved, current, ((50, 0, 1),)) is None
+
+
 def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
     assert area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 257)
     assert not area_binding_module._valid_local_segments([[0, 0, 1, "bad"]])

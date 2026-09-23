@@ -1375,6 +1375,45 @@ async def test_area_binding_upgrade_ignores_malformed_area_record(hass) -> None:
     manager._store.async_save.assert_not_awaited()
 
 
+async def test_dense_hash_only_area_upgrade_is_a_noop(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    base = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "protocol", b"room", ((0, 0), (1, 0), (0, 1))),),
+    )
+    boundary = [
+        *((index / 75, 0.0) for index in range(75)),
+        *((1.0, index / 75) for index in range(75)),
+        *((1.0 - index / 75, 1.0) for index in range(75)),
+        *((0.0, 1.0 - index / 75) for index in range(75)),
+    ]
+    floor_plan = replace(
+        base,
+        rooms=(replace(base.rooms[0], boundary=tuple(boundary)),),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
+    binding = binding_for_area(floor_plan, circles)
+    assert binding["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+    manager._robot("serial")["areas"] = {"dense": area}
+
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(0, False)
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(0, False)
+    assert area["map_binding"] == binding
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_native_history_import_records_activity_not_completion(
     hass,
 ) -> None:
