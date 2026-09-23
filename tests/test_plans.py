@@ -1439,6 +1439,32 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
     assert all(index is geometry_indexes[0] for index in geometry_indexes)
 
 
+async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    floor_plan = FloorPlan(
+        43,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "room", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    manager._robot("serial")["areas"] = {
+        "old": {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "circles": [{"x": 0.5, "y": 0.5, "radius": 0.2}],
+            "map_binding": binding_for_floor_plan(replace(floor_plan, mission_id=42)),
+        }
+    }
+
+    with patch.object(
+        plans_module,
+        "_room_geometry_index",
+        side_effect=AssertionError("unneeded room index built"),
+    ):
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(0, False)
+
+
 async def test_area_binding_upgrade_stays_pending_for_partial_map(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
