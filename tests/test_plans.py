@@ -162,6 +162,21 @@ async def test_native_history_after_robot_removal_cannot_recreate_data(hass) -> 
     assert "removed" not in manager._data["robots"]
 
 
+async def test_remove_robot_waits_for_pending_native_history_save(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._data = {"robots": {"removed": {}}}
+    manager.async_cancel_and_wait = AsyncMock()
+    pending = asyncio.Event()
+    manager._native_history_saves["removed"] = {pending}
+
+    removal = asyncio.create_task(manager.async_remove_robot("removed"))
+    await asyncio.sleep(0)
+    assert not removal.done()
+    pending.set()
+    await removal
+
+
 async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
     """A managed run emits one bounded terminal record without user identity."""
     manager = CleaningPlanManager(hass)
