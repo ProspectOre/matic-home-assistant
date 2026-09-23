@@ -76,6 +76,8 @@ def _decode_labeled_mission(payload: bytes) -> MappedFloor:
     try:
         fields = _decode_bounded_fields(payload)
     except DecodeError as err:
+        if "field limit" in str(err):
+            raise DecodeError("labeled mission exceeds its field limit") from err
         raise DecodeError("labeled mission has an invalid shape") from err
     mission_values = _bytes_values(fields, 1)
     label_values = _bytes_values(fields, 2)
