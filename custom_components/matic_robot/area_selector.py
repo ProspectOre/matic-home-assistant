@@ -158,7 +158,7 @@ class _IndexedPolygon:
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
-    _MAX_QUERY_WORK = 2_500_000
+    _MAX_QUERY_WORK = 4_100_000
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)

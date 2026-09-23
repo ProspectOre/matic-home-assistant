@@ -284,6 +284,26 @@ def test_room_index_completes_supported_repeated_fallback_probes() -> None:
         assert geometry.contains(128.5, 1.0) is True
 
 
+def test_room_index_finds_late_supported_room_after_many_valid_probes() -> None:
+    """A containing fallback room stays visible through 62 bounded probes."""
+    outside = [
+        [float(index), -10_000.0 if index % 2 else 10_000.0] for index in range(256)
+    ]
+    containing = [point.copy() for point in outside]
+    containing[129][1] = -5_000.0
+    containing.extend([containing[-1].copy(), containing[-1].copy()])
+    geometry = _RoomGeometryIndex(
+        [
+            {"room_id": str(index), "name": "Room", "boundary": outside}
+            for index in range(255)
+        ]
+        + [{"room_id": "containing", "name": "Room", "boundary": containing}]
+    )
+
+    for _ in range(62):
+        assert geometry.contains(128.5, 1.0) is True
+
+
 def test_room_index_reports_uncertainty_when_fallback_budget_is_exhausted() -> None:
     """Budget exhaustion is explicit instead of becoming a false containment result."""
     outside = [
