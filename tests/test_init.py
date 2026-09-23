@@ -1056,13 +1056,19 @@ async def test_setup_refreshes_before_forwarding_platforms(
         observe({"kind": "started"})
         with patch(
             "custom_components.matic_robot.monotonic",
-            side_effect=[100.0, 100.5, 101.0],
+            side_effect=[100.0, 100.5, 100.75, 101.5, 102.0, 103.0, 103.1],
         ):
             observe({"kind": "state", "state_codes": [106]})
             observe({"kind": "state", "state_codes": [107]})
+            scheduled_state_flushes[0].callback()
             observe({"kind": "state", "state_codes": [108]})
+            scheduled_state_flushes[1].callback()
+            observe({"kind": "state", "state_codes": [109]})
+            scheduled_state_flushes[2].callback()
+            observe({"kind": "state", "state_codes": [110]})
+            entry.async_on_unload.call_args_list[0].args[0]()
         assert ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS == 1.0
-        assert hass.bus.async_fire.call_args_list[-3:] == [
+        assert hass.bus.async_fire.call_args_list[-4:] == [
             call(
                 "matic_robot_activity_observed",
                 {"entry_id": entry.entry_id, "kind": "started"},
@@ -1083,9 +1089,17 @@ async def test_setup_refreshes_before_forwarding_platforms(
                     "state_codes": [108],
                 },
             ),
+            call(
+                "matic_robot_activity_observed",
+                {
+                    "entry_id": entry.entry_id,
+                    "kind": "state",
+                    "state_codes": [109],
+                },
+            ),
         ]
-        scheduled_state_flushes[0].cancel.assert_called_once_with()
-        assert len(scheduled_state_flushes) == 1
+        assert len(scheduled_state_flushes) == 4
+        scheduled_state_flushes[3].cancel.assert_called_once_with()
     assert len(setup_scheduled) == 1
     await setup_scheduled[0]
 
