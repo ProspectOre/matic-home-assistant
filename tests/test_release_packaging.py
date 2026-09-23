@@ -483,8 +483,20 @@ def test_review_gate_uses_only_regular_review_evidence() -> None:
             "request_comment_ids=", review_gate.index("request_binding_statuses=")
         )
     ]
+    request_binding_validation = review_gate[
+        review_gate.index("request_binding_statuses=") : review_gate.index(
+            "issue_comment_records=", review_gate.index("request_binding_statuses=")
+        )
+    ]
     assert "flatten[]" in request_status_lookup
     assert "jq -s" not in request_status_lookup
+    assert '(.user.type // "") == "User"' in request_binding_validation
+    assert ".created_at == $binding.created" in request_binding_validation
+    assert ".updated_at == $binding.created" in request_binding_validation
+    assert (
+        'contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->")'
+        in request_binding_validation
+    )
     assert '"github-actions[bot]"' in review_gate
     assert "issue_comment:" not in audit
     assert "pulls?state=open" in rollout

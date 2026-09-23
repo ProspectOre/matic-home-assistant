@@ -253,7 +253,7 @@ jobs:
           # comments can qualify. Findings-bearing issue comments invalidate;
           # security review results and availability notices are ignored.
           regular_evidence() {
-            local review_records issue_comment_records request_reaction_records request_binding_statuses
+            local review_records issue_comment_records request_reaction_records request_binding_statuses issue_comments
             review_records="$(
               # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
               gh api graphql --paginate \
@@ -295,13 +295,32 @@ jobs:
                         source: "review",
                         clean: ($body | stock_clean_envelope)}]'
             )"
+            issue_comments="$(
+              gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+                | jq -c '[flatten[]]'
+            )"
             request_binding_statuses="$(
               gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-                | jq -c --arg context "review-gate-request" \
-                    '[flatten[] | select(.context == $context) | select((.creator.login // "") == "github-actions[bot]")]'
+                | jq -c --arg context "review-gate-request" --arg head "$head_sha" \
+                    --arg base "$base_sha" --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --argjson comments "$issue_comments" '
+                    [flatten[]
+                     | select(.context == $context and .state == "success")
+                     | select((.creator.login // "") == "github-actions[bot]")
+                     | (.description // "") as $description
+                     | (try ($description | capture("^review-request-comment:(?<id>[1-9][0-9]*); base:(?<base>[0-9a-f]{40}); created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$")) catch {}) as $binding
+                     | select($binding.base == $base)
+                     | select(any($comments[];
+                         (.id | tostring) == $binding.id
+                         and (.user.type // "") == "User"
+                         and (.user.login // "") != $bot
+                         and .created_at == $binding.created
+                         and .updated_at == $binding.created
+                         and ((.body // "") | contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->"))
+                         and ((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))))]'
             )"
             issue_comment_records="$(
-              gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+              jq -c '.' <<< "$issue_comments" \
                 | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" \
                     --arg prefix "$head_prefix" --arg base "$base_sha" \
                     --argjson bindings "$request_binding_statuses" '
