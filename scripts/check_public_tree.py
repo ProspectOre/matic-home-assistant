@@ -81,6 +81,10 @@ def _address_violation(candidate: str) -> str | None:
         return None
     if address.is_loopback or address.is_unspecified:
         return None
+    # IPv4 0/8 is the non-routable "this network" range, not a private
+    # household LAN. Four-part 0.x release versions can look like it.
+    if address.version == 4 and address.packed[0] == 0:
+        return None
     if any(address in network for network in DOCUMENTATION_NETWORKS):
         return None
     family = "IPv6" if address.version == 6 else "IPv4"

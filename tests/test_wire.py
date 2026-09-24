@@ -29,6 +29,11 @@ def test_decode_fields_rejects_invalid_wire_data(payload: bytes) -> None:
         decode_fields(payload)
 
 
+def test_decode_fields_enforces_optional_field_limit() -> None:
+    with pytest.raises(DecodeError, match="field limit"):
+        decode_fields(b"\x08\x00" * 3, max_fields=2)
+
+
 def test_fixed_width_and_missing_field_errors() -> None:
     with pytest.raises(DecodeError, match="truncated protobuf value"):
         decode_fields(b"\x09\x00")

@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import math
 import socket
 import ssl
 import struct
-from collections.abc import AsyncGenerator, AsyncIterator
+from collections import Counter
+from collections.abc import AsyncGenerator, AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -32,8 +34,13 @@ from .commands import (
     UserCommand,
     encode_coverage_command,
     encode_custom_coverage_command,
+    encode_mixed_coverage_commands,
     encode_user_command,
     encode_user_data,
+)
+from .coverage_goals import (
+    coverage_command_goal_signatures,
+    coverage_plan_goal_signatures,
 )
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
@@ -44,7 +51,7 @@ from .exceptions import (
     MaticError,
     PairingModeRequiredError,
 )
-from .floor_plan import decode_floor_plans, decode_pose
+from .floor_plan import decode_floor_plans, decode_pose, room_name_key
 from .flythrough import Flythrough, decode_flythrough
 from .history import (
     CleaningSessionImage,
@@ -90,7 +97,7 @@ from .tls import (
     validate_certificate,
 )
 from .trajectory import decode_approximate_trajectory
-from .wire import WireField, decode_fields, first_bytes, first_varint
+from .wire import WireField, decode_fields, first_bytes, first_varint, uuid_string
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -125,6 +132,8 @@ _SCHEDULE_MAX_DEPTH = 4
 _CLEANING_SESSION_MAX_BYTES = 256 * 1024
 _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
+_MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
+_MIXED_COVERAGE_READBACK_INTERVAL = 0.5
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -703,17 +712,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
 
     async def async_get_cleaning_session_records(
         self,
+        *,
+        strict: bool = False,
     ) -> tuple[CleaningSessionRecord, ...]:
         """Read opaque-keyed native history records for completion evidence."""
         entries = await self.async_get_tracked_collection_entries(
             "coverage_session_history", limit=64
         )
-        return tuple(
+        records = tuple(
             CleaningSessionRecord(entry.key, session)
             for entry in entries
             if entry.key
             and (session := _decode_cleaning_session(entry.value)) is not None
         )
+        if strict and len(records) != len(entries):
+            raise MaticError("Native history is incomplete or undecodable")
+        return records
 
     async def async_get_cleaning_session_images(
         self,
@@ -1175,11 +1189,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         """Return non-sensitive read health for observed endpoints."""
         return dict(self._endpoint_health)
 
-    async def async_send_user_command(self, command: UserCommand) -> None:
+    async def async_send_user_command(
+        self,
+        command: UserCommand,
+        *,
+        on_transmitted: Callable[[], None] | None = None,
+    ) -> None:
         """Send one live-verified command through the authenticated user channel."""
         payload = encode_user_command(command)
         _LOGGER.debug("Requesting Matic user command %s", command.name)
-        await self._async_send_user_payload(payload, command_name=command.name)
+        await self._async_send_user_payload(
+            payload, command_name=command.name, on_transmitted=on_transmitted
+        )
 
     async def async_start_coverage(
         self,
@@ -1202,6 +1223,181 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             ),
             command_name="START_COVERAGE",
         )
+
+    async def async_start_mixed_coverage(
+        self,
+        floor_plan: FloorPlan,
+        region_ids: list[str],
+        settings: list[CoverageSetting],
+        modes: list[CleaningMode],
+        *,
+        first_room_name: str,
+        require_current: Callable[[], None],
+        require_owned: Callable[[], None],
+        prepare_stop: Callable[[], Awaitable[None]],
+        rollback_stop: Callable[[], Awaitable[None]],
+        on_recovery_stop_transmitted: Callable[[], None] | None = None,
+        checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
+    ) -> None:
+        """Start then update only our accepted, still-current native mission.
+
+        There is no retry/replay of either write. A partial dispatch failure
+        stops only the exact generated session, never an external replacement.
+        Managed callers durably checkpoint the generated identity before the
+        initial write, so restart can fence this exact partial transaction.
+        """
+        commands = encode_mixed_coverage_commands(
+            mission_id=floor_plan.mission_id,
+            partition_id=floor_plan.partition_protocol_id,
+            region_ids=region_ids,
+            settings=settings,
+            modes=modes,
+        )
+        expected_goals = Counter(coverage_command_goal_signatures(commands.update))
+        require_current()
+        if await self.async_get_cleaning_session_identity() != b"":
+            raise MaticError("Mixed coverage requires an idle native session")
+        require_current()
+        if checkpoint_initial_session is not None:
+            await checkpoint_initial_session(
+                hashlib.sha256(commands.session_id.encode("ascii")).hexdigest()
+            )
+        require_current()
+        try:
+            await self._async_send_user_payload(
+                commands.initial, command_name="START_COVERAGE"
+            )
+            async with asyncio.timeout(180):
+                while True:
+                    require_current()
+                    identity = await self.async_get_cleaning_session_identity()
+                    if identity and uuid_string(identity) != commands.session_id:
+                        raise MaticError(
+                            "Native mission changed before coverage update"
+                        )
+                    state = await self.async_get_state()
+                    if (
+                        identity
+                        and state.activity.value == "cleaning"
+                        and room_name_key(state.current_area)
+                        == room_name_key(first_room_name)
+                    ):
+                        break
+                    await asyncio.sleep(2)
+                latest = await self.async_get_floor_plan()
+
+                def floor_identity(floor: FloorPlan) -> tuple[object, ...]:
+                    return (
+                        floor.mission_id,
+                        floor.partition_protocol_id,
+                        floor.partition_id_wire,
+                        frozenset(
+                            (room.id, room.protocol_id, room.id_wire)
+                            for room in floor.rooms
+                        ),
+                    )
+
+                if floor_identity(latest) != floor_identity(floor_plan):
+                    raise MaticError("Room map changed before coverage update")
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed before coverage update")
+                require_current()
+                await self._async_send_user_payload(
+                    commands.update, command_name="UPDATE_COVERAGE"
+                )
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed after coverage update")
+                await self._async_wait_for_mixed_coverage_readback(
+                    expected_goals,
+                    require_current=require_current,
+                    expected_identity=identity,
+                )
+        except Exception, asyncio.CancelledError:
+            # Reconnection/read failure must not turn into an unowned STOP.
+            try:
+                require_owned()
+                current = await self.async_get_cleaning_session_identity()
+                require_owned()
+                if current and uuid_string(current) == commands.session_id:
+                    stop_fence_prepared = False
+                    stop_may_have_been_sent = False
+                    try:
+                        # A callback can install an in-memory fence before its
+                        # persistence await fails, so arrange rollback first.
+                        stop_fence_prepared = True
+                        await prepare_stop()
+                        require_owned()
+                        if await self.async_get_cleaning_session_identity() != current:
+                            raise MaticError(
+                                "Native mission changed before recovery STOP"
+                            )
+
+                        def note_stop_transmitted() -> None:
+                            nonlocal stop_may_have_been_sent
+                            if stop_may_have_been_sent:
+                                return
+                            stop_may_have_been_sent = True
+                            if on_recovery_stop_transmitted is not None:
+                                on_recovery_stop_transmitted()
+
+                        await self.async_send_user_command(
+                            UserCommand.STOP, on_transmitted=note_stop_transmitted
+                        )
+                        stop_fence_prepared = False
+                    except Exception, asyncio.CancelledError:
+                        if stop_fence_prepared and not stop_may_have_been_sent:
+                            try:
+                                await rollback_stop()
+                            except Exception, asyncio.CancelledError:
+                                _LOGGER.warning(
+                                    "Mixed coverage STOP fence rollback failed"
+                                )
+                        raise
+            except Exception:
+                _LOGGER.warning(
+                    "Mixed coverage recovery could not confirm safe ownership"
+                )
+            raise
+
+    async def _async_wait_for_mixed_coverage_readback(
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        *,
+        require_current: Callable[[], None],
+        expected_identity: bytes,
+    ) -> None:
+        """Require the acknowledged update to appear intact in the live plan."""
+        deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
+        async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
+            while True:
+                require_current()
+                try:
+                    actual_goals = Counter(
+                        coverage_plan_goal_signatures(
+                            await self.async_get_property("coverage_plan")
+                        )
+                    )
+                except DecodeError:
+                    actual_goals = Counter()
+                if actual_goals == expected_goals:
+                    if (
+                        await self.async_get_cleaning_session_identity()
+                        != expected_identity
+                    ):
+                        raise MaticError(
+                            "Native mission changed during coverage readback"
+                        )
+                    return
+                if monotonic() >= deadline:
+                    raise MaticError(
+                        "Robot did not retain all requested mixed coverage goals"
+                    )
+                if (
+                    await self.async_get_cleaning_session_identity()
+                    != expected_identity
+                ):
+                    raise MaticError("Native mission changed during coverage readback")
+                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_start_custom_coverage(
         self,
@@ -1253,22 +1449,34 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def _async_send_user_payload(
-        self, payload: bytes, *, command_name: str
+        self,
+        payload: bytes,
+        *,
+        command_name: str,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Send an encoded command through the authenticated user channel."""
         await self._async_send_channel_payload(
-            "user_command", payload, command_name=command_name
+            "user_command",
+            payload,
+            command_name=command_name,
+            on_transmitted=on_transmitted,
         )
 
     async def _async_send_channel_payload(
-        self, channel_name: str, payload: bytes, *, command_name: str | None = None
+        self,
+        channel_name: str,
+        payload: bytes,
+        *,
+        command_name: str | None = None,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> None:
         """Observe every outgoing channel write, including internal cleanup."""
         fields = {"channel": channel_name, "command": command_name or channel_name}
         command_id = self.activity_journal.record("command_requested", **fields)
         try:
             outcome = await self._async_transmit_channel_payload(
-                channel_name, payload, command_id
+                channel_name, payload, command_id, on_transmitted=on_transmitted
             )
         except asyncio.CancelledError:
             self.activity_journal.record(
@@ -1289,7 +1497,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
 
     async def _async_transmit_channel_payload(
-        self, channel_name: str, payload: bytes, command_id: int
+        self,
+        channel_name: str,
+        payload: bytes,
+        command_id: int,
+        *,
+        on_transmitted: Callable[[], None] | None = None,
     ) -> str:
         """Send unchanged bytes; record when transport transmission begins."""
         if self._channel is None:
@@ -1316,6 +1529,12 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                         "command_sending", command_id=command_id, channel=channel_name
                     )
                     await stream.send_message(request, end=True)
+                    # A failed send_message can be a local rejection before
+                    # any request bytes reach the transport. Mark the point
+                    # only after its DATA write returns successfully; errors
+                    # while awaiting the response are then known ambiguous.
+                    if on_transmitted is not None:
+                        on_transmitted()
                     response = await stream.recv_message()
         except MaticError as err:
             self._command_health[channel_name] = type(err).__name__

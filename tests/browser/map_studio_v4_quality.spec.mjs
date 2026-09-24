@@ -420,6 +420,28 @@ for (const sameFloor of [true, false]) {
   });
 }
 
+test("revalidation clears drafts when the verified map session changes at the same floor ordinal", async ({ page }) => {
+  await loadQualityModules(page);
+  const result = await page.evaluate(async () => {
+    const { EffectController, WorkspaceStore, createGalleryState } = await import("/quality-modules.js");
+    const initial = createGalleryState("draw");
+    const store = new WorkspaceStore({ ...initial, areaDraft: { ...initial.areaDraft, name: "Old frame", dirty: true }, planDraft: { ...initial.planDraft, name: "Old plan", dirty: true } });
+    let entry = { ...initial.resources.entry, mapFloorOrdinal: null, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null };
+    const aborted = async () => { throw new DOMException("Aborted", "AbortError"); };
+    const effects = new EffectController(store, { catalog: async () => [entry], scene: aborted, pose: aborted, history: aborted, plans: aborted, areas: aborted, dispose() {} });
+    effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "one", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+    await effects.refreshCatalog(true);
+    const unknown = { name: store.value.areaDraft.name, count: store.value.draw.circles.length };
+    entry = { ...initial.resources.entry, mapSessionKey: "b".repeat(64) };
+    await effects.refreshCatalog(true);
+    const replacement = { name: store.value.areaDraft.name, plan: store.value.planDraft.name, count: store.value.draw.circles.length, rooms: store.value.selection.roomIds, areaId: store.value.selection.areaId };
+    effects.dispose();
+    return { unknown, replacement, count: initial.draw.circles.length };
+  });
+  expect(result.unknown).toEqual({ name: "Old frame", count: result.count });
+  expect(result.replacement).toEqual({ name: "", plan: "", count: 0, rooms: [], areaId: null });
+});
+
 for (const dispose of [false, true]) {
   test(`preserves both owners' rapid preference changes before ${dispose ? "disposal" : "debounce"}`, async ({ page }) => {
     await loadQualityModules(page);

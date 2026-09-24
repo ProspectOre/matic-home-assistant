@@ -73,8 +73,10 @@ def test_privacy_scan_ignores_local_and_non_routable_addresses(
     candidate = tmp_path / "local.txt"
     multicast_address = ":".join(("ff02", "", "2"))
     oid = ".".join(("2", "5", "4", "72"))
+    version = ".".join(("0", "4", "3", "1"))
     candidate.write_text(
         f"loop=::1\nany=::\nmulticast={multicast_address}\noid={oid}\nversion=1.2.3\n"
+        f"version={version}-beta1\n"
     )
 
     assert scan_file(candidate, tmp_path) == []

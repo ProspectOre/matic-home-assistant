@@ -348,7 +348,7 @@ class MaticGetPlanTool(_MaticTool):
                 }
                 for rank, room in enumerate(rooms, start=1)
             ]
-        groups = leg_groups(chosen)
+        groups = leg_groups(chosen, mixed_settings=True)
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
@@ -378,11 +378,21 @@ class MaticGetPlanTool(_MaticTool):
                     {
                         "leg": index,
                         "rooms": [
-                            {"id": room.room_id, "name": room.name} for room in group
+                            {
+                                "id": room.room_id,
+                                "name": room.name,
+                                "cleaning_mode": room.cleaning_mode,
+                                "coverage_setting": room.coverage_setting,
+                            }
+                            for room in group
                         ],
-                        "cleaning_mode": group[0].cleaning_mode,
-                        "coverage_setting": group[0].coverage_setting,
-                        "dock_between_rooms": "not_expected",
+                        "cleaning_mode": group[0].cleaning_mode
+                        if len({room.cleaning_mode for room in group}) == 1
+                        else "mixed",
+                        "coverage_setting": group[0].coverage_setting
+                        if len({room.coverage_setting for room in group}) == 1
+                        else "mixed",
+                        "dock_between_rooms": "firmware_resource_servicing_possible",
                         "handoff_after_leg": (
                             "firmware_may_touch_dock"
                             if index < len(groups)

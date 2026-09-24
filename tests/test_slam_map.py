@@ -278,6 +278,13 @@ def test_decode_slam_tile_rejects_empty_entries(entry: HermesCollectionEntry) ->
         decode_slam_tile(entry)
 
 
+def test_full_map_decoders_reject_out_of_bounds_page_coordinates() -> None:
+    with pytest.raises(DecodeError, match="outside safe bounds"):
+        decode_slam_tile(synthetic_slam_entry(page_x=4097))
+    with pytest.raises(DecodeError, match="outside safe bounds"):
+        decode_slam_structure_tile(synthetic_structure_entry(page_y=-4097))
+
+
 def test_decode_slam_tile_applies_defaults_for_omitted_fields() -> None:
     entry = synthetic_slam_entry(surface_height=6, with_rgb=False)
     key = _bytes_field(1, b"") + _bytes_field(2, b"synthetic-mission")
@@ -494,8 +501,19 @@ def test_encode_slam_scene_rejects_empty_unbounded_or_invisible_data() -> None:
         tile.surface_bits,
         tile.rgb_data,
     )
-    with pytest.raises(DecodeError, match="too wide"):
+    with pytest.raises(DecodeError, match="too large"):
         encode_slam_scene((tile, far_tile))
+
+    corner_tile = SlamTile(
+        2047,
+        2047,
+        tile.mission_token,
+        tile.floor_rgba,
+        tile.surface_bits,
+        tile.rgb_data,
+    )
+    with pytest.raises(DecodeError, match="raster is too large"):
+        encode_slam_scene((tile, corner_tile))
 
 
 def test_decode_integrated_slam_tile_matches_structure_and_orientation() -> None:
@@ -665,3 +683,28 @@ def test_render_slam_map_rejects_empty_or_unbounded_cache() -> None:
     structure = decode_slam_structure_tile(synthetic_structure_entry())
     with pytest.raises(DecodeError):
         render_slam_map((tile,), structure_tiles=(structure,) * 1025)
+
+    hostile_floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (
+            Room(
+                "room-1",
+                "Huge",
+                "protocol-1",
+                b"room",
+                ((0.0, 0.0), (100.0, 0.0), (100.0, 100.0)),
+            ),
+        ),
+    )
+    with pytest.raises(DecodeError, match="raster is too large"):
+        render_slam_map((tile,), floor_plan=hostile_floor_plan)
+
+
+def test_render_slam_map_rejects_unbounded_projection() -> None:
+    near_corner = decode_slam_tile(synthetic_slam_entry(page_x=0, page_y=0))
+    distant = decode_slam_tile(synthetic_slam_entry(page_x=14, page_y=255))
+
+    with pytest.raises(DecodeError, match="projection is too large"):
+        render_slam_map((near_corner, distant))

@@ -34,6 +34,8 @@ from .area_binding import (
 )
 from .area_selector import MaticAreaSelector
 from .bluetooth_pairing import (
+    BluetoothBondRecoveryRequiredError,
+    BluetoothBondResetFailedError,
     BluetoothPairingIncompleteError,
     BluetoothPairingResetError,
     BluetoothPairingUnavailableError,
@@ -261,6 +263,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         self._manual_discoveries: dict[str, ZeroconfServiceInfo] = {}
         self._pairing_data: dict[str, Any] | None = None
         self._pairing_user_id = new_hermes_user_id()
+        self._reset_bond_paths: set[str] = set()
+        self._reset_bond_path: str | None = None
+        self._bond_recovery_candidates: dict[str, str] = {}
         self._pairing_task: asyncio.Task[None] | None = None
         self._pairing_checkpoint_task: asyncio.Task[None] | None = None
         self._passkey_exchange: BluetoothPasskeyExchange | None = None
@@ -513,6 +518,35 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     "pair", {"base": "pairing_mode_confirmation_required"}
                 )
             self._async_start_pairing("matic_robot_wait_for_pairing")
+        return self._async_pairing_progress("pair")
+
+    def _show_bond_recovery(self) -> config_entries.ConfigFlowResult:
+        """Offer only candidates that rejected a write on a reused bond."""
+        return self.async_show_form(
+            step_id="reset_bond",
+            data_schema=vol.Schema(
+                {
+                    vol.Required("bluetooth_device"): vol.In(
+                        self._bond_recovery_candidates
+                    )
+                }
+            ),
+        )
+
+    async def async_step_reset_bond(
+        self, user_input: dict[str, Any] | None = None
+    ) -> config_entries.ConfigFlowResult:
+        """Reset only the Bluetooth device explicitly selected by the user."""
+        if not self._bond_recovery_candidates or self._pairing_data is None:
+            return self.async_abort(reason="pairing_session_expired")
+        if (
+            user_input is None
+            or user_input.get("bluetooth_device") not in self._bond_recovery_candidates
+        ):
+            return self._show_bond_recovery()
+        self._reset_bond_path = user_input["bluetooth_device"]
+        self._bond_recovery_candidates = {}
+        self._async_start_pairing("matic_robot_wait_for_pairing")
         return self._async_pairing_progress("pair")
 
     async def async_step_pairing_code(
@@ -822,7 +856,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     if result["type"] is not FlowResultType.FORM:
                         self._pairing_result = result
                         return
+                    if result.get("step_id") == "reset_bond":
+                        self._pairing_result = result
+                        return
                     error = (result.get("errors") or {}).get("base")
+                    if error == "bond_reset_failed":
+                        self._pairing_result = result
+                        return
                     last_error = error
                     self._async_note_code_outcome()
                     if (
@@ -919,6 +959,10 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     self._pairing_user_id,
                     self._passkey_exchange,
                     stage_callback=self._async_set_pairing_stage,
+                    reset_bond_paths=self._reset_bond_paths
+                    if step_id == "pair"
+                    else None,
+                    reset_bond_path=self._reset_bond_path,
                 )
                 _LOGGER.debug("Received a robot-issued Bluetooth credential")
             if credential is not None:
@@ -943,6 +987,13 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                         self._pairing_user_id,
                         self._passkey_exchange,
                         stage_callback=self._async_set_pairing_stage,
+                        reset_bond_paths=self._reset_bond_paths,
+                        reset_bond_path=self._reset_bond_path,
+                    )
+                except BluetoothBondResetFailedError as err:
+                    self._pairing_diagnostic = str(err)
+                    return self._show_pairing_form(
+                        "pair", {"base": "bond_reset_failed"}
                     )
                 except BluetoothPairingUnavailableError as err:
                     self._pairing_diagnostic = str(err)
@@ -955,7 +1006,14 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     return self.async_show_form(
                         step_id="pair", errors={"base": "bluetooth_unavailable"}
                     )
-                except BluetoothPairingIncompleteError as err:
+                except BluetoothBondRecoveryRequiredError as err:
+                    self._pairing_diagnostic = str(err)
+                    self._bond_recovery_candidates = err.candidates
+                    return self._show_bond_recovery()
+                except (
+                    BluetoothPairingIncompleteError,
+                    BluetoothPairingResetError,
+                ) as err:
                     self._pairing_diagnostic = str(err)
                     self._pairing_data = {
                         CONF_HOST: host,
@@ -984,6 +1042,9 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HOSTNAME: identity.hostname,
             }
             return self._show_pairing_form("pair")
+        except BluetoothBondResetFailedError as err:
+            self._pairing_diagnostic = str(err)
+            return self._show_pairing_form("pair", {"base": "bond_reset_failed"})
         except BluetoothPairingUnavailableError as err:
             self._pairing_diagnostic = str(err)
             _LOGGER.warning("Matic Bluetooth pairing stopped: %s", err)
@@ -993,7 +1054,11 @@ class MaticRobotConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 CONF_HOSTNAME: identity.hostname,
             }
             return self._show_pairing_form("pair", {"base": "bluetooth_unavailable"})
-        except BluetoothPairingIncompleteError as err:
+        except BluetoothBondRecoveryRequiredError as err:
+            self._pairing_diagnostic = str(err)
+            self._bond_recovery_candidates = err.candidates
+            return self._show_bond_recovery()
+        except (BluetoothPairingIncompleteError, BluetoothPairingResetError) as err:
             self._pairing_diagnostic = str(err)
             self._pairing_data = {
                 CONF_HOST: host,
@@ -1492,6 +1557,16 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 errors["name"] = "duplicate_area"
             else:
                 floor_plan, _binding = context
+                try:
+                    map_binding = binding_for_area(
+                        floor_plan, user_input["area_editor"]
+                    )
+                except ValueError:
+                    return self._show_area_form(
+                        "add_area",
+                        user_input,
+                        errors={"base": "area_geometry_too_complex"},
+                    )
                 self._area_id = area_id
                 await self._manager.async_save_area(
                     self._serial_number,
@@ -1502,9 +1577,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         "circles": user_input["area_editor"],
                         "cleaning_mode": user_input["cleaning_mode"],
                         "coverage_setting": user_input["coverage_setting"],
-                        "map_binding": binding_for_area(
-                            floor_plan, user_input["area_editor"]
-                        ),
+                        "map_binding": map_binding,
                     },
                 )
                 return await self.async_step_area_menu()
@@ -1533,6 +1606,14 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     status=AREA_STATUS_REDRAW_REQUIRED,
                 )
             floor_plan, _binding = context
+            try:
+                map_binding = binding_for_area(floor_plan, user_input["area_editor"])
+            except ValueError:
+                return self._show_area_form(
+                    "edit_area",
+                    user_input,
+                    errors={"base": "area_geometry_too_complex"},
+                )
             await self._manager.async_save_area(
                 self._serial_number,
                 self._area_id,
@@ -1542,9 +1623,7 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     "circles": user_input["area_editor"],
                     "cleaning_mode": user_input["cleaning_mode"],
                     "coverage_setting": user_input["coverage_setting"],
-                    "map_binding": binding_for_area(
-                        floor_plan, user_input["area_editor"]
-                    ),
+                    "map_binding": map_binding,
                 },
             )
             return await self.async_step_area_menu()

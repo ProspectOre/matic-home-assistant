@@ -388,17 +388,19 @@ class SlamMapStore:
                 != (entry.sequence_start_ns, entry.sequence_no)
             )
         target[key] = entry
-        # Only unchanged replays of a classified candidate are harmless.
-        # A new tile, changed content/version, or missing counterpart can
-        # signal a floor return before the selected-floor watcher catches up.
-        # Give that fresh evidence its own bounded classification window.
+        # Fresh candidate evidence starts a bounded classification window.
+        # Even an unchanged replay remains contrary live-stream evidence and
+        # must immediately fail closed; ``blocks_active`` only controls whether
+        # delayed active pages may subsequently re-establish two-layer proof.
         if blocks_active and fresh_page:
             if not candidate.blocks_active:
                 candidate.first_seen_at = monotonic()
             candidate.blocks_active = True
         if candidate.blocks_active:
             self._cancel_candidate_refresh_retry()
-            self._invalidate_live_session()
+        self._invalidate_live_session()
+        if not candidate.blocks_active:
+            self._schedule_candidate_refresh()
         self._enforce_candidate_bounds(candidate)
         # A newer observed mission is authoritative until it is classified.
         # Do not promote an older candidate merely because its delayed layer

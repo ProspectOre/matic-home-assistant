@@ -235,6 +235,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_add_listener=MagicMock(return_value=MagicMock()),
         cancel=MagicMock(return_value=True),
         request_stop=MagicMock(return_value=PlanStopDecision("not_running")),
+        async_checkpoint_stop_intent=AsyncMock(),
         has_managed_task=MagicMock(return_value=False),
         motion_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
@@ -1000,6 +1001,7 @@ def test_sensor_and_binary_sensor_values() -> None:
     assert history.extra_state_attributes["plan_running"] is False
     assert history.extra_state_attributes["last_completed_by_room"] == {}
     assert "plans" in sensor.MaticCleaningHistorySensor._unrecorded_attributes
+    assert "last_run" in sensor.MaticCleaningHistorySensor._unrecorded_attributes
     active_plan = sensor.MaticActiveCleaningPlanSensor(entry)
     next_room = sensor.MaticNextCleaningRoomSensor(entry)
     assert active_plan.native_value is None
@@ -2101,7 +2103,7 @@ def test_native_session_exposes_unrecorded_per_mode_outcomes():
 async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
     hass, structural_first: bool
 ) -> None:
-    """Exercise all four actual button listeners through candidate recovery."""
+    """Unknown map replays fail closed until active evidence is refreshed."""
     entry = _entry(idle=True)
     store = SlamMapStore(hass, "synthetic-idle-buttons")
     entry.runtime_data.slam_map = store
@@ -2147,13 +2149,15 @@ async def test_idle_map_pages_do_not_toggle_floor_bound_buttons(
         writes.clear()
         for page_x in range(100):
             await add(fixture(mission_id=2, page_x=page_x))
-        assert writes == []
-        assert all(entity.available for entity in buttons)
-        # Fresh content from the expired floor still disables every action.
-        await add(fixture(mission_id=2, page_x=100))
         assert sorted(writes) == [(index, False) for index in range(4)]
         assert not any(entity.available for entity in buttons)
+        # Independent active-layer evidence restores the current floor.
         await store.async_add(synthetic_slam_entry(mission_id=7))
         await store.async_add_structure(synthetic_structure_entry(mission_id=7))
+        assert all(entity.available for entity in buttons)
+        writes.clear()
+        # Fresh content from the alternative floor disables every action.
+        await add(fixture(mission_id=2, page_x=100))
+        assert sorted(writes) == [(index, False) for index in range(4)]
         assert not any(entity.available for entity in buttons)
     await store.async_shutdown()

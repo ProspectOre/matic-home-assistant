@@ -44,10 +44,15 @@ Home Assistant OS configures these requirements automatically.
 | Bluetooth connection fails | Check distance and obstructions. A proxy detecting Matic does not prove the local adapter can connect. |
 | Local adapter sees no nearby devices | Reload Bluetooth or replug the adapter. Reboot the host if scanning still fails. |
 | Pairing hangs or times out | Read the `matic_robot` warning in **Settings → System → Logs**; it identifies the failing stage. |
+| Existing Bluetooth pairing is reused but no code appears | If the credential write is rejected, setup offers **Reset an existing Bluetooth pairing**. Select the affected robot by its Bluetooth name and address, enable Pairing mode, and submit. Setup removes only that bond once, rediscovers that device, and requests a fresh code. Cancel if you cannot identify the robot. |
 | Version 0.3.3 reports no fresh advertisement | Update to 0.3.4 or newer; older discovery discarded valid retained scanner entries. |
 
 For more detail, enable `custom_components.matic_robot: debug`, reproduce once,
 and include the relevant log lines in a bug report after removing private data.
+
+Restarting Home Assistant does not clear Bluetooth bonds: they are stored by
+the host's BlueZ service. If recovery still fails, remove only the affected
+robot's bond on the host, reopen Pairing mode, and retry setup.
 
 ## Reauthentication
 

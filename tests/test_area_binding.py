@@ -14,10 +14,12 @@ from custom_components.matic_robot.area_binding import (
     MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     AreaBindingStatus,
+    _add_flow_edge,
     _hash_only_area_geometry_fingerprint,
     _local_segment_correspondence,
     _local_segment_geometries_match,
     _local_segments_match,
+    _minimum_cost_maximum_flow,
     _occupancy_changes_are_explained,
     _point_near_segment,
     _segment_context,
@@ -32,6 +34,10 @@ from custom_components.matic_robot.area_binding import (
     binding_for_floor_plan,
     custom_area_issue_id,
     floor_plan_geometry_fingerprint,
+)
+from custom_components.matic_robot.area_selector import (
+    GeometryTooComplex,
+    _RoomGeometryIndex,
 )
 from custom_components.matic_robot.client.models import FloorPlan, MappedFloor, Room
 from custom_components.matic_robot.const import DOMAIN
@@ -533,8 +539,81 @@ def test_scoped_binding_rejects_unexplained_probe_occupancy_change(
         area["map_binding"]["local_segments_mm"] == current_binding["local_segments_mm"]
     )
     assert area["map_binding"]["local_occupancy"] != current_binding["local_occupancy"]
-    assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    geometry = _RoomGeometryIndex(
+        [
+            {
+                "room_id": str(index),
+                "name": room.name,
+                "boundary": [list(point) for point in room.boundary],
+            }
+            for index, room in enumerate(changed.rooms)
+        ]
+    )
+    status = area_binding_status(area, changed, room_geometry=geometry)
+    assert status is AreaBindingStatus.GEOMETRY_CHANGED
+    remaining = geometry._query_work_remaining
+    assert area_binding_allows_review(
+        area,
+        changed,
+        status=status,
+        room_geometry=geometry,
+        circles_already_validated=True,
+    )
+    assert geometry._query_work_remaining == remaining
     assert area_binding_allows_review(area, changed)
+
+
+def test_hash_only_binding_uses_the_shared_bounded_geometry_index() -> None:
+    floor_plan = _floor_plan()
+    area = _hash_only_scoped_area(floor_plan)
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    remaining = geometry._query_work_remaining
+
+    assert (
+        area_binding_status(area, floor_plan, room_geometry=geometry)
+        is AreaBindingStatus.CURRENT
+    )
+
+    assert geometry._query_work_remaining < remaining
+
+
+def test_area_geometry_charges_fallback_neighborhood_intersection_checks() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    boundary_edge_count = sum(len(room.boundary) for room in floor_plan.rooms)
+
+    with (
+        patch.object(
+            geometry, "charge_query_work", wraps=geometry.charge_query_work
+        ) as charge_work,
+        patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0),
+    ):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=geometry
+        )
+
+    assert charge_work.call_count >= (2 * boundary_edge_count) + 3
+
+
+def test_area_geometry_charges_neighborhood_index_cell_visits() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    indexed_geometry = area_binding_module._room_geometry_index(floor_plan)
+    fallback_geometry = area_binding_module._room_geometry_index(floor_plan)
+
+    with patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 4_096):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=indexed_geometry
+        )
+    with patch.object(area_binding_module, "_MAX_NEIGHBORHOOD_QUERY_CELLS", 0):
+        area_binding_module._area_geometry_components(
+            floor_plan, circles, room_geometry=fallback_geometry
+        )
+
+    assert (
+        indexed_geometry._query_work_remaining < fallback_geometry._query_work_remaining
+    )
 
 
 def test_occupancy_explanation_rejects_malformed_evidence() -> None:
@@ -858,6 +937,85 @@ def test_local_segment_matching_finds_non_greedy_pairing() -> None:
     assert _local_segments_match(saved, current, ((50, 0, 0),))
 
 
+def test_local_segment_correspondence_charges_candidate_generation() -> None:
+    geometry = area_binding_module._room_geometry_index(_floor_plan())
+    geometry._query_work_remaining = 5
+    context = (frozenset({0}), frozenset({0}), (), frozenset({(1, 1)}))
+
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_local_segment_contexts_match") as match,
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(
+            ((0, 0, 100, 0),),
+            ((0, 0, 100, 0),),
+            ((50, 0, 0),),
+            room_geometry=geometry,
+        )
+
+    assert geometry._query_work_remaining == 0
+    match.assert_not_called()
+
+
+def test_local_segment_correspondence_caps_segment_count() -> None:
+    segments = tuple((index, 0, index + 1, 0) for index in range(4_097))
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(segments, (), ((0, 0, 0),))
+
+
+def test_local_segment_correspondence_caps_compatible_pairs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 20_000
+    )
+    segments = tuple((index * 1_000, 0, index * 1_000, 1) for index in range(16_385))
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(segments, segments, ((0, 0, 20_000_000),))
+
+
+def test_local_segment_correspondence_caps_fallback_work(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_WORK", 2)
+
+    with pytest.raises(GeometryTooComplex):
+        _local_segment_correspondence(
+            ((0, 0, 100, 0),), ((0, 0, 100, 0),), ((50, 0, 0),)
+        )
+
+
+def test_minimum_cost_flow_rejects_nonnegative_path() -> None:
+    graph: list[list[list[int]]] = [[], []]
+    _add_flow_edge(graph, 0, 1, 0)
+
+    assert _minimum_cost_maximum_flow(graph, 0, 1, stop_at_nonnegative=True) == 0
+    assert graph[0][0][2] == 1
+
+
+def test_area_binding_fails_closed_when_segment_matching_exhausts_budget() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.5, "y": 0.75, "radius": 0.2}]
+    area = _scoped_area(floor_plan, circles)
+
+    with (
+        patch.object(
+            area_binding_module,
+            "_local_geometry_fingerprint",
+            return_value="0" * 64,
+        ),
+        patch.object(
+            area_binding_module,
+            "_local_segment_correspondence",
+            side_effect=GeometryTooComplex("test budget exhausted"),
+        ),
+    ):
+        assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
+
+
 def test_local_segment_matching_restricts_spatial_candidates() -> None:
     shape = tuple((index * 1000, 0, 0) for index in range(512))
     segments = tuple(
@@ -890,7 +1048,7 @@ def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
     assert matches.call_count < len(segments) ** 2 // 8
 
 
-def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
+def test_occupancy_explanation_caps_overlapping_neighborhood_work() -> None:
     shape = ((0, 0, 2500),) * 512
     circles = ({"x": 0.0, "y": 0.0, "radius": 2.5},) * len(shape)
     saved = tuple((center, -2500, center, 2500) for center in range(-2550, 2551, 20))
@@ -901,14 +1059,15 @@ def test_occupancy_explanation_indexes_overlapping_neighborhoods() -> None:
         "_wall_pair_explains_probe",
         wraps=area_binding_module._wall_pair_explains_probe,
     ) as explains:
-        assert not _occupancy_changes_are_explained(
-            (0,) * len(shape),
-            (1, *(0 for _ in shape[1:])),
-            saved,
-            current,
-            shape,
-            circles,
-        )
+        with pytest.raises(GeometryTooComplex):
+            _occupancy_changes_are_explained(
+                (0,) * len(shape),
+                (1, *(0 for _ in shape[1:])),
+                saved,
+                current,
+                shape,
+                circles,
+            )
 
     assert explains.call_count < len(saved) * len(current) // 8
 
@@ -960,6 +1119,19 @@ def test_occupancy_explanation_uses_one_to_one_wall_correspondence() -> None:
         shape,
         circles,
     )
+
+
+def test_occupancy_explanation_rejects_incomplete_segment_correspondence() -> None:
+    shape = ((0, 0, 100),)
+    circles = ({"x": 0.0, "y": 0.0, "radius": 0.1},)
+    segments = ((345, -100, 345, 100),)
+
+    with patch.object(
+        area_binding_module, "_local_segment_correspondence", return_value=None
+    ):
+        assert not _occupancy_changes_are_explained(
+            (0,), (4,), segments, segments, shape, circles
+        )
 
 
 @pytest.mark.parametrize(
@@ -1368,6 +1540,44 @@ def test_area_issue_sync_deduplicates_updates_and_exposes_only_stale_count() -> 
         assert "circles" not in serialized
     assert create.call_args.kwargs["translation_placeholders"] == {"count": "2"}
     delete.assert_not_called()
+
+
+def test_area_issue_sync_shares_geometry_budget_across_saved_areas() -> None:
+    hass = MagicMock()
+    original = _floor_plan()
+    changed = replace(
+        original,
+        rooms=(
+            replace(
+                original.rooms[0],
+                boundary=((0.01, 0.0), *original.rooms[0].boundary[1:]),
+            ),
+            original.rooms[1],
+        ),
+    )
+    areas = {f"area-{index}": _scoped_area(original) for index in range(3)}
+
+    with (
+        patch(
+            "custom_components.matic_robot.area_binding._room_geometry_index",
+            wraps=area_binding_module._room_geometry_index,
+        ) as build_geometry,
+        patch(
+            "custom_components.matic_robot.area_binding.area_binding_status",
+            wraps=area_binding_status,
+        ) as classify,
+        patch("custom_components.matic_robot.area_binding.ir.async_create_issue"),
+        patch("custom_components.matic_robot.area_binding.ir.async_delete_issue"),
+    ):
+        async_sync_custom_area_issue(hass, "entry", areas, changed)
+
+    build_geometry.assert_called_once()
+    shared_geometry = classify.call_args_list[0].kwargs["room_geometry"]
+    assert all(
+        call.kwargs["room_geometry"] is shared_geometry
+        for call in classify.call_args_list
+    )
+    assert shared_geometry._query_work_remaining < shared_geometry._MAX_QUERY_WORK
 
 
 def test_area_issue_sync_preserves_unknown_state_and_clears_verified_state() -> None:
