@@ -493,6 +493,7 @@ jobs:
                      | (.description // "")
                      | try capture("^review-request-comment:(?<id>[1-9][0-9]*); base:[0-9a-f]{40}; created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$") catch {}
                      | select(.created == $latest_delivery.at)
+                     | select((.id | tonumber) < ($cleared_comment_id | tonumber))
                      | .id] | unique)
                    else []
                    end) as $tied_request_comment_ids
