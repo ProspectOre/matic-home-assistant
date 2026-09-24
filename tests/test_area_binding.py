@@ -86,8 +86,8 @@ def test_linear_smallest_rotation_matches_reference(
     assert _smallest_rotation(points) == expected
 
 
-def test_dense_floor_area_binding_remains_bounded() -> None:
-    """Dense native traces and a maximum-size painted area stay interactive."""
+def test_dense_floor_area_binding_fails_closed_at_work_budget() -> None:
+    """Decoder-valid dense geometry must not exceed synchronous query work."""
     side_points = 2_000
     boundary = tuple(
         [(index / side_points * 10, 0.0) for index in range(side_points)]
@@ -110,10 +110,8 @@ def test_dense_floor_area_binding_remains_bounded() -> None:
         for index in range(512)
     ]
 
-    binding = binding_for_area(floor_plan, circles)
-
-    assert binding["version"] == SCOPED_MAP_BINDING_VERSION
-    assert len(binding["local_occupancy"]) == 512
+    with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
+        binding_for_area(floor_plan, circles)
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
