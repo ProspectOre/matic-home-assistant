@@ -10,6 +10,7 @@ import pytest
 import custom_components.matic_robot.area_binding as area_binding_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
@@ -112,6 +113,392 @@ def test_dense_floor_area_binding_fails_closed_at_work_budget() -> None:
 
     with pytest.raises(GeometryTooComplex, match="query budget exhausted"):
         binding_for_area(floor_plan, circles)
+
+
+def test_area_binding_rejects_excess_local_segments() -> None:
+    """Robot-controlled local walls cannot make persisted evidence unbounded."""
+    floor_plan = FloorPlan(
+        1,
+        "duplicate-partition",
+        b"duplicate-partition",
+        tuple(
+            _room(str(index), "Duplicate", ((0.0, 0.0), (1.0, 0.0), (0.0, 1.0)))
+            for index in range(2)
+        ),
+    )
+
+    with (
+        patch.object(area_binding_module, "_MAX_STORED_LOCAL_SEGMENTS", 1),
+        pytest.raises(ValueError, match="too many local floor-plan segments"),
+    ):
+        binding_for_area(floor_plan, [{"x": 0.2, "y": 0.2, "radius": 0.1}])
+
+
+def test_legacy_dense_v3_binding_remains_reviewable_after_map_drift() -> None:
+    zigzag = tuple(
+        (5.4 - index / 750, 5.3 if index % 2 else 4.7) for index in range(601)
+    )
+    boundary = (
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (5.5, 10.0),
+        *zigzag,
+        (0.0, 10.0),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("dense", "Dense", boundary),),
+    )
+    circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 4096):
+        area = _scoped_area(floor_plan, circles)
+
+    assert len(area["map_binding"]["local_segments_mm"]) > 256
+    changed_boundary = list(boundary)
+    changed_boundary[304] = (changed_boundary[304][0], 4.9)
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=tuple(changed_boundary)),),
+    )
+
+    def over_match_budget(*args, **kwargs):
+        raise GeometryTooComplex("synthetic legacy segment count exceeds matcher cap")
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=over_match_budget,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=over_match_budget,
+    ):
+        assert area_binding_allows_review(area, changed)
+
+
+def test_matcher_work_exhaustion_keeps_valid_drift_reviewable() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.8, "y": 0.75, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (2.05, 0.0), (2.05, 1.5), (0.0, 1.5)),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+
+    def exhaust_match_work(*args, **kwargs):
+        raise GeometryTooComplex("synthetic matcher work budget exhausted")
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=exhaust_match_work,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=exhaust_match_work,
+    ):
+        assert area_binding_allows_review(area, changed)
+
+
+def test_hash_fingerprint_work_exhaustion_keeps_valid_drift_reviewable() -> None:
+    boundary = (
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (5.5, 10.0),
+        *((5.4 - index / 750, 5.3 if index % 2 else 4.7) for index in range(601)),
+        (0.0, 10.0),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("dense", "Dense", boundary),),
+    )
+    circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    assert (
+        area["map_binding"]["version"]
+        == area_binding_module.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    )
+    changed_boundary = (*boundary[:-1], (0.0, 10.1))
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=changed_boundary),),
+    )
+
+    with patch.object(
+        area_binding_module,
+        "_bounded_hash_only_area_geometry_fingerprint",
+        side_effect=area_binding_module._BoundedFingerprintWorkExhausted(
+            "synthetic fingerprint work exhausted after validation"
+        ),
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+        assert area_binding_allows_review(area, changed)
+        assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
+    shared_geometry = area_binding_module._room_geometry_index(changed)
+    shared_geometry._query_work_remaining = 0
+    with (
+        patch.object(
+            area_binding_module,
+            "_bounded_hash_only_area_geometry_fingerprint",
+            side_effect=area_binding_module._BoundedFingerprintWorkExhausted(
+                "synthetic fingerprint work exhausted after validation"
+            ),
+        ),
+        patch.object(area_binding_module, "_room_geometry_index") as create_index,
+    ):
+        assert (
+            area_binding_status(area, changed, room_geometry=shared_geometry)
+            is AreaBindingStatus.GEOMETRY_CHANGED
+        )
+        assert shared_geometry._query_work_remaining == 0
+        create_index.assert_not_called()
+    invalid_area = {**area, "circles": [{"x": 500.0, "y": 500.0, "radius": 0.1}]}
+    assert area_binding_status(invalid_area, changed) is AreaBindingStatus.INVALID
+
+
+def test_hash_fingerprint_exhaustion_keeps_saved_center_tolerance() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "near-edge",
+                "Near Edge",
+                ((0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 1.995, "y": 1.0, "radius": 0.1}]
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0):
+        area = _scoped_area(floor_plan, circles)
+    assert (
+        area["map_binding"]["version"]
+        == area_binding_module.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    )
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (1.99, 0.0), (1.99, 2.0), (0.0, 2.0)),
+            ),
+        ),
+    )
+
+    def exhaust_after_validation(*args, center_tolerance, room_geometry):
+        assert center_tolerance == area_binding_module._LOCAL_GEOMETRY_TOLERANCE_METERS
+        area_binding_module._validate_area_circles(
+            args[0],
+            args[1],
+            center_tolerance=center_tolerance,
+            room_geometry=room_geometry,
+        )
+        raise area_binding_module._BoundedFingerprintWorkExhausted(
+            "synthetic fingerprint work exhausted after validation"
+        )
+
+    with patch.object(
+        area_binding_module,
+        "_bounded_hash_only_area_geometry_fingerprint",
+        side_effect=exhaust_after_validation,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_hash_fingerprint_wraps_work_exhaustion_after_validation() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.5, "y": 0.75, "radius": 0.1}]
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    validate = area_binding_module._validate_area_circles
+
+    def validate_then_exhaust(*args, **kwargs):
+        normalized = validate(*args, **kwargs)
+        geometry._query_work_remaining = 0
+        return normalized
+
+    with (
+        patch.object(
+            area_binding_module,
+            "_validate_area_circles",
+            side_effect=validate_then_exhaust,
+        ),
+        pytest.raises(area_binding_module._BoundedFingerprintWorkExhausted),
+    ):
+        area_binding_module._bounded_hash_only_area_geometry_fingerprint(
+            floor_plan, circles, room_geometry=geometry
+        )
+
+
+def test_local_segment_correspondence_enforces_work_limits() -> None:
+    """Dense compatible walls fail closed before building or scanning a graph."""
+    segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))
+    shape = ((500, 0, 100),)
+
+    with (
+        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1),
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(segments, segments, shape)
+    with (
+        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_WORK", 1),
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(segments[:1], segments[:1], shape)
+
+
+def test_local_segment_matching_caps_duplicate_index_reference_visits() -> None:
+    context = (True, 0, 0, ((0, 0), (0, 0)))
+    saved = ((0, 0, 100, 0),)
+    current = ((0, 0, 100, 0),)
+
+    with (
+        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_WORK", 25),
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(saved, current, ((50, 0, 1),))
+
+
+def test_local_segment_matching_reference_budget_is_scan_wide() -> None:
+    context = (True, 0, 0, ((0, 0), (1, 0)))
+    saved = ((0, 0, 100, 0), (0, 0, 100, 0))
+    current = ((0, 0, 100, 0),)
+
+    with (
+        patch.object(area_binding_module, "_segment_context", return_value=context),
+        patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_WORK", 25),
+        pytest.raises(GeometryTooComplex),
+    ):
+        _local_segment_correspondence(saved, current, ((50, 0, 1),))
+
+
+def test_saved_local_segments_keep_legacy_numeric_shape() -> None:
+    assert area_binding_module._valid_local_segments([[0, 0, 1, 1]] * 257)
+    assert not area_binding_module._valid_local_segments([[0, 0, 1, "bad"]])
+
+
+def test_large_local_geometry_uses_hash_only_binding() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
+    boundary = [
+        *((index / 75, 0.0) for index in range(75)),
+        *((1.0, index / 75) for index in range(75)),
+        *((1.0 - index / 75, 1.0) for index in range(75)),
+        *((0.0, 1.0 - index / 75) for index in range(75)),
+    ]
+    floor_plan = replace(
+        floor_plan, rooms=(replace(floor_plan.rooms[0], boundary=tuple(boundary)),)
+    )
+    binding = binding_for_area(floor_plan, circles)
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+    assert area_binding_status(area, floor_plan) is AreaBindingStatus.CURRENT
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=(*boundary[:-1], (0.0, 0.9))),),
+    )
+    assert area_binding_status(area, changed) is not AreaBindingStatus.CURRENT
+
+
+def test_dense_area_hash_keeps_separated_circle_union_scope(monkeypatch) -> None:
+    edge = tuple(
+        [(index / 200 * 20, 0.0) for index in range(201)]
+        + [(20.0, index / 100 * 2) for index in range(101)]
+        + [(20 - index / 200 * 20, 2.0) for index in range(201)]
+        + [(0.0, 2 - index / 100 * 2) for index in range(101)]
+    )
+    base = FloorPlan(1, "partition", b"partition", (_room("main", "Main", edge),))
+    circles = [
+        {"x": 1.0, "y": 0.3, "radius": 0.2},
+        {"x": 19.0, "y": 0.3, "radius": 0.2},
+    ]
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 1)
+    binding = binding_for_area(base, circles)
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+
+    gap = _room("gap", "Gap", ((9.5, 0.5), (10.5, 0.5), (10.5, 1.5), (9.5, 1.5)))
+    changed = replace(base, rooms=(*base.rooms, gap))
+    assert (
+        area_binding_status(
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "circles": circles,
+                "map_binding": binding,
+            },
+            changed,
+        )
+        is AreaBindingStatus.CURRENT
+    )
+    duplicated_boundary = replace(
+        base,
+        rooms=(*base.rooms, _room("duplicate", "Duplicate", edge)),
+    )
+    assert (
+        area_binding_status(
+            {
+                "schema_version": AREA_SCHEMA_VERSION,
+                "circles": circles,
+                "map_binding": binding,
+            },
+            duplicated_boundary,
+        )
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
+
+
+def test_dense_hash_verification_accepts_saved_center_boundary_tolerance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor_plan = FloorPlan(
+        1,
+        "partition",
+        b"partition",
+        (_room("main", "Main", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    circles = [{"x": 0.005, "y": 5.0, "radius": 0.2}]
+    monkeypatch.setattr(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", -1)
+    binding = binding_for_area(floor_plan, circles)
+    boundary_moved_inward = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.01, 0.0), (10.0, 0.0), (10.0, 10.0), (0.01, 10.0)),
+            ),
+        ),
+    )
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    assert (
+        area_binding_status(area, boundary_moved_inward)
+        is not AreaBindingStatus.INVALID
+    )
 
 
 def _area(floor_plan: FloorPlan | None = None) -> dict[str, object]:
@@ -444,6 +831,17 @@ def test_hash_only_v2_binding_remains_valid_for_safe_migration() -> None:
     assert (
         area_binding_status(area, changed_nearby) is AreaBindingStatus.GEOMETRY_CHANGED
     )
+
+
+def test_hash_only_signature_uses_indexed_occupancy_queries() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.1}]
+    with patch.object(
+        area_binding_module.MaticAreaSelector,
+        "_point_in_polygon",
+        side_effect=AssertionError("legacy full-edge scan used"),
+    ):
+        assert len(_hash_only_area_geometry_fingerprint(floor_plan, circles)) == 64
 
 
 def test_scoped_binding_tolerates_local_subcentimeter_jitter() -> None:
@@ -956,6 +1354,24 @@ def test_local_segment_correspondence_charges_candidate_generation() -> None:
     match.assert_not_called()
 
 
+def test_segment_context_stops_before_materializing_excessive_cells() -> None:
+    remaining = 8
+
+    def charge(work: int = 1) -> None:
+        nonlocal remaining
+        if work > remaining:
+            remaining = 0
+            raise GeometryTooComplex("local segment matching work budget exhausted")
+        remaining -= work
+
+    with pytest.raises(GeometryTooComplex):
+        area_binding_module._segment_context(
+            (0, 0, 10_000_000, 0), ((5_000_000, 0, 5_000_000),), charge_work=charge
+        )
+
+    assert remaining == 0
+
+
 def test_local_segment_correspondence_caps_segment_count() -> None:
     segments = tuple((index, 0, index + 1, 0) for index in range(4_097))
 
@@ -1015,7 +1431,7 @@ def test_area_binding_fails_closed_when_segment_matching_exhausts_budget() -> No
 
 
 def test_local_segment_matching_restricts_spatial_candidates() -> None:
-    shape = tuple((index * 1000, 0, 0) for index in range(512))
+    shape = tuple((index * 1000, 0, 0) for index in range(128))
     segments = tuple(
         (center_x - 100, 0, center_x + 100, 0) for center_x, _center_y, _radius in shape
     )
@@ -1031,9 +1447,9 @@ def test_local_segment_matching_restricts_spatial_candidates() -> None:
 
 
 def test_local_segment_matching_indexes_overlapping_neighborhoods() -> None:
-    shape = ((0, 0, 2500),) * 512
+    shape = ((0, 0, 2500),) * 64
     segments = tuple(
-        (center_x, -100, center_x, 100) for center_x in range(-2550, 2551, 20)
+        (center_x, -100, center_x, 100) for center_x in range(-2520, 2521, 80)
     )
 
     with patch.object(

@@ -36,6 +36,7 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from .area_selector import GeometryTooComplex
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
 
@@ -1032,11 +1033,18 @@ class CleaningPlanManager:
             if room_geometry is None:
                 room_geometry = _room_geometry_index(floor_plan)
             try:
-                area["map_binding"] = binding_for_area(
+                upgraded_binding = binding_for_area(
                     floor_plan, circles, room_geometry=room_geometry
                 )
+            except GeometryTooComplex:
+                # Status verification and replacement share one bounded index.
+                # If replacement exhausts it, keep the migration pending for a
+                # later map revision instead of silently treating it as done.
+                pending = True
+                continue
             except KeyError, TypeError, ValueError:
                 continue
+            area["map_binding"] = upgraded_binding
             upgraded += 1
         if upgraded:
             await self._async_save_and_notify(serial_number)
