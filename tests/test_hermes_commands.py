@@ -8,6 +8,7 @@ from custom_components.matic_robot.client.commands import (
     HermesConnectionKind,
     UserCommand,
     encode_coverage_command,
+    encode_sink_summon_command,
     encode_user_command,
     encode_user_data,
 )
@@ -118,3 +119,23 @@ def test_coverage_rejects_out_of_range_mission_id(mission_id: int) -> None:
             partition_id="aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
             region_ids=["11111111-1111-4111-8111-111111111111"],
         )
+
+
+def test_sink_summon_waits_for_a_refill_at_the_saved_posture() -> None:
+    """Lock the robot-validated NavigateTo + 900 s refill wait structure."""
+    payload = encode_sink_summon_command(
+        mission_id=0x01020304,
+        posture=bytes.fromhex("0d0000c03f15000000c0220515000080bf"),
+    )
+
+    assert payload == bytes.fromhex(
+        "122722250a110d0000c03f15000000c0220515000080bf"
+        "1205150403020122090a070a030884071000"
+    )
+
+
+def test_sink_summon_rejects_missing_posture_and_out_of_range_mission() -> None:
+    with pytest.raises(ValueError, match="posture"):
+        encode_sink_summon_command(mission_id=1, posture=b"")
+    with pytest.raises(ValueError, match="mission_id"):
+        encode_sink_summon_command(mission_id=1 << 32, posture=b"\x0d")

@@ -30,6 +30,25 @@ coverage: `quick`, `standard` (Optimal), `heavy_duty`; it does not change
 mopping, so use Double-pass mopping for an extra mop pass. For pause, resume
 and dock, use Home Assistant's standard vacuum actions.
 
+## Sink refill
+
+`vacuum.send_command` with `command: sink_summon` sends the robot to the sink
+location saved in the Matic app for the current floor. It waits there for up to
+15 minutes for a water refill. Sent from the dock or while idle, it then docks.
+During a clean, including a plan run, the robot keeps its task: Resume continues
+the clean straight away, and otherwise it continues once the wait ends. A plan
+docked between rooms holds no task, so a summon then ends the plan like any
+other direct command. The floor must have a saved sink location.
+
+```yaml
+actions:
+  - action: vacuum.send_command
+    target:
+      entity_id: vacuum.matic
+    data:
+      command: sink_summon
+```
+
 ## Plans
 
 | Action | Fields and behavior |

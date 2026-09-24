@@ -1339,6 +1339,9 @@
     "coverage_identity_changed": {
       "message": "The clean changed while starting, so check the robot first."
     },
+    "sink_location_unavailable": {
+      "message": "No sink location is saved for this floor. Save one in the Matic app, then try again."
+    },
     "robot_stop_pending": {
       "message": "The robot is stopping. Wait until it docks, then try again."
     },
@@ -1373,7 +1376,7 @@
       "message": "No custom area matches {area}. Check the name, or choose from your custom areas."
     },
     "unsupported_command": {
-      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, or return_home."
+      "message": "That Matic command is not supported. Use start, clean_all, clean_rooms, clean_segments, pause, resume, stop, dock, return_home, or sink_summon."
     },
     "managed_run_changed": {
       "message": "The cleaning plan changed before Stop could be sent, so Stop was not sent. Check the robot and press Stop again if it is still cleaning."
