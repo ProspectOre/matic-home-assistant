@@ -259,8 +259,10 @@ class _RoomGeometryIndex:
             self._query_work_remaining = 0
             raise
 
-    def containing_indices(self, x: float, y: float) -> tuple[int, ...]:
-        """Return all containing room positions under the shared work budget."""
+    def containing_indices(
+        self, x: float, y: float, tolerance: float = 0.0
+    ) -> tuple[int, ...]:
+        """Return room positions containing or tolerably near a point."""
         if self._query_work_remaining <= 0:
             raise GeometryTooComplex("room geometry query budget exhausted")
         indices = []
@@ -268,7 +270,7 @@ class _RoomGeometryIndex:
             for index, polygon in enumerate(self.polygons):
                 self._charge_work()
                 contained, work = polygon.contains_with_work_limit(
-                    x, y, 0.0, self._query_work_remaining
+                    x, y, tolerance, self._query_work_remaining
                 )
                 self._charge_work(work)
                 if contained:

@@ -505,6 +505,16 @@ def test_partial_translation_evidence_without_room_anchors_fails_closed() -> Non
     assert area_binding_status(area, translated_and_reshaped) is (
         AreaBindingStatus.GEOMETRY_CHANGED
     )
+    empty_anchors = {
+        **area,
+        "map_binding": {
+            **area["map_binding"],
+            "translation_room_anchors": [],
+        },
+    }
+    assert area_binding_status(empty_anchors, translated_and_reshaped) is (
+        AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_uses_union_of_separated_mark_neighborhoods() -> None:
@@ -590,6 +600,72 @@ def test_hash_only_v2_binding_remains_valid_for_safe_migration() -> None:
     )
     assert (
         area_binding_status(area, changed_nearby) is AreaBindingStatus.GEOMETRY_CHANGED
+    )
+
+
+@pytest.mark.parametrize(
+    "circles",
+    [
+        None,
+        [{"x": 50.0, "y": 50.0, "radius": 0.1}],
+    ],
+)
+def test_hash_only_v2_map_drift_validates_saved_circles(circles) -> None:
+    floor_plan = _floor_plan()
+    area = _hash_only_scoped_area(floor_plan)
+    if circles is None:
+        area["circles"] = "malformed"
+    else:
+        area["circles"] = circles
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=tuple((x + 1.0, y) for x, y in floor_plan.rooms[0].boundary),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+
+    assert area_binding_status(area, changed) is AreaBindingStatus.INVALID
+
+
+def test_mixed_area_checks_frame_anchor_for_every_circle() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("near", "Near", ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0))),
+            _room(
+                "interior",
+                "Interior",
+                ((20.0, 0.0), (40.0, 0.0), (40.0, 20.0), (20.0, 20.0)),
+            ),
+        ),
+    )
+    circles = [
+        {"x": 0.2, "y": 2.0, "radius": 0.05},
+        {"x": 30.0, "y": 10.0, "radius": 0.2},
+    ]
+    area = _scoped_area(floor_plan, circles)
+    translated_interior = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=tuple(
+                    (x + 1.0, y + 2.0) for x, y in floor_plan.rooms[1].boundary
+                ),
+            ),
+        ),
+    )
+
+    assert area["map_binding"]["local_segments_mm"]
+    assert area_binding_status(area, translated_interior) is (
+        AreaBindingStatus.GEOMETRY_CHANGED
     )
 
 

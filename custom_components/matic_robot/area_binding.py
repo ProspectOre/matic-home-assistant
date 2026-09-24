@@ -323,6 +323,13 @@ def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+def _bounds_within_tolerance(old: Sequence[int], new: Sequence[int]) -> bool:
+    return all(
+        abs(new_value - old_value) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        for old_value, new_value in zip(old, new, strict=True)
+    )
+
+
 def _translation_room_anchors(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -345,7 +352,9 @@ def _translation_room_anchors(
         index
         for circle in circles
         for index in room_geometry.containing_indices(
-            float(circle["x"]), float(circle["y"])
+            float(circle["x"]),
+            float(circle["y"]),
+            _LOCAL_GEOMETRY_TOLERANCE_METERS,
         )
     }
     anchors = []
@@ -719,6 +728,12 @@ def area_binding_status(
         # Fail closed on every whole-map change rather than authorizing stale
         # coordinates from an unanchored occupancy-only match.
         if saved_geometry != current["geometry_sha256"]:
+            try:
+                _validate_area_circles(
+                    floor_plan, area["circles"], room_geometry=room_geometry
+                )
+            except KeyError, OverflowError, TypeError, ValueError:
+                return AreaBindingStatus.INVALID
             return AreaBindingStatus.GEOMETRY_CHANGED
         try:
             local_geometry = _hash_only_area_geometry_fingerprint(
@@ -750,50 +765,52 @@ def area_binding_status(
         # cannot prove that an unchanged area stayed in its original room
         # frame. Check the area's own shape first so edited input remains INVALID.
         return AreaBindingStatus.GEOMETRY_CHANGED
-    # Areas with no nearby wall have no coordinate anchor. If any whole-map
-    # geometry changed, local occupancy and extrema can both remain plausible
-    # after relocalization. Match unchanged room shapes in their absolute
-    # frame so edits to distant room extrema do not hide a shifted room.
-    if not saved["local_segments_mm"] and saved_geometry != current["geometry_sha256"]:
+    # A nearby wall anchors only its own circle. Check containing-room frame
+    # evidence for every circle because one area may span anchored and unanchored
+    # rooms. Local wall evidence cannot establish another circle's frame.
+    if saved_geometry != current["geometry_sha256"]:
         saved_anchors = saved.get("translation_room_anchors")
-        if isinstance(saved_anchors, list):
-            try:
-                current_anchors = _translation_room_anchors(
-                    floor_plan, area["circles"], room_geometry=room_geometry
-                )
-            except GeometryTooComplex, OverflowError, TypeError, ValueError:
-                return AreaBindingStatus.INVALID
-            current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
-            for anchor in current_anchors:
-                current_bounds_by_fingerprint.setdefault(
-                    anchor["fingerprint"], []
-                ).append(anchor["bounds"])
-            for anchor in saved_anchors:
-                old_bounds = anchor["bounds"]
-                matching_bounds = current_bounds_by_fingerprint.get(
-                    str(anchor["fingerprint"]).casefold(), ()
-                )
-                if len(matching_bounds) == 1:
-                    if matching_bounds[0] != old_bounds:
-                        return AreaBindingStatus.GEOMETRY_CHANGED
-                elif not matching_bounds:
-                    bounds_within_tolerance = any(
-                        all(
-                            abs(new - old) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
-                            for old, new in zip(
-                                old_bounds, anchor["bounds"], strict=True
-                            )
-                        )
-                        for anchor in current_anchors
-                    )
-                    if not bounds_within_tolerance:
-                        # A changed containing-room shape cannot prove that
-                        # saved coordinates remain in the same absolute frame.
-                        return AreaBindingStatus.GEOMETRY_CHANGED
-                elif len(matching_bounds) > 1 and all(
-                    new_bounds != old_bounds for new_bounds in matching_bounds
+        if not isinstance(saved_anchors, list) or not saved_anchors:
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        try:
+            current_anchors = _translation_room_anchors(
+                floor_plan, area["circles"], room_geometry=room_geometry
+            )
+        except GeometryTooComplex, OverflowError, TypeError, ValueError:
+            return AreaBindingStatus.INVALID
+        current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
+        for anchor in current_anchors:
+            current_bounds_by_fingerprint.setdefault(anchor["fingerprint"], []).append(
+                anchor["bounds"]
+            )
+        for anchor in saved_anchors:
+            old_bounds = anchor["bounds"]
+            matching_bounds = current_bounds_by_fingerprint.get(
+                str(anchor["fingerprint"]).casefold(), ()
+            )
+
+            if len(matching_bounds) == 1:
+                if not _bounds_within_tolerance(
+                    old_bounds, matching_bounds[0]
+                ) and not any(
+                    _bounds_within_tolerance(old_bounds, current_anchor["bounds"])
+                    for current_anchor in current_anchors
                 ):
                     return AreaBindingStatus.GEOMETRY_CHANGED
+            elif not matching_bounds:
+                bounds_within_tolerance = any(
+                    _bounds_within_tolerance(old_bounds, current_anchor["bounds"])
+                    for current_anchor in current_anchors
+                )
+                if not bounds_within_tolerance:
+                    # A changed containing-room shape cannot prove that
+                    # saved coordinates remain in the same absolute frame.
+                    return AreaBindingStatus.GEOMETRY_CHANGED
+            elif len(matching_bounds) > 1 and all(
+                not _bounds_within_tolerance(old_bounds, new_bounds)
+                for new_bounds in matching_bounds
+            ):
+                return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
         if (
