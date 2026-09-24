@@ -709,21 +709,6 @@ def area_binding_status(
     if saved["partition_id"] != current["partition_id"]:
         return AreaBindingStatus.PARTITION_CHANGED
     saved_geometry = str(saved["geometry_sha256"]).casefold()
-    if (
-        saved["version"] == SCOPED_MAP_BINDING_VERSION
-        and saved_geometry != current["geometry_sha256"]
-        and not any(
-            field in saved
-            for field in (
-                "translation_invariant_geometry_sha256",
-                "translation_frame_bounds",
-                "translation_room_anchors",
-            )
-        )
-    ):
-        # Early v3 bindings can lack every coordinate-frame signal. Their
-        # unchanged local digest cannot rule out a translated containing room.
-        return AreaBindingStatus.GEOMETRY_CHANGED
     if saved["version"] == MAP_BINDING_VERSION:
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
@@ -757,6 +742,14 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
+    if (
+        saved_geometry != current["geometry_sha256"]
+        and "translation_room_anchors" not in saved
+    ):
+        # Without room anchors, translation-invariant hashes and frame bounds
+        # cannot prove that an unchanged area stayed in its original room
+        # frame. Check the area's own shape first so edited input remains INVALID.
+        return AreaBindingStatus.GEOMETRY_CHANGED
     # Areas with no nearby wall have no coordinate anchor. If any whole-map
     # geometry changed, local occupancy and extrema can both remain plausible
     # after relocalization. Match unchanged room shapes in their absolute
@@ -810,17 +803,6 @@ def area_binding_status(
             == translation_invariant_geometry_fingerprint(floor_plan)
         ):
             return AreaBindingStatus.GEOMETRY_CHANGED
-        if (
-            "translation_room_anchors" not in saved
-            and "translation_frame_bounds" in saved
-            and saved_geometry != current["geometry_sha256"]
-        ):
-            old = saved["translation_frame_bounds"]
-            new = translation_frame_bounds(floor_plan)
-            if (new[0] - old[0] == new[2] - old[2] != 0) or (
-                new[1] - old[1] == new[3] - old[3] != 0
-            ):
-                return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])

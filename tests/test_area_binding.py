@@ -375,6 +375,37 @@ def test_scoped_binding_fails_closed_when_unanchored_containing_room_changes() -
     )
 
 
+def test_scoped_binding_rejects_translated_remote_room_with_same_invariant(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    floor_plan = _floor_plan()
+    area = _scoped_area(floor_plan, [{"x": 0.1, "y": 0.5, "radius": 0.05}])
+    moved_remote_room = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=tuple(
+                    (x + 1.0, y + 2.0) for x, y in floor_plan.rooms[1].boundary
+                ),
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        area_binding_module,
+        "translation_invariant_geometry_fingerprint",
+        lambda _floor_plan: area["map_binding"][
+            "translation_invariant_geometry_sha256"
+        ],
+    )
+
+    assert (
+        area_binding_status(area, moved_remote_room)
+        is AreaBindingStatus.GEOMETRY_CHANGED
+    )
+
+
 def test_scoped_binding_rejects_translated_map_without_local_boundary_anchor() -> None:
     floor_plan = FloorPlan(
         42,
@@ -425,7 +456,18 @@ def test_scoped_binding_rejects_altered_circles_before_map_drift_fallback() -> N
         (_room("room", "Room", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
     )
     area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.35}])
-    altered = {**area, "circles": [{"x": 5.5, "y": 5.0, "radius": 0.35}]}
+    legacy_binding = dict(area["map_binding"])
+    for field in (
+        "translation_invariant_geometry_sha256",
+        "translation_frame_bounds",
+        "translation_room_anchors",
+    ):
+        legacy_binding.pop(field)
+    altered = {
+        **area,
+        "circles": [{"x": 5.5, "y": 5.0, "radius": 0.35}],
+        "map_binding": legacy_binding,
+    }
     translated = replace(
         floor_plan,
         rooms=(
@@ -437,6 +479,32 @@ def test_scoped_binding_rejects_altered_circles_before_map_drift_fallback() -> N
     )
 
     assert area_binding_status(altered, translated) is AreaBindingStatus.INVALID
+
+
+def test_partial_translation_evidence_without_room_anchors_fails_closed() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("room", "Room", ((0.0, 0.0), (10.0, 0.0), (10.0, 10.0), (0.0, 10.0))),),
+    )
+    area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.35}])
+    binding = dict(area["map_binding"])
+    binding.pop("translation_room_anchors")
+    area["map_binding"] = binding
+    translated_and_reshaped = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((1.0, 2.0), (12.0, 2.0), (12.0, 13.0), (1.0, 13.0)),
+            ),
+        ),
+    )
+
+    assert area_binding_status(area, translated_and_reshaped) is (
+        AreaBindingStatus.GEOMETRY_CHANGED
+    )
 
 
 def test_scoped_binding_uses_union_of_separated_mark_neighborhoods() -> None:
