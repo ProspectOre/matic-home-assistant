@@ -189,6 +189,7 @@ class _RoomGeometryIndex:
     # Bound retained index storage across the complete floor plan, not only
     # independently inside each room polygon.
     _MAX_TOTAL_EDGE_REFERENCES = 262_144
+    _MAX_CONTAINMENT_CACHE_ENTRIES = 4_096
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         polygons = []
@@ -208,6 +209,7 @@ class _RoomGeometryIndex:
             )
         )
         self._query_work_remaining = self._MAX_QUERY_WORK
+        self._containment_cache: dict[tuple[float, float, float], bool] = {}
 
     def _charge_work(self, work: int = 1) -> None:
         if work > self._query_work_remaining:
@@ -221,6 +223,9 @@ class _RoomGeometryIndex:
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
+        key = (float(x), float(y), float(tolerance))
+        if key in self._containment_cache:
+            return self._containment_cache[key]
         if self._query_work_remaining <= 0:
             raise GeometryTooComplex("room geometry query budget exhausted")
         try:
@@ -233,6 +238,11 @@ class _RoomGeometryIndex:
                 )
                 self._charge_work(work)
                 if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
                     return True
 
             # Indexed rooms have a fixed reference cap, so check them before
@@ -251,7 +261,14 @@ class _RoomGeometryIndex:
                 )
                 self._charge_work(work)
                 if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
                     return True
+            if len(self._containment_cache) < self._MAX_CONTAINMENT_CACHE_ENTRIES:
+                self._containment_cache[key] = False
             return False
         except GeometryTooComplex:
             # A failed candidate query must not leave residual budget for the

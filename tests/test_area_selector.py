@@ -252,6 +252,25 @@ def test_room_query_budget_is_safe_for_synchronous_updates() -> None:
     assert _RoomGeometryIndex._MAX_QUERY_WORK <= 100_000
 
 
+def test_room_index_bounds_its_containment_cache(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(_RoomGeometryIndex, "_MAX_CONTAINMENT_CACHE_ENTRIES", 1)
+    geometry = _RoomGeometryIndex(
+        [
+            {
+                "room_id": "room",
+                "name": "Room",
+                "boundary": [[0.0, 0.0], [2.0, 0.0], [2.0, 2.0], [0.0, 2.0]],
+            }
+        ]
+    )
+
+    assert geometry.contains(0.5, 0.5) is True
+    assert geometry.contains(1.5, 1.5) is True
+    assert len(geometry._containment_cache) == 1
+
+
 def test_room_index_caps_edge_references_across_the_floor_plan(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -297,9 +316,9 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
     )
     geometry._query_work_remaining = len(boundary) * 2
 
-    for _ in range(4):
+    for index in range(16):
         try:
-            geometry.contains(128.5, 0.0)
+            geometry.contains(128.5 + index * 0.01, 0.0)
         except ValueError:
             break
     else:
@@ -307,7 +326,7 @@ def test_room_index_caps_aggregate_overloaded_fallback_work() -> None:
 
     assert geometry._query_work_remaining < len(boundary)
     with pytest.raises(ValueError, match="query budget exhausted"):
-        geometry.contains(128.5, 0.0)
+        geometry.contains(129.9, 0.0)
 
 
 def test_room_index_fair_fallback_does_not_depend_on_room_order() -> None:
