@@ -38,7 +38,11 @@ from custom_components.matic_robot.client.commands import (
     CoverageSetting,
     UserCommand,
 )
-from custom_components.matic_robot.client.exceptions import CannotConnectError
+from custom_components.matic_robot.client.exceptions import (
+    CannotConnectError,
+    EndpointUnsupportedError,
+    SinkLocationUnavailableError,
+)
 from custom_components.matic_robot.client.models import (
     CleaningSchedule,
     CleaningSession,
@@ -201,6 +205,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
             ),
             async_send_user_command=AsyncMock(),
             async_start_coverage=AsyncMock(),
+            async_sink_summon=AsyncMock(),
             async_set_binary_setting=AsyncMock(),
             async_set_deep_mop=AsyncMock(),
             async_set_water_flow=AsyncMock(),
@@ -265,6 +270,7 @@ def _entry(*, paused: bool = False, idle: bool = False, with_floor_plan: bool = 
         async_replace_managed_motion=AsyncMock(return_value=0),
         active_run_id=MagicMock(return_value=None),
         has_managed_task=MagicMock(return_value=False),
+        recovery_run=MagicMock(return_value=None),
         motion_generation=MagicMock(return_value=0),
         stop_request_generation=MagicMock(return_value=0),
         stop_pending=MagicMock(return_value=False),
@@ -2640,6 +2646,46 @@ async def test_vacuum_named_commands_and_validation() -> None:
 
     with pytest.raises(ServiceValidationError, match="room map is unavailable"):
         await vacuum.MaticVacuum(_entry(with_floor_plan=False)).async_start()
+
+
+async def test_sink_summon_sends_the_current_floor_when_idle() -> None:
+    entry = _entry(idle=True)
+    client = entry.runtime_data.coordinator.client
+
+    await vacuum.MaticVacuum(entry).async_send_command("sink_summon")
+
+    client.async_sink_summon.assert_awaited_once_with(_floor_plan())
+    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_sink_summon_rejects_a_floor_without_a_saved_location() -> None:
+    unsaved = _entry(idle=True)
+    unsaved.runtime_data.coordinator.client.async_sink_summon.side_effect = (
+        SinkLocationUnavailableError("synthetic")
+    )
+    with pytest.raises(ServiceValidationError) as missing:
+        await vacuum.MaticVacuum(unsaved).async_sink_summon()
+    assert missing.value.translation_key == "sink_location_unavailable"
+    unsaved.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
+
+
+async def test_sink_summon_rejects_stale_maps_and_reports_robot_failures() -> None:
+    stale = _entry(idle=True)
+    stale.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    with pytest.raises(ServiceValidationError) as unavailable:
+        await vacuum.MaticVacuum(stale).async_sink_summon()
+    assert unavailable.value.translation_key == "room_plan_unavailable"
+    stale.runtime_data.coordinator.client.async_sink_summon.assert_not_awaited()
+
+    unsupported = _entry(idle=True)
+    unsupported.runtime_data.coordinator.client.async_sink_summon.side_effect = (
+        EndpointUnsupportedError("synthetic")
+    )
+    with pytest.raises(HomeAssistantError) as failed:
+        await vacuum.MaticVacuum(unsupported).async_sink_summon()
+    assert not isinstance(failed.value, ServiceValidationError)
+    assert failed.value.translation_key == "robot_command_failed"
+    unsupported.runtime_data.coordinator.async_request_refresh.assert_not_awaited()
 
 
 async def test_vacuum_dock_from_idle_sends_no_stop() -> None:

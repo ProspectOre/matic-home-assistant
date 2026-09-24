@@ -49,6 +49,25 @@ run's `expected_run_id` (`run_id` in Active cleaning plan's `active` attribute)
 acts as **Stop now & dock**. `include_unmanaged: true` also stops a one-time
 clean, or one started in the Matic app, when no plan is running.
 
+## Sink refill
+
+`vacuum.send_command` with `command: sink_summon` sends the robot to the sink
+location saved in the Matic app for the current floor. It waits there for up to
+15 minutes for a water refill. Sent from the dock or while idle, it then docks.
+During a clean, including a plan run, the robot keeps its task: Resume continues
+the clean straight away, and otherwise it continues once the wait ends. A plan
+docked between rooms holds no task, so a summon then ends the plan like any
+other direct command. The floor must have a saved sink location.
+
+```yaml
+actions:
+  - action: vacuum.send_command
+    target:
+      entity_id: vacuum.matic
+    data:
+      command: sink_summon
+```
+
 ## Plans
 
 | Action | Fields and behavior |
