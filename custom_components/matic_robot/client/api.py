@@ -1302,6 +1302,8 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
                 state = await self.async_get_state()
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed before coverage update")
                 if state.activity.value != "cleaning" or room_name_key(
                     state.current_area
                 ) != room_name_key(first_room_name):
