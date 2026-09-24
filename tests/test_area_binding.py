@@ -667,6 +667,56 @@ def test_mixed_area_checks_frame_anchor_for_every_circle() -> None:
     )
 
 
+def test_mixed_area_rejects_incomplete_saved_circle_anchor_coverage() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room("near", "Near", ((0.0, 0.0), (4.0, 0.0), (4.0, 4.0), (0.0, 4.0))),
+            _room(
+                "interior",
+                "Interior",
+                ((20.0, 0.0), (40.0, 0.0), (40.0, 20.0), (20.0, 20.0)),
+            ),
+        ),
+    )
+    circles = [
+        {"x": 0.2, "y": 2.0, "radius": 0.05},
+        {"x": 30.0, "y": 10.0, "radius": 0.2},
+    ]
+    area = _scoped_area(floor_plan, circles)
+    translated_interior = replace(
+        floor_plan,
+        rooms=(
+            floor_plan.rooms[0],
+            replace(
+                floor_plan.rooms[1],
+                boundary=tuple(
+                    (x + 1.0, y + 2.0) for x, y in floor_plan.rooms[1].boundary
+                ),
+            ),
+        ),
+    )
+    anchors = area["map_binding"]["translation_room_anchors"]
+    assert len(anchors) == 2
+
+    omitted_anchor = {**area, "map_binding": dict(area["map_binding"])}
+    omitted_anchor["map_binding"]["translation_room_anchors"] = [anchors[0]]
+    assert area_binding_status(omitted_anchor, translated_interior) is (
+        AreaBindingStatus.GEOMETRY_CHANGED
+    )
+
+    omitted_circle = {**area, "map_binding": dict(area["map_binding"])}
+    omitted_circle["map_binding"]["translation_room_anchors"] = [
+        {**anchors[0], "circle_keys": anchors[0]["circle_keys"][:0]},
+        anchors[1],
+    ]
+    assert area_binding_status(omitted_circle, translated_interior) is (
+        AreaBindingStatus.INVALID
+    )
+
+
 def test_scoped_binding_requires_review_after_local_subcentimeter_jitter() -> None:
     original = _floor_plan()
     floor_plan = replace(

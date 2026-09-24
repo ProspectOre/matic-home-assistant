@@ -820,6 +820,20 @@ def area_binding_status(
             # rooms. Keep those coordinates reviewable after drift, but never
             # infer a room match from another circle's anchor.
             return AreaBindingStatus.GEOMETRY_CHANGED
+        # A syntactically valid persisted binding can still omit one circle
+        # association. Require complete coverage of the saved area before
+        # trusting any room anchor; otherwise a moved room could have no
+        # corresponding evidence at all.
+        saved_circle_keys = {
+            str(key).casefold()
+            for anchor in saved_anchors
+            for key in anchor["circle_keys"]
+        }
+        expected_circle_keys = {
+            _translation_circle_key(circle).casefold() for circle in area["circles"]
+        }
+        if saved_circle_keys != expected_circle_keys:
+            return AreaBindingStatus.GEOMETRY_CHANGED
         try:
             current_anchors = _translation_room_anchors(
                 floor_plan, area["circles"], room_geometry=room_geometry
