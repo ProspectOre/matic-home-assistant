@@ -276,6 +276,27 @@ class _RoomGeometryIndex:
             self._query_work_remaining = 0
             raise
 
+    def containing_indices(
+        self, x: float, y: float, tolerance: float = 0.0
+    ) -> tuple[int, ...]:
+        """Return room positions containing or tolerably near a point."""
+        if self._query_work_remaining <= 0:
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        indices = []
+        try:
+            for index, polygon in enumerate(self.polygons):
+                self._charge_work()
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    indices.append(index)
+            return tuple(indices)
+        except GeometryTooComplex:
+            self._query_work_remaining = 0
+            raise
+
 
 @SELECTORS.register("matic-area")
 class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
