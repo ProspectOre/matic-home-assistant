@@ -36,6 +36,7 @@ from .area_binding import (
     area_binding_status,
     binding_for_area,
 )
+from .area_selector import GeometryTooComplex
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
 
@@ -1035,6 +1036,12 @@ class CleaningPlanManager:
                 upgraded_binding = binding_for_area(
                     floor_plan, circles, room_geometry=room_geometry
                 )
+            except GeometryTooComplex:
+                # Status verification and replacement share one bounded index.
+                # If replacement exhausts it, keep the migration pending for a
+                # later map revision instead of silently treating it as done.
+                pending = True
+                continue
             except KeyError, TypeError, ValueError:
                 continue
             area["map_binding"] = upgraded_binding

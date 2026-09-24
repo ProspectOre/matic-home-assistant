@@ -1628,6 +1628,44 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
     assert all(index is geometry_indexes[0] for index in geometry_indexes)
 
 
+async def test_area_binding_upgrade_stays_pending_on_rebuild_budget_exhaustion(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "room", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": {
+            **binding_for_floor_plan(floor_plan),
+            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                floor_plan, circles
+            ),
+        },
+    }
+    manager._robot("serial")["areas"] = {"legacy": area}
+
+    with patch.object(
+        plans_module,
+        "binding_for_area",
+        side_effect=plans_module.GeometryTooComplex("shared geometry budget exhausted"),
+    ) as rebuild:
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(0, True)
+    assert area["map_binding"]["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    rebuild.assert_called_once()
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> None:
     manager = CleaningPlanManager(hass)
     floor_plan = FloorPlan(
