@@ -247,12 +247,9 @@ def test_indexed_polygon_rejects_wide_bucket_span_over_fallback_edge_limit() -> 
         polygon.contains(2_048.0, 0.0, 0.01)
 
 
-def test_room_query_budget_covers_all_circle_probes_for_eight_rooms() -> None:
-    """The aggregate cap covers the editor maximum at the reviewed room size."""
-    maximum_circle_probes = 512 * 10
-    reviewed_room_work = maximum_circle_probes * 8 * 256
-
-    assert _RoomGeometryIndex._MAX_QUERY_WORK >= reviewed_room_work
+def test_room_query_budget_is_safe_for_synchronous_updates() -> None:
+    """The aggregate cap cannot admit multi-million-edge event-loop work."""
+    assert _RoomGeometryIndex._MAX_QUERY_WORK <= 100_000
 
 
 def test_room_index_caps_edge_references_across_the_floor_plan(

@@ -182,10 +182,10 @@ class _IndexedPolygon:
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
-    # This synchronous custom-area query ceiling is separate from decoder
-    # limits. Some decoder-valid maps exceed it; those areas fail closed in
-    # the options flow rather than blocking Home Assistant on unbounded work.
-    _MAX_QUERY_WORK = 10_600_000
+    # This work runs on Home Assistant's event loop when a floor plan update is
+    # received. Keep the ceiling small enough that hostile decoder-valid maps
+    # fail closed instead of monopolizing the loop for several seconds.
+    _MAX_QUERY_WORK = 100_000
     # Bound retained index storage across the complete floor plan, not only
     # independently inside each room polygon.
     _MAX_TOTAL_EDGE_REFERENCES = 262_144
