@@ -243,13 +243,107 @@ def test_hash_fingerprint_work_exhaustion_keeps_valid_drift_reviewable() -> None
     with patch.object(
         area_binding_module,
         "_bounded_hash_only_area_geometry_fingerprint",
-        side_effect=GeometryTooComplex("synthetic fingerprint work exhausted"),
+        side_effect=area_binding_module._BoundedFingerprintWorkExhausted(
+            "synthetic fingerprint work exhausted after validation"
+        ),
     ):
         assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
         assert area_binding_allows_review(area, changed)
-        invalid_area = {**area, "circles": [{"x": 500.0, "y": 500.0, "radius": 0.1}]}
-        assert area_binding_status(invalid_area, changed) is AreaBindingStatus.INVALID
         assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
+    shared_geometry = area_binding_module._room_geometry_index(changed)
+    shared_geometry._query_work_remaining = 0
+    with (
+        patch.object(
+            area_binding_module,
+            "_bounded_hash_only_area_geometry_fingerprint",
+            side_effect=area_binding_module._BoundedFingerprintWorkExhausted(
+                "synthetic fingerprint work exhausted after validation"
+            ),
+        ),
+        patch.object(area_binding_module, "_room_geometry_index") as create_index,
+    ):
+        assert (
+            area_binding_status(area, changed, room_geometry=shared_geometry)
+            is AreaBindingStatus.GEOMETRY_CHANGED
+        )
+        assert shared_geometry._query_work_remaining == 0
+        create_index.assert_not_called()
+    invalid_area = {**area, "circles": [{"x": 500.0, "y": 500.0, "radius": 0.1}]}
+    assert area_binding_status(invalid_area, changed) is AreaBindingStatus.INVALID
+
+
+def test_hash_fingerprint_exhaustion_keeps_saved_center_tolerance() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "near-edge",
+                "Near Edge",
+                ((0.0, 0.0), (2.0, 0.0), (2.0, 2.0), (0.0, 2.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 1.995, "y": 1.0, "radius": 0.1}]
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 0):
+        area = _scoped_area(floor_plan, circles)
+    assert (
+        area["map_binding"]["version"]
+        == area_binding_module.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    )
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (1.99, 0.0), (1.99, 2.0), (0.0, 2.0)),
+            ),
+        ),
+    )
+
+    def exhaust_after_validation(*args, center_tolerance, room_geometry):
+        assert center_tolerance == area_binding_module._LOCAL_GEOMETRY_TOLERANCE_METERS
+        area_binding_module._validate_area_circles(
+            args[0],
+            args[1],
+            center_tolerance=center_tolerance,
+            room_geometry=room_geometry,
+        )
+        raise area_binding_module._BoundedFingerprintWorkExhausted(
+            "synthetic fingerprint work exhausted after validation"
+        )
+
+    with patch.object(
+        area_binding_module,
+        "_bounded_hash_only_area_geometry_fingerprint",
+        side_effect=exhaust_after_validation,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
+def test_hash_fingerprint_wraps_work_exhaustion_after_validation() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.5, "y": 0.75, "radius": 0.1}]
+    geometry = area_binding_module._room_geometry_index(floor_plan)
+    validate = area_binding_module._validate_area_circles
+
+    def validate_then_exhaust(*args, **kwargs):
+        normalized = validate(*args, **kwargs)
+        geometry._query_work_remaining = 0
+        return normalized
+
+    with (
+        patch.object(
+            area_binding_module,
+            "_validate_area_circles",
+            side_effect=validate_then_exhaust,
+        ),
+        pytest.raises(area_binding_module._BoundedFingerprintWorkExhausted),
+    ):
+        area_binding_module._bounded_hash_only_area_geometry_fingerprint(
+            floor_plan, circles, room_geometry=geometry
+        )
 
 
 def test_local_segment_correspondence_enforces_work_limits() -> None:

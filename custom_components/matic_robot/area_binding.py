@@ -442,6 +442,10 @@ def _hash_only_area_geometry_fingerprint(
     )
 
 
+class _BoundedFingerprintWorkExhausted(GeometryTooComplex):
+    """Signal exhausted post-validation fingerprint work for v4 bindings."""
+
+
 def _bounded_hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -457,59 +461,66 @@ def _bounded_hash_only_area_geometry_fingerprint(
         center_tolerance=center_tolerance,
         room_geometry=room_geometry,
     )
-    ordered = sorted(
-        (float(circle["x"]), float(circle["y"]), float(circle["radius"]))
-        for circle in normalized
-    )
-    digest = hashlib.sha256()
-    digest.update(_SCOPED_FINGERPRINT_DOMAIN)
-    digest.update(struct.pack(">H", BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
-    digest.update(struct.pack(">I", len(ordered)))
-    for x, y, radius in ordered:
-        digest.update(
-            struct.pack(
-                ">qqq",
-                _quantize_coordinate(x),
-                _quantize_coordinate(y),
-                _quantize_coordinate(radius),
+    try:
+        ordered = sorted(
+            (float(circle["x"]), float(circle["y"]), float(circle["radius"]))
+            for circle in normalized
+        )
+        digest = hashlib.sha256()
+        digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+        digest.update(struct.pack(">H", BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
+        digest.update(struct.pack(">I", len(ordered)))
+        for x, y, radius in ordered:
+            digest.update(
+                struct.pack(
+                    ">qqq",
+                    _quantize_coordinate(x),
+                    _quantize_coordinate(y),
+                    _quantize_coordinate(radius),
+                )
             )
-        )
-        probes = _occupancy_probes(x, y, radius)
-        occupancy = sum(
-            int(room_geometry.contains(probe_x, probe_y)) << index
-            for index, (probe_x, probe_y) in enumerate(probes)
-        )
-        digest.update(struct.pack(">H", occupancy))
-        neighborhood = (
-            x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
-            y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
-            x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
-            y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
-        )
-        segments: Counter[_LocalSegment] = Counter()
-        for room in floor_plan.rooms:
-            boundary = room.boundary
-            for start, end in zip(boundary, (*boundary[1:], boundary[0]), strict=True):
-                room_geometry.charge_query_work()
-                clipped = _clip_segment(start, end, neighborhood)
-                if clipped is None:
-                    continue
-                first = (
-                    _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                    _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
-                )
-                second = (
-                    _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
-                    _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
-                )
-                if second < first:
-                    first, second = second, first
-                segments[(*first, *second)] += 1
-        room_geometry.charge_query_work(len(segments))
-        digest.update(struct.pack(">I", sum(segments.values())))
-        for segment, multiplicity in sorted(segments.items()):
-            digest.update(struct.pack(">qqqqI", *segment, multiplicity))
-    return digest.hexdigest()
+            probes = _occupancy_probes(x, y, radius)
+            occupancy = sum(
+                int(room_geometry.contains(probe_x, probe_y)) << index
+                for index, (probe_x, probe_y) in enumerate(probes)
+            )
+            digest.update(struct.pack(">H", occupancy))
+            neighborhood = (
+                x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+                y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+                x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+                y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+            )
+            segments: Counter[_LocalSegment] = Counter()
+            for room in floor_plan.rooms:
+                boundary = room.boundary
+                for start, end in zip(
+                    boundary, (*boundary[1:], boundary[0]), strict=True
+                ):
+                    room_geometry.charge_query_work()
+                    clipped = _clip_segment(start, end, neighborhood)
+                    if clipped is None:
+                        continue
+                    first = (
+                        _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                    )
+                    second = (
+                        _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                    )
+                    if second < first:
+                        first, second = second, first
+                    segments[(*first, *second)] += 1
+            room_geometry.charge_query_work(len(segments))
+            digest.update(struct.pack(">I", sum(segments.values())))
+            for segment, multiplicity in sorted(segments.items()):
+                digest.update(struct.pack(">qqqqI", *segment, multiplicity))
+        return digest.hexdigest()
+    except GeometryTooComplex as error:
+        raise _BoundedFingerprintWorkExhausted(
+            "bounded area fingerprint work budget exhausted after circle validation"
+        ) from error
 
 
 def _area_geometry_components(
@@ -740,22 +751,13 @@ def area_binding_status(
                     center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
                     room_geometry=room_geometry,
                 )
-        except GeometryTooComplex:
+        except _BoundedFingerprintWorkExhausted:
             if (
                 saved["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
                 and saved_geometry != current["geometry_sha256"]
             ):
-                # Fingerprinting may exhaust its shared scan budget after the
-                # saved circles have become invalid or unreviewable. Validate
-                # them on a fresh, still-bounded index before exposing drift.
-                try:
-                    _validate_area_circles(
-                        floor_plan,
-                        area["circles"],
-                        room_geometry=_room_geometry_index(floor_plan),
-                    )
-                except KeyError, OverflowError, TypeError, ValueError:
-                    return AreaBindingStatus.INVALID
+                # The fingerprint helper raises this only after validating the
+                # circles. Keep exhausted recovery work on the shared index.
                 return AreaBindingStatus.GEOMETRY_CHANGED
             return AreaBindingStatus.INVALID
         except KeyError, OverflowError, TypeError, ValueError:
