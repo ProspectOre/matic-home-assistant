@@ -2464,6 +2464,47 @@ def test_mixed_room_anchors_cannot_substitute_another_room() -> None:
     )
 
 
+def test_translation_room_anchor_detects_reshaping_with_unchanged_bounds() -> None:
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (
+            _room(
+                "living",
+                "Living",
+                ((0.0, 0.0), (20.0, 0.0), (20.0, 20.0), (0.0, 20.0)),
+            ),
+        ),
+    )
+    circles = [{"x": 5.0, "y": 5.0, "radius": 0.2}]
+    area = _scoped_area(floor_plan, circles)
+    reshaped = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=(
+                    (0.0, 0.0),
+                    (20.0, 0.0),
+                    (20.0, 20.0),
+                    (12.0, 20.0),
+                    (12.0, 19.0),
+                    (8.0, 19.0),
+                    (8.0, 20.0),
+                    (0.0, 20.0),
+                ),
+            ),
+        ),
+    )
+
+    saved_anchor = area["map_binding"]["translation_room_anchors"][0]
+    current_anchor = area_binding_module._translation_room_anchors(reshaped, circles)[0]
+    assert saved_anchor["bounds"] == current_anchor["bounds"]
+    assert saved_anchor["fingerprint"] != current_anchor["fingerprint"]
+    assert area_binding_status(area, reshaped) is AreaBindingStatus.GEOMETRY_CHANGED
+
+
 def test_scoped_binding_rejects_malformed_translation_room_anchors() -> None:
     area = _scoped_area()
     original = area["map_binding"]["translation_room_anchors"]

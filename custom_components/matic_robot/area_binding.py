@@ -832,6 +832,7 @@ def area_binding_status(
             if room_key in current_by_room_key:
                 return AreaBindingStatus.GEOMETRY_CHANGED
             current_by_room_key[room_key] = anchor
+        room_shape_changed = False
         for anchor in saved_anchors:
             current_anchor = current_by_room_key.get(str(anchor["room_key"]).casefold())
             if (
@@ -844,8 +845,14 @@ def area_binding_status(
                 )
             ):
                 return AreaBindingStatus.GEOMETRY_CHANGED
+            room_shape_changed |= (
+                str(anchor["fingerprint"]).casefold()
+                != str(current_anchor["fingerprint"]).casefold()
+            )
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
+        if saved_geometry != current["geometry_sha256"] and room_shape_changed:
+            return AreaBindingStatus.GEOMETRY_CHANGED
         if (
             "translation_invariant_geometry_sha256" in saved
             and saved_geometry != current["geometry_sha256"]
