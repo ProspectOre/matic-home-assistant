@@ -324,9 +324,14 @@ def mixed_client(monkeypatch):
         return coverage_plan_from_command(update)
 
     client.async_get_property = AsyncMock(side_effect=read_back_sent_update)
-    client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity]
-    )
+    identity_reads = 0
+
+    async def current_identity():
+        nonlocal identity_reads
+        identity_reads += 1
+        return b"" if identity_reads == 1 else identity
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
         return_value=SimpleNamespace(
             activity=SimpleNamespace(value="cleaning"), current_area="the First"
@@ -502,7 +507,9 @@ async def test_mixed_update_does_not_stop_replacement_after_stale_readback(
 ):
     client, identity, args = mixed_client
     replacement = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
-    identities = iter([b"", identity, identity, identity, replacement, replacement])
+    identities = iter(
+        [b"", identity, identity, identity, identity, replacement, replacement]
+    )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=identities)
     client.async_get_property.side_effect = lambda _name: coverage_plan_from_command(
         next(
@@ -528,7 +535,9 @@ async def test_mixed_update_does_not_stop_replacement_during_readback(
 ):
     client, identity, args = mixed_client
     replacement = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
-    reads = iter([b"", identity, identity, identity, replacement, replacement])
+    reads = iter(
+        [b"", identity, identity, identity, identity, replacement, replacement]
+    )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=reads)
 
     with pytest.raises(MaticError, match="changed during coverage readback"):
@@ -561,6 +570,81 @@ async def test_mixed_wait_normalizes_room_spacing(mixed_client):
     ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
 
 
+async def test_room_transition_before_update_stops_without_updating(mixed_client):
+    client, identity, args = mixed_client
+    reads = 0
+
+    async def current_identity():
+        nonlocal reads
+        reads += 1
+        return b"" if reads == 1 else identity
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
+    client.async_get_state = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                activity=SimpleNamespace(value="cleaning"), current_area="First"
+            ),
+            SimpleNamespace(
+                activity=SimpleNamespace(value="cleaning"), current_area="Second"
+            ),
+        ]
+    )
+
+    with pytest.raises(MaticError, match="First room changed"):
+        await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE"]
+    args["prepare_stop"].assert_awaited_once()
+    client.async_send_user_command.assert_awaited_once()
+
+
+async def test_replaced_mission_during_state_read_is_not_updated_or_stopped(
+    mixed_client,
+):
+    client, identity, args = mixed_client
+    replacement = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
+    current = {"identity": b""}
+    identity_reads = 0
+
+    async def current_identity():
+        nonlocal identity_reads
+        identity_reads += 1
+        return current["identity"]
+
+    async def read_state():
+        # The first read is the wait for the generated mission. Replace it on
+        # the later pre-update read, after the preceding identity check passed.
+        if identity_reads >= 3:
+            current["identity"] = replacement
+        return SimpleNamespace(
+            activity=SimpleNamespace(value="cleaning"), current_area="First"
+        )
+
+    async def send(payload, *, command_name):
+        if command_name == "START_COVERAGE":
+            current["identity"] = identity
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
+    client.async_get_state = AsyncMock(side_effect=read_state)
+    client._async_send_user_payload.side_effect = send
+
+    with pytest.raises(
+        MaticError, match="Native mission changed before coverage update"
+    ):
+        await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE"]
+    args["prepare_stop"].assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+
+
 async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_client):
     client, identity, args = mixed_client
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
@@ -589,7 +673,11 @@ async def test_active_native_mission_rejects_initial_write(mixed_client):
 async def test_identity_rechecked_around_update(mixed_client, after_write):
     client, identity, args = mixed_client
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
-    reads = [b"", identity] + ([identity] if after_write else []) + [other, other]
+    reads = (
+        [b"", identity, identity, identity, other, other]
+        if after_write
+        else [b"", identity, other, other]
+    )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=reads)
     with pytest.raises(MaticError, match="Native mission changed"):
         await client.async_start_mixed_coverage(**args)
@@ -621,7 +709,7 @@ async def test_pre_send_recovery_stop_failure_rolls_back_its_fence(
     client, identity, args = mixed_client
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity]
+        side_effect=[b"", identity, identity, identity, identity, identity]
     )
     client.async_send_user_command.side_effect = MaticError("STOP rejected")
     if rollback_fails:
@@ -649,7 +737,7 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
     args["on_recovery_stop_transmitted"] = Mock()
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity]
+        side_effect=[b"", identity, identity, identity, identity, identity]
     )
 
     async def fail_after_transmission_starts(command, *, on_transmitted=None):
@@ -675,7 +763,7 @@ async def test_recovery_stop_ack_schedules_settlement_before_dispatch_error(
     args["on_recovery_stop_transmitted"] = Mock()
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity]
+        side_effect=[b"", identity, identity, identity, identity, identity]
     )
 
     async def stop_acknowledged(command, *, on_transmitted=None):
@@ -940,6 +1028,7 @@ async def test_failed_update_cannot_replay_or_stop_replacement(mixed_client, fai
         client.async_get_cleaning_session_identity = AsyncMock(
             side_effect=[
                 b"",
+                identity,
                 identity,
                 identity,
                 identity if failure == "update" else None,
