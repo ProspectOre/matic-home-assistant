@@ -1301,6 +1301,11 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     raise MaticError("Room map changed before coverage update")
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
+                state = await self.async_get_state()
+                if state.activity.value != "cleaning" or room_name_key(
+                    state.current_area
+                ) != room_name_key(first_room_name):
+                    raise MaticError("First room changed before coverage update")
                 require_current()
                 await self._async_send_user_payload(
                     commands.update, command_name="UPDATE_COVERAGE"

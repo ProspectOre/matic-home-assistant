@@ -561,6 +561,38 @@ async def test_mixed_wait_normalizes_room_spacing(mixed_client):
     ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
 
 
+async def test_room_transition_before_update_stops_without_updating(mixed_client):
+    client, identity, args = mixed_client
+    reads = 0
+
+    async def current_identity():
+        nonlocal reads
+        reads += 1
+        return b"" if reads == 1 else identity
+
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
+    client.async_get_state = AsyncMock(
+        side_effect=[
+            SimpleNamespace(
+                activity=SimpleNamespace(value="cleaning"), current_area="First"
+            ),
+            SimpleNamespace(
+                activity=SimpleNamespace(value="cleaning"), current_area="Second"
+            ),
+        ]
+    )
+
+    with pytest.raises(MaticError, match="First room changed"):
+        await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE"]
+    args["prepare_stop"].assert_awaited_once()
+    client.async_send_user_command.assert_awaited_once()
+
+
 async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_client):
     client, identity, args = mixed_client
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
