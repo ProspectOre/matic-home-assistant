@@ -10,13 +10,14 @@ from typing import Any
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
 from homeassistant.core import HomeAssistant, callback
-from homeassistant.exceptions import ServiceValidationError
+from homeassistant.exceptions import HomeAssistantError, ServiceValidationError
 from homeassistant.helpers import area_registry as ar
 from homeassistant.helpers import entity_registry as er
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
+from .client.exceptions import MaticError
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN
 from .entity import MaticEntity
@@ -156,7 +157,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 self._require_motion_generation(serial_number, generation)
             await self.coordinator.client.async_send_user_command(command)
             if command is UserCommand.STOP:
-                await self._plans.async_mark_stop_pending(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
             await self.coordinator.async_request_refresh()
         if command is UserCommand.STOP:
             self._schedule_dock_after_stop(serial_number, run_id=run_id)
@@ -206,7 +207,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         ordered: bool = False,
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
+        room_coverage: list[CoverageSetting] | None = None,
+        room_modes: list[CleaningMode] | None = None,
     ) -> None:
+        if (room_coverage is not None or room_modes is not None) and (
+            motion_token is None
+            or not ordered
+            or room_coverage is None
+            or room_modes is None
+            or len(room_coverage) != len(rooms)
+            or len(room_modes) != len(rooms)
+            or len(rooms) < 2
+        ):
+            raise ServiceValidationError(
+                "Mixed coverage requires an owned ordered plan with per-room settings"
+            )
         floor_plan = self._current_floor_plan(expected_floor_token)
         command_floor_token = expected_floor_token or plan_floor_token(floor_plan)
         serial_number = self.coordinator.data.info.serial_number
@@ -226,13 +241,86 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             await self._async_ensure_stop_settled(serial_number)
             self._require_motion_generation(serial_number, expected_generation)
             floor_plan = self._current_floor_plan(command_floor_token)
-            await self.coordinator.client.async_start_coverage(
-                floor_plan,
-                [room.protocol_id for room in rooms],
-                cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
-                coverage_setting=coverage_setting or self.coordinator.coverage_setting,
-                ordered=ordered,
-            )
+            if room_coverage is not None:
+                assert room_modes is not None
+
+                def require_owned() -> None:
+                    self._require_motion_generation(serial_number, expected_generation)
+
+                def require_current() -> None:
+                    require_owned()
+                    self._current_floor_plan(command_floor_token)
+                    if self._plans.cancellation_event(serial_number).is_set():
+                        raise HomeAssistantError(
+                            "Mixed coverage was stopped before its update"
+                        )
+
+                stop_fence_run_id: str | None = None
+
+                async def prepare_stop() -> None:
+                    nonlocal stop_fence_run_id
+                    run_id = self._plans.active_run_id(serial_number)
+                    stop_fence_run_id = run_id
+                    try:
+                        await self._plans.async_mark_stop_pending(
+                            serial_number, run_id=run_id
+                        )
+                    except BaseException:
+                        await self._plans.async_clear_stop_pending(
+                            serial_number, run_id=run_id
+                        )
+                        raise
+
+                async def rollback_stop() -> None:
+                    await self._plans.async_clear_stop_pending(
+                        serial_number, run_id=stop_fence_run_id
+                    )
+
+                def recovery_stop_transmitted() -> None:
+                    # The client invokes this only after STOP bytes reached the
+                    # transport. Start settlement watching before the partial
+                    # dispatch error unwinds to managed-plan cleanup.
+                    self._schedule_dock_after_stop(
+                        serial_number, run_id=stop_fence_run_id
+                    )
+
+                run_id = self._plans.active_run_id(serial_number)
+
+                async def checkpoint_initial_session(identity_hash: str) -> None:
+                    if run_id is not None:
+                        await self._plans.async_checkpoint_mixed_session(
+                            serial_number, run_id, identity_hash
+                        )
+
+                try:
+                    await self.coordinator.client.async_start_mixed_coverage(
+                        floor_plan,
+                        [room.protocol_id for room in rooms],
+                        room_coverage,
+                        room_modes,
+                        first_room_name=rooms[0].name,
+                        require_current=require_current,
+                        require_owned=require_owned,
+                        prepare_stop=prepare_stop,
+                        rollback_stop=rollback_stop,
+                        on_recovery_stop_transmitted=recovery_stop_transmitted,
+                        checkpoint_initial_session=(
+                            checkpoint_initial_session if run_id is not None else None
+                        ),
+                    )
+                except (MaticError, TimeoutError) as err:
+                    raise HomeAssistantError(
+                        "Mixed coverage dispatch could not be verified"
+                    ) from err
+            else:
+                await self.coordinator.client.async_start_coverage(
+                    floor_plan,
+                    [room.protocol_id for room in rooms],
+                    cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
+                    coverage_setting=coverage_setting
+                    or self.coordinator.coverage_setting,
+                    ordered=ordered,
+                )
             await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
@@ -249,6 +337,9 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     async def async_stop(self, **kwargs: object) -> None:
         """Stop now or finish the active room according to the plan policy."""
         decision = self._plans.request_stop(self.coordinator.data.info.serial_number)
+        await self._plans.async_checkpoint_stop_intent(
+            self.coordinator.data.info.serial_number, decision.behavior
+        )
         if decision.behavior == "after_room":
             return
         self.coordinator.async_discard_current_room()
@@ -280,7 +371,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 # firmware's ten-minute countdown.
                 self.coordinator.async_discard_current_room()
                 await self.coordinator.client.async_send_user_command(UserCommand.STOP)
-                await self._plans.async_mark_stop_pending(serial_number)
+                await self._plans.async_mark_stop_pending(serial_number, run_id=run_id)
                 await self.coordinator.async_request_refresh()
                 stopped = True
             else:
@@ -607,11 +698,26 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             raise _validation_error(
                 "ordered must be true or false", "ordered_must_be_boolean"
             )
-        return {
+        result = {
             "cleaning_mode": mode,
             "coverage_setting": coverage,
             "ordered": ordered,
         }
+        for key in ("room_coverage", "room_modes"):
+            if key in params:
+                values = params[key]
+                if not isinstance(values, list):
+                    raise ServiceValidationError(f"{key} must be a list")
+                try:
+                    result[key] = [
+                        _enum_option(CoverageSetting, value)
+                        if key == "room_coverage"
+                        else _enum_option(CleaningMode, value)
+                        for value in values
+                    ]
+                except ValueError as err:
+                    raise ServiceValidationError("Invalid per-room setting") from err
+        return result
 
     @staticmethod
     def _motion_token(params: dict[str, Any] | list[Any] | None) -> int | None:

@@ -577,6 +577,7 @@ class MaticCleaningHistorySensor(MaticEntity, SensorEntity):
             "selected_plan_name",
             "active_plan",
             "last_interrupted_plan",
+            "last_run",
         }
     )
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import math
 from typing import Any, NotRequired, TypedDict
 
@@ -21,6 +22,10 @@ class MaticAreaSelectorConfig(TypedDict):
     scene_url: NotRequired[str]
 
 
+class GeometryTooComplex(ValueError):
+    """The bounded fallback budget cannot prove containment."""
+
+
 POINT_SCHEMA = vol.ExactSequence((vol.Coerce(float), vol.Coerce(float)))
 ROOM_SCHEMA = vol.Schema(
     {
@@ -30,14 +35,21 @@ ROOM_SCHEMA = vol.Schema(
     }
 )
 
-_POLYGON_BUCKET_COUNT = 256
-_GEOMETRY_EPSILON = 1e-8
-
 
 class _IndexedPolygon:
-    """Answer exact point-in-polygon queries without rescanning every edge."""
+    """Answer point-in-polygon queries with bounded storage and work."""
 
-    def __init__(self, boundary: list[list[float]]) -> None:
+    _BUCKET_COUNT = 256
+    _MAX_BUCKET_QUERY_SPAN = 4_096
+    _MAX_EDGE_REFERENCES = 16_384
+    _MAX_TOTAL_EDGE_REFERENCES = 262_144
+    # Match the room-boundary limit enforced by the protocol decoder. Charge
+    # every fallback edge check to the shared query budget.
+    _MAX_FALLBACK_EDGES = 4_096
+
+    def __init__(
+        self, boundary: list[list[float]], reference_limit: int | None = None
+    ) -> None:
         self.boundary = boundary
         xs = [float(point[0]) for point in boundary]
         ys = [float(point[1]) for point in boundary]
@@ -45,48 +57,112 @@ class _IndexedPolygon:
         self.maximum_x = max(xs)
         self.minimum_y = min(ys)
         self.maximum_y = max(ys)
+        fingerprint = hashlib.blake2b(digest_size=8)
+        for point in boundary:
+            fingerprint.update(float(point[0]).hex().encode("ascii"))
+            fingerprint.update(b",")
+            fingerprint.update(float(point[1]).hex().encode("ascii"))
+            fingerprint.update(b";")
+        self.fallback_order_key = (
+            len(boundary),
+            self.minimum_x,
+            self.minimum_y,
+            self.maximum_x,
+            self.maximum_y,
+            fingerprint.digest(),
+        )
         span = self.maximum_y - self.minimum_y
-        self.bucket_height = max(span / _POLYGON_BUCKET_COUNT, _GEOMETRY_EPSILON)
+        self.bucket_height = max(span / self._BUCKET_COUNT, 1e-8)
         buckets: dict[int, list[tuple[list[float], list[float]]]] = {}
+        references = 0
+        remaining_references = (
+            self._MAX_EDGE_REFERENCES
+            if reference_limit is None
+            else min(self._MAX_EDGE_REFERENCES, reference_limit)
+        )
+        overloaded = remaining_references <= 0
         previous = boundary[-1]
-        for current in boundary:
-            minimum_y = min(float(previous[1]), float(current[1]))
-            maximum_y = max(float(previous[1]), float(current[1]))
-            first = self._bucket(minimum_y - _GEOMETRY_EPSILON)
-            last = self._bucket(maximum_y + _GEOMETRY_EPSILON)
-            for bucket in range(first, last + 1):
-                buckets.setdefault(bucket, []).append((previous, current))
-            previous = current
+        if not overloaded:
+            for current in boundary:
+                first = self._bucket(min(float(previous[1]), float(current[1])) - 1e-8)
+                last = self._bucket(max(float(previous[1]), float(current[1])) + 1e-8)
+                count = last - first + 1
+                if references + count > remaining_references:
+                    overloaded = True
+                    break
+                for bucket in range(first, last + 1):
+                    buckets.setdefault(bucket, []).append((previous, current))
+                references += count
+                previous = current
+        if overloaded:
+            # Fallback queries use the original boundary, so retaining partial
+            # references only wastes memory after the cap has been reached.
+            buckets.clear()
+        self.edge_reference_count = references
         self.edges_by_bucket = {
             bucket: tuple(edges) for bucket, edges in buckets.items()
         }
+        self.overloaded = overloaded
 
     def _bucket(self, y: float) -> int:
         return math.floor((y - self.minimum_y) / self.bucket_height)
 
     def contains(self, x: float, y: float, tolerance: float) -> bool:
         """Return whether a point is inside or tolerably near this polygon."""
+        contained, _ = self.contains_with_work_limit(x, y, tolerance, None)
+        return contained
+
+    def contains_with_work_limit(
+        self, x: float, y: float, tolerance: float, work_limit: int | None
+    ) -> tuple[bool, int]:
+        """Return containment and edge work performed under a shared budget."""
+        work = 0
+
+        def charge_edge() -> None:
+            nonlocal work
+            work += 1
+            if work_limit is not None and work > work_limit:
+                raise GeometryTooComplex("room geometry query budget exhausted")
+
         if not (
             self.minimum_x - tolerance <= x <= self.maximum_x + tolerance
             and self.minimum_y - tolerance <= y <= self.maximum_y + tolerance
         ):
-            return False
-        candidates = {
-            (id(start), id(end)): (start, end)
-            for bucket in range(
-                self._bucket(y - tolerance - _GEOMETRY_EPSILON),
-                self._bucket(y + tolerance + _GEOMETRY_EPSILON) + 1,
+            return False, work
+        if self.overloaded:
+            if len(self.boundary) > self._MAX_FALLBACK_EDGES:
+                raise GeometryTooComplex(
+                    "room geometry exceeds the fallback edge limit"
+                )
+            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+                x, y, self.boundary, tolerance, work_limit
             )
-            for start, end in self.edges_by_bucket.get(bucket, ())
-        }.values()
-        edges = tuple(candidates)
-        if any(
-            MaticAreaSelector._point_on_segment(x, y, start, end)
-            for start, end in edges
-        ):
-            return True
+
+        first_bucket = self._bucket(y - tolerance - 1e-8)
+        last_bucket = self._bucket(y + tolerance + 1e-8)
+        if last_bucket - first_bucket + 1 > self._MAX_BUCKET_QUERY_SPAN:
+            if len(self.boundary) > self._MAX_FALLBACK_EDGES:
+                raise GeometryTooComplex(
+                    "room geometry exceeds the fallback edge limit"
+                )
+            return MaticAreaSelector._point_in_or_near_polygon_with_work_limit(
+                x, y, self.boundary, tolerance, work_limit
+            )
+
+        edge_values: dict[tuple[int, int], tuple[list[float], list[float]]] = {}
+        for bucket in range(first_bucket, last_bucket + 1):
+            charge_edge()
+            for start, end in self.edges_by_bucket.get(bucket, ()):
+                charge_edge()
+                edge_values[(id(start), id(end))] = (start, end)
+        edges = tuple(edge_values.values())
+        for start, end in edges:
+            charge_edge()
+            if MaticAreaSelector._point_on_segment(x, y, start, end):
+                return True, work
         inside = False
         for previous, current in edges:
+            charge_edge()
             current_x, current_y = (float(value) for value in current)
             previous_x, previous_y = (float(value) for value in previous)
             if (current_y > y) != (previous_y > y) and x < (
@@ -95,22 +171,110 @@ class _IndexedPolygon:
             ):
                 inside = not inside
         if inside or not tolerance:
-            return inside
-        return any(
-            MaticAreaSelector._point_near_segment(x, y, start, end, tolerance)
-            for start, end in edges
-        )
+            return inside, work
+        for start, end in edges:
+            charge_edge()
+            if MaticAreaSelector._point_near_segment(x, y, start, end, tolerance):
+                return True, work
+        return False, work
 
 
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
+    # This work runs on Home Assistant's event loop when a floor plan update is
+    # received. Keep the ceiling small enough that hostile decoder-valid maps
+    # fail closed instead of monopolizing the loop for several seconds.
+    _MAX_QUERY_WORK = 100_000
+    # Bound retained index storage across the complete floor plan, not only
+    # independently inside each room polygon.
+    _MAX_TOTAL_EDGE_REFERENCES = 262_144
+    _MAX_CONTAINMENT_CACHE_ENTRIES = 4_096
+
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
-        self.polygons = tuple(_IndexedPolygon(room["boundary"]) for room in rooms)
+        polygons = []
+        remaining_references = self._MAX_TOTAL_EDGE_REFERENCES
+        for room in rooms:
+            polygon = _IndexedPolygon(room["boundary"], remaining_references)
+            polygons.append(polygon)
+            remaining_references -= polygon.edge_reference_count
+        self.polygons = tuple(polygons)
+        self.indexed_polygons = tuple(
+            polygon for polygon in self.polygons if not polygon.overloaded
+        )
+        self.fallback_polygons = tuple(
+            sorted(
+                (polygon for polygon in self.polygons if polygon.overloaded),
+                key=lambda polygon: polygon.fallback_order_key,
+            )
+        )
+        self._query_work_remaining = self._MAX_QUERY_WORK
+        self._containment_cache: dict[tuple[float, float, float], bool] = {}
+
+    def _charge_work(self, work: int = 1) -> None:
+        if work > self._query_work_remaining:
+            self._query_work_remaining = 0
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        self._query_work_remaining -= work
+
+    def charge_query_work(self, work: int = 1) -> None:
+        """Charge non-containment geometry work to the shared query limit."""
+        self._charge_work(work)
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
-        return any(polygon.contains(x, y, tolerance) for polygon in self.polygons)
+        key = (float(x), float(y), float(tolerance))
+        if key in self._containment_cache:
+            return self._containment_cache[key]
+        if self._query_work_remaining <= 0:
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        try:
+            # Charge each polygon candidate before testing its bounds. The
+            # fallback order was sorted once when this request index was built.
+            for polygon in self.indexed_polygons:
+                self._charge_work()
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
+                    return True
+
+            # Indexed rooms have a fixed reference cap, so check them before
+            # fallbacks that may need to fail closed for excessive geometry.
+            for polygon in self.fallback_polygons:
+                self._charge_work()
+                if not (
+                    polygon.minimum_x - tolerance <= x <= polygon.maximum_x + tolerance
+                    and polygon.minimum_y - tolerance
+                    <= y
+                    <= polygon.maximum_y + tolerance
+                ):
+                    continue
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
+                    return True
+            if len(self._containment_cache) < self._MAX_CONTAINMENT_CACHE_ENTRIES:
+                self._containment_cache[key] = False
+            return False
+        except GeometryTooComplex:
+            # A failed candidate query must not leave residual budget for the
+            # next saved area in the same request to repeat the expensive work.
+            self._query_work_remaining = 0
+            raise
 
 
 @SELECTORS.register("matic-area")
@@ -203,16 +367,54 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
         tolerance: float,
     ) -> bool:
         """Return whether a point is inside or tolerably near a polygon."""
-        if cls._point_in_polygon(x, y, boundary):
-            return True
-        if not tolerance:
-            return False
-        return any(
-            cls._point_near_segment(x, y, previous, current, tolerance)
-            for previous, current in zip(
-                (boundary[-1], *boundary[:-1]), boundary, strict=True
-            )
+        contained, _ = cls._point_in_or_near_polygon_with_work_limit(
+            x, y, boundary, tolerance, None
         )
+        return contained
+
+    @classmethod
+    def _point_in_or_near_polygon_with_work_limit(
+        cls,
+        x: float,
+        y: float,
+        boundary: list[list[float]],
+        tolerance: float,
+        work_limit: int | None,
+    ) -> tuple[bool, int]:
+        """Check a polygon while counting edge work against a shared budget."""
+        work = 0
+
+        def charge_edge() -> None:
+            nonlocal work
+            work += 1
+            if work_limit is not None and work > work_limit:
+                raise GeometryTooComplex("room geometry fallback budget exhausted")
+
+        inside = False
+        previous = boundary[-1]
+        for current in boundary:
+            charge_edge()
+            if cls._point_on_segment(x, y, previous, current):
+                return True, work
+            current_x, current_y = (float(value) for value in current)
+            previous_x, previous_y = (float(value) for value in previous)
+            if (current_y > y) != (previous_y > y) and x < (
+                (previous_x - current_x) * (y - current_y) / (previous_y - current_y)
+                + current_x
+            ):
+                inside = not inside
+            previous = current
+        if inside:
+            return True, work
+        if not tolerance:
+            return False, work
+        for previous, current in zip(
+            (boundary[-1], *boundary[:-1]), boundary, strict=True
+        ):
+            charge_edge()
+            if cls._point_near_segment(x, y, previous, current, tolerance):
+                return True, work
+        return False, work
 
     def __call__(self, data: Any) -> list[dict[str, float]]:
         """Validate and canonicalize drawn circles without exposing them."""
@@ -247,7 +449,13 @@ class MaticAreaSelector(Selector[MaticAreaSelectorConfig]):
             circle = dict(schema(item))
             if not all(math.isfinite(value) for value in circle.values()):
                 raise vol.Invalid("Area circle values must be finite")
-            if not geometry.contains(circle["x"], circle["y"], center_tolerance):
+            try:
+                contained = geometry.contains(
+                    circle["x"], circle["y"], center_tolerance
+                )
+            except GeometryTooComplex as err:
+                raise vol.Invalid(str(err)) from err
+            if not contained:
                 raise vol.Invalid("Area circle centers must be inside a mapped room")
             circles.append(circle)
         return circles

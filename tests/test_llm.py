@@ -440,14 +440,20 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
     result = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
     assert result["preview_scope"] == "next_run"
     assert result["active_run_for_plan"] is True
-    assert result["settings_boundary_count"] == 1
-    assert result["legs"][0]["rooms"] == [
-        {"id": "kitchen", "name": "Kitchen"},
-        {"id": "study", "name": "Study"},
+    assert result["settings_boundary_count"] == 0
+    assert [item["id"] for item in result["legs"][0]["rooms"]] == [
+        "kitchen",
+        "study",
+        "hall",
     ]
-    assert result["legs"][0]["dock_between_rooms"] == "not_expected"
-    assert result["legs"][0]["handoff_after_leg"] == "firmware_may_touch_dock"
-    assert result["legs"][1]["handoff_after_leg"] == "final_leg"
+    assert result["legs"][0]["rooms"][2]["cleaning_mode"] == "vacuum_and_mop"
+    assert result["legs"][0]["cleaning_mode"] == "mixed"
+    assert result["legs"][0]["coverage_setting"] == "mixed"
+    assert (
+        result["legs"][0]["dock_between_rooms"]
+        == "firmware_resource_servicing_possible"
+    )
+    assert result["legs"][0]["handoff_after_leg"] == "final_leg"
 
     manager.rooms_for_plan.return_value = (
         {"id": "saved", "run_behavior": "saved_order", "return_to_base": False},

@@ -1,0 +1,85 @@
+# Managed cleaning across Home Assistant restarts
+
+Home Assistant shutdown is an observer lifecycle event, not a robot Stop.
+Cancellation while HA is stopping must not send Stop or publish a terminal
+managed-run outcome. Reloading an enabled integration preserves the same
+checkpoint, including a second reload during HA startup. Explicit user Stop,
+disabling/removing the integration, replacement commands, and real failures
+retain their separate cancellation behavior. Removal retires durable queue
+ownership so later pairing cannot resurrect the removed entry's plan.
+Removal does not stop an already running native mission; use Stop before
+removing the integration if you want the robot to stop as well.
+
+## Durable ownership
+
+Managed room plans checkpoint their resolved queue, run ID, settings, floor
+binding, current leg, dispatch phase, verified room credits, and stop intent.
+Durable state retains the confirmed-start completion deadline, pause/recharge state,
+room timing, and bounded trigger provenance; restart does not grant extra time.
+Native session identities and history keys remain opaque in memory; only
+fingerprints are stored locally. Checkpoints are excluded from entity snapshots.
+
+Mixed-settings dispatch also stores the generated native-session fingerprint
+before its initial START write. If restart finds the matching session while
+that two-write dispatch is incomplete, recovery persists a run-bound STOP intent
+and settles that exact mission; it never replays START or UPDATE. An ended,
+changed, malformed, or unreadable identity does not authorize a command. If the
+STOP write is ambiguous, recovery does not replay it; the persisted fence resumes
+only the native-inactive settlement watcher. A previously saved
+finish-current-room intent is converted to this exact-session STOP during an
+incomplete mixed dispatch, because the initial START may otherwise continue
+through later rooms using the first room's settings. If persisting the recovery
+STOP intent fails before transmission, recovery rolls the intent and fence back
+and releases command ownership without sending STOP.
+
+The checkpoint is written before dispatch and after accepted identity evidence.
+Durable runs do not prefetch a different-settings mission while verifying the
+previous leg. Same-settings rooms still share one native ordered mission.
+
+Startup reports `recovering`, waits for current floor/session evidence, and
+rejoins the normal executor only when the native identity fingerprint and floor
+binding match. It retains the original run ID and does not resend the accepted
+clean command. Verified prior legs are skipped; the remaining queue continues
+through the existing completion and command-ownership guards. User Stop wins
+over recovery; a saved finish-current-room request is not cleared by reconnect.
+Accepted managed Stops retain a run-bound settlement fence. Restart restores
+the same native-inactive dock watcher even after the cleaning record ended;
+replacement commands, expiry, and mismatched run ownership cannot restore it.
+
+## Deliberate uncertainty boundaries
+
+- If HA already observed the native mission end and began verifying history,
+  restart resumes that history-only observer with its original verification
+  deadline. Partial proof survives that deadline; saved graceful Stop retains
+  its cancellation outcome. Verification cannot dispatch another leg.
+- A crash between native command acceptance and the identity checkpoint is
+  ambiguous. Recovery does not guess whether dispatch succeeded or replay it.
+- A checkpoint before confirmed room start and its persisted completion budget
+  is not recoverable. The native mission is left alone; HA does not grant a new
+  cleaning budget or consume cleaning time during the separately bounded start.
+- If the native mission ended or changed while HA was offline, native-history
+  import can still credit its explicit room results. The managed run remains
+  unverified and its remaining queue is not automatically dispatched: history
+  alone does not establish continuous ownership of that queue.
+- This also applies between different-settings legs, even when the prior leg
+  was credited before shutdown and the next leg is known to be undispatched.
+  Verified completion proves prior work, not continued authority to start new
+  motion after an unobserved interval. Remaining work needs a fresh user start.
+- If all requested rooms were already durably verified before shutdown,
+  recovery preserves completion even if the final run record was not yet saved.
+- Missing identity/history, stale floor evidence, malformed checkpoints, and
+  old runs without checkpoints cannot authorize recovered motion.
+- Reconnection is bounded. Inconclusive recovery retires the managed record
+  as unverified, not completed, without stopping an unrelated native mission.
+
+These boundaries intentionally prefer truthful uncertainty over duplicate
+cleaning or invented completion. Previously cancelled runs are not resurrected.
+
+## Acceptance
+
+Synthetic tests cover actual HA shutdown, no shutdown Stop/terminal event,
+durable restoration, same-mission reattachment, takeover, stop races, and
+ambiguous dispatch. Deployment and physical acceptance are separate gates:
+install a reviewed candidate only while idle, then use an explicitly authorized
+bounded clean/restart/reconnect exercise to verify unchanged native mission,
+accurate status, remaining-room progress, and final stop/dock behavior.

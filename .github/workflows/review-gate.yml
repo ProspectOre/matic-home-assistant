@@ -13,6 +13,10 @@ on:
         description: Pull request number
         required: true
         type: string
+      request_comment_id:
+        description: Optional exact-head review request comment to bind after a missed create event
+        required: false
+        type: string
 
 # The latest state-changing PR event wins. Dedicated routers classify review and
 # issue-comment events before dispatching here, so ignored security activity
@@ -40,12 +44,13 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
+          INPUT_REQUEST_COMMENT_ID: ${{ inputs.request_comment_id }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           REPO: ${{ github.repository }}
-          REVIEW_BOT: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
-          REVIEW_BOT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions' || 'chatgpt-codex-connector' }}
-          REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && 'github-actions[bot]' || 'chatgpt-codex-connector[bot]' }}
+          REVIEW_BOT: ${{ vars.REVIEW_PROVIDER == 'claude' && vars.CLAUDE_REVIEW_BOT_EVENT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && 'chatgpt-codex-connector[bot]' }}
+          REVIEW_BOT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && vars.CLAUDE_REVIEW_BOT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && 'chatgpt-codex-connector' }}
+          REVIEW_BOT_EVENT_LOGIN: ${{ vars.REVIEW_PROVIDER == 'claude' && vars.CLAUDE_REVIEW_BOT_EVENT_LOGIN || vars.REVIEW_PROVIDER != 'claude' && 'chatgpt-codex-connector[bot]' }}
           REVIEW_GATE_CONTEXT: review-gate
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
@@ -143,6 +148,34 @@ jobs:
             echo "The event head changed before evaluation; the newer PR event will re-evaluate it."
             exit 0
           fi
+          if [[ -n "${INPUT_REQUEST_COMMENT_ID:-}" ]]; then
+            if [[ "${GITHUB_EVENT_NAME:-}" != "workflow_dispatch" \
+              || ! "$INPUT_REQUEST_COMMENT_ID" =~ ^[1-9][0-9]*$ ]]; then
+              echo "A request-comment binding requires a workflow dispatch and a valid comment ID." >&2
+              exit 1
+            fi
+            request_comment="$(gh api "repos/$REPO/issues/comments/$INPUT_REQUEST_COMMENT_ID")"
+            if ! jq -e \
+              --arg id "$INPUT_REQUEST_COMMENT_ID" \
+              --arg issue_url "${GITHUB_API_URL:-https://api.github.com}/repos/$REPO/issues/$pr_number" \
+              --arg head "$head_sha" \
+              --arg base "$base_sha" \
+              --arg bot "$REVIEW_BOT_EVENT_LOGIN" '
+                .id == ($id | tonumber)
+                and .issue_url == $issue_url
+                and (.user.login // "") != $bot
+                and .created_at == .updated_at
+                and ((.body // "") | contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->"))
+                and ((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))
+              ' <<< "$request_comment" >/dev/null; then
+              echo "The supplied comment is not an unedited exact-head review request for this pull request." >&2
+              exit 1
+            fi
+            request_created_at="$(jq -er '.created_at' <<< "$request_comment")"
+            stamp_status_for_sha "$head_sha" "review-gate-request" success \
+              "review-request-comment:$INPUT_REQUEST_COMMENT_ID; base:$base_sha; created:$request_created_at"
+            echo "Bound the unedited exact-head review request comment $INPUT_REQUEST_COMMENT_ID."
+          fi
           head_prefix="$(printf '%.10s' "$head_sha")"
           base_marker_description="Base changed for PR #$pr_number at base $base_sha at $(date -u +%Y-%m-%dT%H:%M:%SZ); push a new head for a fresh review"
 
@@ -186,19 +219,19 @@ jobs:
                     and ((.description // "") | startswith($prefix)))' >/dev/null
           }
 
-          latest_regular_issue_comment_at() {
+          latest_regular_issue_comment() {
             gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
-              | jq -r --arg context "$REVIEW_COMMENT_CONTEXT" '
+              | jq -c --arg context "$REVIEW_COMMENT_CONTEXT" '
                   [.[][]
                    | select(.context == $context)
                    | select(.state == "pending")
                    | (.description // "") as $description
                    | select($description | startswith("Regular issue-comment invalidated"))
-                   | if ($description | test("^Regular issue-comment invalidated at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z;"))
-                     then ($description | capture("^Regular issue-comment invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
-                     else .updated_at
-                     end]
-                  | max // empty'
+                   | {at: (if ($description | test("^Regular issue-comment invalidated at [0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z;"))
+                           then ($description | capture("^Regular issue-comment invalidated at (?<at>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z);").at)
+                           else .updated_at end),
+                      comment_id: (try ($description | capture("; comment:(?<id>[1-9][0-9]*);").id) catch "") }]
+                  | sort_by(.at)'
           }
 
           latest_regular_review_invalidation_at() {
@@ -220,7 +253,7 @@ jobs:
           # comments can qualify. Findings-bearing issue comments invalidate;
           # security review results and availability notices are ignored.
           regular_evidence() {
-            local review_records issue_comment_records
+            local review_records issue_comment_records request_reaction_records request_binding_statuses issue_comments
             review_records="$(
               # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
               gh api graphql --paginate \
@@ -262,9 +295,35 @@ jobs:
                         source: "review",
                         clean: ($body | stock_clean_envelope)}]'
             )"
-            issue_comment_records="$(
+            issue_comments="$(
               gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
-                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" '
+                | jq -c '[flatten[]]'
+            )"
+            request_binding_statuses="$(
+              gh api "repos/$REPO/commits/$head_sha/statuses?per_page=100" --paginate --slurp \
+                | jq -c --arg context "review-gate-request" --arg head "$head_sha" \
+                    --arg base "$base_sha" --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                    --argjson comments "$issue_comments" '
+                    [flatten[]
+                     | select(.context == $context and .state == "success")
+                     | select((.creator.login // "") == "github-actions[bot]")
+                     | (.description // "") as $description
+                     | (try ($description | capture("^review-request-comment:(?<id>[1-9][0-9]*); base:(?<base>[0-9a-f]{40}); created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$")) catch {}) as $binding
+                     | select($binding.base == $base)
+                     | select(any($comments[];
+                         (.id | tostring) == $binding.id
+                         and (.user.type // "") == "User"
+                         and (.user.login // "") != $bot
+                         and .created_at == $binding.created
+                         and .updated_at == $binding.created
+                         and ((.body // "") | contains("<!-- review-request:v2 head=" + $head + " base=" + $base + " -->"))
+                         and ((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))))]'
+            )"
+            issue_comment_records="$(
+              jq -c '.' <<< "$issue_comments" \
+                | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" \
+                    --arg prefix "$head_prefix" --arg base "$base_sha" \
+                    --argjson bindings "$request_binding_statuses" '
                     def regular_heading:
                       ascii_downcase
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|^[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
@@ -274,28 +333,85 @@ jobs:
                     def availability_notice:
                       ascii_downcase
                       | test("(?mi)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
-                    def exact_head:
+                    # A short footer can prove a clean verdict only when a
+                    # preceding request binds it to the full current head and base.
+                    def exact_reviewed_head:
                       test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60");
+                    def exact_full_head:
+                      test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60" + $head + "\\x60");
                     # An issue comment has no review-thread metadata. A generic
                     # suggestions envelope therefore cannot prove a clean verdict.
                     def stock_clean_issue_comment_envelope:
-                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
-                      or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
-                    [.[][]
+                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github")
+                      or test("(?is)^[[:space:]]*#{1,6}[^\\r\\n]*(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60" + $head + "\\x60[[:space:]]*$");
+                    def stock_clean_requested_issue_comment_envelope:
+                      test("(?is)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[^\\r\\n]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github");
+                    def bound_request_precedes($current_base; $comment_at):
+                      select(.state == "success")
+                      | (.description // "") as $description
+                      | select($description | test("^review-request-comment:[1-9][0-9]*; base:[0-9a-f]{40}; created:[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"))
+                      | ($description | capture("^review-request-comment:[1-9][0-9]*; base:(?<base>[0-9a-f]{40}); created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$"))
+                      | .base == $current_base and .created <= $comment_at;
+                    [.[]
                      | select((.user.login // "") == $bot)
                      | (.body // "") as $body
                      | select($body | regular_heading)
                      | select(($body | security_heading) | not)
                      | select(($body | availability_notice) | not)
-                     | select($body | exact_head)
-                     | {at: (.updated_at // .created_at),
+                     | select($body | exact_reviewed_head)
+                     | (.updated_at // .created_at) as $at
+                     | {at: $at,
                         id: ("issue-comment-" + (.id | tostring)),
                         source: "issue_comment",
-                        clean: ($body | stock_clean_issue_comment_envelope)}]'
+                        clean: (
+                          (($body | stock_clean_issue_comment_envelope)
+                            and ($body | exact_full_head))
+                          or (($body | stock_clean_requested_issue_comment_envelope)
+                            and any($bindings[]; bound_request_precedes($base; $at)))
+                        )}]'
             )"
-            jq -cn --argjson reviews "$review_records" --argjson issue_comments "$issue_comment_records" '
-              {deliveries: ($reviews + $issue_comments),
-               review_ids: [$reviews[].id]}'
+            request_reaction_records="$(
+              # The bot positive reaction is tied to this exact request
+              # comment. Reject it if the author edited that request later.
+              request_comment_ids="$(
+                gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp \
+                  | jq -r --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                      --arg marker "<!-- review-request:v2 head=$head_sha base=$base_sha -->" '
+                        [.[][]
+                         | select((.user.login // "") != $bot)
+                         | select((.body // "") | contains($marker))
+                         | select((.body // "") | test("(?mi)^[[:space:]]*@codex review([[:space:]:]|$)"))
+                         | select(.created_at == .updated_at)
+                         | [.id, .created_at, .updated_at]]
+                        | .[] | @tsv'
+              )"
+              while IFS=$'\t' read -r request_comment_id request_created_at request_updated_at; do
+                [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || continue
+                gh api "repos/$REPO/issues/comments/$request_comment_id/reactions?per_page=100" --paginate --slurp \
+                  | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" \
+                      --arg id "$request_comment_id" --arg request_updated_at "$request_updated_at" \
+                      --arg base "$base_sha" --arg created "$request_created_at" \
+                      --argjson bindings "$request_binding_statuses" '
+                      [flatten[]
+                       | select((.user.login // "") == $bot)
+                       | select((.content // "") == "+1")
+                       | select((.created_at // "") >= $request_updated_at)
+                       | select(any($bindings[];
+                           .state == "success"
+                           and .description == ("review-request-comment:" + $id + "; base:" + $base + "; created:" + $created)))
+                       | {at: .created_at,
+                          id: ("request-reaction-" + $id),
+                          source: "request_reaction",
+                          clean: true}]'
+              done <<< "$request_comment_ids" | jq -s 'add // []'
+            )"
+            jq -cn --argjson reviews "$review_records" \
+              --argjson issue_comments "$issue_comment_records" \
+              --argjson request_reactions "$request_reaction_records" \
+              --argjson request_bindings "$request_binding_statuses" '
+              {deliveries: ($reviews + $issue_comments + $request_reactions),
+               review_ids: [$reviews[].id],
+               request_bindings: $request_bindings}'
           }
 
           regular_review_thread_summary() {
@@ -346,28 +462,66 @@ jobs:
           }
 
           read_gate_snapshot() {
-            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_at review_invalidation_at
+            local evidence deliveries reviews review_ids thread_summary verdict_selection verdict finding_count latest_finding_at issue_comment_records request_bindings review_invalidation_at
             evidence="$(regular_evidence)"
             deliveries="$(jq -c '.deliveries' <<< "$evidence")"
             reviews="$(jq -c '[.deliveries[] | select(.source == "review")]' <<< "$evidence")"
             review_ids="$(jq -c '.review_ids' <<< "$evidence")"
+            request_bindings="$(jq -c '.request_bindings' <<< "$evidence")"
             thread_summary="$(regular_review_thread_summary "$review_ids")"
             verdict_selection="$(
-              issue_comment_at="$(latest_regular_issue_comment_at)"
+              issue_comment_records="$(latest_regular_issue_comment)"
               review_invalidation_at="$(latest_regular_review_invalidation_at)"
-              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" '
+              jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --argjson issue_comment_records "$issue_comment_records" --argjson request_bindings "$request_bindings" --arg review_invalidation_at "$review_invalidation_at" '
                 ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
+                | ($deliveries
+                   | sort_by([.at, (if .source == "request_reaction" then 1 else 0 end), .id])
+                   | last) as $latest_delivery
+                | (($latest_delivery != null
+                   and (($latest_delivery.source == "request_reaction"
+                          and ($latest_delivery.id | startswith("request-reaction-")))
+                      or ($latest_delivery.source == "issue_comment"
+                          and $latest_delivery.clean
+                          and ($latest_delivery.id | startswith("issue-comment-")))))
+                   ) as $clears_own_comment_invalidation
+                | (if $clears_own_comment_invalidation
+                   then ($latest_delivery.id | sub("^(request-reaction-|issue-comment-)"; ""))
+                   else ""
+                   end) as $cleared_comment_id
+                | (if $latest_delivery.source == "issue_comment" and $latest_delivery.clean
+                   then ([$request_bindings[]
+                     | (.description // "")
+                     | try capture("^review-request-comment:(?<id>[1-9][0-9]*); base:[0-9a-f]{40}; created:(?<created>[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z)$") catch {}
+                     | select(.created == $latest_delivery.at)
+                     | select((.id | tonumber) < ($cleared_comment_id | tonumber))
+                     | .id] | unique)
+                   else []
+                   end) as $tied_request_comment_ids
+                | ([$issue_comment_records[]
+                    | .comment_id as $invalidated_comment_id
+                    | select(
+                        if $latest_delivery.source == "request_reaction" then
+                          $invalidated_comment_id != $cleared_comment_id
+                        elif $latest_delivery.source == "issue_comment" and $latest_delivery.clean then
+                          ((($invalidated_comment_id == $cleared_comment_id)
+                             or (($tied_request_comment_ids | index($invalidated_comment_id)) != null))
+                           and .at == $latest_delivery.at) | not
+                        else
+                          true
+                        end)
+                    | .at]) as $other_issue_comment_invalidations
                 | (([$deliveries[] | select(.clean | not) | .at]
-                    + [$reviews[]
-                       | select(.id as $id | ($finding_ids | index($id)) != null)
-                       | .at]
-                    + (if $issue_comment_at == "" then [] else [$issue_comment_at] end)
+                   + [$reviews[]
+                      | select(.id as $id | ($finding_ids | index($id)) != null)
+                      | .at]
+                    + $other_issue_comment_invalidations
                     + (if $review_invalidation_at == "" then [] else [$review_invalidation_at] end))
                    | max // "") as $latest_finding_at
-                | ($deliveries | sort_by(.at) | last) as $latest_delivery
                 | {verdict:
                      (if $latest_delivery != null
-                           and ($latest_delivery.source == "review" or $latest_delivery.source == "issue_comment")
+                           and ($latest_delivery.source == "review"
+                             or $latest_delivery.source == "issue_comment"
+                             or $latest_delivery.source == "request_reaction")
                            and $latest_delivery.clean
                            and (($finding_ids | index($latest_delivery.id)) == null)
                            and $latest_delivery.at > $latest_finding_at
@@ -515,6 +669,11 @@ jobs:
               evidence_comment_id="${evidence_id#issue-comment-}"
               [[ "$evidence_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
               evidence_marker="issue-comment:$evidence_comment_id"
+              ;;
+            request_reaction)
+              request_comment_id="${evidence_id#request-reaction-}"
+              [[ "$request_comment_id" =~ ^[1-9][0-9]*$ ]] || exit 1
+              evidence_marker="request-reaction:$request_comment_id"
               ;;
             *)
               echo "Could not persist the current clean regular-review evidence." >&2

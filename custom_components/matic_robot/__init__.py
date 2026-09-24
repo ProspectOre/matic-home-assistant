@@ -6,9 +6,10 @@ import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from time import monotonic
 from typing import Any, cast
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigEntryState
 from homeassistant.const import CONF_HOST, CONF_PORT
 from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import config_validation as cv
@@ -45,7 +46,8 @@ from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
 from .migrations import async_migrate_entry
-from .plans import CleaningPlanManager
+from .plans import CleaningPlanManager, async_get_plan_manager
+from .restart import async_recover_managed_run
 from .services import (
     OEM_STOP_RECONCILIATION_POLL_SECONDS,
     async_register_services,
@@ -66,6 +68,7 @@ FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS = 2
 FLOOR_PLAN_TRANSITION_REFRESH_BACKOFF_SECONDS = 5
 FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS = 30
 FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS = 300
+ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS = 1.0
 
 
 @dataclass(slots=True)
@@ -84,6 +87,17 @@ MaticConfigEntry = ConfigEntry[MaticRuntimeData]
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
+async def _async_recover_after_failed_unload(
+    hass: HomeAssistant, entry: MaticConfigEntry, serial_number: str
+) -> None:
+    """Resume ownership after HA finishes marking a failed unload."""
+    while getattr(entry, "state", None) is ConfigEntryState.UNLOAD_IN_PROGRESS:  # noqa: ASYNC110 - lifecycle state changes after callback return
+        await asyncio.sleep(0)
+    if getattr(hass, "is_stopping", False) or getattr(entry, "disabled_by", None):
+        return
+    await async_recover_managed_run(hass, entry, serial_number)
+
+
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     """Register integration-wide services and the plan editor."""
     await async_register_room_plan_editor(hass)
@@ -95,11 +109,65 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Set up an unofficial Matic robot integration from a config entry."""
 
-    @callback
-    def _async_observe_activity(observation: dict[str, Any]) -> None:
+    next_state_event_at = 0.0
+    pending_state_observation: dict[str, Any] | None = None
+    pending_state_timer: asyncio.TimerHandle | None = None
+
+    def _async_flush_pending_state() -> None:
+        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
+        pending_state_timer = None
+        observation = pending_state_observation
+        pending_state_observation = None
+        if observation is None:
+            return
+        now = monotonic()
+        if now < next_state_event_at:
+            _schedule_pending_state_flush(next_state_event_at - now)
+            pending_state_observation = observation
+            return
+        next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
         hass.bus.async_fire(
             EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
         )
+
+    def _schedule_pending_state_flush(delay: float) -> None:
+        nonlocal pending_state_timer
+        loop = getattr(hass, "loop", None)
+        if loop is not None:
+            pending_state_timer = loop.call_later(delay, _async_flush_pending_state)
+
+    @callback
+    def _async_observe_activity(observation: dict[str, Any]) -> None:
+        nonlocal next_state_event_at, pending_state_observation, pending_state_timer
+        if observation.get("kind") == "state":
+            now = monotonic()
+            if now < next_state_event_at:
+                pending_state_observation = dict(observation)
+                if pending_state_timer is None:
+                    _schedule_pending_state_flush(next_state_event_at - now)
+                return
+            next_state_event_at = now + ACTIVITY_STATE_EVENT_MIN_INTERVAL_SECONDS
+            if pending_state_timer is not None:
+                pending_state_timer.cancel()
+                pending_state_timer = None
+            pending_state_observation = None
+        hass.bus.async_fire(
+            EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+        )
+
+    def _cancel_pending_state_timer() -> None:
+        nonlocal pending_state_observation, pending_state_timer
+        if pending_state_timer is not None:
+            pending_state_timer.cancel()
+            pending_state_timer = None
+        observation = pending_state_observation
+        pending_state_observation = None
+        if observation is not None:
+            hass.bus.async_fire(
+                EVENT_ACTIVITY_OBSERVED, {"entry_id": entry.entry_id, **observation}
+            )
+
+    entry.async_on_unload(_cancel_pending_state_timer)
 
     offset = dt_util.now().utcoffset()
     client = MaticHermesClient(
@@ -134,6 +202,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         await coordinator.async_config_entry_first_refresh()
         plans = hass.data[DOMAIN][DATA_PLAN_MANAGER]
         serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+        robot_generation = plans.activate_robot(serial_number)
         area_binding_upgrade = await plans.async_upgrade_area_bindings(
             serial_number, coordinator.data.floor_plan
         )
@@ -145,10 +214,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
         except MaticError as err:
             _LOGGER.debug("Native cleaning history recovery is unavailable: %s", err)
         else:
+            kwargs = (
+                {"generation": robot_generation}
+                if isinstance(robot_generation, int)
+                else {}
+            )
             await plans.async_import_native_history(
-                serial_number,
-                coordinator.data.floor_plan,
-                native_history,
+                serial_number, coordinator.data.floor_plan, native_history, **kwargs
             )
         slam_map = SlamMapStore(hass, entry.entry_id)
         await slam_map.async_load()
@@ -169,6 +241,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_history,
         )
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+        if (
+            plans.recovery_run(serial_number) is not None
+            or plans.pending_stop_run_id(serial_number) is not None
+        ):
+            entry.async_create_background_task(
+                hass,
+                async_recover_managed_run(hass, entry, serial_number),
+                f"{DOMAIN} managed run recovery",
+            )
         entry.async_create_background_task(
             hass,
             coordinator.async_watch_cues(),
@@ -294,9 +375,29 @@ def _register_slam_map_floor_plan_sync(
     """
     refresh_in_progress = False
     last_attempted_identity: SlamMapIdentity | None = None
+    identity_changed: asyncio.Event | None = None
 
-    async def _async_refresh_floor_plan(identity: SlamMapIdentity) -> None:
-        nonlocal refresh_in_progress, last_attempted_identity
+    async def _async_wait_for_identity_change(
+        wake_on_identity_change: asyncio.Event, delay: int
+    ) -> bool:
+        sleep_task = asyncio.create_task(asyncio.sleep(delay))
+        identity_task = asyncio.create_task(wake_on_identity_change.wait())
+        tasks = (sleep_task, identity_task)
+        try:
+            done, _pending = await asyncio.wait(
+                tasks, return_when=asyncio.FIRST_COMPLETED
+            )
+            return identity_task in done
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _async_refresh_floor_plan(
+        identity: SlamMapIdentity, wake_on_identity_change: asyncio.Event
+    ) -> None:
+        nonlocal refresh_in_progress, last_attempted_identity, identity_changed
         try:
             for round_ in range(FLOOR_PLAN_TRANSITION_REFRESH_ROUNDS):
                 for attempt in range(FLOOR_PLAN_TRANSITION_REFRESH_ATTEMPTS):
@@ -338,7 +439,16 @@ def _register_slam_map_floor_plan_sync(
             # an unrelated identity or restart changes the state.
             recovery_delay = FLOOR_PLAN_TRANSITION_RECOVERY_INITIAL_SECONDS
             while True:
-                await asyncio.sleep(recovery_delay)
+                identity_woke = await _async_wait_for_identity_change(
+                    wake_on_identity_change, recovery_delay
+                )
+                if identity_woke:
+                    # This worker is tied to the old recovery attempt. Even if
+                    # the identity is later reverified with equal value, the
+                    # latched wake belongs to this worker and must not be reused
+                    # to spin through the recovery loop.
+                    wake_on_identity_change.clear()
+                    return
                 if slam_map.mission_identity != identity or not getattr(
                     slam_map, "live_session_verified", True
                 ):
@@ -365,11 +475,12 @@ def _register_slam_map_floor_plan_sync(
                     FLOOR_PLAN_TRANSITION_RECOVERY_MAX_SECONDS,
                 )
         finally:
+            identity_changed = None
             refresh_in_progress = False
             _async_sync_floor_plan()
 
     def _async_sync_floor_plan() -> None:
-        nonlocal refresh_in_progress, last_attempted_identity
+        nonlocal refresh_in_progress, last_attempted_identity, identity_changed
         floor_plan = coordinator.data.floor_plan
         identity = slam_map.mission_identity
         if identity is None or identity.mission_id is None:
@@ -387,13 +498,18 @@ def _register_slam_map_floor_plan_sync(
         # A busy SLAM stream can publish many pages before the floor-plan
         # endpoint catches up. Keep one recovery task per verified mission,
         # rather than one coordinator refresh per page.
-        if refresh_in_progress or identity == last_attempted_identity:
+        if refresh_in_progress:
+            if identity != last_attempted_identity and identity_changed is not None:
+                identity_changed.set()
+            return
+        if identity == last_attempted_identity:
             return
         refresh_in_progress = True
         last_attempted_identity = identity
+        identity_changed = asyncio.Event()
         entry.async_create_background_task(
             hass,
-            _async_refresh_floor_plan(identity),
+            _async_refresh_floor_plan(identity, identity_changed),
             f"{DOMAIN} current floor map refresh",
         )
 
@@ -417,6 +533,11 @@ def _register_native_history_sync(
     it as each session ends keeps rotation fairness current without ever
     claiming a completion; see ``_import_native_room_activity``.
     """
+    generation = (
+        plans.robot_generation(serial_number)
+        if hasattr(plans, "robot_generation")
+        else None
+    )
 
     async def _async_sync(event: Event) -> None:
         if event.data.get("entry_id") != entry.entry_id:
@@ -426,10 +547,9 @@ def _register_native_history_sync(
         except MaticError as err:
             _LOGGER.debug("Native cleaning history sync is unavailable: %s", err)
             return
+        kwargs = {} if generation is None else {"generation": generation}
         await plans.async_import_native_history(
-            serial_number,
-            coordinator.data.floor_plan,
-            records,
+            serial_number, coordinator.data.floor_plan, records, **kwargs
         )
 
     entry.async_on_unload(hass.bus.async_listen(EVENT_CLEANING_FINISHED, _async_sync))
@@ -455,6 +575,11 @@ def _schedule_native_reconciliation_recovery(
             plans,
             serial_number,
             pending,
+            generation=(
+                plans.robot_generation(serial_number)
+                if hasattr(plans, "robot_generation")
+                else None
+            ),
         ),
         f"{DOMAIN} native stop recovery",
     )
@@ -468,6 +593,8 @@ async def _async_resume_native_reconciliation(
     plans: CleaningPlanManager,
     serial_number: str,
     pending: dict[str, str],
+    *,
+    generation: int | None = None,
 ) -> None:
     """Poll native history for only a retained marker's remaining window."""
     dispatched_at = cast(datetime, dt_util.parse_datetime(pending["dispatched_at"]))
@@ -493,10 +620,12 @@ async def _async_resume_native_reconciliation(
                 )
             else:
                 if plans.pending_native_reconciliation(serial_number) == pending:
+                    kwargs = {} if generation is None else {"generation": generation}
                     await plans.async_import_native_history(
                         serial_number,
                         coordinator.data.floor_plan,
                         native_history,
+                        **kwargs,
                     )
 
 
@@ -513,10 +642,45 @@ def _floor_plan_supports_area_binding(floor_plan: FloorPlan | None) -> bool:
 
 async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bool:
     """Unload the Matic robot integration."""
+    # HA can reload an enabled entry again during startup (for example after
+    # discovery updates its endpoint). Losing this observer is not a Stop.
+    preserve_run = entry.disabled_by is None
     await entry.runtime_data.cleaning_plans.async_cancel_and_wait(
-        str(entry.data[CONF_SERIAL_NUMBER])
+        str(entry.data[CONF_SERIAL_NUMBER]),
+        preserve_run=preserve_run,
     )
-    if unload_ok := await hass.config_entries.async_unload_platforms(entry, PLATFORMS):
+    if not preserve_run:
+        await entry.runtime_data.cleaning_plans.async_retire_recovery(
+            str(entry.data[CONF_SERIAL_NUMBER]), "config_entry_unload"
+        )
+    unload_ok = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
+    if not unload_ok and preserve_run and not getattr(hass, "is_stopping", False):
+        recovery_reader = getattr(
+            entry.runtime_data.cleaning_plans, "recovery_run", None
+        )
+        recovery = (
+            recovery_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(recovery_reader)
+            else None
+        )
+        pending_reader = getattr(
+            entry.runtime_data.cleaning_plans, "pending_stop_run_id", None
+        )
+        pending_stop = (
+            pending_reader(str(entry.data[CONF_SERIAL_NUMBER]))
+            if callable(pending_reader)
+            else None
+        )
+        create_task = getattr(entry, "async_create_background_task", None)
+        if (recovery is not None or pending_stop is not None) and callable(create_task):
+            create_task(
+                hass,
+                _async_recover_after_failed_unload(
+                    hass, entry, str(entry.data[CONF_SERIAL_NUMBER])
+                ),
+                f"{DOMAIN} managed run recovery after unload failure",
+            )
+    if unload_ok:
         await entry.runtime_data.slam_history.async_shutdown()
         await entry.runtime_data.slam_map.async_shutdown()
         clear_slam_scene_cache(hass, entry.entry_id)
@@ -525,7 +689,12 @@ async def async_unload_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> bo
 
 
 async def async_remove_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> None:
-    """Erase the removed robot's persisted firmware history and repairs."""
+    """Erase the removed robot's persisted private data."""
+    # Always enter the shared initialization lock: the manager may already be
+    # published in hass.data while its initial storage load is still pending.
+    plans = await async_get_plan_manager(hass)
+    serial_number = str(entry.data[CONF_SERIAL_NUMBER])
+    await plans.async_remove_robot(serial_number)
     clear_slam_scene_cache(hass, entry.entry_id)
     async_delete_custom_area_issue(hass, entry.entry_id)
     tracker: FirmwareTracker | None = hass.data.get(DOMAIN, {}).get(
