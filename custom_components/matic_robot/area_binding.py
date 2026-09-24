@@ -58,6 +58,7 @@ _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
 _MAX_TRANSLATION_ROOM_ANCHORS = 256
+_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
 _AREA_REPAIR_LEARN_MORE_URL = (
     "https://github.com/ProspectOre/matic-home-assistant/"
     "blob/main/docs/automation.md#drawn-custom-areas"
@@ -323,6 +324,35 @@ def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
     return [min(xs), min(ys), max(xs), max(ys)]
 
 
+def _translation_room_key(room: Any) -> str:
+    """Hash stable room identity without persisting private protocol IDs."""
+    digest = hashlib.sha256()
+    digest.update(b"matic-room-frame-key-v1\0")
+    for value in (room.id, room.protocol_id):
+        encoded = value.encode("utf-8")
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+    wire_id = bytes(room.id_wire)
+    digest.update(struct.pack(">I", len(wire_id)))
+    digest.update(wire_id)
+    return digest.hexdigest()
+
+
+def _translation_circle_key(circle: Mapping[str, Any]) -> str:
+    """Identify a saved circle independently of list order."""
+    digest = hashlib.sha256()
+    digest.update(b"matic-room-frame-circle-v1\0")
+    digest.update(
+        struct.pack(
+            ">qqq",
+            _quantize_coordinate(float(circle["x"])),
+            _quantize_coordinate(float(circle["y"])),
+            _quantize_coordinate(float(circle["radius"])),
+        )
+    )
+    return digest.hexdigest()
+
+
 def _bounds_within_tolerance(old: Sequence[int], new: Sequence[int]) -> bool:
     return all(
         abs(new_value - old_value) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
@@ -348,18 +378,26 @@ def _translation_room_anchors(
         for room in floor_plan.rooms
     ]
     room_geometry = room_geometry or _RoomGeometryIndex(rooms)
-    containing_rooms = {
-        index
-        for circle in circles
+    circle_keys_by_room: dict[int, set[str]] = {}
+    association_count = 0
+    for circle in circles:
+        circle_key = _translation_circle_key(circle)
         for index in room_geometry.containing_indices(
             float(circle["x"]),
             float(circle["y"]),
             _LOCAL_GEOMETRY_TOLERANCE_METERS,
-        )
-    }
+        ):
+            keys = circle_keys_by_room.setdefault(index, set())
+            if circle_key not in keys:
+                if association_count >= _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
+                    raise ValueError("too many circle-room frame anchors")
+                room_geometry.charge_query_work()
+                keys.add(circle_key)
+                association_count += 1
     anchors = []
     for index, room in enumerate(floor_plan.rooms):
-        if index not in containing_rooms:
+        circle_keys = circle_keys_by_room.get(index)
+        if not circle_keys:
             continue
         polygon = _canonical_polygon(room.boundary)
         origin_x = min(x for x, _y in polygon)
@@ -372,6 +410,8 @@ def _translation_room_anchors(
         anchors.append(
             {
                 "fingerprint": digest.hexdigest(),
+                "room_key": _translation_room_key(room),
+                "circle_keys": sorted(circle_keys),
                 "bounds": [
                     min(x for x, _y in polygon),
                     min(y for _x, y in polygon),
@@ -772,43 +812,36 @@ def area_binding_status(
         saved_anchors = saved.get("translation_room_anchors")
         if not isinstance(saved_anchors, list) or not saved_anchors:
             return AreaBindingStatus.GEOMETRY_CHANGED
+        if any(
+            "room_key" not in anchor or "circle_keys" not in anchor
+            for anchor in saved_anchors
+        ):
+            # Older anchors did not retain which circles belonged to which
+            # rooms. Keep those coordinates reviewable after drift, but never
+            # infer a room match from another circle's anchor.
+            return AreaBindingStatus.GEOMETRY_CHANGED
         try:
             current_anchors = _translation_room_anchors(
                 floor_plan, area["circles"], room_geometry=room_geometry
             )
         except GeometryTooComplex, OverflowError, TypeError, ValueError:
             return AreaBindingStatus.INVALID
-        current_bounds_by_fingerprint: dict[str, list[list[int]]] = {}
+        current_by_room_key: dict[str, Mapping[str, Any]] = {}
         for anchor in current_anchors:
-            current_bounds_by_fingerprint.setdefault(anchor["fingerprint"], []).append(
-                anchor["bounds"]
-            )
+            room_key = str(anchor["room_key"]).casefold()
+            if room_key in current_by_room_key:
+                return AreaBindingStatus.GEOMETRY_CHANGED
+            current_by_room_key[room_key] = anchor
         for anchor in saved_anchors:
-            old_bounds = anchor["bounds"]
-            matching_bounds = current_bounds_by_fingerprint.get(
-                str(anchor["fingerprint"]).casefold(), ()
-            )
-
-            if len(matching_bounds) == 1:
-                if not _bounds_within_tolerance(
-                    old_bounds, matching_bounds[0]
-                ) and not any(
-                    _bounds_within_tolerance(old_bounds, current_anchor["bounds"])
-                    for current_anchor in current_anchors
-                ):
-                    return AreaBindingStatus.GEOMETRY_CHANGED
-            elif not matching_bounds:
-                bounds_within_tolerance = any(
-                    _bounds_within_tolerance(old_bounds, current_anchor["bounds"])
-                    for current_anchor in current_anchors
+            current_anchor = current_by_room_key.get(str(anchor["room_key"]).casefold())
+            if (
+                current_anchor is None
+                or not set(anchor["circle_keys"]).issubset(
+                    current_anchor["circle_keys"]
                 )
-                if not bounds_within_tolerance:
-                    # A changed containing-room shape cannot prove that
-                    # saved coordinates remain in the same absolute frame.
-                    return AreaBindingStatus.GEOMETRY_CHANGED
-            elif len(matching_bounds) > 1 and all(
-                not _bounds_within_tolerance(old_bounds, new_bounds)
-                for new_bounds in matching_bounds
+                or not _bounds_within_tolerance(
+                    anchor["bounds"], current_anchor["bounds"]
+                )
             ):
                 return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
@@ -995,24 +1028,43 @@ def _valid_digest(value: Any) -> bool:
 
 def _valid_translation_room_anchors(value: Any) -> bool:
     """Validate the bounded optional absolute-frame room evidence."""
-    return (
-        isinstance(value, list)
-        and len(value) <= _MAX_TRANSLATION_ROOM_ANCHORS
-        and all(
-            isinstance(anchor, Mapping)
-            and set(anchor) == {"fingerprint", "bounds"}
-            and _valid_digest(anchor["fingerprint"])
-            and isinstance(anchor["bounds"], list)
-            and len(anchor["bounds"]) == 4
+    if not isinstance(value, list) or len(value) > _MAX_TRANSLATION_ROOM_ANCHORS:
+        return False
+    associations = 0
+    for anchor in value:
+        if not isinstance(anchor, Mapping) or set(anchor) not in (
+            {"fingerprint", "bounds"},
+            {"fingerprint", "bounds", "room_key", "circle_keys"},
+        ):
+            return False
+        if not _valid_digest(anchor["fingerprint"]):
+            return False
+        bounds = anchor["bounds"]
+        if not (
+            isinstance(bounds, list)
+            and len(bounds) == 4
             and all(
                 isinstance(coordinate, int)
                 and not isinstance(coordinate, bool)
                 and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
-                for coordinate in anchor["bounds"]
+                for coordinate in bounds
             )
-            for anchor in value
-        )
-    )
+        ):
+            return False
+        if "room_key" in anchor:
+            keys = anchor["circle_keys"]
+            if not (
+                _valid_digest(anchor["room_key"])
+                and isinstance(keys, list)
+                and 0 < len(keys) <= 512
+                and all(_valid_digest(key) for key in keys)
+                and len(set(keys)) == len(keys)
+            ):
+                return False
+            associations += len(keys)
+            if associations > _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
+                return False
+    return True
 
 
 def _valid_local_occupancy(value: Any) -> bool:
