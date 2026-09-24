@@ -740,6 +740,24 @@ def area_binding_status(
                     center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
                     room_geometry=room_geometry,
                 )
+        except GeometryTooComplex:
+            if (
+                saved["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                and saved_geometry != current["geometry_sha256"]
+            ):
+                # Fingerprinting may exhaust its shared scan budget after the
+                # saved circles have become invalid or unreviewable. Validate
+                # them on a fresh, still-bounded index before exposing drift.
+                try:
+                    _validate_area_circles(
+                        floor_plan,
+                        area["circles"],
+                        room_geometry=_room_geometry_index(floor_plan),
+                    )
+                except KeyError, OverflowError, TypeError, ValueError:
+                    return AreaBindingStatus.INVALID
+                return AreaBindingStatus.GEOMETRY_CHANGED
+            return AreaBindingStatus.INVALID
         except KeyError, OverflowError, TypeError, ValueError:
             return AreaBindingStatus.INVALID
         if str(saved["local_geometry_sha256"]).casefold() == local_geometry:

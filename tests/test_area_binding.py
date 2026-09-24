@@ -213,6 +213,45 @@ def test_matcher_work_exhaustion_keeps_valid_drift_reviewable() -> None:
         assert area_binding_allows_review(area, changed)
 
 
+def test_hash_fingerprint_work_exhaustion_keeps_valid_drift_reviewable() -> None:
+    boundary = (
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (5.5, 10.0),
+        *((5.4 - index / 750, 5.3 if index % 2 else 4.7) for index in range(601)),
+        (0.0, 10.0),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("dense", "Dense", boundary),),
+    )
+    circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    assert (
+        area["map_binding"]["version"]
+        == area_binding_module.BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    )
+    changed_boundary = (*boundary[:-1], (0.0, 10.1))
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=changed_boundary),),
+    )
+
+    with patch.object(
+        area_binding_module,
+        "_bounded_hash_only_area_geometry_fingerprint",
+        side_effect=GeometryTooComplex("synthetic fingerprint work exhausted"),
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+        assert area_binding_allows_review(area, changed)
+        invalid_area = {**area, "circles": [{"x": 500.0, "y": 500.0, "radius": 0.1}]}
+        assert area_binding_status(invalid_area, changed) is AreaBindingStatus.INVALID
+        assert area_binding_status(area, floor_plan) is AreaBindingStatus.INVALID
+
+
 def test_local_segment_correspondence_enforces_work_limits() -> None:
     """Dense compatible walls fail closed before building or scanning a graph."""
     segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))
