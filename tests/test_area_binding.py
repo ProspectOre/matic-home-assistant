@@ -181,6 +181,38 @@ def test_legacy_dense_v3_binding_remains_reviewable_after_map_drift() -> None:
         assert area_binding_allows_review(area, changed)
 
 
+def test_matcher_work_exhaustion_keeps_valid_drift_reviewable() -> None:
+    floor_plan = _floor_plan()
+    circles = [{"x": 1.8, "y": 0.75, "radius": 0.1}]
+    area = _scoped_area(floor_plan, circles)
+    changed = replace(
+        floor_plan,
+        rooms=(
+            replace(
+                floor_plan.rooms[0],
+                boundary=((0.0, 0.0), (2.05, 0.0), (2.05, 1.5), (0.0, 1.5)),
+            ),
+            floor_plan.rooms[1],
+        ),
+    )
+
+    def exhaust_match_work(*args, **kwargs):
+        raise GeometryTooComplex("synthetic matcher work budget exhausted")
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=exhaust_match_work,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=exhaust_match_work,
+    ):
+        assert area_binding_allows_review(area, changed)
+
+
 def test_local_segment_correspondence_enforces_work_limits() -> None:
     """Dense compatible walls fail closed before building or scanning a graph."""
     segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))
