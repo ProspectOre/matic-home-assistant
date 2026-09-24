@@ -136,6 +136,53 @@ def test_area_binding_rejects_excess_local_segments() -> None:
         binding_for_area(floor_plan, [{"x": 0.2, "y": 0.2, "radius": 0.1}])
 
 
+def test_legacy_dense_v3_binding_remains_reviewable_after_map_drift() -> None:
+    zigzag = tuple(
+        (5.4 - index / 750, 5.3 if index % 2 else 4.7) for index in range(601)
+    )
+    boundary = (
+        (0.0, 0.0),
+        (10.0, 0.0),
+        (10.0, 10.0),
+        (5.5, 10.0),
+        *zigzag,
+        (0.0, 10.0),
+    )
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (_room("dense", "Dense", boundary),),
+    )
+    circles = [{"x": 5.0, "y": 4.4, "radius": 0.1}]
+    with patch.object(area_binding_module, "_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS", 4096):
+        area = _scoped_area(floor_plan, circles)
+
+    assert len(area["map_binding"]["local_segments_mm"]) > 256
+    changed_boundary = list(boundary)
+    changed_boundary[304] = (changed_boundary[304][0], 4.9)
+    changed = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], boundary=tuple(changed_boundary)),),
+    )
+
+    def over_match_budget(*args, **kwargs):
+        raise GeometryTooComplex("synthetic legacy segment count exceeds matcher cap")
+
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=over_match_budget,
+    ):
+        assert area_binding_status(area, changed) is AreaBindingStatus.GEOMETRY_CHANGED
+    with patch.object(
+        area_binding_module,
+        "_local_segment_correspondence",
+        side_effect=over_match_budget,
+    ):
+        assert area_binding_allows_review(area, changed)
+
+
 def test_local_segment_correspondence_enforces_work_limits() -> None:
     """Dense compatible walls fail closed before building or scanning a graph."""
     segments = ((0, 0, 1000, 0), (0, 0, 1000, 0))

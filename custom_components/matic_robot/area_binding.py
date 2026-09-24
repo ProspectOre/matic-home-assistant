@@ -784,6 +784,15 @@ def area_binding_status(
         ):
             return AreaBindingStatus.CURRENT
     except GeometryTooComplex:
+        # Older v3 bindings may contain up to the storage cap of wall segments,
+        # even though the tolerant matcher is now limited to 256. On map drift,
+        # preserve a review path for valid saved circles instead of hiding them
+        # as invalid; no stale command is authorized by GEOMETRY_CHANGED.
+        if (
+            saved_geometry != current["geometry_sha256"]
+            and len(saved["local_segments_mm"]) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS
+        ):
+            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.INVALID
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
