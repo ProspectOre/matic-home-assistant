@@ -837,8 +837,8 @@ def area_binding_status(
             current_anchor = current_by_room_key.get(str(anchor["room_key"]).casefold())
             if (
                 current_anchor is None
-                or not set(anchor["circle_keys"]).issubset(
-                    current_anchor["circle_keys"]
+                or not {str(key).casefold() for key in anchor["circle_keys"]}.issubset(
+                    {str(key).casefold() for key in current_anchor["circle_keys"]}
                 )
                 or not _bounds_within_tolerance(
                     anchor["bounds"], current_anchor["bounds"]

@@ -2417,6 +2417,8 @@ def test_unanchored_area_ignores_moved_remote_duplicate_room() -> None:
         ),
     )
     area = _scoped_area(floor_plan, [{"x": 5.0, "y": 5.0, "radius": 0.2}])
+    anchor = area["map_binding"]["translation_room_anchors"][0]
+    anchor["circle_keys"] = [key.upper() for key in anchor["circle_keys"]]
     changed = replace(
         floor_plan,
         rooms=(
