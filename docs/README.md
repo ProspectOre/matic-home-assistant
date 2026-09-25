@@ -1,33 +1,34 @@
-# Documentation
+# Matic guides
 
-[Project overview](../README.md) · [Latest release](release-notes-0.4.2.md)
+[Project overview](../README.md) · [What Home Assistant adds](features.md) ·
+[Releases](https://github.com/ProspectOre/matic-home-assistant/releases)
 
-| I want to… | Guide |
+## Get more from your robot
+
+| I want to… | Start here |
 | --- | --- |
-| Install or update | [Installation](../README.md#install) |
-| Pair or reconnect a robot | [Local pairing](hermes-pairing.md) |
-| Use maps, plans, and custom areas | [Cleaning](cleaning.md) |
-| Find a sensor or control | [Entities](entities.md) |
-| Build an automation | [Actions, events, and examples](automation.md) |
-| Understand cleaning history | [Cleaning results](native-cleaning-results.md) |
-| Investigate unexpected docking or stopping | [Activity diagnostics](activity-diagnostics.md) |
-| Understand cleaning across HA restarts | [Restart recovery](restart-recovery.md) |
-| Verify the managed cleaning contract | [End-to-end contract](e2e-contract.md) |
-| Check my setup | [Compatibility](acceptance-0.4.md) |
-| Understand stored data | [Privacy](privacy.md) |
+| Rotate fairly through rooms and save per-room settings | [Plans and rotation](cleaning.md#saved-plans) |
+| Clean when I leave or another device triggers it | [Automations and blueprints](automation.md) |
+| Finish the active room before docking | [Stop policies](cleaning.md#stopping-a-plan) |
+| Draw reusable areas and use live maps | [Cleaning and maps](cleaning.md) |
+| Build a dashboard or use room statistics | [Entities](entities.md) |
+| Understand what actually finished | [Cleaning results](native-cleaning-results.md) |
 
-## Reference
+## Setup and support
 
-[Firmware compatibility](firmware-compatibility.md) ·
-[Protocol endpoints](firmware-endpoint-map.md) ·
-[Recording protocol](recording-protocol.md) ·
-[Contributing](../CONTRIBUTING.md) · [Security](../SECURITY.md) ·
-[Release history](https://github.com/ProspectOre/matic-home-assistant/releases)
+[Install or update](../README.md#install) · [Pairing](hermes-pairing.md) ·
+[Compatibility](acceptance-0.4.md) · [Privacy](privacy.md)
 
-## Support
+For unexpected stops or docking, start with [activity diagnostics](activity-diagnostics.md).
+For an interrupted Home Assistant session, see [restart recovery](restart-recovery.md).
 
-Start with the relevant guide, then
-[report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml),
-[request a feature](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=feature_request.yml),
-or [ask the community](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684).
-Remove private information from logs, diagnostics, and screenshots before posting.
+[Report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml) ·
+[Request a feature](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=feature_request.yml) ·
+[Community discussion](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684)
+
+## Technical reference
+
+[Actions](actions.md) · [Mixed room missions](mixed-room-missions.md) ·
+[Managed-run contract](e2e-contract.md) · [Firmware compatibility](firmware-compatibility.md) ·
+[Protocol endpoints](firmware-endpoint-map.md) · [Recording protocol](recording-protocol.md) ·
+[Contributing](../CONTRIBUTING.md) · [Security](../SECURITY.md)

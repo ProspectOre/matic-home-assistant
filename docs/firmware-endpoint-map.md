@@ -2,6 +2,9 @@
 
 [Entities](entities.md) · [Actions](actions.md) · [Firmware compatibility](firmware-compatibility.md)
 
+Use this reference to connect Home Assistant features to their local protocol
+endpoints. For inspection actions, see the [action reference](actions.md).
+
 Hermes is Matic's local gRPC protocol. The registry in
 [endpoints.py](../custom_components/matic_robot/client/endpoints.py) defines the
 40 non-credential endpoints available to inspection and firmware snapshots.

@@ -2,33 +2,8 @@
 
 [Documentation](README.md) · [Automations](automation.md)
 
-## Map Studio
-
-Open **Matic Map** from Home Assistant's sidebar. Choose **3D** for the photographic
-map or **2D** for a top-down view. The 2D appearance can show the photo or room map.
-
-Drag to move around the map; use pinch or the wheel to zoom. **Fit map** recenters
-the floor. **How to move the map** lists mouse, touch, and keyboard controls.
-Map options include appearance, refresh, and full screen.
-When choosing rooms for a run or plan, click a room on either map view to select
-or deselect it. The map and room list stay in sync.
-
-**Map history** browses saved views. When history includes another floor, the
-floor selector can show it read-only. Cleaning is available only on the current
-floor. After carrying the robot, wait for its new map and position to appear.
-
-The map panel requires a Home Assistant administrator. For a dashboard, add
-`camera.matic_map` with a Picture Entity card.
-
-## One-time cleaning
-
-Choose **One-time clean**, select rooms, and pick vacuum, mop, or both.
-Coverage choices are **Quick**, **Optimal**, and **Heavy Duty**. Start the run
-from its summary; use the active cleaning controls to pause, resume, or stop.
-
-Home Assistant Areas can map to Matic rooms. Exact names and unique aliases
-match automatically; configure other matches in the integration's options.
-Mapped room names must be unique.
+Save per-room preferences, give waiting rooms a turn, and choose when a plan
+should stop. Open **Matic Map** in the Home Assistant sidebar to get started.
 
 ## Saved plans
 
@@ -40,9 +15,10 @@ Each plan saves:
 - Intelligent rotation or saved-order execution.
 - Return-to-dock and finish-current-room preferences.
 
-Drag rooms or use their arrow controls to reorder them. Matching settings let
-consecutive rooms share one mission. A settings change starts another mission,
-which can include a dock visit. Group similar settings when order allows it.
+Drag rooms or use their arrow controls to reorder them. Each room keeps its
+mode and coverage within one ordered mission, including mixed settings.
+The robot handles battery and water servicing as needed.
+[Mixed room missions](mixed-room-missions.md).
 
 A plan defines what to clean. Home Assistant automations decide when it runs.
 The integration's **Configure** flow also supports plan editing.
@@ -74,6 +50,34 @@ active cleaning time. Wait for the stop to settle before starting another run.
 
 Pause/resume preserves the plan. A separate clean, Stop, or Dock replaces it.
 Avoid controlling the robot from multiple integrations or apps at once.
+
+## Map Studio
+
+Open **Matic Map** from Home Assistant's sidebar. Choose **3D** for the photographic
+map or **2D** for a top-down view. The 2D appearance can show the photo or room map.
+
+Drag to move around the map; use pinch or the wheel to zoom. **Fit map** recenters
+the floor. **How to move the map** lists mouse, touch, and keyboard controls.
+Map options include appearance, refresh, and full screen.
+When choosing rooms for a run or plan, click a room on either map view to select
+or deselect it. The map and room list stay in sync.
+
+**Map history** browses saved views. When history includes another floor, the
+floor selector can show it read-only. Cleaning is available only on the current
+floor. After carrying the robot, wait for its new map and position to appear.
+
+The map panel requires a Home Assistant administrator. For a dashboard, add
+`camera.matic_map` with a Picture Entity card.
+
+## One-time cleaning
+
+Choose **One-time clean**, select rooms, and pick vacuum, mop, or both.
+Coverage choices are **Quick**, **Optimal**, and **Heavy Duty**. Start the run
+from its summary; use the active cleaning controls to pause, resume, or stop.
+
+Home Assistant Areas can map to Matic rooms. Exact names and unique aliases
+match automatically; configure other matches in the integration's options.
+Mapped room names must be unique.
 
 ## Custom areas
 
