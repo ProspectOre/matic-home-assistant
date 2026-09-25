@@ -32,9 +32,12 @@ style. Keep runtime traffic local and use Home Assistant's asynchronous APIs.
 
 ## Documentation
 
-Describe the feature or required action. Keep release notes focused on changes
-users can see. Put instructions and compatibility details in one relevant guide;
-keep test logs, review narration, and development diaries out of user docs.
+Lead with what users can do, especially plan logic and Home Assistant workflows
+that add to the native app. Verify feature claims against code and native-app
+comparisons against Matic documentation. Keep instructions in one task-specific
+guide and link to it. Include limits only where they affect the task; avoid
+repeated warnings. Preserve release notes as historical records, focused on
+user-visible changes. Keep test logs and development diaries out of user docs.
 
 ## Releasing
 

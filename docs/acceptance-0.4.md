@@ -2,6 +2,8 @@
 
 [Documentation](README.md) · [Firmware observations](firmware-compatibility.md)
 
+Check the Home Assistant and Bluetooth requirements before installing.
+
 ## Requirements
 
 - **Home Assistant 2026.7+**. Live use has covered 2026.7 and 2026.8.

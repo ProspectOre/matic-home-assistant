@@ -2,6 +2,9 @@
 
 [Automations and examples](automation.md) · [Cleaning guide](cleaning.md)
 
+Run saved plans, preview room order, clean named areas, and manage per-room
+settings from Home Assistant automations or **Developer tools → Actions**.
+
 All actions use the `matic_robot` domain and target a Matic vacuum entity.
 Names and stable IDs are accepted where applicable; ambiguous names are rejected.
 The full field schema is in [services.yaml](../custom_components/matic_robot/services.yaml)

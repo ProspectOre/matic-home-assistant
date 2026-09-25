@@ -1,89 +1,67 @@
 # Investigating interrupted cleaning
 
-[Documentation](README.md) · [Privacy](privacy.md)
+[Documentation](README.md) · [Cleaning results](native-cleaning-results.md)
 
-When the robot briefly reports returning to dock or stops before finishing a
-plan, download the integration diagnostics soon afterward. `activity_observations`
-contains the last 512 command and state observations from the current integration
-load. Older observations are evicted; reloading or restarting clears this buffer.
-The administrator-only `MaticGetActivity` tool reads this journal directly;
-`MaticGetRecentEvents` returns the last 64 low-volume operational events by
-default, so polling observations cannot evict room and terminal evidence. Pass
-`include_activity: true` when a combined current-process trail is needed; use
-`MaticGetActivity` for the paginated raw journal.
+Use the local activity trail to see which commands Home Assistant sent, what
+states the robot reported, and how a managed plan ended. No debug logging is needed.
 
-The integration emits `matic_robot_activity_observed` events locally. Home
-Assistant Recorder can retain these across restarts according to its event
-exclusions and retention settings. Raw state events are rate-limited to one per
-second; the in-memory journal still retains state changes at their received rate,
-subject to its 512-observation bound. No debug logging needs to be enabled.
+## Start here
 
-## Reading the evidence
+1. Download integration diagnostics soon after an unexpected stop or dock visit.
+2. Find the plan's `run_id` and match it to room events and command observations.
+3. Compare the managed outcome with native history for the requested cleaning mode.
 
-- `observation_session` identifies one integration load. `sequence` orders its
-  observations, and `observed_at` is the Home Assistant receipt time in UTC.
-- `run_id` links integration commands and raw state observations to one managed
-  plan run. It is a random local token, not a user or account identifier.
-- `command_requested` identifies the integration's intended command, including
-  internal cleanup. Later records refer to its sequence as `command_id`.
-- `command_sending` means transmission began. A subsequent failure or cancellation
-  does not prove that the robot received nothing.
-- `command_result` reports transport acknowledgement, no acknowledgement,
-  failure, or cancellation. Acknowledgement does not prove execution.
-- `state` records changes in raw `state_codes` and `error_codes`, before Home
-  Assistant error confirmation. `source` distinguishes poll and push observations;
-  a slower poll can arrive after a newer push observation.
-- `state_stream_started` and `state_stream_ended` mark subscription attempts and
-  gaps. A started stream is not proof that a snapshot has arrived.
+The diagnostics contain the last 512 command/state observations from the current
+integration load. Administrators can read them directly with `MaticGetActivity`.
+`MaticGetRecentEvents` returns a separate trail of up to 64 operational events,
+so frequent state changes do not crowd out room and plan outcomes.
 
-A returning state without a corresponding integration command shows that this
-integration did not request docking during that observed interval. It cannot
-distinguish an OEM-app command, a physical control, or an internal robot decision.
-Check for subscription gaps, missing sequences, and restarts before drawing that
-conclusion. These observations do not recover activity from before installation.
+## Read the timeline
 
-## Inspecting a run through MCP
+| Field or observation | Meaning |
+| --- | --- |
+| `observation_session`, `sequence` | Integration load and ordering within that load |
+| `observed_at` | Home Assistant receipt time in UTC |
+| `run_id` | Links plan, room, and activity records |
+| `command_requested` | Intended command; later observations refer to its sequence as `command_id` |
+| `command_sending` | Transmission began |
+| `command_result` | Transport acknowledgement, no acknowledgement, failure, or cancellation |
+| `state` | Raw state/error changes; `source` distinguishes poll and push |
+| `state_stream_started`, `state_stream_ended` | Subscription attempts and gaps |
 
-Call `MaticGetActivity` with `kind: commands` to list integration command attempts
-and results. Use `kind: states`, `stream`, or `all` for state changes and stream
-boundaries. Every response identifies the integration load, earliest and latest
-available sequences and receipt times, and whether older observations were evicted.
+A transport acknowledgement confirms the exchange, not cleaning completion.
+A returning state without a matching command shows no integration-requested dock
+in that observed window; it does not identify an app, physical, or robot-side cause.
+Poll and push messages can arrive out of order.
 
-If `has_more` is true, pass `next_before_sequence` as `before_sequence`, together
-with the returned `observation_session` and the same `kind`. Pagination rejects a
-changed integration load. Compare available windows across pages: eviction during
-inspection can remove older evidence. An empty command page cannot explain events
-outside its available window. Use Recorder for older evidence when retained.
+## Query through MCP
 
-Read `MaticGetNativeHistory` with the run's `cleaning_mode`: `vacuum`, `mop`, or
-`vacuum_and_mop`. Room completion and duration apply to the returned
-`completion_scope`. Without a mode, native per-mode records have unspecified scope
-and nullable completion flags; durations total the reported modes. Missing or
-unattempted modes do not identify which work the user requested. A zero count in
-the older native room summary does not mean a vacuum-only run failed.
+- `MaticGetActivity`: use `kind: commands`, `states`, `stream`, or `all`.
+- For another page, pass `next_before_sequence` as `before_sequence`, with the
+  returned `observation_session` and the same `kind`.
+- `MaticGetRecentEvents`: add `include_activity: true` for a combined trail.
+- `MaticGetNativeHistory`: set `cleaning_mode` to `vacuum`, `mop`, or
+  `vacuum_and_mop` so durations and completion match the requested work.
 
-Report three separate facts: what cleaning the native history reports, which
-integration commands were requested, and where the robot ended up. An intentional
-stop followed by verified docking is a successful stop outcome. It does not prove
-every room finished. An ended-in-place interruption records missing managed
-completion evidence; it does not identify who stopped the robot or prove a fault.
-Native firmware can also report a stopped room as completed, so history alone
-does not override that guard or retrospectively award managed completion credit.
+Responses identify the available window and any eviction. Pagination rejects a
+changed integration load. Without a cleaning mode, native results have unspecified
+completion scope and nullable completion flags.
 
-Managed room events include a stable `reason_code` for machine handling. Codes
-such as `verified_completion`, `unverified_completion`, `stopped_in_place`,
-`native_task_taken_over`, `start_timeout`, `completion_timeout`, and
-`robot_error` describe the observed terminal path. A `cause` of `unknown` is
-intentional when the integration cannot prove whether an OEM app, physical
-control, or robot decision caused the transition; it must not be replaced with
-an inferred user or account identity.
+## Interpret the outcome
 
-The `matic_robot_plan_finished` event is the managed-run boundary. Match its
-`run_id` to room events, `MaticGetActivity`, and the `last_run` plan snapshot.
-Its verified room count and outcome describe the plan runner; native history
-remains a separate robot-side evidence source.
+`matic_robot_plan_finished` describes the managed run. Its outcome, verified room
+count, and `reason_code` explain what the runner observed. Common reasons include
+`verified_completion`, `unverified_completion`, `stopped_in_place`,
+`native_task_taken_over`, `start_timeout`, `completion_timeout`, and `robot_error`.
+`cause: unknown` means the source was not established.
 
-For a controlled reproduction, supervise one plan with presence automation
-temporarily disabled and avoid OEM-app or physical-control input. Note any
-intervention, then restore the automation after the test. Report observed
-movement separately from the robot's displayed activity.
+A successful stop and dock can leave unfinished rooms. Native firmware may label
+a stopped room completed, so managed completion also checks ownership and the
+terminal transition. [Result rules](native-cleaning-results.md).
+
+## Retention
+
+Restarting or reloading clears the in-memory observation window. Home Assistant
+Recorder can retain `matic_robot_activity_observed` events according to its
+configuration. Raw state events are limited to one per second; the in-memory
+journal keeps received changes up to its 512-record limit. [Stored data](privacy.md).

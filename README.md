@@ -2,22 +2,37 @@
 
 # Matic for Home Assistant
 
-Local control, live maps, and room-by-room cleaning for Matic robot vacuums.
-Pair once over Bluetooth; Home Assistant then connects directly over your LAN.
+Make Matic part of your home routines: rotate fairly through rooms, save each
+room's cleaning preferences, and start or stop plans as your household comes and goes.
+Pair once over Bluetooth; everyday control, maps, and state use your local network.
 
-**[Install](#install) · [User guide](docs/cleaning.md) · [Automations](docs/automation.md) · [What's new in 0.4](docs/release-notes-0.4.md)**
+**[Install](#install) · [Cleaning guide](docs/cleaning.md) · [Automations](docs/automation.md) · [All docs](docs/README.md)**
 
-## Features
+## Go beyond the app with Home Assistant
 
-- **Live maps:** explore your floor in 3D or 2D, follow the robot, and browse saved maps.
-- **Room cleaning:** vacuum, mop, or both with Quick, Optimal, or Heavy Duty coverage.
-- **Saved plans:** set each room's cleaning preferences and order, or rotate through rooms that have waited longest.
-- **Custom areas:** draw an outline on the map, adjust its points, and save it for repeated use.
-- **Home Assistant controls:** start, pause, stop, dock, adjust settings, and build routines with sensors, actions, and blueprints.
-- **Cleaning history:** see vacuum and mop results separately, including partial and unattempted work.
+- **Give every room a turn.** Intelligent rotation starts with rooms that have waited longest. Short trips away won't keep restarting the same first rooms; cleaning from the Matic app also informs the order.
+- **Build a plan around each room.** Save room order, vacuum/mop mode, and Quick, Optimal, or Heavy Duty coverage per room. Preview the next run before starting it.
+- **Clean around your life.** Run plans when everyone leaves, schedule quiet-hours routines, or clean a named area after a litter-box cycle. Ready-to-import blueprints get you started.
+- **Choose how to stop.** Stop immediately or let the active room finish based on a configurable progress estimate, then dock without starting another room.
+- **Use cleaning results in your smart home.** Trigger actions on verified room completion, track last-cleaned times and durations, and distinguish completed, partial, and unattempted vacuum/mop work.
 
-Maps and cleaning data stay in Home Assistant. The integration has no telemetry
-or cloud service. Optional Matic Cues follows [Matic's own voice-data policy](docs/privacy.md#matic-cues).
+[Explore plans and rotation](docs/cleaning.md#saved-plans) ·
+[Use the automation blueprints](docs/automation.md#ready-to-import-blueprints)
+
+## Everything in one Home Assistant workspace
+
+- **Map Studio:** interactive 3D and 2D maps, robot position, room selection, and saved map history.
+- **Named custom areas:** draw and edit reusable outlines, including across room boundaries, then run them from a dashboard or automation.
+- **Controls and dashboards:** start, pause, stop, dock, adjust robot settings, and use map cameras, sensors, and switches.
+- **Run insight:** inspect plan outcomes, command activity, and per-mode history through local diagnostics and administrator-only read-only MCP tools.
+- **Firmware tracking:** compare local protocol snapshots and see compatibility changes in Home Assistant.
+
+Matic's app already offers [room and custom-area schedules](https://support.maticrobots.com/frequently-asked-questions).
+This integration adds the plan logic, automation actions, and Home Assistant
+visibility described above. See the [full feature guide](docs/features.md).
+
+The integration has no telemetry or cloud service. Maps and plan data are stored
+locally in Home Assistant. [Matic Cues](docs/privacy.md#matic-cues) uses Matic's own voice service.
 
 ## Install
 
@@ -73,8 +88,8 @@ and [automation examples](docs/automation.md).
 - [Report a bug](https://github.com/ProspectOre/matic-home-assistant/issues/new?template=bug_report.yml)
 - [Community discussion](https://community.home-assistant.io/t/matic-unofficial-local-robot-vacuum-control-map-room-plans-and-intelligent-rotation/1017684)
 
-Review diagnostics and screenshots before sharing them. [Privacy](docs/privacy.md)
-explains stored data and removal; report vulnerabilities through [Security](SECURITY.md).
+[Privacy](docs/privacy.md) explains stored data and removal.
+Report vulnerabilities through [Security](SECURITY.md).
 
 ## About
 

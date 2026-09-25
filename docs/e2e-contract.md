@@ -2,12 +2,11 @@
 
 [Documentation](README.md) · [Actions and events](automation.md) · [Activity diagnostics](activity-diagnostics.md)
 
-The managed runner keeps seven evidence boundaries explicit. A clean native
-history record is useful evidence, but it is not by itself proof that a saved
-plan completed or that a person caused a stop.
+This reference defines managed-run outcomes, rotation, and completion checks.
+For everyday use, start with [plans and stopping](cleaning.md#saved-plans).
 
 1. **Managed outcomes.** Every managed run gets one local `run_id` and emits a
-   `matic_robot_plan_finished` event when its runner exits. Its terminal
+   `matic_robot_plan_finished` event when its run ends. HA shutdown preserves recoverable runs instead. Its terminal
    `outcome` is `completed`, `stopped_docked`, `recharge_suspended`,
    `cancelled`, `failed`, or `unverified`; `reason_code`, `cause`, and aggregate
    verified room counts explain the result without exposing the saved room list.
@@ -47,14 +46,14 @@ plan completed or that a person caused a stop.
 | --- | --- | --- |
 | Departure trigger starts a plan | Trigger trace, `run_id`, first room event, and command journal | Credit only rooms with verified native completion |
 | Return-home stop | `plan_finished: cancelled`, STOP plus final DOCK with the same `run_id`, then `plan_docked: stopped_docked` | Never credit the room that was stopped |
-| Stop during a room | Room event `partial`, native visited/partial evidence, and no completion credit | Keep the room due for rotation |
+| Stop during a room | Cancellation/interruption event, native result, and no unverified completion credit | Preserve its recorded cleaning opportunity separately from completion |
 | Finish-current-room threshold | Policy decision, threshold/progress, and either room completion or cancelled stop | Credit only when native completion verification passes |
 | Recharge and resume | Suspended event, native recharge/resume transition, and resumed room timeline | A resumed room can complete; an unreconciled low-charge stop is `recharge_suspended` |
-| Mixed settings | Preview `settings_boundary_count`, per-leg settings, and command timeline | Each leg keeps its own mode and coverage |
+| Mixed settings | Per-room settings, owned native session, and command timeline | Preserve per-room settings; verify completion for every requested mode |
 | All selected rooms verify | `plan_finished: completed`, matching `run_id`, all room events | Credit verified rooms only |
-| Native session ends early | `plan_finished: unverified`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms due; a known in-place stop is a controlled unverified result, not a generic service fault |
-| Delayed native history | Initial `unverified`/pending reconciliation, then exact room/run match or expiry | Never advance rotation until the delayed evidence is exact |
-| Home Assistant restart recovery | `unverified`, `home_assistant_restart`, recovered room records, and new observation session | No completion credit or invented end time |
+| Native session ends early | `plan_finished: unverified`, `partial_native_result`, `stopped_in_place`, or `unverified_completion` | Leave unverified rooms without completion credit; a known in-place stop is a controlled unverified result, not a generic service fault |
+| Delayed native history | Initial `unverified`/pending reconciliation, then exact room/run match or expiry | Award completion only on an exact match; cleaning opportunity is tracked separately |
+| Home Assistant restart recovery | Durable checkpoint, matching floor/native mission, same `run_id`, and new observation session | Retain verified results; resume only with matching ownership |
 | External/OEM interruption | Native ownership change, `cause: unknown`, and `external_unknown` provenance | No completion credit and no guessed fault |
 | Timeout or robot error | `plan_finished: failed`, stable failure code, room failure event | No completion credit |
 | Rotation preview and execution | Same room order and selection reasons | Advance opportunity on a confirmed cleaning start; credit completion only after verification |
@@ -63,11 +62,11 @@ plan completed or that a person caused a stop.
 Keep release evidence separate from robot credentials, network identifiers,
 serials, maps, and personal account identifiers.
 
-After an abrupt Home Assistant restart, the persisted run becomes `unverified`
-with `reason_code: home_assistant_restart`. `recovered_at` records when recovery
-observed it; `ended_at` remains unknown. Recovery does not reconstruct a missing
-terminal event or award room credit. Verified counts are saved with room history,
-so recovery retains work already verified before the interruption.
+After a Home Assistant restart, a recoverable checkpoint can rejoin the same
+native mission. Inconclusive recovery leaves the managed run unverified and
+preserves previously verified results. Old runs without recoverable checkpoints
+do not authorize new motion. See [restart recovery](restart-recovery.md) for
+dispatch, stop, and history-reconciliation rules.
 
 Late native reconciliation carries the originating `run_id`. The terminal plan
 record continues to describe the evidence available when its runner exited;
@@ -76,6 +75,6 @@ record continues to describe the evidence available when its runner exited;
 When a multi-room run exits, earlier rooms from that run that still lack a
 terminal result become `ended_unverified` and emit a matching room event.
 Their rotation opportunity remains recorded; completion credit still requires
-native evidence. Startup also closes stored nonterminal room records, preserving
+native evidence. For runs that cannot be recovered, startup closes stored nonterminal room records, preserving
 the previous result and recording the recovery time. It does not reconstruct
 missing room events or invent a physical room-end timestamp.

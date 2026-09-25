@@ -2,6 +2,10 @@
 
 [Documentation](README.md) · [Automations](automation.md)
 
+Build dashboards, adjust settings, and use cleaning results in automations.
+Enable per-room statistics to track when each room was last cleaned and how
+long successful cleaning took.
+
 Each robot has 55 fixed entities — 23 sensors, 13 binary sensors, 5 buttons,
 4 switches, 4 selects, 1 number, 2 cameras, 1 event, 1 update, and 1 vacuum —
 plus two opt-in statistics sensors per mapped room.
