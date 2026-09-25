@@ -33,7 +33,7 @@ def mixed_coverage_readback_matches(
     if actual - expected:
         return False
     missing = expected - actual
-    return bool(missing) and all(
+    return missing.total() == 1 and all(
         floor == 0
         and mode == 1
         and behavior == 3

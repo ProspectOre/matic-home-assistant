@@ -248,6 +248,20 @@ def test_mixed_readback_normalization_rejects_unupdated_initial_plan():
     assert not mixed_coverage_readback_matches(expected, initial)
 
 
+def test_mixed_readback_rejects_multiple_mop_behavior_three_omissions():
+    commands = encode_mixed_coverage_commands(
+        mission_id=42,
+        partition_id=PARTITION,
+        region_ids=ROOMS,
+        settings=[Setting.QUICK, Setting.OPTIMAL],
+        modes=[Mode.MOP, Mode.MOP],
+    )
+    expected = Counter(coverage_command_goal_signatures(commands.update))
+    optional = Counter({goal: 1 for goal in expected if goal[3:] == (1, 3)})
+    assert optional.total() == 2
+    assert not mixed_coverage_readback_matches(expected, expected - optional)
+
+
 def test_coverage_plan_readback_ignores_unknown_spec_extensions():
     assert len(coverage_plan_goal_signatures(_plan_for_goals(_synthetic_goal()))) == 1
 
