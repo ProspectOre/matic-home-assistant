@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections import Counter
+
 from google.protobuf.message import DecodeError
 
 from .wire import WireField, decode_fields, first_bytes, uuid_string
@@ -12,6 +14,33 @@ _MAX_COVERAGE_GOALS = 4096
 _SPEC_FIELDS = frozenset((1, 2, 4, 5))
 
 type CoverageGoalSignature = tuple[str, int, int, int, int]
+
+
+def mixed_coverage_readback_matches(
+    expected: Counter[CoverageGoalSignature],
+    actual: Counter[CoverageGoalSignature],
+) -> bool:
+    """Allow only the observed omission of a mop behavior-three goal.
+
+    The robot has retained the other three mop behaviors while omitting the
+    fourth in live mixed-mode readback. All room, setting, floor, mode, and
+    other behavior signatures must still match the transmitted command.
+    """
+    if not expected:
+        return False
+    if actual == expected:
+        return True
+    if actual - expected:
+        return False
+    missing = expected - actual
+    return bool(missing) and all(
+        floor == 0
+        and mode == 1
+        and behavior == 3
+        and count == 1
+        and expected[(region, setting, floor, mode, behavior)] == 1
+        for (region, setting, floor, mode, behavior), count in missing.items()
+    )
 
 
 def coverage_command_goal_signatures(
