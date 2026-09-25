@@ -41,6 +41,7 @@ from .commands import (
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
+    mixed_coverage_readback_matches,
 )
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
@@ -1386,7 +1387,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     )
                 except DecodeError:
                     actual_goals = Counter()
-                if actual_goals == expected_goals:
+                if mixed_coverage_readback_matches(expected_goals, actual_goals):
                     if (
                         await self.async_get_cleaning_session_identity()
                         != expected_identity

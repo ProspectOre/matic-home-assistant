@@ -29,6 +29,7 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
+    mixed_coverage_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan
@@ -61,10 +62,10 @@ def coverage(payload):
     return b(b(b(payload, 15), 1), 3)
 
 
-def coverage_plan_from_command(payload, *, drop_last_goal=False):
-    goals = bytes_fields(b(coverage(payload), 5), 1)
-    if drop_last_goal:
-        goals = goals[:-1]
+def coverage_plan_from_command(payload, *, drop_goal_index=None):
+    goals = list(bytes_fields(b(coverage(payload), 5), 1))
+    if drop_goal_index is not None:
+        goals.pop(drop_goal_index)
     return _field(7, _field(1, b"".join(_field(1, goal) for goal in goals)))
 
 
@@ -193,11 +194,72 @@ def test_coverage_plan_readback_matches_full_transmitted_goal_multiset():
 def test_coverage_plan_readback_preserves_missing_goal_as_mismatch():
     expected = coverage_command_goal_signatures(OFFICIAL_MOP)
     readback = coverage_plan_goal_signatures(
-        coverage_plan_from_command(OFFICIAL_MOP, drop_last_goal=True)
+        coverage_plan_from_command(OFFICIAL_MOP, drop_goal_index=-1)
     )
 
     assert len(readback) == 11
     assert Counter(readback) != Counter(expected)
+    assert mixed_coverage_readback_matches(Counter(expected), Counter(readback))
+
+
+def test_mixed_readback_normalization_rejects_other_missing_or_changed_goals():
+    expected = Counter(coverage_command_goal_signatures(OFFICIAL_MOP))
+    assert not mixed_coverage_readback_matches(Counter(), Counter())
+    for index in (0, -2):
+        actual = Counter(
+            coverage_plan_goal_signatures(
+                coverage_plan_from_command(OFFICIAL_MOP, drop_goal_index=index)
+            )
+        )
+        assert not mixed_coverage_readback_matches(expected, actual)
+
+    normalized = Counter(
+        coverage_plan_goal_signatures(
+            coverage_plan_from_command(OFFICIAL_MOP, drop_goal_index=-1)
+        )
+    )
+    optional = next(goal for goal in expected if goal[3:] == (1, 3))
+    required = next(goal for goal in expected if goal[3:] == (1, 2))
+    assert mixed_coverage_readback_matches(expected, normalized)
+    assert not mixed_coverage_readback_matches(
+        expected, normalized + Counter({required: 1})
+    )
+    assert not mixed_coverage_readback_matches(
+        expected, normalized + Counter({optional: 2})
+    )
+    changed_setting = (*required[:1], 2, *required[2:])
+    assert not mixed_coverage_readback_matches(
+        expected, normalized - Counter({required: 1}) + Counter({changed_setting: 1})
+    )
+
+
+def test_mixed_readback_normalization_rejects_unupdated_initial_plan():
+    commands = encode_mixed_coverage_commands(
+        mission_id=42,
+        partition_id=PARTITION,
+        region_ids=ROOMS,
+        settings=[Setting.QUICK, Setting.OPTIMAL],
+        modes=[Mode.VACUUM, Mode.MOP],
+    )
+    expected = Counter(coverage_command_goal_signatures(commands.update))
+    initial = Counter(
+        coverage_plan_goal_signatures(coverage_plan_from_command(commands.initial))
+    )
+    assert not mixed_coverage_readback_matches(expected, initial)
+
+
+def test_mixed_readback_rejects_multiple_mop_behavior_three_omissions():
+    commands = encode_mixed_coverage_commands(
+        mission_id=42,
+        partition_id=PARTITION,
+        region_ids=ROOMS,
+        settings=[Setting.QUICK, Setting.OPTIMAL],
+        modes=[Mode.MOP, Mode.MOP],
+    )
+    expected = Counter(coverage_command_goal_signatures(commands.update))
+    optional = Counter({goal: 1 for goal in expected if goal[3:] == (1, 3)})
+    assert optional.total() == 2
+    assert not mixed_coverage_readback_matches(expected, expected - optional)
 
 
 def test_coverage_plan_readback_ignores_unknown_spec_extensions():
@@ -383,6 +445,24 @@ async def test_owned_update_sent_once(mixed_client):
     client.async_send_user_command.assert_not_awaited()
 
 
+async def test_owned_update_accepts_observed_mop_goal_normalization(mixed_client):
+    client, _, args = mixed_client
+
+    async def normalized_readback(_name):
+        update = next(
+            call.args[0]
+            for call in reversed(client._async_send_user_payload.await_args_list)
+            if call.kwargs["command_name"] == "UPDATE_COVERAGE"
+        )
+        return coverage_plan_from_command(update, drop_goal_index=-1)
+
+    client.async_get_property.side_effect = normalized_readback
+    await client.async_start_mixed_coverage(**args)
+
+    client.async_get_property.assert_awaited_once_with("coverage_plan")
+    client.async_send_user_command.assert_not_awaited()
+
+
 async def test_mixed_update_readback_mismatch_stops_only_owned_session(
     mixed_client, monkeypatch
 ):
@@ -400,7 +480,7 @@ async def test_mixed_update_readback_mismatch_stops_only_owned_session(
             for call in reversed(client._async_send_user_payload.await_args_list)
             if call.kwargs["command_name"] == "UPDATE_COVERAGE"
         )
-        return coverage_plan_from_command(update, drop_last_goal=True)
+        return coverage_plan_from_command(update, drop_goal_index=-2)
 
     clock = iter((0.0, 9.0))
     monkeypatch.setattr(
@@ -436,7 +516,9 @@ async def test_mixed_update_waits_for_matching_readback(mixed_client, monkeypatc
             for call in reversed(client._async_send_user_payload.await_args_list)
             if call.kwargs["command_name"] == "UPDATE_COVERAGE"
         )
-        return coverage_plan_from_command(update, drop_last_goal=readback_count == 1)
+        return coverage_plan_from_command(
+            update, drop_goal_index=-2 if readback_count == 1 else None
+        )
 
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
@@ -517,7 +599,7 @@ async def test_mixed_update_does_not_stop_replacement_after_stale_readback(
             for call in reversed(client._async_send_user_payload.await_args_list)
             if call.kwargs["command_name"] == "UPDATE_COVERAGE"
         ),
-        drop_last_goal=True,
+        drop_goal_index=-2,
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.monotonic", iter((0.0, 0.0)).__next__
