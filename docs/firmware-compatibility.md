@@ -2,8 +2,9 @@
 
 [Compatibility](acceptance-0.4.md) · [Protocol endpoints](firmware-endpoint-map.md)
 
-Matic updates can change the local protocol. These records describe the
-firmware and workflows checked on real robots.
+Track robot updates in Home Assistant with automatic local endpoint comparisons
+and a firmware compatibility sensor. The table below records firmware and
+workflows checked on real robots.
 
 ## Recorded checks
 

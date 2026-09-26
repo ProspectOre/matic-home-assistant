@@ -41,6 +41,7 @@ from .commands import (
 from .coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
+    mixed_coverage_readback_matches,
 )
 from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
@@ -1301,6 +1302,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     raise MaticError("Room map changed before coverage update")
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
+                state = await self.async_get_state()
+                if await self.async_get_cleaning_session_identity() != identity:
+                    raise MaticError("Native mission changed before coverage update")
+                if state.activity.value != "cleaning" or room_name_key(
+                    state.current_area
+                ) != room_name_key(first_room_name):
+                    raise MaticError("First room changed before coverage update")
                 require_current()
                 await self._async_send_user_payload(
                     commands.update, command_name="UPDATE_COVERAGE"
@@ -1379,7 +1387,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     )
                 except DecodeError:
                     actual_goals = Counter()
-                if actual_goals == expected_goals:
+                if mixed_coverage_readback_matches(expected_goals, actual_goals):
                     if (
                         await self.async_get_cleaning_session_identity()
                         != expected_identity

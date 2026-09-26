@@ -16,6 +16,7 @@ from homeassistant.util import dt as dt_util
 import custom_components.matic_robot.plans as plans_module
 from custom_components.matic_robot.area_binding import (
     AREA_SCHEMA_VERSION,
+    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
     SCOPED_MAP_BINDING_VERSION,
     _hash_only_area_geometry_fingerprint,
@@ -1022,10 +1023,6 @@ async def test_managed_terminal_matrix_uses_real_room_history_and_events(
             active_session=AsyncMock(return_value=False),
         )
     await manager.async_cancel_and_wait("serial")
-    # The terminal plan event is fired from the run finalizer after the room
-    # boundary. Give Home Assistant's event bus one loop turn to schedule that
-    # listener before draining pending work.
-    await asyncio.sleep(0)
     await hass.async_block_till_done()
     snapshot = manager.snapshot("serial")
     last_run = snapshot["last_run"]
@@ -1631,6 +1628,44 @@ async def test_area_binding_upgrade_shares_one_geometry_budget(hass) -> None:
     assert all(index is geometry_indexes[0] for index in geometry_indexes)
 
 
+async def test_area_binding_upgrade_stays_pending_on_rebuild_budget_exhaustion(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "room", b"room", ((0, 0), (2, 0), (0, 2))),),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.2}]
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": {
+            **binding_for_floor_plan(floor_plan),
+            "version": HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            "local_geometry_sha256": _hash_only_area_geometry_fingerprint(
+                floor_plan, circles
+            ),
+        },
+    }
+    manager._robot("serial")["areas"] = {"legacy": area}
+
+    with patch.object(
+        plans_module,
+        "binding_for_area",
+        side_effect=plans_module.GeometryTooComplex("shared geometry budget exhausted"),
+    ) as rebuild:
+        result = await manager.async_upgrade_area_bindings("serial", floor_plan)
+
+    assert result == AreaBindingUpgradeResult(0, True)
+    assert area["map_binding"]["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    rebuild.assert_called_once()
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_area_binding_upgrade_skips_index_for_changed_whole_map(hass) -> None:
     manager = CleaningPlanManager(hass)
     floor_plan = FloorPlan(
@@ -1709,6 +1744,45 @@ async def test_area_binding_upgrade_ignores_malformed_area_record(hass) -> None:
     assert await manager.async_upgrade_area_bindings(
         "serial", None
     ) == AreaBindingUpgradeResult(0, False)
+    manager._store.async_save.assert_not_awaited()
+
+
+async def test_dense_hash_only_area_upgrade_is_a_noop(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    base = FloorPlan(
+        42,
+        "synthetic-partition",
+        b"synthetic-partition",
+        (Room("room", "Room", "protocol", b"room", ((0, 0), (1, 0), (0, 1))),),
+    )
+    boundary = [
+        *((index / 75, 0.0) for index in range(75)),
+        *((1.0, index / 75) for index in range(75)),
+        *((1.0 - index / 75, 1.0) for index in range(75)),
+        *((0.0, 1.0 - index / 75) for index in range(75)),
+    ]
+    floor_plan = replace(
+        base,
+        rooms=(replace(base.rooms[0], boundary=tuple(boundary)),),
+    )
+    circles = [{"x": 0.5, "y": 0.5, "radius": 0.5}]
+    binding = binding_for_area(floor_plan, circles)
+    assert binding["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+    area = {
+        "schema_version": AREA_SCHEMA_VERSION,
+        "circles": circles,
+        "map_binding": binding,
+    }
+    manager._robot("serial")["areas"] = {"dense": area}
+
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(0, False)
+    assert await manager.async_upgrade_area_bindings(
+        "serial", floor_plan
+    ) == AreaBindingUpgradeResult(0, False)
+    assert area["map_binding"] == binding
     manager._store.async_save.assert_not_awaited()
 
 
@@ -3792,6 +3866,7 @@ async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) ->
         )
 
     assert "new-plan" not in plans
+    assert len(plans) == MAX_SAVED_PLANS_PER_ROBOT
     manager._store.async_save.assert_not_awaited()
 
     await manager.async_save_plan(
@@ -3800,6 +3875,22 @@ async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) ->
 
     assert plans["plan-0"]["name"] == "Replacement"
     manager._store.async_save.assert_awaited_once_with(manager._data)
+
+
+async def test_saved_plan_zero_capacity_rejects_creation(hass, monkeypatch) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.plans.MAX_SAVED_PLANS_PER_ROBOT", 0
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+
+    with pytest.raises(SavedPlanLimitError, match="at most 0 saved plans"):
+        await manager.async_save_plan(
+            "serial", "first-plan", {"name": "First plan", "rooms": []}
+        )
+
+    assert manager._robot("serial")["plans"] == {}
+    manager._store.async_save.assert_not_awaited()
 
 
 async def test_room_execution_uses_its_individual_settings() -> None:

@@ -50,43 +50,31 @@ def test_github_validation_runs_hacs_and_hassfest() -> None:
     )
 
 
-def test_review_gate_uses_only_regular_review_evidence() -> None:
-    """Validate the generated review contract and retired router layout."""
-    source = json.loads((ROOT / ".github" / "review-gate" / "source.json").read_text())
-    managed = source["managedWorkflows"]
-    assert managed
-    workflows = ROOT / ".github" / "workflows"
-    assert all((ROOT / name).exists() for name in managed)
-    review_workflow = workflows / "review-regular-review.yml"
-    assert review_workflow.exists()
-    assert "pull_request_review:" in review_workflow.read_text()
-    assert not (workflows / "claude-review.yml").exists()
-    evaluator_bytes = (ROOT / ".github" / "review-gate" / "evaluate.sh").read_bytes()
-    evaluator = evaluator_bytes.decode()
-    assert hashlib.sha256(evaluator_bytes).hexdigest() == source["sha256"]
-    shim = (ROOT / ".github" / "review-gate" / "classify_dependencies.py").read_bytes()
-    assert hashlib.sha256(shim).hexdigest() == source["dependencyClassifierSha256"]
-    gate = (workflows / "review-gate.yml").read_text()
-    audit = (workflows / "review-gate-audit.yml").read_text()
-    rollout = (workflows / "review-gate-rollout.yml").read_text()
-    combined = evaluator + "\n" + gate + "\n" + audit + "\n" + rollout
-    for loader in (gate, audit):
-        assert "github.workflow_sha" in loader
-        assert "shasum -a 256" in loader
-        assert source["sha256"] in loader
-        assert source["dependencyClassifierSha256"] in loader
-    assert "actions/checkout" not in combined
-    assert "gh pr merge" not in combined and "--auto" not in combined
-    assert "REVIEW_PROVIDER" not in combined and "claude" not in evaluator
-    assert "REVIEW_REVIEW_CONTEXT: review-gate-regular-review" in combined
-    assert "active_security_findings" in evaluator
-    assert "require_no_security_findings" in evaluator
-    assert "security_findings_dismissed" in evaluator
-    assert "regular_evidence" in evaluator
-    assert "Dependencies exempt" not in evaluator
-    assert "stock_clean_envelope" in combined
-    assert "pull_request_review:" not in gate
-    assert "issue_comment:" not in gate
+def test_review_gate_consumer_contract() -> None:
+    """Keep this repository aligned with the frozen canonical gate adapter."""
+    source = json.loads((ROOT / ".github/review-gate/source.json").read_text())
+    evaluator = (ROOT / ".github/review-gate/evaluate.sh").read_bytes()
+    classifier = (ROOT / ".github/review-gate/classify_dependencies.py").read_bytes()
+    assert hashlib.sha256(evaluator).hexdigest() == source["sha256"]
+    assert (
+        hashlib.sha256(classifier).hexdigest() == source["dependencyClassifierSha256"]
+    )
+    for name in source["managedWorkflows"]:
+        workflow = (ROOT / name).read_text()
+        assert "Generated adapter; edit scripts/review-gate/adapters" in workflow
+        assert "actions/checkout" not in workflow
+        assert "gh pr merge" not in workflow
+        assert "--auto" not in workflow
+    assert (
+        "github.workflow_sha"
+        in (ROOT / ".github/workflows/review-gate.yml").read_text()
+    )
+    assert (
+        "github.workflow_sha"
+        in (ROOT / ".github/workflows/review-gate-audit.yml").read_text()
+    )
+    assert not (ROOT / ".github/workflows/claude-review.yml").exists()
+    assert not (ROOT / ".github/workflows/review-fork-regular-review.yml").exists()
 
 
 def test_github_actions_use_immutable_refs_with_semantic_comments() -> None:

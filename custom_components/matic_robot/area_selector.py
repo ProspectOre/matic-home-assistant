@@ -182,13 +182,14 @@ class _IndexedPolygon:
 class _RoomGeometryIndex:
     """Share bounded exact room lookups across custom-area validation."""
 
-    # This synchronous custom-area query ceiling is separate from decoder
-    # limits. Some decoder-valid maps exceed it; those areas fail closed in
-    # the options flow rather than blocking Home Assistant on unbounded work.
-    _MAX_QUERY_WORK = 10_600_000
+    # This work runs on Home Assistant's event loop when a floor plan update is
+    # received. Keep the ceiling small enough that hostile decoder-valid maps
+    # fail closed instead of monopolizing the loop for several seconds.
+    _MAX_QUERY_WORK = 100_000
     # Bound retained index storage across the complete floor plan, not only
     # independently inside each room polygon.
     _MAX_TOTAL_EDGE_REFERENCES = 262_144
+    _MAX_CONTAINMENT_CACHE_ENTRIES = 4_096
 
     def __init__(self, rooms: list[dict[str, Any]]) -> None:
         polygons = []
@@ -208,6 +209,7 @@ class _RoomGeometryIndex:
             )
         )
         self._query_work_remaining = self._MAX_QUERY_WORK
+        self._containment_cache: dict[tuple[float, float, float], bool] = {}
 
     def _charge_work(self, work: int = 1) -> None:
         if work > self._query_work_remaining:
@@ -221,6 +223,9 @@ class _RoomGeometryIndex:
 
     def contains(self, x: float, y: float, tolerance: float = 0.0) -> bool:
         """Return whether a point belongs to any mapped room."""
+        key = (float(x), float(y), float(tolerance))
+        if key in self._containment_cache:
+            return self._containment_cache[key]
         if self._query_work_remaining <= 0:
             raise GeometryTooComplex("room geometry query budget exhausted")
         try:
@@ -233,6 +238,11 @@ class _RoomGeometryIndex:
                 )
                 self._charge_work(work)
                 if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
                     return True
 
             # Indexed rooms have a fixed reference cap, so check them before
@@ -251,11 +261,39 @@ class _RoomGeometryIndex:
                 )
                 self._charge_work(work)
                 if contained:
+                    if (
+                        len(self._containment_cache)
+                        < self._MAX_CONTAINMENT_CACHE_ENTRIES
+                    ):
+                        self._containment_cache[key] = True
                     return True
+            if len(self._containment_cache) < self._MAX_CONTAINMENT_CACHE_ENTRIES:
+                self._containment_cache[key] = False
             return False
         except GeometryTooComplex:
             # A failed candidate query must not leave residual budget for the
             # next saved area in the same request to repeat the expensive work.
+            self._query_work_remaining = 0
+            raise
+
+    def containing_indices(
+        self, x: float, y: float, tolerance: float = 0.0
+    ) -> tuple[int, ...]:
+        """Return room positions containing or tolerably near a point."""
+        if self._query_work_remaining <= 0:
+            raise GeometryTooComplex("room geometry query budget exhausted")
+        indices = []
+        try:
+            for index, polygon in enumerate(self.polygons):
+                self._charge_work()
+                contained, work = polygon.contains_with_work_limit(
+                    x, y, tolerance, self._query_work_remaining
+                )
+                self._charge_work(work)
+                if contained:
+                    indices.append(index)
+            return tuple(indices)
+        except GeometryTooComplex:
             self._query_work_remaining = 0
             raise
 

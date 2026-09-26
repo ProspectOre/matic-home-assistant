@@ -1,13 +1,16 @@
 # Mixed room missions
 
+[Cleaning guide](cleaning.md#saved-plans) · [Restart recovery](restart-recovery.md)
+
 Managed plans preserve each room's cleaning mode and coverage setting inside
 one ordered native mission. A settings change no longer requires the integration
 to finish one mission at the dock before starting the next.
 
-The robot still controls resource servicing: water, battery, or other preparation
-may interrupt cleaning. This is not a promise that it will never visit the dock.
+For example, a plan can vacuum one room on Quick and mop the next on Optimal
+without an integration-imposed dock visit between settings. The robot still
+handles battery, water, and other servicing as needed.
 
-## Safety and recovery
+## Dispatch and recovery
 
 - Per-room updates require the generated native session, the original room map,
   the first room actively cleaning, and a current managed command generation.

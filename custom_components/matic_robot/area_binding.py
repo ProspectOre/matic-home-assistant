@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import math
 import struct
-from collections import deque
+from collections import Counter, deque
 from collections.abc import Callable, Mapping, Sequence
 from enum import StrEnum
 from typing import Any
@@ -15,6 +15,7 @@ from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import issue_registry as ir
 
 from .area_selector import GeometryTooComplex, MaticAreaSelector, _RoomGeometryIndex
+from .client.floor_plan import MAX_FLOOR_PLAN_BOUNDARY_POINTS
 from .client.models import FloorPlan
 from .const import DOMAIN
 
@@ -22,6 +23,7 @@ AREA_SCHEMA_VERSION = 1
 MAP_BINDING_VERSION = 1
 HASH_ONLY_SCOPED_MAP_BINDING_VERSION = 2
 SCOPED_MAP_BINDING_VERSION = 3
+BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION = 4
 _FINGERPRINT_DOMAIN = b"matic-area-geometry\0"
 _SCOPED_FINGERPRINT_DOMAIN = b"matic-area-local-geometry\0"
 _AREA_SHAPE_FINGERPRINT_DOMAIN = b"matic-area-shape\0"
@@ -50,13 +52,16 @@ _GUARD_MARGIN_MILLIMETERS = math.ceil(
 )
 _SPATIAL_INDEX_CELL_MILLIMETERS = 100
 _SPATIAL_INDEX_SAMPLE_MILLIMETERS = _SPATIAL_INDEX_CELL_MILLIMETERS // 2
-_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 4_096
+_MAX_LOCAL_SEGMENT_MATCH_SEGMENTS = 256
 _MAX_LOCAL_SEGMENT_MATCH_PAIRS = 16_384
-_MAX_LOCAL_SEGMENT_MATCH_WORK = 10_600_000
+_MAX_LOCAL_SEGMENT_MATCH_WORK = 1_048_576
+_MAX_STORED_LOCAL_SEGMENTS = MAX_FLOOR_PLAN_BOUNDARY_POINTS
 _NEIGHBORHOOD_INDEX_CELL_METERS = 0.5
 _MAX_NEIGHBORHOOD_QUERY_CELLS = 4_096
 _MIN_SIGNED_64 = -(1 << 63)
 _MAX_SIGNED_64 = (1 << 63) - 1
+_MAX_TRANSLATION_ROOM_ANCHORS = 256
+_MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS = 8_192
 _AREA_REPAIR_LEARN_MORE_URL = (
     "https://github.com/ProspectOre/matic-home-assistant/"
     "blob/main/docs/automation.md#drawn-custom-areas"
@@ -292,6 +297,135 @@ def binding_for_floor_plan(floor_plan: FloorPlan) -> MapBinding:
     }
 
 
+def translation_invariant_geometry_fingerprint(floor_plan: FloorPlan) -> str:
+    """Fingerprint room geometry after removing one global coordinate offset."""
+    polygons = sorted(_canonical_polygon(room.boundary) for room in floor_plan.rooms)
+    if not polygons:
+        raise ValueError("floor plan has no room geometry")
+    origin_x = min(point[0] for polygon in polygons for point in polygon)
+    origin_y = min(point[1] for polygon in polygons for point in polygon)
+    normalized = [
+        tuple((x - origin_x, y - origin_y) for x, y in polygon) for polygon in polygons
+    ]
+    digest = hashlib.sha256()
+    digest.update(b"matic-translation-invariant-floor-v1\0")
+    digest.update(struct.pack(">I", len(normalized)))
+    for polygon in normalized:
+        digest.update(struct.pack(">I", len(polygon)))
+        for x, y in polygon:
+            digest.update(struct.pack(">qq", x, y))
+    return digest.hexdigest()
+
+
+def translation_frame_bounds(floor_plan: FloorPlan) -> list[int]:
+    """Return quantized global bounds used to confirm rigid translation."""
+    points = [point for room in floor_plan.rooms for point in room.boundary]
+    if not points:
+        raise ValueError("floor plan has no room geometry")
+    xs = [round(x * 1000) for x, _ in points]
+    ys = [round(y * 1000) for _, y in points]
+    return [min(xs), min(ys), max(xs), max(ys)]
+
+
+def _translation_room_key(room: Any) -> str:
+    """Hash stable room identity without persisting private protocol IDs."""
+    digest = hashlib.sha256()
+    digest.update(b"matic-room-frame-key-v1\0")
+    for value in (room.id, room.protocol_id):
+        encoded = value.encode("utf-8")
+        digest.update(struct.pack(">I", len(encoded)))
+        digest.update(encoded)
+    wire_id = bytes(room.id_wire)
+    digest.update(struct.pack(">I", len(wire_id)))
+    digest.update(wire_id)
+    return digest.hexdigest()
+
+
+def _translation_circle_key(circle: Mapping[str, Any]) -> str:
+    """Identify a saved circle independently of list order."""
+    digest = hashlib.sha256()
+    digest.update(b"matic-room-frame-circle-v1\0")
+    digest.update(
+        struct.pack(
+            ">qqq",
+            _quantize_coordinate(float(circle["x"])),
+            _quantize_coordinate(float(circle["y"])),
+            _quantize_coordinate(float(circle["radius"])),
+        )
+    )
+    return digest.hexdigest()
+
+
+def _bounds_within_tolerance(old: Sequence[int], new: Sequence[int]) -> bool:
+    return all(
+        abs(new_value - old_value) <= _LOCAL_GEOMETRY_TOLERANCE_MILLIMETERS
+        for old_value, new_value in zip(old, new, strict=True)
+    )
+
+
+def _translation_room_anchors(
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
+) -> list[dict[str, Any]]:
+    """Persist frame anchors only for rooms containing saved circle centers."""
+    if len(floor_plan.rooms) > _MAX_TRANSLATION_ROOM_ANCHORS:
+        raise ValueError("too many rooms for scoped area frame anchors")
+    rooms = [
+        {
+            "room_id": room.id,
+            "name": room.name,
+            "boundary": [list(point) for point in room.boundary],
+        }
+        for room in floor_plan.rooms
+    ]
+    room_geometry = room_geometry or _RoomGeometryIndex(rooms)
+    circle_keys_by_room: dict[int, set[str]] = {}
+    association_count = 0
+    for circle in circles:
+        circle_key = _translation_circle_key(circle)
+        for index in room_geometry.containing_indices(
+            float(circle["x"]),
+            float(circle["y"]),
+            _LOCAL_GEOMETRY_TOLERANCE_METERS,
+        ):
+            keys = circle_keys_by_room.setdefault(index, set())
+            if circle_key not in keys:
+                if association_count >= _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
+                    raise ValueError("too many circle-room frame anchors")
+                room_geometry.charge_query_work()
+                keys.add(circle_key)
+                association_count += 1
+    anchors = []
+    for index, room in enumerate(floor_plan.rooms):
+        circle_keys = circle_keys_by_room.get(index)
+        if not circle_keys:
+            continue
+        polygon = _canonical_polygon(room.boundary)
+        origin_x = min(x for x, _y in polygon)
+        origin_y = min(y for _x, y in polygon)
+        digest = hashlib.sha256()
+        digest.update(b"matic-room-frame-anchor-v1\0")
+        digest.update(struct.pack(">I", len(polygon)))
+        for x, y in polygon:
+            digest.update(struct.pack(">qq", x - origin_x, y - origin_y))
+        anchors.append(
+            {
+                "fingerprint": digest.hexdigest(),
+                "room_key": _translation_room_key(room),
+                "circle_keys": sorted(circle_keys),
+                "bounds": [
+                    min(x for x, _y in polygon),
+                    min(y for _x, y in polygon),
+                    max(x for _x, y in polygon),
+                    max(y for _x, y in polygon),
+                ],
+            }
+        )
+    return anchors
+
+
 def binding_for_area(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
@@ -299,12 +433,28 @@ def binding_for_area(
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> MapBinding:
     """Bind an area to its map identity and nearby room geometry."""
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
     shape, occupancy, segments = _area_geometry_components(
         floor_plan, circles, room_geometry=room_geometry
     )
+    if len(segments) > _MAX_LOCAL_SEGMENT_MATCH_SEGMENTS:
+        return {
+            "version": BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            **_floor_plan_binding(floor_plan),
+            "local_geometry_sha256": _bounded_hash_only_area_geometry_fingerprint(
+                floor_plan, circles, room_geometry=room_geometry
+            ),
+        }
     return {
         "version": SCOPED_MAP_BINDING_VERSION,
         **_floor_plan_binding(floor_plan),
+        "translation_invariant_geometry_sha256": (
+            translation_invariant_geometry_fingerprint(floor_plan)
+        ),
+        "translation_frame_bounds": translation_frame_bounds(floor_plan),
+        "translation_room_anchors": _translation_room_anchors(
+            floor_plan, circles, room_geometry=room_geometry
+        ),
         "area_shape_sha256": _area_shape_fingerprint(shape),
         "local_geometry_sha256": _local_geometry_fingerprint(
             shape, occupancy, segments
@@ -347,13 +497,13 @@ def area_geometry_fingerprint(
     return _local_geometry_fingerprint(*_area_geometry_components(floor_plan, circles))
 
 
-def _hash_only_area_geometry_fingerprint(
+def _legacy_hash_only_area_geometry_fingerprint(
     floor_plan: FloorPlan,
     circles: Sequence[Mapping[str, Any]],
     *,
     room_geometry: _RoomGeometryIndex | None = None,
 ) -> str:
-    """Reproduce the short-lived hash-only v2 signature for safe migration."""
+    """Reproduce the persisted hash-only v2 signature for safe migration."""
     room_geometry = room_geometry or _room_geometry_index(floor_plan)
     normalized = _validate_area_circles(
         floor_plan, circles, room_geometry=room_geometry
@@ -416,6 +566,99 @@ def _hash_only_area_geometry_fingerprint(
     for segment in sorted(segments):
         digest.update(struct.pack(">qqqq", *segment))
     return digest.hexdigest()
+
+
+def _hash_only_area_geometry_fingerprint(
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    room_geometry: _RoomGeometryIndex | None = None,
+) -> str:
+    """Keep the v2 helper name bound to its original serialization."""
+    return _legacy_hash_only_area_geometry_fingerprint(
+        floor_plan, circles, room_geometry=room_geometry
+    )
+
+
+class _BoundedFingerprintWorkExhausted(GeometryTooComplex):
+    """Signal exhausted post-validation fingerprint work for v4 bindings."""
+
+
+def _bounded_hash_only_area_geometry_fingerprint(
+    floor_plan: FloorPlan,
+    circles: Sequence[Mapping[str, Any]],
+    *,
+    center_tolerance: float = 0.0,
+    room_geometry: _RoomGeometryIndex | None = None,
+) -> str:
+    """Return the per-circle union-scoped v4 hash-only geometry signature."""
+    room_geometry = room_geometry or _room_geometry_index(floor_plan)
+    normalized = _validate_area_circles(
+        floor_plan,
+        circles,
+        center_tolerance=center_tolerance,
+        room_geometry=room_geometry,
+    )
+    try:
+        ordered = sorted(
+            (float(circle["x"]), float(circle["y"]), float(circle["radius"]))
+            for circle in normalized
+        )
+        digest = hashlib.sha256()
+        digest.update(_SCOPED_FINGERPRINT_DOMAIN)
+        digest.update(struct.pack(">H", BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION))
+        digest.update(struct.pack(">I", len(ordered)))
+        for x, y, radius in ordered:
+            digest.update(
+                struct.pack(
+                    ">qqq",
+                    _quantize_coordinate(x),
+                    _quantize_coordinate(y),
+                    _quantize_coordinate(radius),
+                )
+            )
+            probes = _occupancy_probes(x, y, radius)
+            occupancy = sum(
+                int(room_geometry.contains(probe_x, probe_y)) << index
+                for index, (probe_x, probe_y) in enumerate(probes)
+            )
+            digest.update(struct.pack(">H", occupancy))
+            neighborhood = (
+                x - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+                y - radius - _LOCAL_GEOMETRY_MARGIN_METERS,
+                x + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+                y + radius + _LOCAL_GEOMETRY_MARGIN_METERS,
+            )
+            segments: Counter[_LocalSegment] = Counter()
+            for room in floor_plan.rooms:
+                boundary = room.boundary
+                for start, end in zip(
+                    boundary, (*boundary[1:], boundary[0]), strict=True
+                ):
+                    room_geometry.charge_query_work()
+                    clipped = _clip_segment(start, end, neighborhood)
+                    if clipped is None:
+                        continue
+                    first = (
+                        _quantize(clipped[0][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[0][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                    )
+                    second = (
+                        _quantize(clipped[1][0], _LEGACY_LOCAL_UNITS_PER_METER),
+                        _quantize(clipped[1][1], _LEGACY_LOCAL_UNITS_PER_METER),
+                    )
+                    if second < first:
+                        first, second = second, first
+                    segments[(*first, *second)] += 1
+            room_geometry.charge_query_work(len(segments))
+            digest.update(struct.pack(">I", sum(segments.values())))
+            for segment, multiplicity in sorted(segments.items()):
+                digest.update(struct.pack(">qqqqI", *segment, multiplicity))
+        return digest.hexdigest()
+    except GeometryTooComplex as error:
+        raise _BoundedFingerprintWorkExhausted(
+            "bounded area fingerprint work budget exhausted after circle validation"
+        ) from error
 
 
 def _area_geometry_components(
@@ -528,6 +771,8 @@ def _area_geometry_components(
             if second < first:
                 first, second = second, first
             segments.append((*first, *second))
+            if len(segments) > _MAX_STORED_LOCAL_SEGMENTS:
+                raise ValueError("too many local floor-plan segments")
     room_geometry.charge_query_work(len(segments))
 
     occupancy_values = []
@@ -623,17 +868,63 @@ def area_binding_status(
         if saved_geometry != current["geometry_sha256"]:
             return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
-    if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+    if (
+        saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+        and saved_geometry != current["geometry_sha256"]
+    ):
+        # V2 did not persist the local boundary evidence, so its digest cannot
+        # distinguish an unrelated edit from a coordinate-frame translation.
+        # Fail closed on every whole-map change rather than authorizing stale
+        # coordinates from an unanchored occupancy-only match.
         try:
-            local_geometry = _hash_only_area_geometry_fingerprint(
+            _validate_area_circles(
                 floor_plan, area["circles"], room_geometry=room_geometry
             )
         except KeyError, OverflowError, TypeError, ValueError:
             return AreaBindingStatus.INVALID
+        return AreaBindingStatus.GEOMETRY_CHANGED
+    if saved["version"] in {
+        HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+        BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+    }:
+        try:
+            fingerprint = (
+                _legacy_hash_only_area_geometry_fingerprint
+                if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                else _bounded_hash_only_area_geometry_fingerprint
+            )
+            if saved["version"] == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+                local_geometry = fingerprint(
+                    floor_plan, area["circles"], room_geometry=room_geometry
+                )
+            else:
+                local_geometry = _bounded_hash_only_area_geometry_fingerprint(
+                    floor_plan,
+                    area["circles"],
+                    center_tolerance=_LOCAL_GEOMETRY_TOLERANCE_METERS,
+                    room_geometry=room_geometry,
+                )
+        except _BoundedFingerprintWorkExhausted:
+            if (
+                saved["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                and saved_geometry != current["geometry_sha256"]
+            ):
+                # The fingerprint helper raises this only after validating the
+                # circles. Keep exhausted recovery work on the shared index.
+                return AreaBindingStatus.GEOMETRY_CHANGED
+            return AreaBindingStatus.INVALID
+        except KeyError, OverflowError, TypeError, ValueError:
+            return AreaBindingStatus.INVALID
+        if (
+            saved["version"] == BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+            and saved_geometry != current["geometry_sha256"]
+        ):
+            # V4's bounded local fingerprint cannot establish that a room
+            # frame stayed fixed when the full map changed. Keep these areas
+            # reviewable until room anchors are available for this version.
+            return AreaBindingStatus.GEOMETRY_CHANGED
         if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
             return AreaBindingStatus.CURRENT
-        if saved_geometry != current["geometry_sha256"]:
-            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.INVALID
 
     try:
@@ -648,8 +939,83 @@ def area_binding_status(
         return AreaBindingStatus.INVALID
     if str(saved["area_shape_sha256"]).casefold() != _area_shape_fingerprint(shape):
         return AreaBindingStatus.INVALID
+    if (
+        saved_geometry != current["geometry_sha256"]
+        and "translation_room_anchors" not in saved
+    ):
+        # Without room anchors, translation-invariant hashes and frame bounds
+        # cannot prove that an unchanged area stayed in its original room
+        # frame. Check the area's own shape first so edited input remains INVALID.
+        return AreaBindingStatus.GEOMETRY_CHANGED
+    # A nearby wall anchors only its own circle. Check containing-room frame
+    # evidence for every circle because one area may span anchored and unanchored
+    # rooms. Local wall evidence cannot establish another circle's frame.
+    if saved_geometry != current["geometry_sha256"]:
+        saved_anchors = saved.get("translation_room_anchors")
+        if not isinstance(saved_anchors, list) or not saved_anchors:
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        if any(
+            "room_key" not in anchor or "circle_keys" not in anchor
+            for anchor in saved_anchors
+        ):
+            # Older anchors did not retain which circles belonged to which
+            # rooms. Keep those coordinates reviewable after drift, but never
+            # infer a room match from another circle's anchor.
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        # A syntactically valid persisted binding can still omit one circle
+        # association. Require complete coverage of the saved area before
+        # trusting any room anchor; otherwise a moved room could have no
+        # corresponding evidence at all.
+        saved_circle_keys = {
+            str(key).casefold()
+            for anchor in saved_anchors
+            for key in anchor["circle_keys"]
+        }
+        expected_circle_keys = {
+            _translation_circle_key(circle).casefold() for circle in area["circles"]
+        }
+        if saved_circle_keys != expected_circle_keys:
+            return AreaBindingStatus.GEOMETRY_CHANGED
+        try:
+            current_anchors = _translation_room_anchors(
+                floor_plan, area["circles"], room_geometry=room_geometry
+            )
+        except GeometryTooComplex, OverflowError, TypeError, ValueError:
+            return AreaBindingStatus.INVALID
+        current_by_room_key: dict[str, Mapping[str, Any]] = {}
+        for anchor in current_anchors:
+            room_key = str(anchor["room_key"]).casefold()
+            if room_key in current_by_room_key:
+                return AreaBindingStatus.GEOMETRY_CHANGED
+            current_by_room_key[room_key] = anchor
+        room_shape_changed = False
+        for anchor in saved_anchors:
+            current_anchor = current_by_room_key.get(str(anchor["room_key"]).casefold())
+            if (
+                current_anchor is None
+                or not {str(key).casefold() for key in anchor["circle_keys"]}.issubset(
+                    {str(key).casefold() for key in current_anchor["circle_keys"]}
+                )
+                or not _bounds_within_tolerance(
+                    anchor["bounds"], current_anchor["bounds"]
+                )
+            ):
+                return AreaBindingStatus.GEOMETRY_CHANGED
+            room_shape_changed |= (
+                str(anchor["fingerprint"]).casefold()
+                != str(current_anchor["fingerprint"]).casefold()
+            )
+        if room_shape_changed:
+            return AreaBindingStatus.GEOMETRY_CHANGED
     local_geometry = _local_geometry_fingerprint(shape, occupancy, segments)
     if str(saved["local_geometry_sha256"]).casefold() == local_geometry:
+        if (
+            "translation_invariant_geometry_sha256" in saved
+            and saved_geometry != current["geometry_sha256"]
+            and saved["translation_invariant_geometry_sha256"].casefold()
+            == translation_invariant_geometry_fingerprint(floor_plan)
+        ):
+            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.CURRENT
     saved_segments = tuple(tuple(segment) for segment in saved["local_segments_mm"])
     saved_occupancy = tuple(saved["local_occupancy"])
@@ -672,6 +1038,11 @@ def area_binding_status(
         ):
             return AreaBindingStatus.CURRENT
     except GeometryTooComplex:
+        # A valid persisted binding can exceed either the new segment count or
+        # work cap. If the map changed, keep its circles reviewable instead of
+        # hiding them as invalid; GEOMETRY_CHANGED still blocks stale commands.
+        if saved_geometry != current["geometry_sha256"]:
+            return AreaBindingStatus.GEOMETRY_CHANGED
         return AreaBindingStatus.INVALID
     if saved_geometry != current["geometry_sha256"]:
         return AreaBindingStatus.GEOMETRY_CHANGED
@@ -716,7 +1087,10 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         return False
     if version == MAP_BINDING_VERSION:
         expected_fields = base_fields
-    elif version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION:
+    elif version in {
+        HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+        BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+    }:
         expected_fields = {*base_fields, "local_geometry_sha256"}
     else:
         expected_fields = {
@@ -725,8 +1099,21 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
             "local_geometry_sha256",
             "local_occupancy",
             "local_segments_mm",
+            "translation_invariant_geometry_sha256",
+            "translation_frame_bounds",
+            "translation_room_anchors",
         }
-    if set(binding) != expected_fields:
+    if version == SCOPED_MAP_BINDING_VERSION:
+        legacy_fields = expected_fields - {
+            "translation_invariant_geometry_sha256",
+            "translation_frame_bounds",
+            "translation_room_anchors",
+        }
+        if not set(binding).issubset(expected_fields) or not legacy_fields.issubset(
+            set(binding)
+        ):
+            return False
+    elif set(binding) != expected_fields:
         return False
     mission_id = binding["mission_id"]
     partition_id = binding["partition_id"]
@@ -736,6 +1123,7 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         in {
             MAP_BINDING_VERSION,
             HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
             SCOPED_MAP_BINDING_VERSION,
         }
         and not isinstance(mission_id, bool)
@@ -749,7 +1137,11 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
         and (
             version == MAP_BINDING_VERSION
             or (
-                version == HASH_ONLY_SCOPED_MAP_BINDING_VERSION
+                version
+                in {
+                    HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                    BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+                }
                 and _valid_digest(binding["local_geometry_sha256"])
             )
             or (
@@ -758,6 +1150,29 @@ def _valid_saved_binding(binding: Mapping[str, Any]) -> bool:
                 and _valid_digest(binding["local_geometry_sha256"])
                 and _valid_local_occupancy(binding["local_occupancy"])
                 and _valid_local_segments(binding["local_segments_mm"])
+                and (
+                    "translation_frame_bounds" not in binding
+                    or (
+                        isinstance(binding["translation_frame_bounds"], list)
+                        and len(binding["translation_frame_bounds"]) == 4
+                        and all(
+                            isinstance(value, int)
+                            and not isinstance(value, bool)
+                            and -(1 << 63) <= value < (1 << 63)
+                            for value in binding["translation_frame_bounds"]
+                        )
+                    )
+                )
+                and (
+                    "translation_invariant_geometry_sha256" not in binding
+                    or _valid_digest(binding["translation_invariant_geometry_sha256"])
+                )
+                and (
+                    "translation_room_anchors" not in binding
+                    or _valid_translation_room_anchors(
+                        binding["translation_room_anchors"]
+                    )
+                )
                 and _stored_local_geometry_is_intact(binding)
             )
         )
@@ -774,7 +1189,11 @@ def area_binding_needs_geometry_index(area: Mapping[str, Any]) -> bool:
         and isinstance(binding, Mapping)
         and _valid_saved_binding(binding)
         and binding["version"]
-        in {HASH_ONLY_SCOPED_MAP_BINDING_VERSION, SCOPED_MAP_BINDING_VERSION}
+        in {
+            HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            BOUNDED_HASH_ONLY_SCOPED_MAP_BINDING_VERSION,
+            SCOPED_MAP_BINDING_VERSION,
+        }
     )
 
 
@@ -785,6 +1204,47 @@ def _valid_digest(value: Any) -> bool:
         and len(value) == 64
         and all(character in "0123456789abcdefABCDEF" for character in value)
     )
+
+
+def _valid_translation_room_anchors(value: Any) -> bool:
+    """Validate the bounded optional absolute-frame room evidence."""
+    if not isinstance(value, list) or len(value) > _MAX_TRANSLATION_ROOM_ANCHORS:
+        return False
+    associations = 0
+    for anchor in value:
+        if not isinstance(anchor, Mapping) or set(anchor) not in (
+            {"fingerprint", "bounds"},
+            {"fingerprint", "bounds", "room_key", "circle_keys"},
+        ):
+            return False
+        if not _valid_digest(anchor["fingerprint"]):
+            return False
+        bounds = anchor["bounds"]
+        if not (
+            isinstance(bounds, list)
+            and len(bounds) == 4
+            and all(
+                isinstance(coordinate, int)
+                and not isinstance(coordinate, bool)
+                and _MIN_SIGNED_64 <= coordinate <= _MAX_SIGNED_64
+                for coordinate in bounds
+            )
+        ):
+            return False
+        if "room_key" in anchor:
+            keys = anchor["circle_keys"]
+            if not (
+                _valid_digest(anchor["room_key"])
+                and isinstance(keys, list)
+                and 0 < len(keys) <= 512
+                and all(_valid_digest(key) for key in keys)
+                and len(set(keys)) == len(keys)
+            ):
+                return False
+            associations += len(keys)
+            if associations > _MAX_TRANSLATION_ROOM_CIRCLE_ASSOCIATIONS:
+                return False
+    return True
 
 
 def _valid_local_occupancy(value: Any) -> bool:

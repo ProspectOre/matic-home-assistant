@@ -2,8 +2,20 @@
 
 [Documentation](README.md) · [Actions](actions.md) · [Entities](entities.md)
 
-Use Home Assistant schedules, presence, and state triggers to run Matic.
+Run a saved plan when everyone leaves, clean a named area after a pet-device
+cycle, or react when a room finishes. Use Home Assistant schedules, presence,
+and state triggers to connect cleaning to the rest of your home.
 Replace example entity IDs with those shown on your robot's device page.
+
+## Ready-to-import blueprints
+
+- [Clean when everyone leaves](../blueprints/automation/matic_robot/clean_when_away.yaml)
+- [Quiet-hours cleaning](../blueprints/automation/matic_robot/quiet_hours.yaml)
+- [Pet-aware cleaning](../blueprints/automation/matic_robot/pet_aware.yaml)
+- [Scheduled intelligent cleaning](../blueprints/automation/matic_robot/room_rotation.yaml)
+
+The away blueprint rechecks presence after its settle period and starts only
+when Matic is docked or idle.
 
 ## Complete cleaning action
 
@@ -111,16 +123,6 @@ before automating the switch.
 `cleaning_finished` depends on native history being available. Startup history
 is not replayed. Use `room_completed` for managed completion triggers; see
 [cleaning results](native-cleaning-results.md) for partial and combined-mode runs.
-
-## Ready-to-import blueprints
-
-- [Clean when everyone leaves](../blueprints/automation/matic_robot/clean_when_away.yaml)
-- [Quiet-hours cleaning](../blueprints/automation/matic_robot/quiet_hours.yaml)
-- [Pet-aware cleaning](../blueprints/automation/matic_robot/pet_aware.yaml)
-- [Scheduled intelligent cleaning](../blueprints/automation/matic_robot/room_rotation.yaml)
-
-The away blueprint rechecks presence after its settle period and starts only
-when Matic is docked or idle.
 
 <a id="entity-contract"></a>
 <a id="map-studio"></a>
