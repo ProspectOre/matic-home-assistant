@@ -361,7 +361,7 @@ class MaticSlamSceneView(HomeAssistantView):
         allow_stale: bool = False,
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
-        if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+        if getattr(runtime.slam_map, "live_session_verified", False) is not True:
             self.clear_entry(entry_id)
             return None
         epoch = self._epochs.get(entry_id, 0)
@@ -424,7 +424,7 @@ class MaticSlamSceneView(HomeAssistantView):
             # A concurrent encoder can populate this cache while this request
             # waits for the lock. Check the live session before returning that
             # newly available payload, not only before entering the lock.
-            if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+            if getattr(runtime.slam_map, "live_session_verified", False) is not True:
                 self.clear_entry(entry_id)
                 return None
             cached = self._cache.get(entry_id)
@@ -436,7 +436,10 @@ class MaticSlamSceneView(HomeAssistantView):
                 identity = runtime.slam_map.mission_identity
                 floor_plan = data.floor_plan
                 key = (map_revision, identity, floor_plan)
-                if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                if (
+                    getattr(runtime.slam_map, "live_session_verified", False)
+                    is not True
+                ):
                     self.clear_entry(entry_id)
                     return None
                 cached = self._cache.get(entry_id)
@@ -965,8 +968,8 @@ class MaticAreasView(HomeAssistantView):
     name = "api:matic_robot:areas"
 
     @staticmethod
-    def _rooms(runtime: MaticRuntimeData) -> list[dict[str, object]]:
-        floor_plan = runtime.coordinator.data.floor_plan
+    def _rooms(floor_plan: FloorPlan | None) -> list[dict[str, object]]:
+        """Project rooms from one explicit floor-plan snapshot."""
         if floor_plan is None:
             return []
         return [
@@ -1002,10 +1005,10 @@ class MaticAreasView(HomeAssistantView):
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             uses_indexed_binding = area_binding_needs_geometry_index(area)
             if uses_indexed_binding and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
             can_rebind = area_binding_allows_review(
                 area,
                 floor_plan,
@@ -1039,7 +1042,7 @@ class MaticAreasView(HomeAssistantView):
         return self.json(
             {
                 "scene_url": scene_api_url(entry_id),
-                "rooms": self._rooms(runtime),
+                "rooms": self._rooms(floor_plan),
                 "areas": areas,
             },
             headers=PRIVATE_NO_STORE_HEADERS,
@@ -1060,9 +1063,11 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
+        map_identity = runtime.slam_map.mission_identity
         if (
             floor_plan is None
             or not floor_plan.rooms
+            or map_identity is None
             or not runtime.slam_map.floor_plan_is_current(floor_plan)
         ):
             return web.Response(
@@ -1070,12 +1075,21 @@ class MaticAreasView(HomeAssistantView):
             )
         try:
             body = await request.json(loads=json.loads)
+            if (
+                _runtime_for_entry(hass, entry_id) is not runtime
+                or runtime.coordinator.data.floor_plan != floor_plan
+                or runtime.slam_map.mission_identity != map_identity
+                or not runtime.slam_map.floor_plan_is_current(floor_plan)
+            ):
+                return web.Response(
+                    status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+                )
             if not isinstance(body, dict):
                 raise ValueError
             name = str(body["name"]).strip()
             if not 1 <= len(name) <= 128:
                 raise ValueError
-            rooms = self._rooms(runtime)
+            rooms = self._rooms(floor_plan)
             circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
             outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
@@ -1431,7 +1445,7 @@ def _scene_snapshot_is_publishable(
 ) -> bool:
     """Return whether a captured point-in-time scene remains safe to publish."""
     return (
-        bool(getattr(runtime.slam_map, "live_session_verified", True))
+        getattr(runtime.slam_map, "live_session_verified", False) is True
         and runtime.slam_map.mission_identity == identity
         and runtime.coordinator.data.floor_plan == floor_plan
         and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent

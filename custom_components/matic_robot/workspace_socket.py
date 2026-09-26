@@ -256,7 +256,7 @@ class WorkspaceSocket:
                 tracked.source_unsubscribers.append(
                     add_listener(lambda: self._async_scene_changed(entry_id))
                 )
-            scene_revision = tracked.source_state["scene"][0]
+            scene_revision = self._scene_revision(entry_id, runtime)
             self._resource_revisions.setdefault(entry_id, {})["scene"] = (
                 scene_revision if scene_revision is not None else 0
             )
@@ -348,7 +348,7 @@ class WorkspaceSocket:
         if tracked.source_state.get("scene") == current:
             return
         tracked.source_state["scene"] = current
-        revision = current[0]
+        revision = self._scene_revision(entry_id, runtime)
         resource_revisions = self._resource_revisions.setdefault(entry_id, {})
         if revision is not None:
             resource_revisions["scene"] = revision
@@ -426,29 +426,26 @@ class WorkspaceSocket:
         return getattr(coordinator, "last_update_success", False) is True, operational
 
     @staticmethod
-    def _scene_state(runtime: Any) -> tuple[int | None, int | None]:
-        """Return bounded scene revision and only a proven floor identity."""
-        coordinator = getattr(runtime, "coordinator", None)
-        slam_map = getattr(runtime, "slam_map", None)
-        data = getattr(coordinator, "data", None)
-        floor_plan = getattr(data, "floor_plan", None)
-        raw_revision = getattr(slam_map, "revision", None)
-        revision = (
-            min(MAX_RESOURCE_REVISION, max(0, raw_revision))
-            if isinstance(raw_revision, int) and not isinstance(raw_revision, bool)
-            else None
+    def _scene_state(runtime: Any) -> tuple[Any, ...]:
+        """Return the exact private scene-cache key for change detection."""
+        from .slam_scene import _scene_snapshot_key
+
+        return _scene_snapshot_key(runtime)
+
+    def _scene_revision(self, entry_id: str, runtime: Any) -> int | None:
+        """Project the scene view's canonical transport revision when present."""
+        from .frontend import DATA_SLAM_SCENE_VIEW
+
+        scene_view = self.hass.data.get(DATA_SLAM_SCENE_VIEW)
+        current_revision = getattr(scene_view, "current_revision", None)
+        raw_revision = (
+            current_revision(entry_id, runtime)
+            if callable(current_revision)
+            else getattr(getattr(runtime, "slam_map", None), "revision", None)
         )
-        mission_id = None
-        is_current = getattr(slam_map, "floor_plan_is_current", None)
-        if (
-            getattr(coordinator, "last_update_success", False) is True
-            and callable(is_current)
-            and is_current(floor_plan)
-        ):
-            candidate = getattr(floor_plan, "mission_id", None)
-            if isinstance(candidate, int) and not isinstance(candidate, bool):
-                mission_id = candidate
-        return (revision, mission_id)
+        if not isinstance(raw_revision, int) or isinstance(raw_revision, bool):
+            return None
+        return min(MAX_RESOURCE_REVISION, max(0, raw_revision))
 
     @staticmethod
     def _history_state(history: Any) -> tuple[tuple[str, int], ...]:

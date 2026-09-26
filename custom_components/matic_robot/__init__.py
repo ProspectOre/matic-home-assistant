@@ -329,7 +329,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             nonlocal area_binding_upgrade_in_progress
             floor_plan = coordinator.data.floor_plan
             slam_map.set_expected_mission_id(
-                floor_plan.mission_id if floor_plan is not None else None
+                floor_plan.mission_id
+                if floor_plan is not None
+                else coordinator.displayed_floor_mission_id
             )
             if (
                 area_binding_upgrade_pending

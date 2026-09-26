@@ -5,6 +5,8 @@ import {
   MAP_PIXELS_PER_METER_AT_100,
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
+  type CoordinateEditCapture,
+  type CoordinateEditTool,
   type CommandState,
   type PrimaryAction,
   type ResourceStamp,
@@ -350,19 +352,17 @@ export const reduceWorkspace = (
       });
     }
     case "set-draft-circles": {
+      if (!hasCoordinateEditAdmission(state, intent.coordinateEdit)) return state;
       const circles: readonly AreaCircle[] = intent.circles.slice(0, 512).map((circle) => ({ ...circle }));
-      const record = intent.record !== false;
       return updateDraw(state, {
         circles,
         outline: intent.outline ?? null,
-        outlineUndo: record ? [...(state.draw.outlineUndo ?? []).slice(-99), intent.previousOutline !== undefined ? intent.previousOutline : state.draw.outline ?? null] : state.draw.outlineUndo ?? [],
-        outlineRedo: record ? [] : state.draw.outlineRedo ?? [],
-        undo: record
-          ? [...state.draw.undo.slice(-99), intent.previous ?? state.draw.circles]
-          : state.draw.undo,
-        redo: record ? [] : state.draw.redo,
+        outlineUndo: [...(state.draw.outlineUndo ?? []).slice(-99), state.draw.outline ?? null],
+        outlineRedo: [],
+        undo: [...state.draw.undo.slice(-99), state.draw.circles],
+        redo: [],
         dirty: true,
-        strokeCount: record ? state.draw.strokeCount + 1 : state.draw.strokeCount,
+        strokeCount: state.draw.strokeCount + 1,
       });
     }
     case "discard-draft":
@@ -659,6 +659,34 @@ export const canEditCoordinates = (state: WorkspaceState): boolean =>
   && state.host.connected
   && state.host.robotConnected
   && !state.floor.readOnly;
+
+const coordinateEditAllowed = (state: WorkspaceState, tool: CoordinateEditTool): boolean =>
+  state.workflow === "draw"
+  && state.draw.tool === tool
+  && state.dialog === null
+  && (state.command === "idle" || state.command === "failed")
+  && canEditCoordinates(state);
+
+export const captureCoordinateEdit = (
+  state: WorkspaceState,
+  tool: CoordinateEditTool,
+): CoordinateEditCapture | null => coordinateEditAllowed(state, tool)
+  ? {
+    generation: state.generation,
+    tool,
+    baselineCircles: state.draw.circles,
+    baselineOutline: state.draw.outline ?? null,
+  }
+  : null;
+
+export const hasCoordinateEditAdmission = (
+  state: WorkspaceState,
+  capture: CoordinateEditCapture | null,
+): capture is CoordinateEditCapture => capture !== null
+  && state.generation === capture.generation
+  && state.draw.circles === capture.baselineCircles
+  && (state.draw.outline ?? null) === capture.baselineOutline
+  && coordinateEditAllowed(state, capture.tool);
 
 /**
  * Floor-scoped metadata is safe to fetch before the rendered scene is fully

@@ -1055,6 +1055,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         async_add_listener=MagicMock(return_value=coordinator_unsubscribe),
         async_watch_cues=AsyncMock(),
         async_watch_floor_plan=AsyncMock(),
+        displayed_floor_mission_id=None,
         data=SimpleNamespace(
             floor_plan=FloorPlan(
                 42,
@@ -1247,6 +1248,13 @@ async def test_setup_refreshes_before_forwarding_platforms(
     coordinator.async_add_listener.assert_called_once()
     sync_callback = coordinator.async_add_listener.call_args.args[0]
     plans.async_add_listener.assert_called_once_with("synthetic-serial", sync_callback)
+    # A displayed-mission transition can revoke the floor before its
+    # replacement fetch completes; keep the map admission bound to that
+    # observed mission instead of clearing it back to an older floor.
+    coordinator.displayed_floor_mission_id = 84
+    coordinator.data.floor_plan = None
+    sync_callback()
+    assert slam_map.set_expected_mission_id.call_args_list[-1].args == (84,)
     assert entry.async_on_unload.call_args_list[-2:] == [
         ((coordinator_unsubscribe,), {}),
         ((plan_unsubscribe,), {}),

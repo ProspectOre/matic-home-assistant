@@ -3,7 +3,7 @@
 Status: implementation contract; evidence: `acceptance-0.5.md`. Binding inputs: the Matic Map Studio Roadmap,
 Matic Map Studio Independent Review, and the full independent review dated 2026-08-29. Historical status and release
 counts are reconciled in the evidence matrix. Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25.
-Scope: map-first operation, reliable live updates, explainable cleaning, independent room cadence.
+Scope: integration ownership and lifecycle, map-first operation, reliable live updates, explainable cleaning, independent room cadence.
 
 ## Product authority
 
@@ -37,16 +37,14 @@ while Full map is open it retains only the exit control until verification retur
 
 ## Principles and ownership
 
-- One authoritative owner exists for each rule. Adapters project state; they do not infer cleaning policy,
-  floor coherence, or completion.
 - Preserve credentials, entities, actions, automations, plans, Areas, preferences, local-only privacy,
   pinned transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; proxy
   pairing is deferred.
 - Keep Home Assistant language, tokens, and supported panel interfaces. Bundle frontend dependencies
   locally; wrap internal Home Assistant components behind capability-tested fallbacks.
-- Every asynchronous spatial result carries `{entry, generation, floor, mission, revision}`. Old generations
-  commit no cache, renderer, pose, draft, toast, or action state. Advance the generation before cancelling
-  obsolete work.
+- Every asynchronous spatial result and coordinate gesture belongs to its entry, generation, floor, mission,
+  and relevant revision. Obsolete work commits no cache, renderer, pose, draft, notice, or command state.
+  Advance generation before cancelling work; reject Area writes if their entry/floor changes during body reading.
 - Central fail-closed selectors own live map, exact pose, coordinate edit, and motion permission. Renderer
   or transport failure cannot relax them.
 - Measure v0.4.5 under reproducible conditions before changing transport or performance defaults. Unknown or
@@ -54,14 +52,17 @@ while Full map is open it retains only the exit control until verification retur
 
 | Authority | Owns | Must not own |
 |---|---|---|
-| Protocol client | Validated transport and vetted robot commands | HA workflows or policy |
+| Protocol client | Pinned transport, vetted commands, candidate-channel cleanup until ownership transfer | HA workflows or policy |
+| Coordinator | Observed floor mission and matching published floor plan; revoke old truth before awaiting refresh | Treating a cached previous floor as current after a transition |
+| Map store | Resource identity, bounds, and live admission against observed floor truth | Reasserting floor identity from stale geometry |
 | Coherence machine | Verified entry/floor/map identity and resource admission | Presentation or rendering |
 | Cleaning policy | Rotation, cadence, effective settings, explanations | Native dispatch or completion proof |
 | Managed executor | Dispatch, ownership, stop settlement, restart recovery | A second completion ledger |
 | Completion accounting | Native verified outcomes and exactly-once credit | UI-derived completion |
+| Firmware tracker | Serialized committed observations; publish after persistence succeeds | Advancing read state or emitting events after a failed save |
 | HA/HTTP/WebSocket adapters | Authorized bounded projections and invalidation | Independent business rules |
 
-Preview, dispatch, operational reads, and explanations consume the same policy and accounting outputs.
+Preview, dispatch, operational reads, and explanations consume the same policy and accounting outputs. `MaticGetPlan` projects `CleaningPlanManager.preview`; it cannot reconstruct selection or rotation. Cadence normalization alone validates intervals and one-shot flags; editors pass submitted values through without lossy coercion.
 Existing vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch/recovery; `native_completion.py` owns shared native proof; `cadence_accounting.py` applies verified credit inside the manager’s durable transaction. Service adapters retain authorization and request validation.
 
 ## Frontend authority
@@ -71,7 +72,7 @@ immutable normalized resources, drafts, preferences, and derived presentation se
 owns monotonic generation, identity, transition, and admission. `EffectController` owns abortable reads,
 subscriptions, and single-fire commands. `RendererController` owns one persistent canvas, camera, buffers,
 uploads, transferable buffers, quality, and fallback. One `GestureController` owns navigation, selection, ordering,
-and drawing.
+and drawing. Brush previews stay in rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the gesture.
 
 Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs.
 One idempotent disposer owns every request, subscription, worker, listener, frame, object URL, and CPU/GPU allocation.

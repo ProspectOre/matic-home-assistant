@@ -104,6 +104,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
     slam_map = SimpleNamespace(
         revision=revision,
         mission_identity=identity,
+        live_session_verified=True,
         map_complete=True,
         tile_count=2,
         structure_tile_count=1,
@@ -816,6 +817,20 @@ async def test_scene_view_rechecks_live_session_before_encoding() -> None:
 
     assert response.status == HTTPStatus.NOT_FOUND
     assert runtime.slam_map.checks == 3
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
+async def test_scene_view_requires_explicit_live_session_verification() -> None:
+    """An adapter missing the production proof property fails closed."""
+    runtime = _runtime()
+    del runtime.slam_map.live_session_verified
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
     assert not view._cache
     hass.async_add_executor_job.assert_not_awaited()
 
@@ -1709,6 +1724,77 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     )
 
 
+async def test_area_workspace_rejects_floor_change_during_request_body_read() -> None:
+    """A body authored for one floor cannot be rebound to a later selection."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    original_floor = runtime.coordinator.data.floor_plan
+
+    async def read_body_after_floor_change(**_kwargs):
+        runtime.coordinator.data.floor_plan = replace(
+            original_floor,
+            partition_protocol_id="synthetic-replacement-partition",
+            partition_id_wire=b"synthetic-replacement-partition",
+        )
+        return {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+
+    request.json = AsyncMock(side_effect=read_body_after_floor_change)
+
+    response = await MaticAreasView().post(request, "entry")
+
+    assert response.status == HTTPStatus.CONFLICT
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+
+async def test_area_workspace_rejects_runtime_replacement_during_body_read() -> None:
+    """A request cannot mutate a detached runtime after entry reload."""
+    runtime = _runtime()
+    entry = _entry(runtime)
+    hass = _hass(entry)
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+
+    async def read_body_after_entry_reload(**_kwargs):
+        entry.runtime_data = _runtime()
+        return {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+
+    request.json = AsyncMock(side_effect=read_body_after_entry_reload)
+
+    response = await MaticAreasView().post(request, "entry")
+
+    assert response.status == HTTPStatus.CONFLICT
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    entry.runtime_data.cleaning_plans.async_save_area.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -1756,7 +1842,7 @@ async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> No
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     runtime.coordinator.data.floor_plan = None
-    assert MaticAreasView._rooms(runtime) == []
+    assert MaticAreasView._rooms(None) == []
     assert (await view.get(_request(hass), "entry")).status == 409
     assert (await view.post(_json_request(hass, "POST", {}), "entry")).status == 409
     runtime.coordinator.data.floor_plan = _floor_plan()

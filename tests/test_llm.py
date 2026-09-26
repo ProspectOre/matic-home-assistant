@@ -44,7 +44,11 @@ from custom_components.matic_robot.llm import (
     async_get_tools,
     async_register_matic_llm_api,
 )
-from custom_components.matic_robot.plans import CleaningRoom
+from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
+    plan_floor_token,
+    room_cadence_identity,
+)
 
 
 def test_llm_platform_does_not_duplicate_the_dedicated_api() -> None:
@@ -112,25 +116,6 @@ def _entry(
     }
     manager.lock.return_value.locked.return_value = True
     manager.stop_pending.return_value = False
-    manager.resolve_cadence.side_effect = lambda _serial, _plan, rooms, **_kwargs: (
-        list(rooms),
-        {
-            room.room_id: {
-                "scope": "plan",
-                "mop_every_n": None,
-                "coverage_every_n": None,
-                "periodic_coverage_setting": None,
-                "mop_progress": 0,
-                "coverage_progress": 0,
-                "mop_due": False,
-                "coverage_due": False,
-                "effective_cleaning_mode": room.cleaning_mode,
-                "effective_coverage_setting": room.coverage_setting,
-                "schedule_active": False,
-            }
-            for room in rooms
-        },
-    )
     manager.pending_native_reconciliation.return_value = {
         "plan_id": "whole-home",
         "room_id": "study",
@@ -427,7 +412,9 @@ async def test_robot_resolution_variants() -> None:
         _loaded_entries(_hass())
 
 
-async def test_plan_tool_reports_exact_leg_boundaries() -> None:
+async def test_plan_tool_projects_the_manager_preview_for_intelligent_and_saved_order(
+    hass,
+) -> None:
     floor_plan = FloorPlan(
         1,
         "partition",
@@ -438,171 +425,241 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
             Room("hall", "Hall", "hall", b"hall", ()),
         ),
     )
-    entry = _entry(floor_plan=floor_plan)
-    manager = entry.runtime_data.cleaning_plans
-    rooms = [
-        CleaningRoom("kitchen", "Kitchen", "vacuum", "quick"),
-        CleaningRoom("study", "Study", "vacuum", "quick"),
-        CleaningRoom("hall", "Hall", "vacuum_and_mop", "optimal"),
-    ]
-    manager.rooms_for_plan.return_value = (
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room_map = {room.id: room.name for room in floor_plan.rooms}
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "whole-home",
         {
-            "id": "whole-home",
             "name": "Whole home",
+            "enabled": True,
             "run_behavior": "intelligent",
             "return_to_base": True,
+            "rooms": [
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+                {
+                    "room_id": "study",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+                {
+                    "room_id": "hall",
+                    "cleaning_mode": "vacuum_and_mop",
+                    "coverage_setting": "heavy_duty",
+                },
+            ],
         },
-        rooms,
     )
-    manager.choose.return_value = rooms
+    entry = _entry(floor_plan=floor_plan)
+    entry.runtime_data.cleaning_plans = manager
     hass = _hass(entry)
     tool = MaticGetPlanTool(MaticOperationsAPI(hass))
     result = await tool.async_call(hass, llm.ToolInput(tool.name, {}), _context())
+    expected = manager.preview(
+        "synthetic-serial",
+        room_map,
+        "whole-home",
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={
+            room.id: room_cadence_identity(floor_plan, room.id)
+            for room in floor_plan.rooms
+        },
+    )
     assert result["preview_scope"] == "next_run"
-    assert result["active_run_for_plan"] is True
+    assert result["active_run_for_plan"] is False
     assert result["settings_boundary_count"] == 0
     assert [item["id"] for item in result["legs"][0]["rooms"]] == [
-        "kitchen",
-        "study",
-        "hall",
+        room["room_id"] for room in expected["rooms"]
     ]
     assert result["legs"][0]["rooms"][2]["cleaning_mode"] == "vacuum_and_mop"
     assert result["legs"][0]["cleaning_mode"] == "mixed"
     assert result["legs"][0]["coverage_setting"] == "mixed"
+    assert result["rotation"] == expected["rotation"]
     assert (
         result["legs"][0]["dock_between_rooms"]
         == "firmware_resource_servicing_possible"
     )
     assert result["legs"][0]["handoff_after_leg"] == "final_leg"
 
-    manager.rooms_for_plan.return_value = (
-        {"id": "saved", "run_behavior": "saved_order", "return_to_base": False},
-        rooms[:1],
-    )
-    manager.rotation_details.return_value = [
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "saved",
         {
-            "room_id": "kitchen",
-            "last_result": "completed",
-            "last_opportunity": "2026-09-12T20:00:00+00:00",
-            "last_opportunity_source": "plan",
-            "last_completion": "2026-09-12T20:00:00+00:00",
-        }
-    ]
-    manager.snapshot.return_value = {"active_plan": None}
+            "name": "Saved order",
+            "enabled": True,
+            "run_behavior": "ordered",
+            "return_to_base": False,
+            "rooms": [
+                {
+                    "room_id": "hall",
+                    "cleaning_mode": "vacuum_and_mop",
+                    "coverage_setting": "heavy_duty",
+                },
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
+    )
     ordered = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
+        hass, llm.ToolInput(tool.name, {"plan": "saved order"}), _context()
+    )
+    expected_ordered = manager.preview(
+        "synthetic-serial",
+        room_map,
+        "saved",
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={
+            room.id: room_cadence_identity(floor_plan, room.id)
+            for room in floor_plan.rooms
+        },
     )
     assert ordered["preview_scope"] == "next_run"
-    assert ordered["active_run_for_plan"] is None
-    assert ordered["plan"]["name"] == "saved"
-    assert ordered["rotation"][0]["last_completion"] == ("2026-09-12T20:00:00+00:00")
+    assert ordered["active_run_for_plan"] is False
+    assert ordered["plan"]["name"] == "Saved order"
+    assert [room["id"] for room in ordered["legs"][0]["rooms"]] == [
+        room["room_id"] for room in expected_ordered["rooms"]
+    ]
+    assert ordered["rotation"] == expected_ordered["rotation"]
+    assert ordered["plan"]["return_to_base"] is False
 
-    manager.lock.return_value.locked.return_value = False
-    idle = await tool.async_call(
-        hass, llm.ToolInput(tool.name, {"plan": "saved"}), _context()
-    )
-    assert idle["active_run_for_plan"] is False
-
-    manager.plans.return_value = {"named-id": {"name": "Unique name"}}
-    manager.rooms_for_plan.return_value = (
-        {"id": "named-id", "name": "Unique name"},
-        rooms[:1],
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "named-id",
+        {
+            "name": "Unique name",
+            "enabled": True,
+            "rooms": [
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
     )
     by_name = await tool.async_call(
         hass, llm.ToolInput(tool.name, {"plan": "unique NAME"}), _context()
     )
     assert by_name["plan"]["id"] == "named-id"
 
-    manager.plans.return_value = {
-        "first-id": {"name": "Shared name"},
-        "second-id": {"name": "Shared name"},
-    }
-    manager.rooms_for_plan.reset_mock()
-    manager.rooms_for_plan.return_value = (
-        {"id": "first-id", "name": "Shared name"},
-        rooms[:1],
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "first-id",
+        {
+            "name": "Shared name",
+            "enabled": True,
+            "rooms": [
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
+    )
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "second-id",
+        {
+            "name": "Shared name",
+            "enabled": True,
+            "rooms": [
+                {
+                    "room_id": "study",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
     )
     by_id = await tool.async_call(
         hass, llm.ToolInput(tool.name, {"plan": "first-id"}), _context()
     )
     assert by_id["plan"]["id"] == "first-id"
-    manager.rooms_for_plan.assert_called_once_with(
-        "synthetic-serial",
-        {"kitchen": "Kitchen", "study": "Study", "hall": "Hall"},
-        "first-id",
-    )
-
-    manager.rooms_for_plan.reset_mock()
-    with pytest.raises(HomeAssistantError, match="share the name"):
-        await tool.async_call(
-            hass, llm.ToolInput(tool.name, {"plan": "Shared name"}), _context()
-        )
-    manager.rooms_for_plan.assert_not_called()
-
     with pytest.raises(HomeAssistantError, match="plan is unavailable"):
         await tool.async_call(
             hass, llm.ToolInput(tool.name, {"plan": "missing"}), _context()
         )
-    manager.rooms_for_plan.assert_not_called()
-
     no_map = _entry()
     no_map_hass = _hass(no_map)
     with pytest.raises(HomeAssistantError, match="room map"):
         await MaticGetPlanTool(MaticOperationsAPI(no_map_hass)).async_call(
             no_map_hass, llm.ToolInput(tool.name, {}), _context()
         )
-    manager.rooms_for_plan.side_effect = KeyError("missing")
-    with pytest.raises(HomeAssistantError, match="plan is unavailable"):
+    with pytest.raises(HomeAssistantError, match="share the name"):
         await tool.async_call(
-            hass, llm.ToolInput(tool.name, {"robot": "entry-one"}), _context()
+            hass, llm.ToolInput(tool.name, {"plan": "Shared name"}), _context()
         )
     with pytest.raises(vol.Invalid):
         await tool.async_call(hass, llm.ToolInput(tool.name, {"plan": ""}), _context())
 
 
-async def test_plan_tool_previews_effective_cadence_settings() -> None:
+async def test_plan_tool_projects_real_manager_cadence_preview(hass) -> None:
     floor_plan = FloorPlan(
         3,
         "partition",
         b"partition",
         (Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),),
     )
-    entry = _entry(floor_plan=floor_plan)
-    manager = entry.runtime_data.cleaning_plans
-    normal = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
-    effective = CleaningRoom("kitchen", "Kitchen", "vacuum_and_mop", "heavy_duty")
-    manager.rooms_for_plan.return_value = (
-        {"id": "home", "name": "Home", "run_behavior": "ordered"},
-        [normal],
-    )
-    manager.resolve_cadence.side_effect = lambda *_args, **_kwargs: (
-        [effective],
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "synthetic-serial",
+        "home",
         {
-            "kitchen": {
-                "scope": "plan",
-                "mop_every_n": 3,
-                "coverage_every_n": 2,
-                "periodic_coverage_setting": "heavy_duty",
-                "mop_progress": 2,
-                "coverage_progress": 1,
-                "mop_due": True,
-                "coverage_due": True,
-                "effective_cleaning_mode": "vacuum_and_mop",
-                "effective_coverage_setting": "heavy_duty",
-                "schedule_active": True,
-            }
+            "name": "Home",
+            "enabled": True,
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": "kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "plan",
+                        "mop_every_n": 3,
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                }
+            ],
         },
     )
+    progress_record = manager._robot("synthetic-serial")["plan_room_cadence"][
+        "home"
+    ].setdefault("kitchen", {"progress": {"mop": 0, "coverage": 0}})
+    progress = progress_record["progress"]
+    progress.update(mop=2, coverage=1)
+    entry = _entry(floor_plan=floor_plan)
+    entry.runtime_data.cleaning_plans = manager
 
     hass = _hass(entry)
     result = await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
         hass, llm.ToolInput("MaticGetPlan", {}), _context()
     )
 
+    expected = manager.preview(
+        "synthetic-serial",
+        {"kitchen": "Kitchen"},
+        "home",
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={"kitchen": room_cadence_identity(floor_plan, "kitchen")},
+    )
     projected_room = result["legs"][0]["rooms"][0]
+    assert expected["rooms"][0]["cadence"]["mop_due"] is True
+    assert expected["rooms"][0]["cadence"]["coverage_due"] is True
     assert projected_room["cleaning_mode"] == "vacuum_and_mop"
     assert projected_room["coverage_setting"] == "heavy_duty"
     assert projected_room["cadence_reasons"] == ["mop_due", "coverage_due"]
+    assert projected_room["cadence"] == expected["rooms"][0]["cadence"]
 
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
     with pytest.raises(HomeAssistantError, match="room map is being rechecked"):
@@ -611,8 +668,10 @@ async def test_plan_tool_previews_effective_cadence_settings() -> None:
         )
     entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
 
-    manager.resolve_cadence.side_effect = ValueError("cadence identity changed")
-    with pytest.raises(HomeAssistantError, match="cadence is unavailable"):
+    manager._robot("synthetic-serial")["plans"]["home"]["rooms"][0]["cadence"][
+        "mop_every_n"
+    ] = True
+    with pytest.raises(HomeAssistantError, match="plan is unavailable"):
         await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
             hass, llm.ToolInput("MaticGetPlan", {}), _context()
         )

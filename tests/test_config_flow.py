@@ -1358,15 +1358,42 @@ async def test_options_flow_omits_malformed_legacy_cadence_from_defaults(hass) -
                 "rooms": [
                     {
                         "room_id": "room-1",
-                        "cleaning_mode": "mop",
+                        "cleaning_mode": "vacuum",
                         "coverage_setting": "standard",
-                        "cadence": {"mop_every_n": 3},
+                        "cadence": {"mop_every_n": 3, "do_mop_next": "true"},
                     }
                 ]
             }
         )
         == []
     )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_options_flow_rejects_malformed_one_shot_cadence_flag(
+    hass, enabled: bool
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    with pytest.raises(ValueError, match="do_mop_next must be a boolean"):
+        flow._rooms_from_editor(
+            {
+                "room_editor": _room_rows(
+                    ("room-1", True, "vacuum", "standard"),
+                    ("room-2", False, "vacuum", "standard"),
+                ),
+                "cadence_editor": _cadence_rows(
+                    {
+                        "room_id": "room-1",
+                        "enabled": enabled,
+                        "scope": "plan",
+                        "mop_every_n": 3,
+                        "do_mop_next": "true",
+                    }
+                ),
+            }
+        )
 
 
 async def test_options_flow_rejects_duplicate_cadence_rows_and_coerces_numbers(

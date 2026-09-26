@@ -135,6 +135,7 @@ _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
 _MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
 _MIXED_COVERAGE_READBACK_INTERVAL = 0.5
+_TRANSPORT_ERRORS = (OSError, StreamTerminatedError, ProtocolError, H2Error)
 
 
 def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
@@ -190,7 +191,7 @@ async def _async_cancel_stream(stream: object) -> None:
     """
     try:
         await stream.cancel()  # type: ignore[attr-defined]
-    except OSError, StreamTerminatedError, ProtocolError, H2Error:
+    except _TRANSPORT_ERRORS:
         pass
 
 
@@ -401,17 +402,19 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             try:
                 async with asyncio.timeout(_RPC_TIMEOUT):
                     await channel.__connect__()
+                self._host = host
+                self._channel = channel
+                break
             except TimeoutError:
-                channel.close()
                 last_error = CannotConnectError("Hermes connection timed out")
                 continue
-            except (OSError, StreamTerminatedError, ProtocolError) as err:
-                channel.close()
+            except _TRANSPORT_ERRORS as err:
                 last_error = CannotConnectError(str(err) or "connection failed")
                 continue
-            self._host = host
-            self._channel = channel
-            break
+            finally:
+                # Ownership transfers only after a successful connect.
+                if self._channel is not channel:
+                    channel.close()
         else:
             raise last_error or CannotConnectError("No reachable robot address")
         try:
@@ -455,7 +458,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             yield
         except TimeoutError as err:
             raise CannotConnectError(f"Hermes {description} timed out") from err
-        except (OSError, StreamTerminatedError, ProtocolError, H2Error) as err:
+        except _TRANSPORT_ERRORS as err:
             raise CannotConnectError(f"Hermes {description} connection failed") from err
         except GRPCError as err:
             if err.status is Status.UNAUTHENTICATED:
@@ -507,7 +510,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             raise CannotConnectError("Robot returned an incomplete credential") from err
         except TimeoutError as err:
             raise CannotConnectError("Hermes credential request timed out") from err
-        except (OSError, StreamTerminatedError, ProtocolError) as err:
+        except _TRANSPORT_ERRORS as err:
             raise CannotConnectError(
                 "Hermes credential request connection failed"
             ) from err

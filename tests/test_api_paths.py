@@ -13,6 +13,7 @@ import pytest
 from google.protobuf.message import DecodeError
 from grpclib.const import Cardinality, Status
 from grpclib.exceptions import GRPCError, ProtocolError, StreamTerminatedError
+from h2.exceptions import H2Error
 
 from custom_components.matic_robot.client.api import (
     MAX_HERMES_MESSAGE_BYTES,
@@ -270,6 +271,74 @@ async def test_connect_maps_transport_timeout_and_closes_candidate(monkeypatch) 
         await client.async_connect()
 
     assert channels and all(channel.closed for channel in channels)
+
+
+async def test_connect_cancellation_closes_unowned_candidate(monkeypatch) -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.async_robot_client_context",
+        AsyncMock(return_value=object()),
+    )
+    channels = []
+
+    class CancelledChannel:
+        def __init__(self, host, port, **kwargs) -> None:
+            self.closed = 0
+            channels.append(self)
+
+        async def __connect__(self):
+            raise asyncio.CancelledError
+
+        def close(self) -> None:
+            self.closed += 1
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._PinnedChannel", CancelledChannel
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await client.async_connect()
+    assert channels[0].closed == 1
+    assert client._channel is None
+
+
+async def test_connect_h2_failure_closes_candidate_and_fails_over(monkeypatch) -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.async_robot_client_context",
+        AsyncMock(return_value=object()),
+    )
+    channels = []
+
+    class H2Channel:
+        def __init__(self, host, port, **kwargs) -> None:
+            self.closed = 0
+            channels.append(self)
+
+        async def __connect__(self):
+            if len(channels) == 1:
+                raise H2Error("synthetic h2 failure")
+
+        def close(self) -> None:
+            self.closed += 1
+
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._PinnedChannel", H2Channel
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api._async_connection_candidates",
+        AsyncMock(return_value=["192.0.2.1", "192.0.2.2"]),
+    )
+    await client.async_connect()
+    assert channels[0].closed == 1
+    assert channels[1].closed == 0
+    assert client._channel is channels[1]
+
+
+async def test_transport_error_mapping_includes_h2() -> None:
+    client = MaticHermesClient("192.0.2.1", 16320)
+    with pytest.raises(CannotConnectError, match="connection failed"):
+        async with client._map_stream_errors("test"):
+            raise H2Error("synthetic protocol failure")
 
 
 class _FakeProtocol:

@@ -70,7 +70,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -4735,6 +4735,16 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     }, { tag: GALLERY_TAG, source: build.toString() });
   }
 
+  async function settlePhoneMap(gallery) {
+    await gallery.evaluate(async (element) => {
+      await element.updateComplete;
+      const shell = element.shadowRoot.querySelector(".shell");
+      await shell.updateComplete;
+      const canvas = shell.shadowRoot.querySelector("matic-map-canvas-v4");
+      await canvas.updateComplete;
+    });
+  }
+
   // The draw scenario ships with a saved outline; start every stroke test
   // from an empty draft so "nothing was painted" is unambiguous.
   const emptyDraw = (module) => {
@@ -4805,6 +4815,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
   test("does not paint when a second finger lands during the arming delay", async ({ page }) => {
     const gallery = await loadPhone(page, { scenario: "draw" });
     await replaceState(page, emptyDraw);
+    await settlePhoneMap(gallery);
     const root = gallery.locator(".map-root");
     const { x, y } = await sceneCentre(gallery);
 
@@ -4829,15 +4840,98 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await replaceState(page, emptyDraw);
     const root = gallery.locator(".map-root");
     const { x, y } = await sceneCentre(gallery);
+    await dispatch(root, pointer("pointermove", 99, x, y));
+    await page.waitForTimeout(50);
+    const overlay = gallery.locator(".overlay-canvas");
+    const beforePreview = await overlay.evaluate(canvas => canvas.toDataURL());
+    const baseline = (await snapshot(page)).draw;
 
     await dispatch(root, pointer("pointerdown", 11, x, y));
     await page.waitForTimeout(150);
     await dispatch(root, pointer("pointermove", 11, x + 20, y));
     await page.waitForTimeout(16);
     await dispatch(root, pointer("pointermove", 11, x + 40, y));
+    await page.waitForTimeout(50);
+    expect((await snapshot(page)).draw).toEqual(baseline);
+    expect(await overlay.evaluate(canvas => canvas.toDataURL())).not.toBe(beforePreview);
     await dispatch(root, pointer("pointerup", 11, x + 40, y));
     await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
-    await expect.poll(async () => (await snapshot(page)).draw.strokeCount).toBe(1);
+    const committed = (await snapshot(page)).draw;
+    expect(committed.strokeCount).toBe(baseline.strokeCount + 1);
+    expect(committed.undo).toHaveLength(baseline.undo.length + 1);
+  });
+
+  for (const authorityChange of ["generation", "coherence", "permission", "new draft"]) test(`drops an armed brush preview when ${authorityChange} changes`, async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    await replaceState(page, (module) => {
+      const ready = module.createGalleryState("draw");
+      return { ...ready, draw: { ...ready.draw,
+        circles: [{ x: 1, y: 1, radius: .2 }], dirty: true, strokeCount: 3,
+        undo: [[{ x: .7, y: .7, radius: .1 }]], redo: [[{ x: .8, y: .8, radius: .1 }]],
+      } };
+    });
+    await settlePhoneMap(gallery);
+    const root = gallery.locator(".map-root");
+    const { x, y } = await sceneCentre(gallery);
+    const baseline = (await snapshot(page)).draw;
+
+    await dispatch(root, pointer("pointerdown", 11, x, y));
+    await page.waitForTimeout(150);
+    await dispatch(root, pointer("pointermove", 11, x + 24, y + 8));
+    await page.waitForTimeout(16);
+    await dispatch(root, pointer("pointermove", 11, x + 40, y + 14));
+    const beforeAuthorityChange = (await snapshot(page)).draw;
+    expect(beforeAuthorityChange).toEqual(baseline);
+
+    // Keep the current draft intact for authority losses. A same-generation
+    // draft replacement exercises the reducer's baseline identity fence.
+    const mutate = authorityChange === "generation"
+      ? (_module, state) => ({ ...state, generation: state.generation + 1 })
+      : authorityChange === "coherence"
+        ? (_module, state) => ({ ...state, coherence: "verifying" })
+        : authorityChange === "permission"
+          ? (_module, state) => ({ ...state, host: { ...state.host, robotConnected: false } })
+          : (_module, state) => ({ ...state, draw: { ...state.draw, circles: [{ x: 1.2, y: 1, radius: .2 }] } });
+    await replaceState(page, mutate);
+    const retained = authorityChange === "new draft"
+      ? { ...baseline, circles: [{ x: 1.2, y: 1, radius: .2 }] }
+      : baseline;
+    // Dispatch before Lit forwards the new state to the canvas. The reducer
+    // must reject the old capture while the controller can still hold its
+    // prior prop. The retained draft is not cleared to make the test pass.
+    await dispatch(root, pointer("pointermove", 11, x + 64, y + 14));
+    await dispatch(root, pointer("pointerup", 11, x + 64, y + 14));
+    expect((await snapshot(page)).draw).toEqual(retained);
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw).toEqual(retained);
+  });
+
+  for (const dirty of [false, true]) test(`pointer cancellation preserves ${dirty ? "dirty" : "clean"} draft history`, async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    const setBaseline = dirty ? (module) => {
+      const ready = module.createGalleryState("draw");
+      const state = { ...ready, draw: { ...ready.draw, circles: [], strokeCount: 0, dirty: false, redo: [] } };
+      return { ...state, draw: { ...state.draw,
+        circles: [{ x: 1, y: 1, radius: .2 }], dirty: true, strokeCount: 3,
+        undo: [[{ x: .7, y: .7, radius: .1 }]], redo: [[{ x: .8, y: .8, radius: .1 }]],
+      } };
+    } : (module) => {
+      const ready = module.createGalleryState("draw");
+      return { ...ready, draw: { ...ready.draw, circles: [], strokeCount: 0, dirty: false, redo: [] } };
+    };
+    await replaceState(page, setBaseline);
+    await settlePhoneMap(gallery);
+    const root = gallery.locator(".map-root");
+    const { x, y } = await sceneCentre(gallery);
+    const baseline = (await snapshot(page)).draw;
+    await dispatch(root, pointer("pointerdown", 11, x, y));
+    await page.waitForTimeout(150);
+    await dispatch(root, pointer("pointermove", 11, x + 35, y + 8));
+    await page.waitForTimeout(30);
+    expect((await snapshot(page)).draw).toEqual(baseline);
+    await dispatch(root, pointer("pointercancel", 11, x + 35, y + 8));
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw).toEqual(baseline);
   });
 
   // Finds a point over a room by tapping candidate spots and watching the
@@ -4902,6 +4996,32 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     const after = await snapshot(page);
     expect(after.draw.circles).toEqual(before.draw.circles);
     expect(after.draw.strokeCount).toBe(before.draw.strokeCount);
+  });
+
+  test("does not commit an outline handle drag across an authority generation", async ({ page }) => {
+    const gallery = await loadPhone(page, { scenario: "draw" });
+    await replaceState(page, (_module, state) => ({ ...state, draw: {
+      ...state.draw,
+      tool: "outline",
+      outline: { points: [{ x: 1.5, y: 1.4 }, { x: 1.9, y: 1.6 }, { x: 1.8, y: 2 }], closed: true },
+    } }));
+    await settlePhoneMap(gallery);
+    await gallery.getByRole("button", { name: "Zone", exact: true }).click();
+    const handle = gallery.locator(".zone-point:not(.zone-midpoint)").first();
+    await expect(handle).toBeVisible();
+    const bounds = await handle.boundingBox();
+    const before = (await snapshot(page)).draw.outline;
+    const target = { x: bounds.x + bounds.width / 2, y: bounds.y + bounds.height / 2 };
+
+    await dispatch(handle, pointer("pointerdown", 11, target.x, target.y));
+    await dispatch(handle, pointer("pointermove", 11, target.x + 8, target.y + 6));
+    await expect.poll(async () => handle.boundingBox()).not.toEqual(bounds);
+    await replaceState(page, (_module, state) => ({ ...state, generation: state.generation + 1 }));
+    await dispatch(handle, pointer("pointerup", 11, target.x + 8, target.y + 6));
+
+    expect((await snapshot(page)).draw.outline).toEqual(before);
+    await settlePhoneMap(gallery);
+    expect((await snapshot(page)).draw.outline).toEqual(before);
   });
 
   test("keeps the primary action, Stop, and every draw tool within thumb reach", async ({ page }) => {
@@ -6126,7 +6246,7 @@ for (const boundary of ["write", "catalog"]) {
   test(`late area save ${boundary} completion preserves a later area draft`, async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async (boundary) => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const { EffectController, WorkspaceStore, createGalleryState, captureCoordinateEdit } = await import("/plan-recovery-test.js");
       const initial = createGalleryState("ready");
       const store = new WorkspaceStore({ ...initial, workflow: "areaReview",
         areaDraft: { ...initial.areaDraft, id: null, name: "First area", dirty: true },
@@ -6145,7 +6265,12 @@ for (const boundary of ["write", "catalog"]) {
         store.dispatch({ type: "discard-draft" });
         store.dispatch({ type: "open-workflow", workflow: "draw" });
         store.dispatch({ type: "patch-area-draft", patch: { name: "Later area" } });
-        store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }] });
+        // This test creates a later, independently admitted drawing state
+        // while the earlier save's catalog reconciliation is still pending.
+        store.patch({ command: "idle" });
+        const coordinateEdit = captureCoordinateEdit(store.value, "paint");
+        if (!coordinateEdit) throw new Error("Draw edit was not admitted");
+        store.dispatch({ type: "set-draft-circles", circles: [{ x: 2, y: 2, radius: .3 }], coordinateEdit });
         const expected = { draft: store.value.areaDraft, draw: store.value.draw, selection: store.value.selection };
         finish();
         await saving;
@@ -6224,7 +6349,7 @@ test("map taps select run and plan rooms in both views and clear old deletion no
       const renderer = new RendererController(canvas, overlay);
       renderer.setState(store.value);
       await new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)));
-      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {} });
+      const gestures = new GestureController(canvas, renderer, { state: () => store.value, onRoom: roomId => store.dispatch({ type: "toggle-room", roomId }), onCircles: () => {}, onCirclePreview: () => {} });
       const bounds = canvas.getBoundingClientRect();
       let hit;
       for (let y = 20; y < 520 && !hit; y += 10) for (let x = 20; x < 700 && !hit; x += 10) {

@@ -1513,16 +1513,15 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         )
                         if enabled
                         else None,
-                        "do_mop_next": cadence.get("do_mop_next") is True
-                        if enabled
-                        else False,
-                        "do_coverage_next": cadence.get("do_coverage_next") is True
-                        if enabled
-                        else False,
+                        "do_mop_next": cadence.get("do_mop_next", False),
+                        "do_coverage_next": cadence.get("do_coverage_next", False),
                     },
                     cleaning_mode=room["cleaning_mode"],
                     coverage_setting=room["coverage_setting"],
                 )
+                if not enabled:
+                    policy["do_mop_next"] = False
+                    policy["do_coverage_next"] = False
                 room["cadence"] = policy
             result.append(room)
         return result

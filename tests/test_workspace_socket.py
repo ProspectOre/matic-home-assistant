@@ -11,6 +11,8 @@ from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, Unauthorized
 
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
+from custom_components.matic_robot.slam_scene import MaticSlamSceneView
 from custom_components.matic_robot.workspace_socket import (
     QUEUE_LIMIT,
     SNAPSHOT_CURSOR_LIMIT,
@@ -114,6 +116,7 @@ class _ScenePublisher(_Publisher):
         super().__init__()
         self.revision = 1
         self.current = True
+        self.mission_identity = None
 
     def floor_plan_is_current(self, floor_plan: Any) -> bool:
         return self.current and floor_plan is not None
@@ -521,6 +524,47 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     assert not scene.listeners
     assert not history.listeners
     assert not entry.runtime_data.coordinator.listeners
+
+
+def test_scene_invalidation_tracks_floor_geometry_at_fixed_mission_and_revision() -> (
+    None
+):
+    """A floor-plan-only update invalidates the scene resource for clients."""
+    entry = _LifecycleEntry("entry-a")
+    entry.runtime_data.coordinator = _CoordinatorPublisher(
+        SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+            floor_plan=SimpleNamespace(
+                mission_id=47,
+                partition_protocol_id="partition-a",
+                rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
+            ),
+        )
+    )
+    scene = _ScenePublisher()
+    entry.runtime_data.slam_map = scene
+    manager = WorkspaceSocket(_Hass([entry]))
+    manager.hass.data[DATA_SLAM_SCENE_VIEW] = MaticSlamSceneView()
+    connection = _connection()
+    manager.track_entry(entry)
+    manager.subscribe(connection, "entry-a", 25)
+
+    entry.runtime_data.coordinator.data = SimpleNamespace(
+        info=SimpleNamespace(serial_number="private-serial"),
+        operational=SimpleNamespace(cleaning=False),
+        floor_plan=SimpleNamespace(
+            mission_id=47,
+            partition_protocol_id="partition-b",
+            rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0), (1, 0))),),
+        ),
+    )
+    entry.runtime_data.coordinator.publish()
+
+    invalidation = connection.send_event.call_args.args[1]["invalidation"]
+    assert invalidation["resources"] == ["scene"]
+    assert invalidation["coherence_generation"] == 2
+    assert invalidation["revisions"]["scene"] == 2
 
 
 def test_coordinator_publishes_status_and_operational_changes_only() -> None:

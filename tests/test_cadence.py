@@ -65,6 +65,28 @@ def test_normalize_cadence_policy_rejects_invalid_input(
         )
 
 
+@pytest.mark.parametrize("field", ["do_mop_next", "do_coverage_next"])
+@pytest.mark.parametrize("value", [None, 0, 1, "true"])
+def test_normalize_cadence_policy_rejects_non_boolean_one_shot_flags(
+    field: str, value: object
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} must be a boolean"):
+        normalize_cadence_policy(
+            {field: value},
+            cleaning_mode="vacuum",
+            coverage_setting="standard",
+        )
+
+
+def test_normalize_cadence_policy_defaults_absent_one_shot_flags() -> None:
+    policy = normalize_cadence_policy(
+        {}, cleaning_mode="vacuum", coverage_setting="standard"
+    )
+
+    assert policy["do_mop_next"] is False
+    assert policy["do_coverage_next"] is False
+
+
 def test_interval_one_is_due_on_first_clean_and_empty_policy_is_inactive() -> None:
     assert (
         normalize_cadence_policy(

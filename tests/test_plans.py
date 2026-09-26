@@ -348,6 +348,7 @@ async def test_managed_run_identity_outcome_and_activity_scope(hass) -> None:
             set_activity_run_id=set_run_id,
         )
 
+    await hass.async_block_till_done()
     last_run = manager.snapshot("serial")["last_run"]
     assert last_run["outcome"] == "completed"
     assert last_run["reason_code"] == "all_rooms_verified"
@@ -3901,6 +3902,45 @@ async def test_shared_schedule_cannot_change_while_a_different_plan_owns_room(
                 ],
             },
         )
+
+
+async def test_invalid_cadence_flag_cannot_mutate_an_existing_saved_plan(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Cadence plan",
+        "enabled": True,
+        "rooms": [
+            {
+                "room_id": "room-hall",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {"mop_every_n": 3, "do_mop_next": True},
+            }
+        ],
+    }
+    await manager.async_save_plan("serial", "cadence", original)
+    before = deepcopy(manager._data)
+    save_count = manager._store.async_save.await_count
+
+    with pytest.raises(ValueError, match="do_mop_next must be a boolean"):
+        await manager.async_save_plan(
+            "serial",
+            "cadence",
+            {
+                **original,
+                "name": "Renamed plan",
+                "rooms": [
+                    {
+                        **original["rooms"][0],
+                        "cadence": {"mop_every_n": 3, "do_mop_next": "true"},
+                    }
+                ],
+            },
+        )
+
+    assert manager._data == before
+    assert manager._store.async_save.await_count == save_count
 
 
 async def test_active_plan_only_locks_cadence_for_its_current_room(hass) -> None:

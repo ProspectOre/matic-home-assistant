@@ -57,6 +57,17 @@ export type Workflow =
 
 export type CommandState = "idle" | "pending" | "starting" | "settling" | "failed";
 export type DrawTool = "paint" | "erase" | "pan" | "outline";
+export type CoordinateEditTool = Extract<DrawTool, "paint" | "erase" | "outline">;
+
+/** Captures the authority generation, tool, and immutable draft baseline that
+ * admitted one coordinate edit, so stale commits are rejected before overwrite. */
+export interface CoordinateEditCapture {
+  readonly generation: number;
+  readonly tool: CoordinateEditTool;
+  readonly baselineCircles: readonly AreaCircle[];
+  readonly baselineOutline: AreaOutline | null;
+}
+
 export type DialogKind =
   | "discardDraft"
   | "confirmDeletePlan"
@@ -261,9 +272,7 @@ export type WorkspaceIntent =
       readonly type: "set-draft-circles";
       readonly outline?: AreaOutline | null;
       readonly circles: readonly AreaCircle[];
-      readonly record?: boolean;
-      readonly previous?: readonly AreaCircle[];
-      readonly previousOutline?: AreaOutline | null;
+      readonly coordinateEdit: CoordinateEditCapture;
     }
   | { readonly type: "redo-draft" }
   | { readonly type: "toggle-room"; readonly roomId: string }

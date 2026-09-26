@@ -38,13 +38,19 @@ def normalize_cadence_policy(
         raise ValueError("mop cadence requires vacuum as the normal cleaning mode")
     if coverage_setting not in _COVERAGE_SETTINGS:
         raise ValueError("room coverage setting is invalid")
+    do_mop_next = value.get("do_mop_next", False)
+    if not isinstance(do_mop_next, bool):
+        raise ValueError("do_mop_next must be a boolean")
+    do_coverage_next = value.get("do_coverage_next", False)
+    if not isinstance(do_coverage_next, bool):
+        raise ValueError("do_coverage_next must be a boolean")
     return {
         "scope": scope,
         "mop_every_n": mop_interval,
         "coverage_every_n": coverage_interval,
         "periodic_coverage_setting": periodic_coverage,
-        "do_mop_next": value.get("do_mop_next") is True,
-        "do_coverage_next": value.get("do_coverage_next") is True,
+        "do_mop_next": do_mop_next,
+        "do_coverage_next": do_coverage_next,
     }
 
 

@@ -7,7 +7,6 @@ import type {
   Workflow,
 } from "./contracts";
 import {
-  type AreaCircle,
   type HistoryFloor,
   type HistorySnapshot,
   type MapEntry,
@@ -2066,20 +2065,6 @@ export class EffectController {
       if (!current()) return;
       this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });
     }
-  }
-
-  updateDraftCircles(
-    circles: readonly AreaCircle[],
-    record = true,
-    previous?: readonly AreaCircle[],
-  ): void {
-    this.#store.dispatch({
-      type: "set-draft-circles",
-      circles,
-      record,
-      ...(previous ? { previous } : {}),
-    });
-    this.#store.dispatch({ type: "patch-area-draft", patch: { dirty: true } });
   }
 
   dispose(): void {
