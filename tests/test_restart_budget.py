@@ -10,15 +10,15 @@ from homeassistant.core import CoreState, ServiceCall
 from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.commands import UserCommand
-from custom_components.matic_robot.plans import CleaningRoom
-from custom_components.matic_robot.restart import async_recover_managed_run
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.managed_executor import (
     RoomRunOutcome,
     _async_completion_budget,
     _async_dispatch_leg_command,
     _PreparedRoomDispatch,
     _remaining_completion_time,
 )
+from custom_components.matic_robot.plans import CleaningRoom
+from custom_components.matic_robot.restart import async_recover_managed_run
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -104,14 +104,16 @@ async def test_recovered_stop_uses_native_settlement_and_correlated_dock(
     hass.bus.async_listen("matic_robot_plan_docked", docked.append)
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_with_native_identity",
+            "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
             return_value=RoomRunOutcome.STOPPED_IN_PLACE,
         ),
         patch(
             "custom_components.matic_robot.stop_return.DOCK_SETTLE_TIMEOUT_SECONDS", 0
         ),
         patch("custom_components.matic_robot.stop_return.DOCK_SETTLE_POLL_SECONDS", 0),
-        patch("custom_components.matic_robot.services._schedule_native_reconciliation"),
+        patch(
+            "custom_components.matic_robot.managed_executor._schedule_native_reconciliation"
+        ),
     ):
         await async_recover_managed_run(hass, entry, "serial")
         tasks = tuple(manager._reconciliation_tasks.get("serial", ()))
@@ -203,7 +205,7 @@ async def test_recovered_suspension_waits_for_owned_resume_with_remaining_budget
         raise asyncio.CancelledError
 
     with patch(
-        "custom_components.matic_robot.services._async_wait_for_owned_resume",
+        "custom_components.matic_robot.managed_executor._async_wait_for_owned_resume",
         side_effect=wait_resume,
     ) as resume:
         with pytest.raises(asyncio.CancelledError):

@@ -10,18 +10,18 @@ from homeassistant.core import CoreState
 from homeassistant.exceptions import HomeAssistantError
 
 from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.managed_executor import (
+    RoomInterruptedError,
+    RoomTakenOverError,
+    _async_execute_rooms,
+    _shutdown_suspends_run,
+)
 from custom_components.matic_robot.plans import (
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
 )
 from custom_components.matic_robot.restart import async_recover_managed_run
-from custom_components.matic_robot.services import (
-    RoomInterruptedError,
-    RoomTakenOverError,
-    _async_execute_rooms,
-    _shutdown_suspends_run,
-)
 
 from .test_restart import recovery_state as recovery_fixture
 
@@ -62,7 +62,7 @@ async def test_shutdown_non_cancellation_errors_preserve_real_executor(
         raise error_type("synthetic shutdown error")
 
     with patch(
-        "custom_components.matic_robot.services._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
         side_effect=shutdown_error,
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -157,7 +157,7 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
         raise error_type
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=cancel_leg),
     ):
         with pytest.raises(error_type):
@@ -168,7 +168,6 @@ async def test_executor_raw_cancelled_error_preserves_only_shutdown_run(
                 "vacuum.matic",
                 "serial",
                 [room],
-                intelligent=False,
             )
     assert manager.snapshot("serial")["last_run"]["outcome"] == expected
 
@@ -198,7 +197,7 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
         return True
 
     with patch(
-        "custom_components.matic_robot.services._async_run_leg",
+        "custom_components.matic_robot.managed_executor._async_run_leg",
         AsyncMock(side_effect=held_leg),
     ):
         task = hass.async_create_background_task(
@@ -209,7 +208,6 @@ async def test_real_home_assistant_stop_preserves_managed_run(hass) -> None:
                 "vacuum.matic",
                 "serial",
                 [room],
-                intelligent=False,
                 managed_user_command=stop,
             ),
             "restart lifecycle test",

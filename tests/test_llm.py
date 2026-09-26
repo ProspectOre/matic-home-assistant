@@ -112,6 +112,25 @@ def _entry(
     }
     manager.lock.return_value.locked.return_value = True
     manager.stop_pending.return_value = False
+    manager.resolve_cadence.side_effect = lambda _serial, _plan, rooms, **_kwargs: (
+        list(rooms),
+        {
+            room.room_id: {
+                "scope": "plan",
+                "mop_every_n": None,
+                "coverage_every_n": None,
+                "periodic_coverage_setting": None,
+                "mop_progress": 0,
+                "coverage_progress": 0,
+                "mop_due": False,
+                "coverage_due": False,
+                "effective_cleaning_mode": room.cleaning_mode,
+                "effective_coverage_setting": room.coverage_setting,
+                "schedule_active": False,
+            }
+            for room in rooms
+        },
+    )
     manager.pending_native_reconciliation.return_value = {
         "plan_id": "whole-home",
         "room_id": "study",
@@ -123,6 +142,7 @@ def _entry(
     runtime = SimpleNamespace(
         coordinator=SimpleNamespace(data=state, last_update_success=True),
         cleaning_plans=manager,
+        slam_map=SimpleNamespace(floor_plan_is_current=MagicMock(return_value=True)),
         client=SimpleNamespace(async_get_cleaning_session_records=AsyncMock()),
     )
     return SimpleNamespace(
@@ -538,6 +558,64 @@ async def test_plan_tool_reports_exact_leg_boundaries() -> None:
         )
     with pytest.raises(vol.Invalid):
         await tool.async_call(hass, llm.ToolInput(tool.name, {"plan": ""}), _context())
+
+
+async def test_plan_tool_previews_effective_cadence_settings() -> None:
+    floor_plan = FloorPlan(
+        3,
+        "partition",
+        b"partition",
+        (Room("kitchen", "Kitchen", "kitchen", b"kitchen", ()),),
+    )
+    entry = _entry(floor_plan=floor_plan)
+    manager = entry.runtime_data.cleaning_plans
+    normal = CleaningRoom("kitchen", "Kitchen", "vacuum", "standard")
+    effective = CleaningRoom("kitchen", "Kitchen", "vacuum_and_mop", "heavy_duty")
+    manager.rooms_for_plan.return_value = (
+        {"id": "home", "name": "Home", "run_behavior": "ordered"},
+        [normal],
+    )
+    manager.resolve_cadence.side_effect = lambda *_args, **_kwargs: (
+        [effective],
+        {
+            "kitchen": {
+                "scope": "plan",
+                "mop_every_n": 3,
+                "coverage_every_n": 2,
+                "periodic_coverage_setting": "heavy_duty",
+                "mop_progress": 2,
+                "coverage_progress": 1,
+                "mop_due": True,
+                "coverage_due": True,
+                "effective_cleaning_mode": "vacuum_and_mop",
+                "effective_coverage_setting": "heavy_duty",
+                "schedule_active": True,
+            }
+        },
+    )
+
+    hass = _hass(entry)
+    result = await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
+        hass, llm.ToolInput("MaticGetPlan", {}), _context()
+    )
+
+    projected_room = result["legs"][0]["rooms"][0]
+    assert projected_room["cleaning_mode"] == "vacuum_and_mop"
+    assert projected_room["coverage_setting"] == "heavy_duty"
+    assert projected_room["cadence_reasons"] == ["mop_due", "coverage_due"]
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    with pytest.raises(HomeAssistantError, match="room map is being rechecked"):
+        await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
+            hass, llm.ToolInput("MaticGetPlan", {}), _context()
+        )
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+
+    manager.resolve_cadence.side_effect = ValueError("cadence identity changed")
+    with pytest.raises(HomeAssistantError, match="cadence is unavailable"):
+        await MaticGetPlanTool(MaticOperationsAPI(hass)).async_call(
+            hass, llm.ToolInput("MaticGetPlan", {}), _context()
+        )
 
 
 async def test_native_history_is_bounded_sanitized_and_failure_safe() -> None:

@@ -8,6 +8,7 @@ import {
   type CommandState,
   type PrimaryAction,
   type ResourceStamp,
+  type AdmittedManualRoomPreview,
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
@@ -71,6 +72,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   fullMap: false,
   precisionOpen: false,
   dialog: null,
+  cadenceResetRequest: null,
   narrowHint: false,
   view: "top",
   appearance: "photo",
@@ -118,12 +120,15 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     plans: emptyResource(),
     areas: emptyResource(),
   },
+  manualRoomPreview: emptyResource(),
+  manualRoomPreviewRetry: 0,
   selection: {
     entryId: null,
     floorId: "current",
     historyId: null,
     roomIds: [],
     roomSettings: [],
+    useRoomSchedule: true,
     cleaningMode: "vacuum",
     coverageSetting: "standard",
     planId: null,
@@ -154,6 +159,46 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   robots: [],
   locale: "en",
 });
+
+/** Stable input identity; map pixel revisions do not invalidate a room preview. */
+export const manualRoomPreviewKey = (state: WorkspaceState): string | null => {
+  const entry = state.resources.entry;
+  const entryId = state.selection.entryId;
+  if (!entry || !entryId || entry.entryId !== entryId || state.selection.roomIds.length === 0) return null;
+  const rooms = state.selection.roomIds.map((roomId) => {
+    const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
+    if (!settings) return null;
+    return [roomId, settings.cleaningMode, settings.coverageSetting];
+  });
+  if (rooms.some((room) => room === null)) return null;
+  return JSON.stringify([
+    entryId,
+    state.dataMode,
+    state.selection.floorId,
+    state.selection.historyId,
+    state.draftFloorOrdinal,
+    state.draftMapSessionKey,
+    entry.selectedFloorOrdinal,
+    entry.mapFloorOrdinal,
+    entry.mapFloorCoherent,
+    entry.mapSessionVerified,
+    entry.mapSessionKey,
+    state.selection.useRoomSchedule,
+    rooms,
+  ]);
+};
+
+/** The single admission check shared by motion, primary-action, and UI paths. */
+export const admittedManualRoomPreview = (state: WorkspaceState): AdmittedManualRoomPreview | null => {
+  const admitted = state.manualRoomPreview.status === "ready" ? state.manualRoomPreview.value : null;
+  const entry = state.resources.entry;
+  if (!admitted || !entry || admitted.key !== manualRoomPreviewKey(state)
+    || admitted.generation !== state.generation
+    || admitted.preview.entryId !== state.selection.entryId
+    || admitted.floorKey !== [entry.selectedFloorOrdinal ?? "none", entry.mapFloorOrdinal ?? "none", entry.mapFloorCoherent ? "coherent" : "transition"].join(":")
+    || admitted.missionKey !== [entry.mapFloorOrdinal ?? "none", entry.mapSessionVerified ? "verified" : "unverified", entry.mapSessionKey ?? "no-session"].join(":")) return null;
+  return admitted;
+};
 
 const updateDraw = (
   state: WorkspaceState,
@@ -394,6 +439,20 @@ export const reduceWorkspace = (
               : room),
         },
       };
+    case "set-use-room-schedule":
+      return {
+        ...state,
+        selection: { ...state.selection, useRoomSchedule: intent.value },
+      };
+    case "retry-room-preview":
+      return { ...state, manualRoomPreviewRetry: state.manualRoomPreviewRetry + 1 };
+    case "request-room-cadence-reset":
+      if (state.planDraft.id !== intent.planId || state.planDraft.dirty) return state;
+      return {
+        ...state,
+        dialog: "confirmResetCadence",
+        cadenceResetRequest: { planId: intent.planId, roomId: intent.roomId, mode: intent.mode },
+      };
     case "set-floor":
       return {
         ...state,
@@ -451,6 +510,9 @@ export const reduceWorkspace = (
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
     case "dismiss-top-layer":
+      if (state.dialog === "confirmResetCadence") {
+        return { ...state, dialog: null, cadenceResetRequest: null };
+      }
       if (needsDraftConfirmation(state, intent)) return { ...state, dialog: "discardDraft" };
       if (state.dialog) return { ...state, dialog: null };
       if (state.precisionOpen) return { ...state, precisionOpen: false };
@@ -792,7 +854,10 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.workflow === "rooms") {
     const count = state.selection.roomIds.length;
-    const ready = canStartMotion(state) && count > 0;
+    const admitted = admittedManualRoomPreview(state);
+    const previewCurrent = admitted !== null;
+    const previewAllowed = previewCurrent && !admitted.preview.blocker && admitted.preview.rooms.length > 0;
+    const ready = canStartMotion(state) && count > 0 && previewAllowed;
     // The counted label carries a placeholder the view cannot fill through
     // `t(labelKey, label)`, so it ships without a key and falls back to English.
     return {
@@ -803,9 +868,15 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       enabled: ready,
       ...(ready
         ? {}
-        : count
-          ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
-          : { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }),
+        : !count
+          ? { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }
+          : !canStartMotion(state)
+            ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
+            : state.manualRoomPreview.status === "error"
+              ? { reason: "The room settings preview could not be verified.", reasonKey: "v4_reason_room_preview_unavailable" }
+              : previewCurrent && admitted.preview.blocker
+                ? { reason: "The room preview is blocked. Review the map and shared schedule.", reasonKey: "v4_reason_room_preview_blocked" }
+                : { reason: "Verifying the selected room settings…", reasonKey: "v4_reason_room_preview_loading" }),
     };
   }
   if (state.workflow === "plan") {
@@ -822,17 +893,22 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
         ...(valid ? {} : { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }),
       };
     }
+    const plan = state.resources.plans.value?.plans.find((candidate) => candidate.id === state.planDraft.id);
+    const previewReady = Boolean(plan?.nextRunPreview && !plan.nextRunPreview.blocker
+      && /^[0-9a-f]{64}$/u.test(plan.nextRunPreview.previewToken ?? ""));
     return {
       id: "run-plan",
       label: "Run this plan",
       labelKey: "v4_action_run_plan",
       kind: "primary",
-      enabled: canStartMotion(state) && state.planDraft.enabled,
+      enabled: canStartMotion(state) && state.planDraft.enabled && previewReady,
       ...(!canStartMotion(state)
         ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
         : !state.planDraft.enabled
           ? { reason: "This plan is paused. Enable it to run.", reasonKey: "v4_reason_run_plan_paused" }
-          : {}),
+          : !previewReady
+            ? { reason: "A valid next-run preview is required before starting.", reasonKey: "v4_reason_run_plan_preview" }
+            : {}),
     };
   }
   if (state.workflow === "areaReview") {

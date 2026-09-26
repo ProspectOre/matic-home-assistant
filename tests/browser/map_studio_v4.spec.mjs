@@ -54,7 +54,7 @@ function syntheticDelta(base, scene, baseRevision, revision) {
 
 async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
   await page.goto("/");
-  await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+  await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
   await page.evaluate(async ({ tag, selectedScenario, selectedNarrow }) => {
     await customElements.whenDefined(tag);
     const gallery = document.createElement(tag);
@@ -70,7 +70,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -128,6 +128,231 @@ function slowDrag(dy, x = 160, y = 20) {
 }
 
 test.describe("Map Studio v0.4 foundation", () => {
+  test("loads workflow tools on first open and diagnostics only when requested", async ({ page }) => {
+    const workflowRequests = [];
+    const diagnosticsRequests = [];
+    await page.route("**/chunks/workflow-panel-*.js", async (route) => {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      await route.continue();
+    });
+    page.on("request", (request) => {
+      if (request.url().includes("/chunks/workflow-panel-")) workflowRequests.push(request.url());
+      if (request.url().includes("/chunks/diagnostics-panel-")) diagnosticsRequests.push(request.url());
+    });
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await expect(gallery.locator(".panel-heading")).toBeVisible();
+    expect(workflowRequests).toHaveLength(0);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
+    }, GALLERY_TAG);
+    await expect(gallery.getByRole("status")).toContainText("Loading workspace tools");
+    await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
+    expect(workflowRequests).toHaveLength(1);
+    expect(diagnosticsRequests).toHaveLength(0);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "none" });
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "history" });
+    }, GALLERY_TAG);
+    await expect(gallery.locator("matic-map-workflow-v4")).toBeVisible();
+    expect(workflowRequests).toHaveLength(1);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "none" });
+      element.replaceWorkspaceState({ ...element.getWorkspaceSnapshot(), workflow: "support" });
+    }, GALLERY_TAG);
+    await expect(gallery.locator("matic-map-diagnostics-v4")).toBeVisible();
+    expect(diagnosticsRequests).toHaveLength(1);
+  });
+
+  test("confirms a named room schedule reset and sends its exact saved identities", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const cadence = {
+        scope: "shared",
+        mopEveryN: 3,
+        coverageEveryN: 2,
+        periodicCoverageSetting: "quick",
+        doMopNext: false,
+        doCoverageNext: false,
+      };
+      const plan = plans.plans[0];
+      const rooms = plan.rooms.map((room) => room.roomId === "room-a"
+        ? { ...room, cadence, cadenceProgress: { mopProgress: 1, coverageProgress: 1, mopDue: false, coverageDue: false, nextMopIn: 2, nextCoverageIn: 1, reasons: [] } }
+        : room);
+      element.replaceWorkspaceState({
+        ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...plan, rooms }] } } },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const inspector = gallery.locator(".inspector");
+    const schedule = inspector.locator("details").first();
+    await schedule.locator("summary").click();
+    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+    const reset = inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" });
+    await reset.click();
+    const dialog = gallery.getByRole("dialog", { name: "Reset mopping progress for Kitchen?" });
+    await expect(dialog).toContainText("across plans that use its shared schedule");
+    await expect(dialog).toContainText("Coverage progress and saved cleaning history stay unchanged");
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await expect(dialog).toHaveCount(0);
+    await reset.click();
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      element.__resetAction = null;
+      element.addEventListener("matic-workspace-action", (event) => {
+        element.__resetAction = event.detail;
+      }, { once: true });
+    }, GALLERY_TAG);
+    await dialog.getByRole("button", { name: "Reset mopping progress" }).click();
+    await expect(dialog).toHaveCount(0);
+    const action = await page.evaluate((tag) => document.querySelector(tag).__resetAction, GALLERY_TAG);
+    expect(action).toEqual({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
+  });
+
+  test("previews next-run order, effective settings, cadence reasons, and mission boundaries", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const current = plans.plans[0];
+      const nextRunPreview = {
+        previewToken: "a".repeat(64),
+        rooms: [
+          { roomId: "room-b", name: "Living room", cleaningMode: "vacuum_and_mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] },
+          { roomId: "room-a", name: "Kitchen", cleaningMode: "vacuum", coverageSetting: "quick", cadenceReasons: ["coverage_due"] },
+        ],
+        missionBoundaries: [1],
+        blocker: null,
+      };
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...current, nextRunPreview }] } },
+        },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const preview = gallery.locator("section[aria-labelledby='next-run-preview-heading']");
+    await expect(preview.getByRole("list", { name: "Next-run room order and effective settings" })).toHaveText(/1\. Living room.*Vacuum \+ mop · Heavy Duty.*Vacuum and mop are due.*Mission 2.*2\. Kitchen.*Vacuum · Quick.*Periodic coverage is due/s);
+    await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeEnabled();
+  });
+
+  test("requires review when a saved-plan preview changes before dispatch", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
+      const store = new WorkspaceStore(initial);
+      const oldCatalog = initial.resources.plans.value;
+      const firstPlan = oldCatalog.plans[0];
+      const updatedCatalog = {
+        ...oldCatalog,
+        plans: [{
+          ...firstPlan,
+          nextRunPreview: {
+            ...firstPlan.nextRunPreview,
+            rooms: [...firstPlan.nextRunPreview.rooms].reverse(),
+          },
+        }],
+      };
+      let useUpdatedPreview = false;
+      const calls = [];
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => useUpdatedPreview ? updatedCatalog : oldCatalog,
+        service: async (...args) => { calls.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.refreshCatalog(true);
+        useUpdatedPreview = true;
+        await effects.executeAction("run-plan");
+        return { calls, notice: store.value.notice?.text, refreshedOrder: store.value.resources.plans.value?.plans[0]?.nextRunPreview?.rooms.map((room) => room.roomId) };
+      } finally { effects.dispose(); }
+    });
+    expect(result.calls).toEqual([]);
+    expect(result.notice).toContain("preview changed");
+    expect(result.refreshedOrder).toEqual(["room-c", "room-b", "room-a"]);
+  });
+
+  test("routes a typed room cadence reset to the exact saved plan and room", async ({ page }) => {
+    await loadEffectHarness(page);
+    const calls = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
+      const store = new WorkspaceStore(initial);
+      const captured = [];
+      const effects = new EffectController(store, {
+        catalog: async () => [initial.resources.entry],
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        service: async (...args) => { captured.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        await effects.refreshCatalog(true);
+        await effects.executeAction({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
+        return captured;
+      } finally { effects.dispose(); }
+    });
+    expect(calls).toEqual([["matic_robot", "reset_room_cadence", { plan: "daily", room_id: "room-a", modes: ["mop"] }, "vacuum.synthetic"]]);
+  });
+
+  test("uses the shared room schedule by default and keeps its progress visible during an override", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const rooms = plans.rooms.map((room) => room.roomId === "room-a" ? {
+        ...room,
+        sharedCadence: { scope: "shared", mopEveryN: 3, coverageEveryN: null,
+          periodicCoverageSetting: null, doMopNext: false, doCoverageNext: false },
+        sharedCadenceProgress: { mopProgress: 3, coverageProgress: 0,
+          mopDue: true, coverageDue: false, nextMopIn: 0, nextCoverageIn: null, reasons: ["mop_due"] },
+        sharedCadenceReasons: ["mop_due"],
+      } : room);
+      element.replaceWorkspaceState({ ...state,
+        resources: { ...state.resources, plans: { ...state.resources.plans, value: { ...plans, rooms } } } });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^One-time clean/ }).click();
+    const roomList = gallery.getByRole("group", { name: "Rooms to clean" });
+    await roomList.getByRole("checkbox").first().check();
+    const useSchedule = gallery.getByRole("checkbox", { name: "Override shared schedule settings" });
+    await expect(useSchedule).not.toBeChecked();
+    expect((await snapshot(page)).selection.useRoomSchedule).toBe(true);
+    const sharedStatus = gallery.getByLabel("Shared room schedule status");
+    await expect(sharedStatus).toContainText("Vacuum and mop is due on this clean.");
+    await useSchedule.check();
+    await expect(useSchedule).toBeChecked();
+    expect((await snapshot(page)).selection.useRoomSchedule).toBe(false);
+    await expect(sharedStatus).toContainText("Vacuum and mop is due on this clean.");
+  });
+
   test("registers the sidebar robot before opening the map without replacing other icon sets", async ({ page }) => {
     await page.goto("/");
     await page.evaluate(() => {
@@ -168,7 +393,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
-  test("never offers a hidden stale plan while its catalog is loading or unavailable", async ({ page }) => {
+  test("never offers a hidden stale plan while its catalog is loading or unavailable @safety", async ({ page }) => {
     const gallery = await loadGallery(page);
     for (const workflow of ["plan", "rooms"]) {
       for (const status of ["loading", "error", "empty"]) {
@@ -185,8 +410,12 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("recovers an uncertain action only after a successful status read without replaying it", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const initial = createGalleryState("ready");
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
       const store = new WorkspaceStore({ ...initial, command: "failed" });
       let writes = 0;
       let reject = true;
@@ -262,7 +491,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
-  test("keeps Stop enabled after failed and accepted starts in every active state and layout", async ({ page }) => {
+  test("keeps Stop enabled after failed and accepted starts in every active state and layout @safety", async ({ page }) => {
     const gallery = await loadGallery(page);
     for (const command of ["failed", "starting"]) {
       for (const activity of ["cleaning", "returning", "recharging", "paused"]) {
@@ -308,7 +537,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         await loadEffectHarness(page);
         const result = await page.evaluate(async ({ startRejects, stopRejects }) => {
           const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-          const initial = createGalleryState("ready");
+          const initial = { ...createGalleryState("ready"), workflow: "plan" };
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
@@ -331,6 +560,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           try {
             await effects.refreshCatalog(true);
             const start = effects.executeAction("run-plan");
+            for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
             const whileStarting = store.value.command;
             await effects.executeAction("run-plan");
             await effects.executeAction("stop");
@@ -389,14 +619,14 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
-  test("ignores an old start response after changing robots or closing the panel", async ({ page }) => {
+  test("ignores an old start response after changing robots or closing the panel @safety", async ({ page }) => {
     await loadEffectHarness(page);
     const results = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const results = [];
       for (const close of [false, true]) {
         for (const rejectLate of [false, true]) {
-          const initial = createGalleryState("ready");
+          const initial = { ...createGalleryState("ready"), workflow: "plan" };
           const store = new WorkspaceStore(initial);
           const calls = [];
           let completeStart;
@@ -418,6 +648,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           effects.sync(projection);
           await effects.refreshCatalog(true);
           const start = effects.executeAction("run-plan");
+          for (let index = 0; index < 20 && !completeStart; index++) await new Promise((resolve) => setTimeout(resolve, 0));
           if (close) effects.dispose();
           else {
             effects.sync({ ...projection, entryKey: "other", vacuumEntityId: "vacuum.other", activity: "cleaning" });
@@ -441,16 +672,22 @@ test.describe("Map Studio v0.4 foundation", () => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
       const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
-      const initial = createGalleryState("ready");
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
       const store = new WorkspaceStore(initial);
       const calls = [];
       let finish;
       const effects = new EffectController(store, {
-        catalog: async () => [initial.resources.entry],
+        catalog: async () => new Promise(() => {}),
         history: async () => initial.resources.history.value,
         scene: async () => { throw new DOMException("Aborted", "AbortError"); },
         pose: async () => { throw new DOMException("Aborted", "AbortError"); },
         plans: async () => initial.resources.plans.value,
+        previewRoomSequence: async (_entityId, rooms) => ({
+          entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
+          rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
+            cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
+          missionBoundaries: [], blocker: null,
+        }),
         service: async (domain, service) => {
           calls.push(service);
           await new Promise((resolve) => { finish = resolve; });
@@ -461,10 +698,20 @@ test.describe("Map Studio v0.4 foundation", () => {
       const phases = [];
       try {
         for (const action of ["run-plan", "clean-rooms"]) {
-          await effects.refreshCatalog(true);
+          finish = undefined;
           const room = initial.resources.plans.value.rooms[0];
-          store.patch({ selection: { ...store.value.selection, roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }] } });
+          store.patch({ workflow: action === "run-plan" ? "plan" : "rooms", selection: {
+            ...store.value.selection,
+            roomIds: action === "clean-rooms" ? [room.roomId] : store.value.selection.roomIds,
+            roomSettings: [{ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "quick" }],
+          } });
+          for (let index = 0; action === "clean-rooms" && index < 20 && store.value.manualRoomPreview.status !== "ready"; index++) await new Promise((resolve) => setTimeout(resolve, 0));
           const run = effects.executeAction(action);
+          if (action === "run-plan") {
+            for (let index = 0; index < 20 && !finish; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          } else {
+            for (let index = 0; index < 20 && !finish; index++) await new Promise((resolve) => setTimeout(resolve, 0));
+          }
           phases.push(store.value.command);
           finish();
           await run;
@@ -474,6 +721,52 @@ test.describe("Map Studio v0.4 foundation", () => {
       } finally { effects.dispose(); }
     });
     expect(result).toEqual({ calls: ["run_selected_plan", "clean_room_sequence"], phases: ["starting", "idle", "starting", "idle"] });
+  });
+  test("sends default shared scheduling and explicit settings overrides with room-sequence requests", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, WorkspaceStore, createGalleryState, withGalleryRoomPreview } = await import("/plan-recovery-test.js");
+      const base = createGalleryState("ready");
+      const initial = withGalleryRoomPreview({ ...base, workflow: "rooms", selection: {
+        ...base.selection, roomIds: ["room-a"],
+        roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "quick" }],
+      } });
+      const store = new WorkspaceStore(initial);
+      const calls = [];
+      const effects = new EffectController(store, {
+        catalog: async () => new Promise(() => {}),
+        history: async () => initial.resources.history.value,
+        scene: async () => { throw new DOMException("Aborted", "AbortError"); },
+        pose: async () => { throw new DOMException("Aborted", "AbortError"); },
+        plans: async () => initial.resources.plans.value,
+        previewRoomSequence: async (_entityId, rooms) => ({
+          entryId: initial.selection.entryId, floorToken: "f".repeat(64), previewToken: "b".repeat(64),
+          rooms: rooms.map((room) => ({ roomId: room.room, name: room.room === "room-a" ? "Kitchen" : room.room,
+            cleaningMode: room.cleaning_mode, coverageSetting: room.coverage_setting, cadenceReasons: [] })),
+          missionBoundaries: [], blocker: null,
+        }),
+        service: async (...args) => { calls.push(args); },
+        dispose() {},
+      });
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      try {
+        for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        store.patch({ selection: { ...store.value.selection, useRoomSchedule: false } });
+        for (let i = 0; i < 20 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise(resolve => setTimeout(resolve, 0));
+        await effects.executeAction("clean-rooms");
+        return calls;
+      } finally { effects.dispose(); }
+    });
+    expect(result).toHaveLength(2);
+    for (const [domain, service, data] of result) {
+      expect(domain).toBe("matic_robot");
+      expect(service).toBe("clean_room_sequence");
+      expect(data.rooms).toEqual([{ room: "room-a", cleaning_mode: "vacuum", coverage_setting: "quick" }]);
+      expect(data.use_room_schedule).toBe(true);
+    }
+    expect(result[0][2].override_room_schedule).toBe(false);
+    expect(result[1][2].override_room_schedule).toBe(true);
   });
   test("resumes a paused managed task with the resume-only command", async ({ page }) => {
     await loadEffectHarness(page);
@@ -641,7 +934,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       const result = await page.evaluate(async (retained) => {
         const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
         const initial = createGalleryState("ready");
-        const store = new WorkspaceStore({ ...initial, selection: { ...initial.selection, areaId: "synthetic-area", roomSettings: [{ roomId: "room-1", cleaningMode: "vacuum", coverageSetting: "standard" }] } });
+        const store = new WorkspaceStore({ ...initial, workflow: "rooms", selection: {
+          ...initial.selection,
+          areaId: "entryway",
+          roomIds: ["room-a"],
+          roomSettings: [{ roomId: "room-a", cleaningMode: "vacuum", coverageSetting: "standard" }],
+        } });
         if (!retained) store.patch({ resources: { ...initial.resources, scene: { status: "idle", value: null, problem: null } } });
         let entry = { ...initial.resources.entry, mapFloorCoherent: false, mapSessionVerified: false, mapSessionKey: null, deltaUrl: null };
         let commands = 0;
@@ -652,6 +950,20 @@ test.describe("Map Studio v0.4 foundation", () => {
           pose: async () => { throw new DOMException("Aborted", "AbortError"); },
           plans: async () => initial.resources.plans.value,
           areas: async () => initial.resources.areas.value,
+          previewRoomSequence: async (_entityId, rooms) => ({
+            entryId: initial.selection.entryId,
+            floorToken: "f".repeat(64),
+            previewToken: "b".repeat(64),
+            rooms: rooms.map((room) => ({
+              roomId: room.room,
+              name: room.room === "room-a" ? "Kitchen" : room.room,
+              cleaningMode: room.cleaning_mode,
+              coverageSetting: room.coverage_setting,
+              cadenceReasons: [],
+            })),
+            missionBoundaries: [],
+            blocker: null,
+          }),
           service: async () => { commands++; },
           dispose() {},
         });
@@ -666,6 +978,7 @@ test.describe("Map Studio v0.4 foundation", () => {
           entry = { ...initial.resources.entry, deltaUrl: null };
           await effects.refreshCatalog();
           for (let i = 0; i < 20 && store.value.resources.scene.value?.marker !== "live"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+          for (let i = 0; i < 100 && store.value.manualRoomPreview.status !== "ready"; i++) await new Promise((resolve) => setTimeout(resolve, 0));
           await effects.executeAction("clean-rooms");
           return { paused, commands, recovered: { available: store.value.map.available, readOnly: store.value.floor.readOnly, marker: store.value.resources.scene.value?.marker } };
         } finally { effects.dispose(); }
@@ -674,7 +987,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       expect(result.paused.notice).toContain(retained ? "rechecked" : "Saved map from");
       expect(result.commands).toBe(1);
       expect(result.recovered).toEqual({ available: true, readOnly: false, marker: "live" });
-      await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+      await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
       await page.evaluate(async (tag) => {
         await customElements.whenDefined(tag);
         const gallery = document.createElement(tag);
@@ -727,7 +1040,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       } finally { effects.dispose(); }
     });
     expect(result).toEqual({ retained: true, available: true, readOnly: true, exactPose: false, catalog: "error", commands: 0 });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async tag => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -891,7 +1204,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(async (tag) => {
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
-      const { reduceWorkspace } = await import("/map_studio_v4/index.js");
+      const { reduceWorkspace } = await import("/map_studio_v4-review/review.js");
       element.replaceWorkspaceState(reduceWorkspace({ ...state, workflow: "plan", planDraft: { ...state.planDraft, dirty: true } }, { type: "dismiss-top-layer" }));
     }, GALLERY_TAG);
     await expect(gallery.getByRole("dialog", { name: "Discard plan changes?" })).toBeVisible();
@@ -961,9 +1274,28 @@ test.describe("Map Studio v0.4 foundation", () => {
     await saved.press("Enter");
     expect((await snapshot(page)).selection.floorId).toBe("saved-1");
   });
+  test("production entry excludes the gallery and review reuses its compiled constructors", async ({ page }) => {
+    await page.goto("/");
+    const result = await page.evaluate(async () => {
+      await import("/map_studio_v4/index.js");
+      const panel = customElements.get("matic-map-panel-v0-4-0");
+      const shell = customElements.get("matic-map-shell-v4");
+      const galleryBeforeReview = Boolean(customElements.get("matic-map-studio-gallery-v0-4-0"));
+      await import("/map_studio_v4-review/review.js");
+      return {
+        productionPanel: Boolean(panel), galleryBeforeReview,
+        galleryAfterReview: Boolean(customElements.get("matic-map-studio-gallery-v0-4-0")),
+        samePanel: panel === customElements.get("matic-map-panel-v0-4-0"),
+        sameShell: shell === customElements.get("matic-map-shell-v4"),
+      };
+    });
+    expect(result).toEqual({ productionPanel: true, galleryBeforeReview: false,
+      galleryAfterReview: true, samePanel: true, sameShell: true });
+  });
+
   test("registers the v0.4 panel and gallery without replacing v0.3 tags", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
 
     expect(await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
@@ -1128,7 +1460,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }));
 
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -1741,16 +2073,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => {
       document.body.innerHTML = "<matic-map-shell-v4></matic-map-shell-v4>";
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
 
     await expect(page.locator("matic-map-shell-v4")).toContainText("Matic Map");
     expect(errors).toEqual([]);
   });
 
-  test("rejects stale coherence generations and fails closed", async ({ page }) => {
+  test("rejects stale coherence generations and fails closed @safety", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const machine = new module.CoherenceMachine();
       const first = machine.begin("entry", "floor-a", "mission-a", 1);
       const second = machine.begin("entry", "floor-b", "mission-b", 2);
@@ -1796,7 +2128,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("dismisses dialog, precision, expanded map, and workflow one layer at a time", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       let state = {
         ...module.createGalleryState("draw"),
         fullMap: true,
@@ -1827,7 +2159,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("opens History without hiding the live map and preserves a chosen saved map", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const live = module.createGalleryState("ready");
       const opened = module.reduceWorkspace(live, { type: "open-workflow", workflow: "history" });
       const saved = {
@@ -1910,7 +2242,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: "Return to the live map" })).toBeVisible();
 
     const workflows = await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
       return ["rooms", "plan", "draw", "areaReview"].map((workflow) =>
@@ -1957,13 +2289,13 @@ test.describe("Map Studio v0.4 foundation", () => {
 
     // Room choices are immediately visible; long forms start at full height.
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       document.querySelector(tag).replaceWorkspaceState(module.createGalleryState("rooms"));
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await expect(gallery.locator("#sheet-body")).toBeVisible();
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       document.querySelector(tag).replaceWorkspaceState({ ...module.createGalleryState("ready"), workflow: "plan" });
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "full");
@@ -1995,7 +2327,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => window.__mapStudioActions)).toEqual(["delete-plan"]);
 
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("draw"),
@@ -2276,11 +2608,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(list.locator(".room")).toHaveCount(4);
     await expect(list.locator('.room[data-selected="true"]')).toHaveCount(3);
     await expect(list.getByLabel("Cleaning system")).toHaveCount(3);
-    await expect(inspector.locator("details")).toHaveCount(0);
+    const cadenceSettings = list.locator("details");
+    await expect(cadenceSettings).toHaveCount(3);
+    await expect(cadenceSettings.first().locator("summary")).toHaveText("Room schedule for Kitchen");
+    await cadenceSettings.first().locator("summary").click();
+    await expect(cadenceSettings.first().getByLabel(/Vacuum and mop interval for .* from 1 to 100/)).toHaveAttribute("min", "1");
+    await expect(cadenceSettings.first().getByLabel(/Periodic coverage interval for .* from 1 to 100/)).toHaveAttribute("max", "100");
     // Completion options now FOLLOW the room list: choose what to clean first,
     // then how the run should end.
     await expect(inspector.getByRole("heading", { name: "When a run ends", level: 3 })).toBeVisible();
-    const options = inspector.locator(".plan-options");
+    const options = inspector.locator('[aria-labelledby="completion-heading"]');
     await expect(options).toHaveAttribute("role", "group");
     expect(await options.evaluate((element) =>
       Boolean(element.compareDocumentPosition(element.parentElement.querySelector('[aria-labelledby="plan-rooms-heading"]')) & Node.DOCUMENT_POSITION_PRECEDING),
@@ -2307,7 +2644,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
     await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const element = document.querySelector(tag);
       const current = element.getWorkspaceSnapshot();
       const ready = module.createGalleryState("ready");
@@ -2457,7 +2794,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("opens Custom areas on a blank draft and preserves only an explicit edit", async ({ page }) => {
     const scene = syntheticScene("Room", 10);
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const entry = {
@@ -2602,14 +2939,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__areaPanel.remove());
   });
 
-  test("keeps Stop reachable while paused and strips transition expanded map to safety controls", async ({ page }) => {
+  test("keeps Stop reachable while paused and strips transition expanded map to safety controls @safety", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "paused" });
     await gallery.getByRole("button", { name: "Hide cleaning panel" }).click();
     await expect(gallery.getByRole("button", { name: "Resume cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
 
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("transition"),
@@ -2626,7 +2963,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("uses identical map math for the brush cursor and scale", async ({ page }) => {
     await page.goto("/");
     const combinations = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const samples = [
         [100, 0.2],
         [100, 2.5],
@@ -2797,7 +3134,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("keeps the plan action honest while saved routines are loading", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const element = document.querySelector(tag);
       const state = module.createGalleryState("ready");
       element.replaceWorkspaceState({
@@ -2913,7 +3250,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -2994,13 +3331,25 @@ test.describe("Map Studio v0.4 foundation", () => {
       await expectContrast(".quick-actions .ms-row__body small");
       await expectContrast(".floor-switcher");
       await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4/index.js");
+        const module = await import("/map_studio_v4-review/review.js");
         const rooms = module.createGalleryState("rooms");
-        element.replaceWorkspaceState({ ...rooms, selection: { ...rooms.selection, roomIds: ["room-a", "room-b"] } });
+        const roomIds = ["room-a", "room-b"];
+        element.replaceWorkspaceState(module.withGalleryRoomPreview({
+          ...rooms,
+          selection: {
+            ...rooms.selection,
+            roomIds,
+            roomSettings: roomIds.map((roomId) => ({
+              roomId,
+              cleaningMode: "vacuum",
+              coverageSetting: "standard",
+            })),
+          },
+        }));
       });
       await expectContrast(".action-summary");
       await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4/index.js");
+        const module = await import("/map_studio_v4-review/review.js");
         const rooms = module.createGalleryState("rooms");
         element.replaceWorkspaceState({ ...rooms, selection: { ...rooms.selection, roomIds: [] } });
       });
@@ -3098,7 +3447,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return original.call(this);
       };
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (tag) => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -3148,7 +3497,7 @@ test.describe("Map Studio v0.4 foundation", () => {
         return original.call(this);
       };
     });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (tag) => {
       await customElements.whenDefined(tag);
       const gallery = document.createElement(tag);
@@ -3223,7 +3572,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("selects a requested robot deterministically", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const adapter = new module.HassAdapter();
       const hass = {
         connected: true,
@@ -3255,7 +3604,7 @@ test.describe("Map Studio v0.4 foundation", () => {
   test("shows recharge-and-resume as charging with Stop still available", async ({ page }) => {
     await page.goto("/");
     const result = await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const adapter = new module.HassAdapter();
       const projection = adapter.project({
         connected: true,
@@ -3302,7 +3651,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("hides the robot selector when non-vacuum Matic entities have stale entry metadata", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(() => {
       const panel = document.createElement("matic-map-panel-v0-4-0");
       panel.panel = { config: { entry_id: "entry-a" } };
@@ -3358,7 +3707,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.setViewportSize({ width: 320, height: 740 });
     await page.goto("/");
     await page.evaluate(() => { document.documentElement.dir = "rtl"; });
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate((tag) => {
       const gallery = document.createElement(tag);
       gallery.controls = false;
@@ -3390,12 +3739,30 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
   });
 
-  test("projects unrelated Home Assistant updates without service calls", async ({ page }) => {
+  test("coalesces 100 unrelated Home Assistant updates without workspace churn", async ({ page }) => {
+    let catalogRequests = 0;
+    await page.route("**/api/matic_robot/slam_entries*", async (route) => {
+      catalogRequests += 1;
+      await route.fulfill({ status: 200, contentType: "application/json", body: '{"entries":[]}' });
+    });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     const result = await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       let calls = 0;
+      let updates = 0;
+      let renders = 0;
+      const Panel = customElements.get("matic-map-panel-v0-4-0");
+      const originalUpdate = Panel.prototype.update;
+      const originalRender = Panel.prototype.render;
+      Panel.prototype.update = function update(changed) {
+        updates += 1;
+        return originalUpdate.call(this, changed);
+      };
+      Panel.prototype.render = function render() {
+        renders += 1;
+        return originalRender.call(this);
+      };
       const panel = document.createElement("matic-map-panel-v0-4-0");
       panel.panel = { config: { entry_id: "synthetic-entry" } };
       const relevant = {
@@ -3412,15 +3779,76 @@ test.describe("Map Studio v0.4 foundation", () => {
         callService: () => { calls += 1; },
       };
       document.body.append(panel);
-      await panel.updateComplete;
-      panel.hass = {
-        ...panel.hass,
-        states: { ...relevant, "sensor.unrelated": { state: "changed", attributes: {} } },
+      const settle = async () => {
+        let settled = false;
+        for (let attempt = 0; attempt < 5 && !settled; attempt += 1) settled = await panel.updateComplete;
       };
-      await panel.updateComplete;
-      return { calls, defined: Boolean(customElements.get("matic-map-panel-v0-4-0")) };
+      await settle();
+      for (let attempt = 0; attempt < 50 && panel.getWorkspaceSnapshot().resources.catalog.status === "loading"; attempt += 1) {
+        await new Promise(resolve => setTimeout(resolve, 2));
+      }
+      await new Promise(resolve => setTimeout(resolve, 30));
+      await settle();
+      const beforeState = panel.getWorkspaceSnapshot();
+      const beforeUpdates = updates;
+      const beforeRenders = renders;
+      for (let index = 0; index < 100; index += 1) {
+        panel.hass = {
+          ...panel.hass,
+          states: { ...relevant, "sensor.unrelated": { state: String(index), attributes: {} } },
+        };
+        await settle();
+      }
+      return {
+        calls,
+        defined: Boolean(customElements.get("matic-map-panel-v0-4-0")),
+        workspaceUnchanged: panel.getWorkspaceSnapshot() === beforeState,
+        updateDelta: updates - beforeUpdates,
+        renderDelta: renders - beforeRenders,
+        lastUnrelatedState: panel.hass.states["sensor.unrelated"].state,
+      };
     });
-    expect(result).toEqual({ calls: 0, defined: true });
+    expect(result).toEqual({ calls: 0, defined: true, workspaceUnchanged: true,
+      updateDelta: 0, renderDelta: 0, lastUnrelatedState: "99" });
+    // Every iteration replaces the test map with the next synthetic state;
+    // no update may refetch the private catalog after initial admission.
+    expect(catalogRequests).toBe(1);
+  });
+
+  test("rebuilds the HA adapter boundary when the connection instance changes", async ({ page }) => {
+    await page.goto("/");
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
+    await page.evaluate(async () => {
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      let fetches = 0;
+      const panel = document.createElement("matic-map-panel-v0-4-0");
+      panel.panel = { config: { entry_id: "synthetic-entry" } };
+      panel.hass = {
+        connected: true,
+        language: "en",
+        user: { id: "local-user", is_admin: true },
+        states: { "vacuum.synthetic": {
+            state: "docked",
+            attributes: { matic_entry_id: "synthetic-entry", battery_level: 91 },
+        } },
+        fetchWithAuth: async () => {
+          fetches += 1;
+          return new Response('{"entries":[]}', { status: 200,
+            headers: { "Content-Type": "application/json" } });
+        },
+      };
+      document.body.append(panel);
+      for (let attempt = 0; attempt < 5; attempt += 1) await panel.updateComplete;
+      window.__adapterConnectionHarness = { panel, fetchCount: () => fetches };
+    });
+    await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(1);
+
+    await page.evaluate(async () => {
+      const { panel } = window.__adapterConnectionHarness;
+      panel.hass = { ...panel.hass, connection: {} };
+      for (let attempt = 0; attempt < 5; attempt += 1) await panel.updateComplete;
+    });
+    await expect.poll(() => page.evaluate(() => window.__adapterConnectionHarness.fetchCount())).toBe(2);
   });
 
   test("streams a bounded live delta without refetching the full scene", async ({ page }) => {
@@ -3567,7 +3995,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     }));
 
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -3701,7 +4129,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__deltaPanel.remove());
   });
 
-  test("retains a verified same-floor scene while a new revision is built", async ({ page }) => {
+  test("retains a verified same-floor scene while a new revision is built @safety", async ({ page }) => {
     const first = syntheticScene("Current room", 10);
     const second = syntheticScene("Updated room", 24);
     let revision = 1;
@@ -3789,7 +4217,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -3899,7 +4327,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       );
     });
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       let sceneRequests = 0;
@@ -4030,10 +4458,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(result.samples.some((sample) => sample.available && sample.scene !== "ready")).toBe(false);
   });
 
-  test("routes Stop through the server even when the catalog has no managed plan", async ({ page }) => {
+  test("routes Stop through the server even when the catalog has no managed plan @safety", async ({ page }) => {
     const scene = syntheticScene("Direct room", 18);
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const calls = [];
@@ -4135,9 +4563,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => window.__directStop.calls[0][2].include_unmanaged)).toBe(true);
   });
 
-  test("fails motion closed when the private catalog reports managed work", async ({ page }) => {
+  test("fails motion closed when the private catalog reports managed work @safety", async ({ page }) => {
     await page.goto("/");
-    await page.addScriptTag({ url: "/map_studio_v4/index.js", type: "module" });
+    await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async () => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");
       const panel = document.createElement("matic-map-panel-v0-4-0");
@@ -4194,7 +4622,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       locked: window.__managedPanel.getWorkspaceSnapshot().managedLock,
     }))).toEqual({ catalog: "ready", locked: true });
     expect(await page.evaluate(async () => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       return module.canStartMotion(window.__managedPanel.getWorkspaceSnapshot());
     })).toBe(false);
   });
@@ -4219,7 +4647,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await page.evaluate((direction) => { document.documentElement.dir = direction; }, dir);
     await page.addScriptTag({
       type: "module",
-      content: 'import * as module from "/map_studio_v4/index.js"; window.__phoneModule = module;',
+      content: 'import * as module from "/map_studio_v4-review/review.js"; window.__phoneModule = module;',
     });
     await page.evaluate(async ({ tag, selectedScenario }) => {
       await customElements.whenDefined(tag);
@@ -4629,7 +5057,7 @@ for (const activity of ["docked", "idle"]) {
     test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page);
       await page.evaluate(async ({ tag, activity, betweenLegs }) => {
-        const module = await import("/map_studio_v4/index.js");
+        const module = await import("/map_studio_v4-review/review.js");
         const state = module.createGalleryState("ready");
         document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
           managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
@@ -4646,7 +5074,7 @@ for (const ordered of [false, true]) {
   test(`mixed-settings guidance respects ${ordered ? "saved order" : "rotation"}`, async ({ page }) => {
     const gallery = await loadGallery(page);
     await page.evaluate(async ({ tag, ordered }) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const state = module.createGalleryState("ready");
       document.querySelector(tag).replaceWorkspaceState({ ...state, workflow: "plan", planDraft: {
         ...state.planDraft, runBehavior: ordered ? "ordered" : "intelligent", rooms: [
@@ -4733,7 +5161,7 @@ for (const width of [1024, 1100]) {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page, { scenario: "rooms" });
     await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4/index.js");
+      const module = await import("/map_studio_v4-review/review.js");
       const state = module.createGalleryState("rooms");
       document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
         selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });

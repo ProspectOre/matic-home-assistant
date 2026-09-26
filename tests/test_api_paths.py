@@ -36,6 +36,7 @@ from custom_components.matic_robot.client.exceptions import (
     CannotConnectError,
     CertificateMismatchError,
     EndpointUnsupportedError,
+    MaticError,
     PairingModeRequiredError,
 )
 from custom_components.matic_robot.client.mission import MissionClientState
@@ -1659,6 +1660,8 @@ def test_decode_cleaning_session_skips_unusable_room_entries() -> None:
 async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._async_send_channel_payload = AsyncMock()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"")
+    client._async_wait_for_coverage_readback = AsyncMock()
     with caplog.at_level("DEBUG"):
         await client.async_send_user_command(UserCommand.STOP)
     assert "Requesting Matic user command STOP" in caplog.text
@@ -1673,6 +1676,7 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
         ["00000000-0000-0000-0000-000000000002"],
         cleaning_mode=CleaningMode.BOTH,
         coverage_setting=CoverageSetting.STANDARD,
+        require_settings_readback=True,
     )
     await client.async_start_custom_coverage(
         FloorPlan(
@@ -1690,6 +1694,37 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
         call.args[0] == "user_command"
         for call in client._async_send_channel_payload.await_args_list
     )
+
+
+@pytest.mark.parametrize(
+    ("identity", "message"),
+    [
+        (None, "identity is unavailable"),
+        (b"existing-session", "requires an idle native session"),
+    ],
+)
+async def test_tracked_coverage_requires_verified_idle_session(identity, message):
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    with pytest.raises(MaticError, match=message):
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.QUICK,
+            require_settings_readback=True,
+        )
+
+    client._async_send_user_payload.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
 
 
 async def test_get_slam_tile_entry_reads_one_rgb_map_entry() -> None:

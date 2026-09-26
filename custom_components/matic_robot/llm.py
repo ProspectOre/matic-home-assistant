@@ -27,7 +27,12 @@ from .const import (
     EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
 )
-from .plans import CleaningPlanManager, leg_groups
+from .plans import (
+    CleaningPlanManager,
+    leg_groups,
+    plan_floor_token,
+    room_cadence_identity,
+)
 
 LLM_API_ID = f"{DOMAIN}_operations"
 LLM_API_NAME = "Matic operations"
@@ -294,6 +299,8 @@ class MaticGetPlanTool(_MaticTool):
         floor_plan = state.floor_plan
         if floor_plan is None or not floor_plan.rooms:
             raise HomeAssistantError("The Matic room map is unavailable")
+        if not runtime.slam_map.floor_plan_is_current(floor_plan):
+            raise HomeAssistantError("The Matic room map is being rechecked")
         serial_number = state.info.serial_number
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
@@ -348,7 +355,23 @@ class MaticGetPlanTool(_MaticTool):
                 }
                 for rank, room in enumerate(rooms, start=1)
             ]
-        groups = leg_groups(chosen, mixed_settings=True)
+        room_identities = {
+            room.id: room_cadence_identity(floor_plan, room.id)
+            for room in floor_plan.rooms
+        }
+        try:
+            effective, cadence_by_room = runtime.cleaning_plans.resolve_cadence(
+                serial_number,
+                plan["id"],
+                chosen,
+                floor_token=plan_floor_token(floor_plan),
+                room_identities=room_identities,
+            )
+        except ValueError as err:
+            raise HomeAssistantError(
+                f"The Matic plan cadence is unavailable: {err}"
+            ) from err
+        groups = leg_groups(effective, mixed_settings=True)
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
@@ -383,6 +406,25 @@ class MaticGetPlanTool(_MaticTool):
                                 "name": room.name,
                                 "cleaning_mode": room.cleaning_mode,
                                 "coverage_setting": room.coverage_setting,
+                                "cadence": cadence_by_room.get(room.room_id),
+                                "cadence_reasons": [
+                                    reason
+                                    for reason, due in (
+                                        (
+                                            "mop_due",
+                                            cadence_by_room.get(room.room_id, {}).get(
+                                                "mop_due"
+                                            ),
+                                        ),
+                                        (
+                                            "coverage_due",
+                                            cadence_by_room.get(room.room_id, {}).get(
+                                                "coverage_due"
+                                            ),
+                                        ),
+                                    )
+                                    if due is True
+                                ],
                             }
                             for room in group
                         ],

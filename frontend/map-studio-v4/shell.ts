@@ -7,6 +7,7 @@ import { isWorkspaceIntent } from "./contracts";
 import type {
   Localize,
   PrimaryAction,
+  ResetCadenceAction,
   WorkspaceIntent,
   WorkspaceState,
   Workflow,
@@ -45,7 +46,6 @@ import {
 } from "./map-canvas";
 import "./map-canvas";
 import "./precision-controls";
-import "./workflow-panel";
 import { translate } from "./localize";
 import { needsDraftConfirmation } from "./draft-navigation";
 import {
@@ -224,11 +224,19 @@ interface DialogPresentation {
   readonly detail: string;
   readonly cancelLabel: string;
   readonly confirmLabel: string;
-  readonly action: "discard" | "delete-plan" | "delete-area" | "stop" | null;
+  readonly action: "discard" | "delete-plan" | "delete-area" | "reset-room-cadence" | "stop" | null;
 }
 
-const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize, plan = false): DialogPresentation | null => {
-  const t = (key: string, fallback: string): string => translate(localize, key, fallback);
+const dialogCopy = (
+  dialog: WorkspaceState["dialog"],
+  localize?: Localize,
+  plan = false,
+  resetRoomName = "room",
+  sharedCadence = false,
+  resetMode: "mop" | "coverage" = "mop",
+): DialogPresentation | null => {
+  const t = (key: string, fallback: string, placeholders?: Record<string, string | number>): string =>
+    translate(localize, key, fallback, placeholders);
   switch (dialog) {
     case "discardDraft":
       return {
@@ -253,6 +261,24 @@ const dialogCopy = (dialog: WorkspaceState["dialog"], localize?: Localize, plan 
         cancelLabel: t("v4_cancel", "Cancel"),
         confirmLabel: t("area_delete", "Delete area"),
         action: "delete-area",
+      };
+    case "confirmResetCadence":
+      return {
+        title: resetMode === "mop"
+          ? t("v4_reset_mop_cadence_title", "Reset mopping progress for {room}?", { room: resetRoomName })
+          : t("v4_reset_coverage_cadence_title", "Reset coverage progress for {room}?", { room: resetRoomName }),
+        detail: sharedCadence
+          ? resetMode === "mop"
+            ? t("v4_reset_shared_mop_cadence_detail", "This clears shared mopping progress for {room} across plans that use its shared schedule. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+            : t("v4_reset_shared_coverage_cadence_detail", "This clears shared coverage progress for {room} across plans that use its shared schedule. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+          : resetMode === "mop"
+            ? t("v4_reset_private_mop_cadence_detail", "This clears mopping progress for {room} in this plan. Coverage progress and saved cleaning history stay unchanged.", { room: resetRoomName })
+            : t("v4_reset_private_coverage_cadence_detail", "This clears coverage progress for {room} in this plan. Mopping progress and saved cleaning history stay unchanged.", { room: resetRoomName }),
+        cancelLabel: t("v4_cancel", "Cancel"),
+        confirmLabel: resetMode === "mop"
+          ? t("v4_reset_mop_cadence_confirm", "Reset mopping progress")
+          : t("v4_reset_coverage_cadence_confirm", "Reset coverage progress"),
+        action: "reset-room-cadence",
       };
     case "confirmStop":
       return {
@@ -297,6 +323,7 @@ export class MaticMapShellV4 extends LitElement {
     _browserFullscreen: { state: true },
     _sheetDetent: { state: true },
     _announcement: { state: true },
+    _workflowLoadFailed: { state: true },
   };
 
   static override styles = shellStyles;
@@ -322,6 +349,7 @@ export class MaticMapShellV4 extends LitElement {
   protected _browserFullscreen = false;
   protected _sheetDetent: SheetDetent = "half";
   protected _announcement = "";
+  protected _workflowLoadFailed = false;
   #resizeObserver: ResizeObserver | null = null;
   #sheetResizeObserver: ResizeObserver | null = null;
   #observedSheet: Element | null = null;
@@ -329,6 +357,7 @@ export class MaticMapShellV4 extends LitElement {
   #workspaceLauncher: HTMLElement | null = null;
   #helpLauncher: HTMLElement | null = null;
   #pendingNavigation: WorkspaceIntent | null = null;
+  #workflowPanelLoad: Promise<void> | null = null;
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
@@ -549,9 +578,9 @@ export class MaticMapShellV4 extends LitElement {
     if (launcher) requestAnimationFrame(() => launcher.focus({ preventScroll: true }));
   }
 
-  #dispatchAction(id: string): void {
+  #dispatchAction(action: string | ResetCadenceAction): void {
     this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
-      detail: { id },
+      detail: typeof action === "string" ? { id: action } : action,
       bubbles: true,
       composed: true,
     }));
@@ -569,6 +598,17 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (presentation.action === "delete-plan" || presentation.action === "delete-area") {
       this.#confirmDelete(presentation.action);
+      return;
+    }
+    if (presentation.action === "reset-room-cadence") {
+      const resetRequest = this.state.cadenceResetRequest;
+      this.#intent({ type: "dismiss-top-layer" });
+      if (resetRequest) this.#dispatchAction({
+        id: "reset-room-cadence",
+        planId: resetRequest.planId,
+        roomId: resetRequest.roomId,
+        mode: resetRequest.mode,
+      });
       return;
     }
     this.#intent({ type: "dismiss-top-layer" });
@@ -1096,12 +1136,45 @@ export class MaticMapShellV4 extends LitElement {
 
   #workflowBody(state: WorkspaceState, narrow: boolean) {
     if (state.workflow === "none") return this.#entry(state, narrow);
+    if (!customElements.get(WORKFLOW_TAG)) {
+      this.#loadWorkflowPanel();
+      if (this._workflowLoadFailed) {
+        return html`<div class="workflow-loading" role="alert">
+          <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
+          <button class="ms-btn ms-btn--secondary" @click=${this.#retryWorkflowPanel}>
+            ${this.#t("v4_retry", "Try again")}
+          </button>
+        </div>`;
+      }
+      return html`<div class="workflow-loading" role="status" aria-live="polite">
+        ${this.#t("v4_workflow_loading", "Loading workspace tools…")}
+      </div>`;
+    }
     return html`<${workflowTag}
       .state=${state}
       .localize=${this.localize}
       @matic-workspace-intent=${this.#captureDialogLauncher}
     ></${workflowTag}>`;
   }
+
+  #loadWorkflowPanel(): void {
+    if (this.#workflowPanelLoad || customElements.get(WORKFLOW_TAG)) return;
+    this._workflowLoadFailed = false;
+    this.#workflowPanelLoad = import("./workflow-panel")
+      .then(() => {
+        this.#workflowPanelLoad = null;
+        this.requestUpdate();
+      })
+      .catch(() => {
+        this.#workflowPanelLoad = null;
+        this._workflowLoadFailed = true;
+      });
+  }
+
+  #retryWorkflowPanel = (): void => {
+    this._workflowLoadFailed = false;
+    this.#loadWorkflowPanel();
+  };
 
   #panel(state: WorkspaceState, narrow: boolean) {
     const workflow = workflowCopy(state, this.localize);
@@ -1195,7 +1268,21 @@ export class MaticMapShellV4 extends LitElement {
     const canToggleWorkspace = state.fullMap || (
       state.host.administrator && state.host.robotCount > 0 && state.map.available
     );
-    const dialog = dialogCopy(state.dialog, this.localize, state.workflow === "plan");
+    const resetRoom = state.cadenceResetRequest
+      ? state.resources.plans.value?.rooms.find((room) => room.roomId === state.cadenceResetRequest?.roomId)
+      : undefined;
+    const resetPlanRoom = state.cadenceResetRequest
+      ? state.resources.plans.value?.plans.find((plan) => plan.id === state.cadenceResetRequest?.planId)
+        ?.rooms.find((room) => room.roomId === state.cadenceResetRequest?.roomId)
+      : undefined;
+    const dialog = dialogCopy(
+      state.dialog,
+      this.localize,
+      state.workflow === "plan",
+      resetRoom?.name || state.cadenceResetRequest?.roomId || "room",
+      resetPlanRoom?.cadence?.scope === "shared",
+      state.cadenceResetRequest?.mode,
+    );
     const sheetOffset = narrow && !state.fullMap ? `--map-sheet-offset:${this._sheetOffset}px` : "--map-sheet-offset:0px";
     const showDrawTools = narrow && state.workflow === "draw";
     const precisionOpen = state.precisionOpen && state.workflow === "draw";

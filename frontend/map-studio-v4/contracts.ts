@@ -1,4 +1,5 @@
 import type { AreaOutline } from "./area-outline";
+import type { ManualRoomSequencePreview } from "./backend-contracts";
 export const MAP_ZOOM_MIN = 100;
 export const MAP_ZOOM_MAX = 1000;
 export const DRAW_BRUSH_MIN_METERS = 0.2;
@@ -60,8 +61,18 @@ export type DialogKind =
   | "discardDraft"
   | "confirmDeletePlan"
   | "confirmDeleteArea"
+  | "confirmResetCadence"
   | "confirmStop"
   | "error";
+
+export interface ResetCadenceAction {
+  readonly id: "reset-room-cadence";
+  readonly planId: string;
+  readonly roomId: string;
+  readonly mode: "mop" | "coverage";
+}
+
+export type WorkspaceAction = { readonly id: string } | ResetCadenceAction;
 
 export interface ResourceStamp {
   readonly entryKey: string;
@@ -124,6 +135,14 @@ export interface WorkspaceResources {
   readonly areas: ResourceState<AreasCatalog>;
 }
 
+export interface AdmittedManualRoomPreview {
+  readonly key: string;
+  readonly generation: number;
+  readonly floorKey: string;
+  readonly missionKey: string;
+  readonly preview: ManualRoomSequencePreview;
+}
+
 export interface PlanDraft {
   readonly id: string | null;
   readonly name: string;
@@ -152,6 +171,7 @@ export interface WorkspaceSelection {
   readonly historyId: string | null;
   readonly roomIds: readonly string[];
   readonly roomSettings: readonly import("./backend-contracts").PlanRoom[];
+  readonly useRoomSchedule: boolean;
   readonly cleaningMode: CleaningMode;
   readonly coverageSetting: CoverageSetting;
   readonly planId: string | null;
@@ -176,6 +196,7 @@ export interface WorkspaceState {
   readonly fullMap: boolean;
   readonly precisionOpen: boolean;
   readonly dialog: DialogKind | null;
+  readonly cadenceResetRequest: { readonly planId: string; readonly roomId: string; readonly mode: "mop" | "coverage" } | null;
   readonly narrowHint: boolean;
   readonly view: MapView;
   readonly appearance: MapAppearance;
@@ -189,6 +210,8 @@ export interface WorkspaceState {
   readonly host: HostState;
   readonly draw: DrawState;
   readonly resources: WorkspaceResources;
+  readonly manualRoomPreview: ResourceState<AdmittedManualRoomPreview>;
+  readonly manualRoomPreviewRetry: number;
   readonly selection: WorkspaceSelection;
   readonly planDraft: PlanDraft;
   readonly areaDraft: AreaDraft;
@@ -250,6 +273,9 @@ export type WorkspaceIntent =
       readonly cleaningMode?: CleaningMode;
       readonly coverageSetting?: CoverageSetting;
     }
+  | { readonly type: "set-use-room-schedule"; readonly value: boolean }
+  | { readonly type: "retry-room-preview" }
+  | { readonly type: "request-room-cadence-reset"; readonly planId: string; readonly roomId: string; readonly mode: "mop" | "coverage" }
   | { readonly type: "set-floor"; readonly floorId: string }
   | { readonly type: "select-entry"; readonly entryId: string }
   | { readonly type: "set-history"; readonly historyId: string | null }
@@ -282,6 +308,7 @@ export interface HassEntityLike {
 }
 
 export interface HassLike {
+  readonly connection?: import("./workspace-transport").WorkspaceConnection;
   readonly connected?: boolean;
   readonly language?: string;
   readonly selectedLanguage?: string;

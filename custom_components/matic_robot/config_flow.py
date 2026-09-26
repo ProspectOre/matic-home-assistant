@@ -42,6 +42,7 @@ from .bluetooth_pairing import (
     BluetoothPasskeyExchange,
     async_request_bluetooth_credential,
 )
+from .cadence import normalize_cadence_policy
 from .client.api import MaticHermesClient
 from .client.auth import HermesCredential, new_hermes_user_id
 from .client.commands import CleaningMode, CoverageSetting
@@ -65,7 +66,12 @@ from .const import (
     DOMAIN,
     SERVICE_TYPE,
 )
-from .plans import MAX_SAVED_PLANS_PER_ROBOT
+from .plans import (
+    MAX_SAVED_PLANS_PER_ROBOT,
+    CadenceBindingError,
+    plan_floor_token,
+    room_cadence_identity,
+)
 from .room_plan_selector import MaticRoomPlanSelector
 from .slam_scene import scene_api_url
 
@@ -1149,6 +1155,23 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             for room in floor_plan.rooms
         ]
 
+    def _room_cadence_bindings(self) -> tuple[str | None, dict[str, str]]:
+        """Bind cadence edits and previews to the active floor when verified."""
+        runtime = self.config_entry.runtime_data
+        floor_plan = runtime.coordinator.data.floor_plan
+        if floor_plan is None:
+            return None, {}
+        slam_map = getattr(runtime, "slam_map", None)
+        if slam_map is not None and not slam_map.floor_plan_is_current(floor_plan):
+            return None, {}
+        return (
+            plan_floor_token(floor_plan),
+            {
+                room.id: room_cadence_identity(floor_plan, room.id)
+                for room in floor_plan.rooms
+            },
+        )
+
     def _plan_options(self) -> list[selector.SelectOptionDict]:
         return [
             selector.SelectOptionDict(
@@ -1336,17 +1359,173 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             for room_id in room_order
         ]
 
-    def _rooms_from_editor(self, user_input: Mapping[str, Any]) -> list[dict[str, str]]:
-        """Build canonical plan rooms in the user-saved order."""
-        return [
+    def _cadence_editor_value(
+        self, plan: Mapping[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return editable cadence records for rooms with a saved policy."""
+        saved_rooms = {
+            str(room["room_id"]): room
+            for room in (plan or {}).get("rooms", [])
+            if isinstance(room, Mapping) and room.get("room_id")
+        }
+        result: list[dict[str, Any]] = []
+        for room_id, room in saved_rooms.items():
+            policy = room.get("cadence")
+            if not isinstance(policy, Mapping):
+                continue
+            try:
+                normalized = normalize_cadence_policy(
+                    policy,
+                    cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
+                    coverage_setting=str(room.get("coverage_setting", "standard")),
+                )
+            except ValueError:
+                # Leave malformed legacy data untouched until the user edits it
+                # through the authoritative Map Studio editor.
+                continue
+            result.append(
+                {
+                    "room_id": room_id,
+                    "enabled": bool(
+                        normalized["mop_every_n"] is not None
+                        or normalized["coverage_every_n"] is not None
+                    ),
+                    "scope": normalized["scope"],
+                    "mop_every_n": normalized["mop_every_n"],
+                    "coverage_every_n": normalized["coverage_every_n"],
+                    "periodic_coverage_setting": normalized[
+                        "periodic_coverage_setting"
+                    ],
+                    "do_mop_next": normalized["do_mop_next"],
+                    "do_coverage_next": normalized["do_coverage_next"],
+                }
+            )
+        return result
+
+    def _cadence_editor_selector(self) -> selector.ObjectSelector:
+        """Build the bounded multi-room cadence editor for the HA options flow."""
+        return selector.ObjectSelector(
             {
-                "room_id": str(room["room_id"]),
-                "cleaning_mode": str(room["cleaning_mode"]),
-                "coverage_setting": str(room["coverage_setting"]),
+                "multiple": True,
+                "fields": {
+                    "room_id": {
+                        "required": True,
+                        "label": "Room",
+                        "selector": self._select(
+                            self._room_options(),
+                        ),
+                    },
+                    "enabled": {
+                        "required": True,
+                        "label": "Enable schedule",
+                        "selector": selector.BooleanSelector(),
+                    },
+                    "scope": {
+                        "required": True,
+                        "label": "Schedule scope",
+                        "selector": self._select(
+                            ["plan", "shared"], translation_key="cadence_scope"
+                        ),
+                    },
+                    "mop_every_n": {
+                        "label": "Mop every N verified cleans",
+                        "selector": selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=1,
+                                max=100,
+                                step=1,
+                                mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                    },
+                    "coverage_every_n": {
+                        "label": "Periodic coverage every N verified cleans",
+                        "selector": selector.NumberSelector(
+                            selector.NumberSelectorConfig(
+                                min=1,
+                                max=100,
+                                step=1,
+                                mode=selector.NumberSelectorMode.BOX,
+                            )
+                        ),
+                    },
+                    "periodic_coverage_setting": {
+                        "label": "Coverage on periodic clean",
+                        "selector": self._select(
+                            ["quick", "standard", "heavy_duty"],
+                            translation_key="coverage_setting",
+                        ),
+                    },
+                    "do_mop_next": {
+                        "label": "Mop on next clean",
+                        "selector": selector.BooleanSelector(),
+                    },
+                    "do_coverage_next": {
+                        "label": "Coverage on next clean",
+                        "selector": selector.BooleanSelector(),
+                    },
+                },
             }
-            for room in user_input["room_editor"]
-            if room["included"]
-        ]
+        )
+
+    def _rooms_from_editor(self, user_input: Mapping[str, Any]) -> list[dict[str, Any]]:
+        """Build canonical plan rooms in the user-saved order."""
+        room_rows = user_input["room_editor"]
+        cadence_rows = user_input.get("cadence_editor", [])
+        cadence_by_room: dict[str, Mapping[str, Any]] = {}
+        for raw in cadence_rows or []:
+            if not isinstance(raw, Mapping):
+                raise ValueError("room cadence must be an object")
+            room_id = str(raw.get("room_id", ""))
+            if not room_id or room_id in cadence_by_room:
+                raise ValueError("room cadence must contain each room once")
+            cadence_by_room[room_id] = raw
+
+        rows_by_room = {
+            str(row["room_id"]): row for row in room_rows if row["included"]
+        }
+        result: list[dict[str, Any]] = []
+        for room_id, row in rows_by_room.items():
+            room: dict[str, Any] = {
+                "room_id": room_id,
+                "cleaning_mode": str(row["cleaning_mode"]),
+                "coverage_setting": str(row["coverage_setting"]),
+            }
+            cadence = cadence_by_room.get(room_id)
+            if cadence is not None:
+                mop_every_n = cadence.get("mop_every_n")
+                coverage_every_n = cadence.get("coverage_every_n")
+                if isinstance(mop_every_n, float) and mop_every_n.is_integer():
+                    mop_every_n = int(mop_every_n)
+                if (
+                    isinstance(coverage_every_n, float)
+                    and coverage_every_n.is_integer()
+                ):
+                    coverage_every_n = int(coverage_every_n)
+                enabled = cadence.get("enabled") is True
+                policy = normalize_cadence_policy(
+                    {
+                        "scope": cadence.get("scope", "plan"),
+                        "mop_every_n": mop_every_n if enabled else None,
+                        "coverage_every_n": coverage_every_n if enabled else None,
+                        "periodic_coverage_setting": cadence.get(
+                            "periodic_coverage_setting", row["coverage_setting"]
+                        )
+                        if enabled
+                        else None,
+                        "do_mop_next": cadence.get("do_mop_next") is True
+                        if enabled
+                        else False,
+                        "do_coverage_next": cadence.get("do_coverage_next") is True
+                        if enabled
+                        else False,
+                    },
+                    cleaning_mode=room["cleaning_mode"],
+                    coverage_setting=room["coverage_setting"],
+                )
+                room["cadence"] = policy
+            result.append(room)
+        return result
 
     def _plan_editor_schema(
         self,
@@ -1375,6 +1554,12 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                 "room_editor",
                 default=defaults.get("room_editor", self._room_editor_value(plan)),
             ): MaticRoomPlanSelector({"rooms": room_config}),
+            vol.Required(
+                "cadence_editor",
+                default=defaults.get(
+                    "cadence_editor", self._cadence_editor_value(plan)
+                ),
+            ): self._cadence_editor_selector(),
         }
         if include_enabled:
             schema[
@@ -1728,35 +1913,46 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             ):
                 errors["base"] = "plan_limit_reached"
             else:
-                rooms = self._rooms_from_editor(user_input)
+                try:
+                    rooms = self._rooms_from_editor(user_input)
+                except ValueError:
+                    rooms = []
+                    errors["base"] = "invalid_plan"
                 if not rooms:
-                    errors["base"] = "no_rooms"
+                    errors.setdefault("base", "no_rooms")
                 else:
-                    self._plan_id = plan_id
-                    await self._manager.async_save_plan(
-                        self._serial_number,
-                        plan_id,
-                        {
-                            "name": user_input["name"],
-                            "enabled": True,
-                            "run_behavior": user_input["run_behavior"],
-                            "rooms": rooms,
-                            "room_order": [
-                                str(room["room_id"])
-                                for room in user_input["room_editor"]
-                            ],
-                            "finish_current_room": bool(
-                                user_input.get("finish_current_room", False)
-                            ),
-                            "finish_current_room_threshold": int(
-                                user_input.get("finish_current_room_threshold", 50)
-                            ),
-                            "return_to_base": user_input["return_to_base"],
-                            "start_timeout": 120,
-                            "completion_timeout": 21600,
-                        },
-                    )
-                    return await self.async_step_plan_menu()
+                    floor_token, room_identities = self._room_cadence_bindings()
+                    try:
+                        await self._manager.async_save_plan(
+                            self._serial_number,
+                            plan_id,
+                            {
+                                "name": user_input["name"],
+                                "enabled": True,
+                                "run_behavior": user_input["run_behavior"],
+                                "rooms": rooms,
+                                "room_order": [
+                                    str(room["room_id"])
+                                    for room in user_input["room_editor"]
+                                ],
+                                "finish_current_room": bool(
+                                    user_input.get("finish_current_room", False)
+                                ),
+                                "finish_current_room_threshold": int(
+                                    user_input.get("finish_current_room_threshold", 50)
+                                ),
+                                "return_to_base": user_input["return_to_base"],
+                                "start_timeout": 120,
+                                "completion_timeout": 21600,
+                            },
+                            floor_token=floor_token,
+                            room_identities=room_identities,
+                        )
+                    except CadenceBindingError:
+                        errors["base"] = "cadence_requires_verified_floor"
+                    else:
+                        self._plan_id = plan_id
+                        return await self.async_step_plan_menu()
         return self.async_show_form(
             step_id="add_plan",
             data_schema=self._plan_editor_schema(user_input or {}),
@@ -1773,9 +1969,13 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
         plan = self._manager.plan(self._serial_number, self._plan_id)
         errors: dict[str, str] = {}
         if user_input is not None:
-            rooms = self._rooms_from_editor(user_input)
+            try:
+                rooms = self._rooms_from_editor(user_input)
+            except ValueError:
+                rooms = []
+                errors["base"] = "invalid_plan"
             if not rooms:
-                errors["base"] = "no_rooms"
+                errors.setdefault("base", "no_rooms")
             else:
                 updated = {
                     **plan,
@@ -1801,10 +2001,20 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     "return_to_base": user_input["return_to_base"],
                 }
                 updated.pop("id", None)
-                await self._manager.async_save_plan(
-                    self._serial_number, self._plan_id, updated, select=False
-                )
-                return await self.async_step_plan_menu()
+                floor_token, room_identities = self._room_cadence_bindings()
+                try:
+                    await self._manager.async_save_plan(
+                        self._serial_number,
+                        self._plan_id,
+                        updated,
+                        select=False,
+                        floor_token=floor_token,
+                        room_identities=room_identities,
+                    )
+                except CadenceBindingError:
+                    errors["base"] = "cadence_requires_verified_floor"
+                else:
+                    return await self.async_step_plan_menu()
         return self.async_show_form(
             step_id="edit_plan",
             data_schema=self._plan_editor_schema(
@@ -1849,8 +2059,13 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
             return await self.async_step_plan_menu()
         room_map = {option["value"]: option["label"] for option in self._room_options()}
         try:
+            floor_token, room_identities = self._room_cadence_bindings()
             preview = self._manager.preview(
-                self._serial_number, room_map, self._plan_id
+                self._serial_number,
+                room_map,
+                self._plan_id,
+                floor_token=floor_token,
+                room_identities=room_identities,
             )
             next_rooms = " → ".join(str(room["name"]) for room in preview["rooms"])
             errors: dict[str, str] = {}

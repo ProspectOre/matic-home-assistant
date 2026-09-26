@@ -580,11 +580,23 @@ def test_source_and_runtime_translations_stay_in_sync() -> None:
     assert (INTEGRATION / "services.yaml").exists()
     assert not (INTEGRATION / "www").exists()
     assert (INTEGRATION / "room_plan_editor.js").exists()
-    assert (INTEGRATION / "map_studio_v4" / "index.js").exists()
-    # The bundle is a single entry with no dynamic imports, so esbuild emits no
-    # chunks. An outdir it never cleans kept an older generation alive, shipping
-    # dead code that still fed the content-addressed URL hash.
-    assert not (INTEGRATION / "map_studio_v4" / "chunks").exists()
+    studio_bundle = INTEGRATION / "map_studio_v4"
+    assert (studio_bundle / "index.js").exists()
+    workflow_chunks = studio_bundle / "chunks"
+    assert workflow_chunks.is_dir()
+    chunk_files = tuple(workflow_chunks.rglob("*.js"))
+    assert chunk_files
+    assert all(path.is_file() for path in chunk_files)
+    assert {path for path in workflow_chunks.rglob("*") if path.is_file()} == set(
+        chunk_files
+    )
+    production_graph = "\n".join(
+        path.read_text() for path in studio_bundle.rglob("*.js")
+    )
+    assert "GALLERY_SCENARIOS" not in production_graph
+    assert "createGalleryState" not in production_graph
+    assert "matic-map-studio-gallery-v0-4-0" not in production_graph
+    assert not (INTEGRATION / "map_studio_v4-review").exists()
 
 
 def test_python_package_includes_home_assistant_runtime_files() -> None:
@@ -603,6 +615,7 @@ def test_python_package_includes_home_assistant_runtime_files() -> None:
     assert "www/*.js" not in package_data
     assert "*.js" in package_data
     assert "map_studio_v4/*.js" in package_data
+    assert "map_studio_v4/**/*.js" in package_data
     assert (INTEGRATION / "manifest.json").exists()
     assert (INTEGRATION / "client" / "matic_intermediate_ca.pem").exists()
 

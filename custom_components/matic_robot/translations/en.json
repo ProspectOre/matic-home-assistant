@@ -617,6 +617,7 @@
       "duplicate_area": "Use a unique area name with at least one letter or number.",
       "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
+      "cadence_requires_verified_floor": "Shared room schedules require the verified live floor. Recheck the map, then save again.",
       "plan_limit_reached": "Delete an existing plan before creating another one.",
       "no_rooms": "Turn on at least one room.",
       "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
@@ -723,11 +724,12 @@
       },
       "add_plan": {
         "title": "Create a cleaning plan",
-        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Optimal.",
+        "description": "Name the plan, pick how it runs, then turn on any of the robot's {room_count} rooms — all settings save together on this screen. Every room starts off; included rooms default to Vacuum and Optimal. Optional room schedules can be private to this plan or shared by participating plans. A new shared schedule starts at zero; joining an existing one adopts its progress. Changing to a new private schedule starts fresh. N=3 applies on the third verified clean.",
         "data": {
           "name": "Plan name",
           "run_behavior": "Cleaning order",
           "room_editor": "Rooms",
+          "cadence_editor": "Optional room schedules",
           "finish_current_room": "Finish the current room when stopping",
           "finish_current_room_threshold": "Finish-room progress threshold",
           "return_to_base": "Return to dock when finished"
@@ -736,6 +738,7 @@
           "name": "Shown in dashboards and automations — for example Away, Weekdays, or Deep clean.",
           "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
+          "cadence_editor": "Intervals are 1–100 verified cleans. Mopping cadence vacuums normally and adds vacuum plus mop when due. Coverage cadence applies the selected coverage on its due clean. You can request each mode on the next clean; partial, failed, stopped, and unverified work does not advance progress.",
           "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
           "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
           "return_to_base": "Dock the robot after the plan finishes."
@@ -743,11 +746,12 @@
       },
       "edit_plan": {
         "title": "Edit cleaning plan",
-        "description": "Changes apply when you save.",
+        "description": "Changes apply when you save. Plan keeps progress private to this plan. Shared for this room is used by participating plans; creating one starts at zero and joining an existing one adopts its progress. Changing to a new private schedule starts fresh. N=3 applies on the third verified clean.",
         "data": {
           "name": "Plan name",
           "run_behavior": "Cleaning order",
           "room_editor": "Rooms",
+          "cadence_editor": "Optional room schedules",
           "enabled": "Plan enabled",
           "finish_current_room": "Finish the current room when stopping",
           "finish_current_room_threshold": "Finish-room progress threshold",
@@ -757,6 +761,7 @@
           "name": "Shown in dashboards, automations, and plan management.",
           "run_behavior": "Intelligent rotation starts with the room least recently confirmed as the current cleaning area, so one unfinished room cannot monopolize short runs. Rejected commands and lingering prior-room state do not change priority. Saved order always runs from top to bottom.",
           "room_editor": "Turn on a room to include it and set its options. The list is the exact order for Run all and saved-order cleaning.",
+          "cadence_editor": "Intervals are 1–100 verified cleans. Mopping cadence vacuums normally and adds vacuum plus mop when due. Coverage cadence applies the selected coverage on its due clean. You can request each mode on the next clean; partial, failed, stopped, and unverified work does not advance progress.",
           "enabled": "Disabled plans stay saved but cannot start.",
           "finish_current_room": "When enabled, stopping the plan may let the active room finish, but never starts the next room.",
           "finish_current_room_threshold": "Estimated progress uses successful managed runs of this room with the same settings. Below this percentage the room stops immediately; at or above it the room finishes. Until a duration is learned, the room finishes. Set 0% to always finish.",
@@ -785,6 +790,12 @@
     }
   },
   "selector": {
+    "cadence_scope": {
+      "options": {
+        "plan": "This plan",
+        "shared": "Shared for this room"
+      }
+    },
     "cleaning_mode": {
       "options": {
         "mop": "Mop",
@@ -1246,6 +1257,36 @@
         "return_to_base": {
           "name": "Return to dock",
           "description": "Return to the dock after the final room."
+        },
+        "use_room_schedule": {
+          "name": "Use shared room schedule",
+          "description": "Use due work from shared room schedules. Tracked cleans advance compatible verified work."
+        },
+        "override_room_schedule": {
+          "name": "Override shared room schedule",
+          "description": "Keep the selected room settings while still tracking compatible shared schedule work."
+        }
+      }
+    },
+    "preview_room_sequence": {
+      "name": "Preview room sequence",
+      "description": "Read the current authoritative room sequence and cadence resolution without starting a clean.",
+      "fields": {
+        "rooms": {
+          "name": "Rooms",
+          "description": "Ordered room objects containing room, cleaning_mode, and coverage_setting."
+        },
+        "return_to_base": {
+          "name": "Return to dock",
+          "description": "Include the dock setting in the preview fingerprint."
+        },
+        "use_room_schedule": {
+          "name": "Use shared room schedule",
+          "description": "Resolve due work from shared room schedules."
+        },
+        "override_room_schedule": {
+          "name": "Override shared room schedule",
+          "description": "Keep selected settings while preserving compatible cadence accounting."
         }
       }
     },
@@ -1316,6 +1357,10 @@
         "plan": {
           "name": "Cleaning plan",
           "description": "Plan name or stable ID. Omit it to use the default plan."
+        },
+        "preview_token": {
+          "name": "Preview token",
+          "description": "Use the token returned by preview_plan to run the accepted saved-plan resolution."
         }
       }
     },
@@ -1350,6 +1395,24 @@
         "all_plans": {
           "name": "Reset history for every plan",
           "description": "Clear intelligent-cleaning history for every plan."
+        }
+      }
+    },
+    "reset_room_cadence": {
+      "name": "Reset room schedule progress",
+      "description": "Resets the selected cadence progress and one-time due settings without changing cleaning history. Omit modes to reset both mopping and coverage.",
+      "fields": {
+        "plan": {
+          "name": "Cleaning plan",
+          "description": "Plan name or stable ID containing the room."
+        },
+        "room_id": {
+          "name": "Room ID",
+          "description": "Stable room ID to reset. Omit this field to reset every scheduled room in the plan."
+        },
+        "modes": {
+          "name": "Cadence types",
+          "description": "Reset mopping, coverage, or both. Omit this field to reset both."
         }
       }
     },

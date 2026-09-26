@@ -9,8 +9,8 @@ from homeassistant.config_entries import ConfigEntryState
 
 from custom_components.matic_robot import async_unload_entry
 from custom_components.matic_robot.const import CONF_SERIAL_NUMBER
+from custom_components.matic_robot.managed_executor import PlanCancelledError
 from custom_components.matic_robot.restart import async_recover_managed_run
-from custom_components.matic_robot.services import PlanCancelledError
 
 # Reuse the synthetic, real CleaningPlanManager state used by restart tests.
 from tests.test_restart import recovery_state as recovery_fixture
@@ -48,7 +48,7 @@ async def test_enabled_reload_preserves_one_managed_run_for_recovery(
         raise PlanCancelledError
 
     with patch(
-        "custom_components.matic_robot.services._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
         side_effect=hold_native_wait,
     ) as executor:
         for _ in range(2 if explicit_reason is None else 1):

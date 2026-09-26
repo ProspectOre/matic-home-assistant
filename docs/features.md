@@ -9,6 +9,7 @@ These are the integration's main additions:
 | --- | --- |
 | Intelligent rotation | Give rooms that have waited longest the first cleaning opportunity on your next run. |
 | Per-room plans | Save a room order with individual vacuum/mop modes and coverage settings; preview the next run. |
+| Room schedules (0.5 development) | Add periodic mopping or coverage with private/shared progress and tracked one-time room cleans. [Guide](room-schedules.md). |
 | Finish-current-room stopping | Stop immediately or finish the active room when its estimated progress reaches your chosen threshold. |
 | Home-driven cleaning | Combine presence, schedules, pet devices, and other Home Assistant triggers with plans or named areas. |
 | Completion events | React to verified room completion and plan outcomes in automations. |

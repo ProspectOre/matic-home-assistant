@@ -136,6 +136,17 @@ _CLEANING_SESSION_MAX_ROOMS = 256
 _MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
 _MIXED_COVERAGE_READBACK_INTERVAL = 0.5
 
+
+def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
+    """Identify the native floor/partition/room set bound to one command."""
+    return (
+        floor.mission_id,
+        floor.partition_protocol_id,
+        floor.partition_id_wire,
+        frozenset((room.id, room.protocol_id, room.id_wire) for room in floor.rooms),
+    )
+
+
 _TELEMETRY_PROPERTIES = (
     "current_version",
     "petwaste_enabled_state",
@@ -1211,19 +1222,28 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         cleaning_mode: CleaningMode,
         coverage_setting: CoverageSetting,
         ordered: bool = False,
+        require_settings_readback: bool = False,
     ) -> None:
         """Start an exact normal-coverage command for local room IDs."""
-        await self._async_send_user_payload(
-            encode_coverage_command(
-                mission_id=floor_plan.mission_id,
-                partition_id=floor_plan.partition_protocol_id,
-                region_ids=region_ids,
-                cleaning_mode=cleaning_mode,
-                coverage_setting=coverage_setting,
-                ordered=ordered,
-            ),
-            command_name="START_COVERAGE",
+        payload = encode_coverage_command(
+            mission_id=floor_plan.mission_id,
+            partition_id=floor_plan.partition_protocol_id,
+            region_ids=region_ids,
+            cleaning_mode=cleaning_mode,
+            coverage_setting=coverage_setting,
+            ordered=ordered,
         )
+        if require_settings_readback:
+            identity = await self.async_get_cleaning_session_identity()
+            if identity is None:
+                raise MaticError("Native task identity is unavailable before coverage")
+            if identity:
+                raise MaticError("Normal coverage requires an idle native session")
+        await self._async_send_user_payload(payload, command_name="START_COVERAGE")
+        if require_settings_readback:
+            await self._async_wait_for_coverage_readback(
+                Counter(coverage_command_goal_signatures(payload)), floor_plan
+            )
 
     async def async_start_mixed_coverage(
         self,
@@ -1287,18 +1307,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     await asyncio.sleep(2)
                 latest = await self.async_get_floor_plan()
 
-                def floor_identity(floor: FloorPlan) -> tuple[object, ...]:
-                    return (
-                        floor.mission_id,
-                        floor.partition_protocol_id,
-                        floor.partition_id_wire,
-                        frozenset(
-                            (room.id, room.protocol_id, room.id_wire)
-                            for room in floor.rooms
-                        ),
-                    )
-
-                if floor_identity(latest) != floor_identity(floor_plan):
+                if _floor_command_identity(latest) != _floor_command_identity(
+                    floor_plan
+                ):
                     raise MaticError("Room map changed before coverage update")
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
@@ -1405,6 +1416,51 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     != expected_identity
                 ):
                     raise MaticError("Native mission changed during coverage readback")
+                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
+
+    async def _async_wait_for_coverage_readback(
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        floor_plan: FloorPlan,
+    ) -> None:
+        """Require the current native task and floor to retain requested goals."""
+        deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
+        observed_identity: bytes | None = None
+        async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
+            while True:
+                identity = await self.async_get_cleaning_session_identity()
+                if identity is None:
+                    raise MaticError("Native task identity became unavailable")
+                if identity:
+                    if observed_identity is None:
+                        observed_identity = identity
+                    elif identity != observed_identity:
+                        raise MaticError(
+                            "Native mission changed during coverage readback"
+                        )
+                    try:
+                        actual_goals = Counter(
+                            coverage_plan_goal_signatures(
+                                await self.async_get_property("coverage_plan")
+                            )
+                        )
+                    except DecodeError:
+                        actual_goals = Counter()
+                    if actual_goals == expected_goals:
+                        if await self.async_get_cleaning_session_identity() != identity:
+                            raise MaticError(
+                                "Native mission changed during coverage readback"
+                            )
+                        latest_floor = await self.async_get_floor_plan()
+                        if _floor_command_identity(
+                            latest_floor
+                        ) != _floor_command_identity(floor_plan):
+                            raise MaticError(
+                                "Room map changed during coverage readback"
+                            )
+                        return
+                if monotonic() >= deadline:
+                    raise MaticError("Robot did not retain requested coverage settings")
                 await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_start_custom_coverage(

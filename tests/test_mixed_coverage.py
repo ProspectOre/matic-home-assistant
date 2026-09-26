@@ -21,6 +21,7 @@ from custom_components.matic_robot.client.commands import (
 )
 from custom_components.matic_robot.client.commands import (
     _wrapped_uuid,
+    encode_coverage_command,
     encode_mixed_coverage_commands,
 )
 from custom_components.matic_robot.client.commands import (
@@ -63,7 +64,13 @@ def coverage(payload):
 
 
 def coverage_plan_from_command(payload, *, drop_goal_index=None):
-    goals = list(bytes_fields(b(coverage(payload), 5), 1))
+    coverage_payload = coverage(payload)
+    goals = [
+        goal
+        for container in bytes_fields(coverage_payload, 5)
+        for field_number in (1, 2)
+        for goal in bytes_fields(container, field_number)
+    ]
     if drop_goal_index is not None:
         goals.pop(drop_goal_index)
     return _field(7, _field(1, b"".join(_field(1, goal) for goal in goals)))
@@ -189,6 +196,121 @@ def test_coverage_plan_readback_matches_full_transmitted_goal_multiset():
 
     assert len(expected) == 12
     assert Counter(readback) == Counter(expected)
+
+
+def _normal_coverage_fixture():
+    floor = FloorPlan(42, PARTITION, b"partition", ())
+    payload = encode_coverage_command(
+        mission_id=42,
+        partition_id=PARTITION,
+        region_ids=ROOMS[:1],
+        cleaning_mode=Mode.VACUUM,
+        coverage_setting=Setting.QUICK,
+    )
+    return floor, payload
+
+
+async def test_normal_coverage_readback_requires_exact_retained_goals():
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    identity = b"managed-native-session"
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[identity, identity]
+    )
+    client.async_get_property = AsyncMock(
+        return_value=coverage_plan_from_command(payload)
+    )
+    client.async_get_floor_plan = AsyncMock(return_value=floor)
+
+    await client._async_wait_for_coverage_readback(
+        Counter(coverage_command_goal_signatures(payload)), floor
+    )
+
+    assert client.async_get_cleaning_session_identity.await_count == 2
+    client.async_get_floor_plan.assert_awaited_once()
+
+
+async def test_normal_coverage_readback_rejects_unavailable_task_identity():
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=None)
+
+    with pytest.raises(MaticError, match="identity became unavailable"):
+        await client._async_wait_for_coverage_readback(
+            Counter(coverage_command_goal_signatures(payload)), floor
+        )
+
+
+async def test_normal_coverage_readback_rejects_a_replaced_task(monkeypatch):
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"first", b"second"]
+    )
+    client.async_get_property = AsyncMock(return_value=b"malformed")
+    clock = iter((0.0, 0.0))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.asyncio.sleep", AsyncMock()
+    )
+
+    with pytest.raises(MaticError, match="mission changed"):
+        await client._async_wait_for_coverage_readback(
+            Counter(coverage_command_goal_signatures(payload)), floor
+        )
+
+
+async def test_normal_coverage_readback_rejects_changed_identity_after_match():
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"first", b"second"]
+    )
+    client.async_get_property = AsyncMock(
+        return_value=coverage_plan_from_command(payload)
+    )
+
+    with pytest.raises(MaticError, match="mission changed during coverage readback"):
+        await client._async_wait_for_coverage_readback(
+            Counter(coverage_command_goal_signatures(payload)), floor
+        )
+
+
+async def test_normal_coverage_readback_rejects_changed_floor():
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"same", b"same"]
+    )
+    client.async_get_property = AsyncMock(
+        return_value=coverage_plan_from_command(payload)
+    )
+    client.async_get_floor_plan = AsyncMock(
+        return_value=FloorPlan(43, PARTITION, b"partition", ())
+    )
+
+    with pytest.raises(MaticError, match="Room map changed"):
+        await client._async_wait_for_coverage_readback(
+            Counter(coverage_command_goal_signatures(payload)), floor
+        )
+
+
+async def test_normal_coverage_readback_mismatch_times_out(monkeypatch):
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture()
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=b"same")
+    client.async_get_property = AsyncMock(return_value=b"malformed")
+    clock = iter((0.0, 9.0))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+    )
+
+    with pytest.raises(MaticError, match="did not retain requested coverage settings"):
+        await client._async_wait_for_coverage_readback(
+            Counter(coverage_command_goal_signatures(payload)), floor
+        )
 
 
 def test_coverage_plan_readback_preserves_missing_goal_as_mismatch():
@@ -1066,7 +1188,9 @@ async def test_entity_rejects_unowned_or_invalid_mixed_parameters(hass, extra):
 async def test_runner_passes_each_rooms_mode_and_setting(hass):
     from homeassistant.core import ServiceCall
 
-    from custom_components.matic_robot.services import _async_dispatch_leg_command
+    from custom_components.matic_robot.managed_executor import (
+        _async_dispatch_leg_command,
+    )
 
     captured = []
 

@@ -37,17 +37,27 @@ from .area_binding import (
     binding_for_area,
 )
 from .area_selector import GeometryTooComplex
+from .cadence import cadence_snapshot, normalize_cadence_policy
+from .cadence_accounting import (
+    apply_verified_cadence as _apply_verified_cadence,
+)
+from .cadence_accounting import (
+    validated_cadence_snapshot as _validated_cadence_snapshot,
+)
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
+from .native_completion import match_single_room_completions
+from .native_completion import native_room_key as _native_room_key
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 5
+STORAGE_MINOR_VERSION = 8
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
 _PLAN_FLOOR_TOKEN_DOMAIN = b"matic-managed-plan-floor-v2\0"
 DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
+NATIVE_COMPLETION_DEDUP_MAX_KEYS = 64
 MAX_SAVED_PLANS_PER_ROBOT = 256
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
@@ -105,6 +115,32 @@ class SavedPlanLimitError(HomeAssistantError):
     """Raised when a robot already has the maximum saved plans."""
 
 
+class CadenceBindingError(ValueError):
+    """Raised when active shared cadence lacks a verified map binding."""
+
+
+@dataclass(frozen=True, slots=True)
+class _PreparedRunReservation:
+    """Freeze every policy that governs one queued managed run."""
+
+    plan_id: str
+    run_id: str
+    rooms: Mapping[str, tuple[str, str | None]]
+    shared_schedule_rooms: frozenset[str]
+    finish_current_room: bool
+    finish_current_room_threshold: int
+
+
+@dataclass(frozen=True, slots=True)
+class _CadenceMutation:
+    """Describe the persisted cadence rows currently being written."""
+
+    plan_id: str
+    plan_room_ids: frozenset[str]
+    shared_room_ids: frozenset[str]
+    deletes_plan: bool = False
+
+
 @dataclass(frozen=True, slots=True)
 class CleaningRoom:
     """One mapped room and its saved cleaning preferences."""
@@ -158,6 +194,32 @@ def plan_floor_token(floor_plan: FloorPlan) -> str:
         add(id_wire)
         add(protocol_id)
         add(room_id)
+    return digest.hexdigest()
+
+
+def room_cadence_identity(floor_plan: FloorPlan, room_id: str) -> str:
+    """Bind cadence to robot-owned floor and room IDs, excluding room labels.
+
+    Mission, partition, and native room identity prevent a reused room ID on
+    another mapped floor from inheriting progress. Geometry and names remain
+    free to change without affecting the schedule identity.
+    """
+    room = next(
+        (candidate for candidate in floor_plan.rooms if candidate.id == room_id), None
+    )
+    if room is None:
+        raise ValueError("room is not present on the current map")
+    digest = hashlib.sha256(b"matic-room-cadence-identity-v1\0")
+    digest.update(struct.pack(">q", floor_plan.mission_id))
+    for value in (
+        floor_plan.partition_id_wire,
+        floor_plan.partition_protocol_id.encode(),
+        room.id_wire,
+        room.protocol_id.encode(),
+        room.id.encode(),
+    ):
+        digest.update(struct.pack(">I", len(value)))
+        digest.update(value)
     return digest.hexdigest()
 
 
@@ -251,6 +313,12 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
                             _migrate_room_opportunity(record)
                 if old_minor_version < 5:
                     robot.setdefault("last_run", None)
+                if old_minor_version < 6:
+                    robot.setdefault("shared_room_cadence", {})
+                if old_minor_version < 7:
+                    robot.setdefault("plan_room_cadence", {})
+                if old_minor_version < 8:
+                    robot.setdefault("native_completion_dedup", [])
         return old_data
 
 
@@ -296,6 +364,8 @@ class CleaningPlanManager:
         self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
         self._stop_fences: dict[str, float] = {}
+        self._prepared_runs: dict[str, _PreparedRunReservation] = {}
+        self._pending_cadence_mutations: dict[str, dict[object, _CadenceMutation]] = {}
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -371,6 +441,37 @@ class CleaningPlanManager:
                 and last_run.get("outcome") == "running"
                 and isinstance(last_run.get("recovery_checkpoint"), dict)
             )
+            if recoverable and isinstance(last_run, dict):
+                checkpoint = last_run["recovery_checkpoint"]
+                room_records = checkpoint.get("rooms", [])
+                self.restore_prepared_run(
+                    str(serial_number),
+                    str(last_run["plan_id"]),
+                    str(last_run["run_id"]),
+                    [
+                        str(room["room_id"])
+                        for room in room_records
+                        if isinstance(room, Mapping) and room.get("room_id")
+                    ],
+                    checkpoint.get("cadence_by_room")
+                    if isinstance(checkpoint.get("cadence_by_room"), Mapping)
+                    else None,
+                    finish_current_room=(
+                        checkpoint.get("finish_current_room")
+                        if isinstance(checkpoint.get("finish_current_room"), bool)
+                        else None
+                    ),
+                    finish_current_room_threshold=(
+                        checkpoint.get("finish_current_room_threshold")
+                        if isinstance(
+                            checkpoint.get("finish_current_room_threshold"), int
+                        )
+                        and not isinstance(
+                            checkpoint.get("finish_current_room_threshold"), bool
+                        )
+                        else None
+                    ),
+                )
             if (
                 active
                 and recoverable
@@ -408,6 +509,177 @@ class CleaningPlanManager:
     def lock(self, serial_number: str) -> asyncio.Lock:
         """Return the single-flight plan lock for one robot."""
         return self._locks.setdefault(serial_number, asyncio.Lock())
+
+    @callback
+    def reserve_prepared_run(
+        self,
+        serial_number: str,
+        plan_id: str,
+        run_id: str,
+        room_ids: Iterable[str],
+        cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
+        *,
+        finish_current_room: bool | None = None,
+        finish_current_room_threshold: int | None = None,
+    ) -> None:
+        """Reserve queued room cadence before the executor's first await."""
+        existing = self._prepared_runs.get(serial_number)
+        if existing is not None:
+            if existing.run_id == run_id:
+                return
+            raise HomeAssistantError("A managed cadence run already owns the robot")
+        plan = self._robot(serial_number)["plans"].get(plan_id, {})
+        stop_enabled, stop_threshold = _managed_stop_policy(plan)
+        if finish_current_room is not None:
+            stop_enabled = finish_current_room
+        if finish_current_room_threshold is not None:
+            stop_threshold = _bounded_stop_threshold(finish_current_room_threshold)
+        normalized_room_ids = tuple(dict.fromkeys(str(room_id) for room_id in room_ids))
+        snapshots = cadence_by_room if isinstance(cadence_by_room, Mapping) else {}
+        plan_rooms = {
+            str(room.get("room_id")): room
+            for room in plan.get("rooms", [])
+            if isinstance(room, Mapping) and room.get("room_id")
+        }
+        reservations: dict[str, tuple[str, str | None]] = {}
+        shared_schedule_rooms: set[str] = set()
+        for room_id in normalized_room_ids:
+            raw = plan_rooms.get(room_id, {})
+            policy = raw.get("cadence") if isinstance(raw, Mapping) else None
+            snapshot = snapshots.get(room_id)
+            scope = snapshot.get("scope") if isinstance(snapshot, Mapping) else None
+            if scope not in {"plan", "shared"}:
+                scope = (
+                    policy.get("scope")
+                    if isinstance(policy, Mapping)
+                    and policy.get("scope") in {"plan", "shared"}
+                    else "plan"
+                )
+            identity = (
+                snapshot.get("identity") if isinstance(snapshot, Mapping) else None
+            )
+            if not isinstance(identity, str):
+                identity = (
+                    raw.get("cadence_identity")
+                    if isinstance(raw, Mapping)
+                    and isinstance(raw.get("cadence_identity"), str)
+                    else None
+                )
+            if identity is None and scope == "shared":
+                schedule = self._robot(serial_number)["shared_room_cadence"].get(
+                    room_id
+                )
+                if isinstance(schedule, Mapping) and isinstance(
+                    schedule.get("identity"), str
+                ):
+                    identity = schedule["identity"]
+            reservations[room_id] = (str(scope), identity)
+            if scope == "shared" or (
+                isinstance(snapshot, Mapping)
+                and snapshot.get("shared_schedule_participating") is True
+            ):
+                shared_schedule_rooms.add(room_id)
+        for mutation in self._pending_cadence_mutations.get(serial_number, {}).values():
+            if mutation.plan_id == plan_id and (
+                mutation.deletes_plan
+                or set(reservations).intersection(mutation.plan_room_ids)
+            ):
+                raise HomeAssistantError("Queued room cadence is being saved")
+            if shared_schedule_rooms.intersection(mutation.shared_room_ids):
+                raise HomeAssistantError("Queued shared cadence is being saved")
+        self._prepared_runs[serial_number] = _PreparedRunReservation(
+            plan_id,
+            run_id,
+            reservations,
+            frozenset(shared_schedule_rooms),
+            stop_enabled,
+            stop_threshold,
+        )
+
+    @callback
+    def restore_prepared_run(
+        self,
+        serial_number: str,
+        plan_id: str,
+        run_id: str,
+        room_ids: Iterable[str],
+        cadence_by_room: Mapping[str, Mapping[str, Any]] | None = None,
+        *,
+        finish_current_room: bool | None = None,
+        finish_current_room_threshold: int | None = None,
+    ) -> None:
+        """Restore ownership from the durable recovery checkpoint."""
+        if room_ids:
+            self.reserve_prepared_run(
+                serial_number,
+                plan_id,
+                run_id,
+                room_ids,
+                cadence_by_room,
+                finish_current_room=finish_current_room,
+                finish_current_room_threshold=finish_current_room_threshold,
+            )
+
+    @callback
+    def release_prepared_run(self, serial_number: str, run_id: str) -> None:
+        """Release only the reservation owned by the finishing managed run."""
+        reservation = self._prepared_runs.get(serial_number)
+        if reservation is not None and reservation.run_id == run_id:
+            self._prepared_runs.pop(serial_number, None)
+
+    @callback
+    def prepared_run_stop_policy(
+        self, serial_number: str, run_id: str
+    ) -> tuple[bool, int]:
+        """Read the stop policy captured during prepared-run admission."""
+        reservation = self._prepared_runs.get(serial_number)
+        if reservation is None or reservation.run_id != run_id:
+            raise HomeAssistantError("Managed run does not own its prepared policy")
+        return (
+            reservation.finish_current_room,
+            reservation.finish_current_room_threshold,
+        )
+
+    def _begin_cadence_mutation(
+        self,
+        serial_number: str,
+        mutation: _CadenceMutation,
+    ) -> object:
+        token = object()
+        self._pending_cadence_mutations.setdefault(serial_number, {})[token] = mutation
+        return token
+
+    def _end_cadence_mutation(self, serial_number: str, token: object) -> None:
+        pending = self._pending_cadence_mutations.get(serial_number)
+        if pending is None:
+            return
+        pending.pop(token, None)
+        if not pending:
+            self._pending_cadence_mutations.pop(serial_number, None)
+
+    def _assert_cadence_reservation_edit_allowed(
+        self,
+        serial_number: str,
+        plan_id: str,
+        plan_room_ids: Iterable[str],
+        shared_room_ids: Iterable[str],
+        *,
+        deletes_plan: bool = False,
+    ) -> None:
+        reservation = self._prepared_runs.get(serial_number)
+        if reservation is None:
+            return
+        changed_plan_rooms = set(plan_room_ids)
+        changed_shared_rooms = set(shared_room_ids)
+        reserved_shared_rooms = reservation.shared_schedule_rooms
+        if reservation.plan_id == plan_id and (
+            deletes_plan or changed_plan_rooms.intersection(reservation.rooms)
+        ):
+            raise ValueError("room cadence is reserved by the queued managed run")
+        if changed_shared_rooms.intersection(reserved_shared_rooms):
+            raise ValueError(
+                "shared room cadence is reserved by the queued managed run"
+            )
 
     def native_history_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize native-history persistence without claiming plan ownership."""
@@ -765,6 +1037,8 @@ class CleaningPlanManager:
         self._listeners.pop(serial_number, None)
         self._stop_fences.pop(serial_number, None)
         self._reconciliation_removal_pending.discard(serial_number)
+        self._prepared_runs.pop(serial_number, None)
+        self._pending_cadence_mutations.pop(serial_number, None)
 
     @asynccontextmanager
     async def external_motion(self, serial_number: str) -> AsyncIterator[int]:
@@ -857,19 +1131,24 @@ class CleaningPlanManager:
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
-        plan = robot["plans"].get(active["plan_id"], {})
-        if not plan.get("finish_current_room", False):
+        frozen_policy = active if _has_frozen_stop_policy(active) else None
+        last_run = robot.get("last_run")
+        checkpoint = (
+            last_run.get("recovery_checkpoint")
+            if isinstance(last_run, Mapping)
+            and last_run.get("run_id") == active.get("run_id")
+            else None
+        )
+        if frozen_policy is None and _has_frozen_stop_policy(checkpoint):
+            frozen_policy = checkpoint
+        if frozen_policy is None:
+            frozen_policy = robot["plans"].get(active["plan_id"], {})
+        finish_current_room, threshold = _managed_stop_policy(frozen_policy)
+        if not finish_current_room:
             fence_new_motion()
             self.cancel(serial_number)
             self._cancellation_reasons.setdefault(serial_number, "managed_stop")
             return PlanStopDecision("immediate")
-
-        try:
-            threshold = max(
-                0, min(100, int(plan.get("finish_current_room_threshold", 50)))
-            )
-        except TypeError, ValueError:
-            threshold = 50
         record = (
             robot["rotations"]
             .get(active["plan_id"], {})
@@ -915,7 +1194,7 @@ class CleaningPlanManager:
     @callback
     def pending_native_reconciliation(
         self, serial_number: str
-    ) -> dict[str, str] | None:
+    ) -> dict[str, Any] | None:
         """Return a copy of the exact late-completion marker, when present."""
         pending = _validated_native_reconciliation(
             self._robot(serial_number).get("pending_native_reconciliation")
@@ -946,7 +1225,7 @@ class CleaningPlanManager:
                 before = deepcopy(robot)
                 records = tuple(records)
                 changed = _import_native_room_activity(robot, floor_plan, records)
-                reconciled: list[dict[str, str]] = []
+                reconciled: list[dict[str, Any]] = []
                 changed = (
                     _reconcile_pending_native_history(
                         robot, floor_plan, records, on_reconciled=reconciled.append
@@ -1107,28 +1386,344 @@ class CleaningPlanManager:
         plan: Mapping[str, Any],
         *,
         select: bool = True,
+        floor_token: str | None = None,
+        room_identities: Mapping[str, str] | None = None,
     ) -> None:
         """Create or replace a validated room-native plan definition."""
         robot = self._robot(serial_number)
+        before = deepcopy(robot)
         plans = robot["plans"]
         if plan_id not in plans and len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
             raise SavedPlanLimitError(
                 "A Matic robot can have at most "
                 f"{MAX_SAVED_PLANS_PER_ROBOT} saved plans"
             )
-        plans[plan_id] = deepcopy(dict(plan))
+        saved_plan = deepcopy(dict(plan))
+        prior_rooms = {
+            str(room.get("room_id")): room
+            for room in plans.get(plan_id, {}).get("rooms", [])
+            if isinstance(room, Mapping) and room.get("room_id")
+        }
+        normalized_rooms: list[dict[str, Any]] = []
+        shared_updates: list[tuple[str, dict[str, Any]]] = []
+        reset_private_progress: set[str] = set()
+        binding_error: CadenceBindingError | None = None
+        shared_cadence = self._robot(serial_number).get("shared_room_cadence", {})
+        room_identities = room_identities or {}
+
+        def valid_binding_token(value: object) -> bool:
+            """Accept only tokens produced by the native binding helpers."""
+            return (
+                isinstance(value, str)
+                and len(value) == 64
+                and all(char in "0123456789abcdef" for char in value)
+            )
+
+        for raw_room in saved_plan.get("rooms", []):
+            if not isinstance(raw_room, Mapping):
+                raise ValueError("plan contains an invalid room")
+            room = deepcopy(dict(raw_room))
+            room_id = str(room.get("room_id", ""))
+            inherited = prior_rooms.get(room_id, {})
+            identity = room_identities.get(room_id) or inherited.get("cadence_identity")
+            if (
+                room_identities.get(room_id)
+                and inherited.get("cadence_identity")
+                and room_identities[room_id] != inherited["cadence_identity"]
+            ):
+                reset_private_progress.add(room_id)
+            prior_cadence = (
+                self._robot(serial_number)["plan_room_cadence"]
+                .get(plan_id, {})
+                .get(room_id)
+            )
+            if (
+                identity is not None
+                and isinstance(prior_cadence, Mapping)
+                and prior_cadence.get("identity") != identity
+            ):
+                # Legacy progress without a map binding cannot be adopted by
+                # the first verified floor identity during an edit.
+                reset_private_progress.add(room_id)
+            cadence_value = room.get("cadence", inherited.get("cadence"))
+            if cadence_value is not None:
+                policy = normalize_cadence_policy(
+                    cadence_value,
+                    cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
+                    coverage_setting=str(room.get("coverage_setting", "standard")),
+                )
+                schedule = shared_cadence.get(room_id)
+                old_policy = inherited.get("cadence")
+                policy_marker = {
+                    key: value for key, value in policy.items() if key != "scope"
+                }
+                old_marker = (
+                    {
+                        key: value
+                        for key, value in normalize_cadence_policy(
+                            old_policy,
+                            cleaning_mode=str(inherited.get("cleaning_mode", "vacuum")),
+                            coverage_setting=str(
+                                inherited.get("coverage_setting", "standard")
+                            ),
+                        ).items()
+                        if key != "scope"
+                    }
+                    if isinstance(old_policy, Mapping)
+                    else None
+                )
+                if (
+                    policy["scope"] == "shared"
+                    and isinstance(schedule, Mapping)
+                    and isinstance(schedule.get("policy"), Mapping)
+                    and (not identity or schedule.get("identity") in {None, identity})
+                    and (
+                        not isinstance(old_policy, Mapping)
+                        or old_policy.get("scope") != "shared"
+                        or policy_marker == old_marker
+                    )
+                ):
+                    policy = normalize_cadence_policy(
+                        {"scope": "shared", **schedule["policy"]},
+                        cleaning_mode=str(room.get("cleaning_mode", "vacuum")),
+                        coverage_setting=str(room.get("coverage_setting", "standard")),
+                    )
+                elif (
+                    policy["scope"] == "plan"
+                    and isinstance(old_policy, Mapping)
+                    and old_policy.get("scope") == "shared"
+                ):
+                    reset_private_progress.add(room_id)
+                active_shared = policy["scope"] == "shared" and (
+                    policy["mop_every_n"] is not None
+                    or policy["coverage_every_n"] is not None
+                )
+                if active_shared:
+                    bound_identity = room_identities.get(room_id)
+                    has_verified_binding = valid_binding_token(
+                        floor_token
+                    ) and valid_binding_token(bound_identity)
+                    schedule_identity = (
+                        schedule.get("identity")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    schedule_floor = (
+                        schedule.get("floor_token")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    schedule_policy = (
+                        schedule.get("policy")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    previously_bound_shared_room = (
+                        isinstance(old_policy, Mapping)
+                        and old_policy.get("scope") == "shared"
+                        and valid_binding_token(inherited.get("cadence_identity"))
+                        and inherited.get("cadence_identity") == schedule_identity
+                    )
+                    schedule_is_bound = (
+                        valid_binding_token(schedule_identity)
+                        and valid_binding_token(schedule_floor)
+                        and floor_token is None
+                        and bound_identity is None
+                        and previously_bound_shared_room
+                        and isinstance(schedule_policy, Mapping)
+                        and dict(schedule_policy)
+                        == {
+                            key: value
+                            for key, value in policy.items()
+                            if key != "scope"
+                        }
+                    )
+                    if not has_verified_binding and not schedule_is_bound:
+                        binding_error = CadenceBindingError(
+                            "active shared room cadence requires a verified floor "
+                            "and room binding"
+                        )
+                elif policy["scope"] == "shared" and not isinstance(schedule, Mapping):
+                    # A disabled shared policy is retained in the plan for
+                    # compatibility, but it does not create an unbound shared
+                    # schedule that a later run could mistake for durable state.
+                    shared_updates = [
+                        item for item in shared_updates if item[0] != room_id
+                    ]
+                room["cadence"] = policy
+                if identity is not None:
+                    room["cadence_identity"] = identity
+                if policy["scope"] == "shared" and (
+                    active_shared or isinstance(schedule, Mapping)
+                ):
+                    policy_marker = {
+                        key: value for key, value in policy.items() if key != "scope"
+                    }
+                    schedule_policy = (
+                        schedule.get("policy")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    schedule_identity = (
+                        schedule.get("identity")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    schedule_floor = (
+                        schedule.get("floor_token")
+                        if isinstance(schedule, Mapping)
+                        else None
+                    )
+                    if (
+                        not isinstance(schedule_policy, Mapping)
+                        or dict(schedule_policy) != policy_marker
+                        or (identity is not None and schedule_identity != identity)
+                        or (floor_token is not None and schedule_floor != floor_token)
+                    ):
+                        shared_updates.append((room_id, policy))
+            normalized_rooms.append(room)
+        saved_plan["rooms"] = normalized_rooms
+        retained_room_ids = {room["room_id"] for room in normalized_rooms}
+        reset_private_progress.update(set(prior_rooms) - retained_room_ids)
+        changed_plan_rooms = {
+            room_id
+            for room_id in set(prior_rooms).union(
+                room["room_id"] for room in normalized_rooms
+            )
+            if (
+                prior_rooms.get(room_id, {}).get("cadence"),
+                prior_rooms.get(room_id, {}).get("cadence_identity"),
+            )
+            != next(
+                (
+                    (room.get("cadence"), room.get("cadence_identity"))
+                    for room in normalized_rooms
+                    if room["room_id"] == room_id
+                ),
+                None,
+            )
+        }
+        changed_plan_rooms.update(reset_private_progress)
+        changed_shared_rooms = {room_id for room_id, _policy in shared_updates}
+        self._assert_cadence_edit_allowed(
+            serial_number,
+            plan_id,
+            saved_plan,
+            shared_updates,
+            changed_plan_rooms=changed_plan_rooms,
+        )
+        if binding_error is not None:
+            raise binding_error
+        private_records = (
+            self._robot(serial_number)
+            .setdefault("plan_room_cadence", {})
+            .setdefault(plan_id, {})
+        )
+        for room_id in reset_private_progress:
+            private_records.pop(room_id, None)
+        for room_id, policy in shared_updates:
+            room_identity = room_identities.get(room_id)
+            if room_identity is None:
+                room_identity = next(
+                    (
+                        raw.get("cadence_identity")
+                        for raw in normalized_rooms
+                        if raw.get("room_id") == room_id
+                    ),
+                    None,
+                )
+            schedules = self._robot(serial_number).setdefault("shared_room_cadence", {})
+            schedule = schedules.get(room_id)
+            if not isinstance(schedule, dict):
+                schedule = {
+                    "progress": {"mop": 0, "coverage": 0},
+                    "identity": room_identity,
+                }
+                schedules[room_id] = schedule
+            elif (
+                room_identity is not None and schedule.get("identity") != room_identity
+            ):
+                # A reused room ID on a different native floor identity starts
+                # a new shared schedule and cannot inherit ambiguous progress.
+                schedule["progress"] = {"mop": 0, "coverage": 0}
+                schedule["identity"] = room_identity
+            elif floor_token is not None and schedule.get("floor_token") != floor_token:
+                # A verified floor rebind must not carry progress from an
+                # older map whose room identity happened to remain stable.
+                schedule["progress"] = {"mop": 0, "coverage": 0}
+            schedule["policy"] = {
+                key: value for key, value in policy.items() if key != "scope"
+            }
+            if floor_token is not None:
+                schedule["floor_token"] = floor_token
+            schedule["revision"] = min(
+                2_147_483_647, _stored_count(schedule, "revision") + 1
+            )
+        plans[plan_id] = saved_plan
         if select or robot.get("selected_plan") is None:
             robot["selected_plan"] = plan_id
-        await self._async_save_and_notify(serial_number)
+        mutation_token = self._begin_cadence_mutation(
+            serial_number,
+            _CadenceMutation(
+                plan_id,
+                frozenset(changed_plan_rooms),
+                frozenset(changed_shared_rooms),
+            ),
+        )
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, deepcopy(robot))
+            raise
+        finally:
+            self._end_cadence_mutation(serial_number, mutation_token)
 
     async def async_delete_plan(self, serial_number: str, plan_id: str) -> None:
         """Delete one saved plan without deleting unrelated history."""
         robot = self._robot(serial_number)
+        active = robot.get("active_plan")
+        pending = _validated_native_reconciliation(
+            robot.get("pending_native_reconciliation")
+        )
+        if isinstance(active, Mapping) and active.get("plan_id") == plan_id:
+            raise ValueError("plan cannot be deleted while it is running")
+        if pending is not None and pending["plan_id"] == plan_id:
+            raise ValueError(
+                "plan cannot be deleted while completion is being verified"
+            )
+        self._assert_cadence_reservation_edit_allowed(
+            serial_number,
+            plan_id,
+            (
+                str(room.get("room_id"))
+                for room in robot["plans"].get(plan_id, {}).get("rooms", [])
+                if isinstance(room, Mapping) and room.get("room_id")
+            ),
+            (),
+            deletes_plan=True,
+        )
+        before = deepcopy(robot)
+        plan_room_ids = frozenset(
+            str(room.get("room_id"))
+            for room in robot["plans"].get(plan_id, {}).get("rooms", [])
+            if isinstance(room, Mapping) and room.get("room_id")
+        )
         robot["plans"].pop(plan_id, None)
         robot["rotation_resets"].pop(plan_id, None)
+        robot["plan_room_cadence"].pop(plan_id, None)
         if robot.get("selected_plan") == plan_id:
             robot["selected_plan"] = next(iter(robot["plans"]), None)
-        await self._async_save_and_notify(serial_number)
+        mutation_token = self._begin_cadence_mutation(
+            serial_number,
+            _CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True),
+        )
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, deepcopy(robot))
+            raise
+        finally:
+            self._end_cadence_mutation(serial_number, mutation_token)
 
     async def async_select_plan(self, serial_number: str, plan_id: str) -> None:
         """Persist the selected plan used by native entities."""
@@ -1179,24 +1774,43 @@ class CleaningPlanManager:
         serial_number: str,
         room_map: Mapping[str, str],
         plan_id: str | None = None,
+        *,
+        floor_token: str | None = None,
+        room_identities: Mapping[str, str] | None = None,
+        intelligent: bool | None = None,
     ) -> dict[str, Any]:
         """Return the next complete execution order without changing state."""
         plan, rooms = self.rooms_for_plan(serial_number, room_map, plan_id)
-        intelligent = plan.get("run_behavior", "intelligent") == "intelligent"
-        chosen = self.choose(serial_number, plan["id"], rooms) if intelligent else rooms
+        use_intelligent = (
+            plan.get("run_behavior", "intelligent") == "intelligent"
+            if intelligent is None
+            else intelligent
+        )
+        chosen = (
+            self.choose(serial_number, plan["id"], rooms) if use_intelligent else rooms
+        )
+        effective, cadence = self.resolve_cadence(
+            serial_number,
+            plan["id"],
+            chosen,
+            floor_token=floor_token,
+            room_identities=room_identities,
+        )
         return {
             "valid": True,
             "plan_id": plan["id"],
             "plan_name": plan.get("name", plan["id"]),
-            "intelligent": intelligent,
+            "intelligent": use_intelligent,
             "run_behavior": plan.get("run_behavior", "intelligent"),
             "rotation_basis": (
-                "least_recent_opportunity" if intelligent else "saved_order"
+                "least_recent_opportunity" if use_intelligent else "saved_order"
             ),
-            "rooms": [asdict(room) for room in chosen],
+            "rooms": [
+                {**asdict(room), "cadence": cadence[room.room_id]} for room in effective
+            ],
             "rotation": (
                 self.rotation_details(serial_number, plan["id"], rooms)
-                if intelligent
+                if use_intelligent
                 else _saved_order_rotation_details(
                     rooms,
                     {
@@ -1207,7 +1821,7 @@ class CleaningPlanManager:
                     },
                 )
             ),
-            "room_count": len(chosen),
+            "room_count": len(effective),
             "return_to_base": bool(plan.get("return_to_base", True)),
             "finish_current_room": bool(plan.get("finish_current_room", False)),
             "finish_current_room_threshold": int(
@@ -1216,6 +1830,507 @@ class CleaningPlanManager:
             "start_timeout": int(plan.get("start_timeout", 120)),
             "completion_timeout": int(plan.get("completion_timeout", 21600)),
         }
+
+    def resolve_cadence(
+        self,
+        serial_number: str,
+        plan_id: str,
+        rooms: Sequence[CleaningRoom],
+        *,
+        floor_token: str | None = None,
+        room_identities: Mapping[str, str] | None = None,
+        use_shared_schedule: bool = False,
+        apply_due_settings: bool = True,
+    ) -> tuple[list[CleaningRoom], dict[str, dict[str, Any]]]:
+        """Resolve per-room effective settings from one durable policy source."""
+        robot = self._robot(serial_number)
+        plan = robot["plans"].get(plan_id, {})
+        plan_rooms = {
+            str(raw.get("room_id")): raw
+            for raw in plan.get("rooms", [])
+            if isinstance(raw, Mapping) and raw.get("room_id")
+        }
+        schedules = robot.get("shared_room_cadence", {})
+        room_identities = room_identities or {}
+        resolved: list[CleaningRoom] = []
+        snapshots: dict[str, dict[str, Any]] = {}
+        for room in rooms:
+            validation_mode = room.cleaning_mode if apply_due_settings else "vacuum"
+            raw = plan_rooms.get(room.room_id, {})
+            policy_value = raw.get("cadence") if isinstance(raw, Mapping) else None
+            expected_identity = (
+                room_identities.get(room.room_id) if room_identities else None
+            )
+            stored_identity = (
+                raw.get("cadence_identity") if isinstance(raw, Mapping) else None
+            )
+            if (
+                isinstance(stored_identity, str)
+                and expected_identity is not None
+                and stored_identity != expected_identity
+                and isinstance(policy_value, Mapping)
+            ):
+                raise ValueError("room cadence belongs to a different map")
+            policy: dict[str, Any] | None = None
+            progress: Mapping[str, Any] | None = None
+            if (
+                isinstance(policy_value, Mapping)
+                and policy_value.get("scope") == "shared"
+            ):
+                schedule = (
+                    schedules.get(room.room_id)
+                    if isinstance(schedules, Mapping)
+                    else None
+                )
+                if isinstance(schedule, Mapping) and isinstance(
+                    schedule.get("policy"), Mapping
+                ):
+                    if (
+                        expected_identity is not None
+                        and schedule.get("identity") != expected_identity
+                    ):
+                        raise ValueError(
+                            "shared room cadence belongs to a different map"
+                        )
+                    if (
+                        floor_token is not None
+                        and schedule.get("floor_token") is not None
+                        and schedule.get("floor_token") != floor_token
+                    ):
+                        raise ValueError(
+                            "shared room cadence belongs to a different map"
+                        )
+                    policy = normalize_cadence_policy(
+                        {"scope": "shared", **schedule["policy"]},
+                        cleaning_mode=validation_mode,
+                        coverage_setting=room.coverage_setting,
+                    )
+                    progress = schedule.get("progress")
+                elif (
+                    policy_value.get("mop_every_n") is not None
+                    or policy_value.get("coverage_every_n") is not None
+                ):
+                    raise ValueError("shared room cadence is unavailable")
+            elif use_shared_schedule:
+                schedule = (
+                    schedules.get(room.room_id)
+                    if isinstance(schedules, Mapping)
+                    else None
+                )
+                if isinstance(schedule, Mapping) and isinstance(
+                    schedule.get("policy"), Mapping
+                ):
+                    if (
+                        expected_identity is not None
+                        and schedule.get("identity") != expected_identity
+                    ):
+                        raise ValueError(
+                            "shared room cadence belongs to a different map"
+                        )
+                    if (
+                        floor_token is not None
+                        and schedule.get("floor_token") is not None
+                        and schedule.get("floor_token") != floor_token
+                    ):
+                        raise ValueError(
+                            "shared room cadence belongs to a different map"
+                        )
+                    policy = normalize_cadence_policy(
+                        {"scope": "shared", **schedule["policy"]},
+                        cleaning_mode=validation_mode,
+                        coverage_setting=room.coverage_setting,
+                    )
+                    progress = schedule.get("progress")
+            elif isinstance(policy_value, Mapping):
+                policy = normalize_cadence_policy(
+                    policy_value,
+                    cleaning_mode=validation_mode,
+                    coverage_setting=room.coverage_setting,
+                )
+                plan_records = robot["plan_room_cadence"].get(plan_id, {})
+                progress_record = (
+                    plan_records.get(room.room_id, {})
+                    if isinstance(plan_records, Mapping)
+                    else {}
+                )
+                if (
+                    isinstance(progress_record, Mapping)
+                    and expected_identity is not None
+                    and progress_record.get("identity") not in {None, expected_identity}
+                ):
+                    raise ValueError("room cadence progress belongs to a different map")
+                progress = (
+                    progress_record.get("progress")
+                    if isinstance(progress_record, Mapping)
+                    else None
+                )
+            if policy is None:
+                snapshots[room.room_id] = {
+                    "scope": "plan",
+                    "shared_schedule_participating": use_shared_schedule,
+                    "mop_every_n": None,
+                    "coverage_every_n": None,
+                    "periodic_coverage_setting": None,
+                    "mop_progress": 0,
+                    "coverage_progress": 0,
+                    "mop_due": False,
+                    "coverage_due": False,
+                    "effective_cleaning_mode": room.cleaning_mode,
+                    "effective_coverage_setting": room.coverage_setting,
+                    "next_mop_in": None,
+                    "next_coverage_in": None,
+                    "schedule_active": False,
+                }
+                resolved.append(room)
+                continue
+            snapshot = cadence_snapshot(
+                policy,
+                progress,
+                cleaning_mode=room.cleaning_mode,
+                coverage_setting=room.coverage_setting,
+            )
+            snapshot["shared_schedule_participating"] = (
+                use_shared_schedule or snapshot.get("scope") == "shared"
+            )
+            if not apply_due_settings:
+                # A tracked one-off may explicitly keep its chosen settings.
+                # Keep the shared due state in the checkpoint so compatible
+                # verified work can satisfy it, while omitted due work stays due.
+                snapshot["effective_cleaning_mode"] = room.cleaning_mode
+                snapshot["effective_coverage_setting"] = room.coverage_setting
+            snapshot["schedule_active"] = bool(
+                policy["mop_every_n"] is not None
+                or policy["coverage_every_n"] is not None
+            )
+            snapshots[room.room_id] = snapshot
+            resolved.append(
+                CleaningRoom(
+                    room.room_id,
+                    room.name,
+                    str(snapshot["effective_cleaning_mode"]),
+                    str(snapshot["effective_coverage_setting"]),
+                )
+            )
+        return resolved, snapshots
+
+    def cadence_progress(
+        self, serial_number: str, plan_id: str, room_id: str
+    ) -> dict[str, int]:
+        """Return current bounded progress for one room's selected scope."""
+        robot = self._robot(serial_number)
+        plan = robot["plans"].get(plan_id, {})
+        room = next(
+            (
+                item
+                for item in plan.get("rooms", [])
+                if isinstance(item, Mapping) and item.get("room_id") == room_id
+            ),
+            {},
+        )
+        policy = room.get("cadence") if isinstance(room, Mapping) else None
+        if isinstance(policy, Mapping) and policy.get("scope") == "shared":
+            schedule = robot["shared_room_cadence"].get(room_id, {})
+            progress = (
+                schedule.get("progress", {}) if isinstance(schedule, Mapping) else {}
+            )
+        else:
+            records = robot["plan_room_cadence"].get(plan_id, {})
+            record = records.get(room_id, {}) if isinstance(records, Mapping) else {}
+            progress = record.get("progress", {}) if isinstance(record, Mapping) else {}
+        return {
+            "mop": _stored_count(progress, "mop"),
+            "coverage": _stored_count(progress, "coverage"),
+        }
+
+    def cadence_editor_state(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        floor_token: str | None = None,
+        identity: str | None = None,
+        use_shared_schedule: bool = False,
+    ) -> dict[str, Any]:
+        """Project editable policy and effective cadence from one authority."""
+        robot = self._robot(serial_number)
+        raw_room = next(
+            (
+                item
+                for item in robot["plans"].get(plan_id, {}).get("rooms", [])
+                if isinstance(item, Mapping) and item.get("room_id") == room.room_id
+            ),
+            None,
+        )
+        stored_policy = (
+            raw_room.get("cadence") if isinstance(raw_room, Mapping) else None
+        )
+        shared_selected = use_shared_schedule or (
+            isinstance(stored_policy, Mapping)
+            and stored_policy.get("scope") == "shared"
+        )
+        if shared_selected:
+            schedule = robot["shared_room_cadence"].get(room.room_id)
+            if isinstance(schedule, Mapping) and isinstance(
+                schedule.get("policy"), Mapping
+            ):
+                stored_policy = {"scope": "shared", **schedule["policy"]}
+            elif use_shared_schedule:
+                stored_policy = None
+        policy = (
+            normalize_cadence_policy(
+                stored_policy,
+                cleaning_mode=(
+                    str(raw_room.get("cleaning_mode", room.cleaning_mode))
+                    if isinstance(raw_room, Mapping) and not use_shared_schedule
+                    else room.cleaning_mode
+                ),
+                coverage_setting=(
+                    str(raw_room.get("coverage_setting", room.coverage_setting))
+                    if isinstance(raw_room, Mapping) and not use_shared_schedule
+                    else room.coverage_setting
+                ),
+            )
+            if isinstance(stored_policy, Mapping)
+            else None
+        )
+        try:
+            _effective, snapshots = self.resolve_cadence(
+                serial_number,
+                plan_id,
+                [room],
+                floor_token=floor_token,
+                room_identities={room.room_id: identity} if identity else None,
+                use_shared_schedule=use_shared_schedule,
+            )
+        except ValueError as err:
+            message = str(err)
+            reason = (
+                "identity_changed"
+                if "different map" in message
+                else "shared_schedule_unavailable"
+                if "unavailable" in message
+                else "invalid_cadence_policy"
+            )
+            return {
+                "cadence": policy,
+                "cadence_progress": None,
+                "cadence_reasons": [reason],
+            }
+        progress = snapshots[room.room_id]
+        return {
+            "cadence": policy,
+            "cadence_progress": progress,
+            "cadence_reasons": [
+                reason
+                for reason, is_due in (
+                    ("mop_due", progress["mop_due"]),
+                    ("coverage_due", progress["coverage_due"]),
+                )
+                if is_due
+            ],
+        }
+
+    async def async_reset_cadence(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room_ids: Sequence[str] | None = None,
+        *,
+        modes: Sequence[str] | None = None,
+    ) -> None:
+        """Reset selected cadence modes separately from cleaning history.
+
+        Omitting ``modes`` preserves the original full-reset behavior. A caller
+        can reset only mop or coverage cadence while retaining the other
+        counter and its one-time due request.
+        """
+        reset_modes = set(("mop", "coverage") if modes is None else modes)
+        if not reset_modes or reset_modes - {"mop", "coverage"}:
+            raise ValueError("cadence reset modes must be mop and/or coverage")
+        robot = self._robot(serial_number)
+        active = robot.get("active_plan")
+        pending = _validated_native_reconciliation(
+            robot.get("pending_native_reconciliation")
+        )
+        selected = set(room_ids or ())
+        plan = robot["plans"].get(plan_id, {})
+        plan_rooms = {
+            str(room.get("room_id")): room
+            for room in plan.get("rooms", [])
+            if isinstance(room, Mapping) and room.get("room_id")
+        }
+        target_ids = selected or set(plan_rooms)
+        shared_ids = {
+            room_id
+            for room_id in target_ids
+            if isinstance(plan_rooms.get(room_id), Mapping)
+            and isinstance(plan_rooms[room_id].get("cadence"), Mapping)
+            and plan_rooms[room_id]["cadence"].get("scope") == "shared"
+        }
+        if selected - set(plan_rooms):
+            raise ValueError("room is not part of the selected plan")
+        if (
+            isinstance(active, Mapping)
+            and active.get("room_id") in target_ids
+            and (
+                active.get("plan_id") == plan_id or active.get("room_id") in shared_ids
+            )
+        ):
+            raise ValueError("room cadence cannot reset while its plan is running")
+        if (
+            pending is not None
+            and pending["room_id"] in target_ids
+            and (pending["plan_id"] == plan_id or pending["room_id"] in shared_ids)
+        ):
+            raise ValueError(
+                "room cadence cannot reset while completion is being verified"
+            )
+        self._assert_cadence_reservation_edit_allowed(
+            serial_number, plan_id, target_ids, shared_ids
+        )
+        before = deepcopy(robot)
+        private = robot["plan_room_cadence"].setdefault(plan_id, {})
+        shared = robot["shared_room_cadence"]
+        for room_id in target_ids:
+            raw = plan_rooms.get(room_id, {})
+            policy = raw.get("cadence") if isinstance(raw, Mapping) else None
+            if isinstance(policy, Mapping) and policy.get("scope") == "shared":
+                schedule = shared.get(room_id)
+                if isinstance(schedule, dict):
+                    # _robot() has already normalized each persisted progress
+                    # record before this policy mutation begins.
+                    progress = schedule["progress"]
+                    for mode in reset_modes:
+                        progress[mode] = 0
+                    policy = schedule.get("policy")
+                    if isinstance(policy, dict):
+                        for mode in reset_modes:
+                            policy[f"do_{mode}_next"] = False
+            else:
+                record = private.get(room_id)
+                if isinstance(record, dict):
+                    progress = record["progress"]
+                    for mode in reset_modes:
+                        progress[mode] = 0
+                policy = raw.get("cadence") if isinstance(raw, Mapping) else None
+                if isinstance(policy, dict):
+                    for mode in reset_modes:
+                        policy[f"do_{mode}_next"] = False
+        mutation_token = self._begin_cadence_mutation(
+            serial_number,
+            _CadenceMutation(
+                plan_id,
+                frozenset(target_ids - shared_ids),
+                frozenset(shared_ids),
+            ),
+        )
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, deepcopy(robot))
+            raise
+        finally:
+            self._end_cadence_mutation(serial_number, mutation_token)
+
+    def _assert_cadence_edit_allowed(
+        self,
+        serial_number: str,
+        plan_id: str,
+        new_plan: Mapping[str, Any],
+        shared_updates: Sequence[tuple[str, Mapping[str, Any]]],
+        *,
+        changed_plan_rooms: Iterable[str] = (),
+    ) -> None:
+        """Keep policy and frozen run settings stable through reconciliation."""
+        robot = self._robot(serial_number)
+        self._assert_cadence_reservation_edit_allowed(
+            serial_number,
+            plan_id,
+            changed_plan_rooms,
+            (room_id for room_id, _policy in shared_updates),
+        )
+        active = robot.get("active_plan")
+        pending = _validated_native_reconciliation(
+            robot.get("pending_native_reconciliation")
+        )
+        if isinstance(active, Mapping) and active.get("plan_id") == plan_id:
+            active_room_id = active.get("room_id")
+            old_plan = robot["plans"].get(plan_id, {})
+            old_room = next(
+                (
+                    room
+                    for room in old_plan.get("rooms", [])
+                    if isinstance(room, Mapping)
+                    and room.get("room_id") == active_room_id
+                ),
+                None,
+            )
+            new_room = next(
+                (
+                    room
+                    for room in new_plan.get("rooms", [])
+                    if isinstance(room, Mapping)
+                    and room.get("room_id") == active_room_id
+                ),
+                None,
+            )
+            old_binding = (
+                (old_room.get("cadence"), old_room.get("cadence_identity"))
+                if isinstance(old_room, Mapping)
+                else None
+            )
+            new_binding = (
+                (new_room.get("cadence"), new_room.get("cadence_identity"))
+                if isinstance(new_room, Mapping)
+                else None
+            )
+            if old_binding != new_binding:
+                raise ValueError("room cadence cannot change while its plan is running")
+        if pending is not None and pending["plan_id"] == plan_id:
+            room_id = pending["room_id"]
+            old_plan = robot["plans"].get(plan_id, {})
+            old_room = next(
+                (
+                    room
+                    for room in old_plan.get("rooms", [])
+                    if isinstance(room, Mapping) and room.get("room_id") == room_id
+                ),
+                None,
+            )
+            new_room = next(
+                (
+                    room
+                    for room in new_plan.get("rooms", [])
+                    if isinstance(room, Mapping) and room.get("room_id") == room_id
+                ),
+                None,
+            )
+            old_binding = (
+                (old_room.get("cadence"), old_room.get("cadence_identity"))
+                if isinstance(old_room, Mapping)
+                else None
+            )
+            new_binding = (
+                (new_room.get("cadence"), new_room.get("cadence_identity"))
+                if isinstance(new_room, Mapping)
+                else None
+            )
+            if old_binding != new_binding:
+                raise ValueError(
+                    "room cadence cannot change while completion is being verified"
+                )
+        if shared_updates and (
+            (
+                isinstance(active, Mapping)
+                and active.get("room_id") in {room for room, _ in shared_updates}
+            )
+            or (
+                pending is not None
+                and pending["room_id"] in {room for room, _ in shared_updates}
+            )
+        ):
+            raise ValueError("shared room cadence cannot change during a room run")
 
     def rotation_details(
         self,
@@ -1359,10 +2474,19 @@ class CleaningPlanManager:
         trigger: str,
         service: str,
         provenance: str | None = None,
+        finish_current_room: bool | None = None,
+        finish_current_room_threshold: int | None = None,
     ) -> None:
         """Persist the bounded identity and provenance of a managed run."""
         robot = self._robot(serial_number)
         safe_provenance = normalize_run_provenance(provenance or trigger)
+        stop_enabled, stop_threshold = _managed_stop_policy(
+            robot["plans"].get(plan_id, {})
+        )
+        if finish_current_room is not None:
+            stop_enabled = finish_current_room
+        if finish_current_room_threshold is not None:
+            stop_threshold = _bounded_stop_threshold(finish_current_room_threshold)
         robot["last_run"] = {
             "run_id": run_id,
             "plan_id": plan_id,
@@ -1376,6 +2500,8 @@ class CleaningPlanManager:
             "service": service[:128],
             "room_count": max(0, room_count),
             "completed_room_count": 0,
+            "finish_current_room": stop_enabled,
+            "finish_current_room_threshold": stop_threshold,
         }
         await self._async_save_and_notify(serial_number)
 
@@ -1386,7 +2512,9 @@ class CleaningPlanManager:
         checkpoint: dict[str, Any],
     ) -> None:
         """Persist the resolved queue required for safe restart recovery."""
-        last_run = self._robot(serial_number).get("last_run")
+        robot = self._robot(serial_number)
+        before = deepcopy(robot)
+        last_run = robot.get("last_run")
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
             return
         existing = last_run.get("recovery_checkpoint", {})
@@ -1403,7 +2531,11 @@ class CleaningPlanManager:
                 else {}
             ),
         }
-        await self._async_save_and_notify(serial_number)
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, deepcopy(robot))
+            raise
 
     async def async_checkpoint_mixed_session(
         self, serial_number: str, run_id: str, session_identity_hash: str
@@ -1589,7 +2721,13 @@ class CleaningPlanManager:
             robot["active_plan"] = None
         if terminal_activity is not None and not docked:
             last_run["terminal_activity"] = terminal_activity[:64]
-        await self._async_save_and_notify(serial_number)
+        try:
+            await self._async_save_and_notify(serial_number)
+        finally:
+            # A failed save still leaves this in-memory run terminal. If HA
+            # restarts before that write becomes durable, async_load rebuilds
+            # ownership from the persisted checkpoint and run ID.
+            self.release_prepared_run(serial_number, run_id)
         for room in unfinished:
             self.hass.bus.async_fire(
                 f"{DOMAIN}_room_ended_unverified",
@@ -1726,6 +2864,22 @@ class CleaningPlanManager:
                 else None
             ),
         }
+        stop_policy = (
+            last_run
+            if isinstance(last_run, Mapping)
+            and last_run.get("run_id") == run_id
+            and _has_frozen_stop_policy(last_run)
+            else checkpoint
+        )
+        if _has_frozen_stop_policy(stop_policy):
+            robot["active_plan"].update(
+                {
+                    "finish_current_room": stop_policy["finish_current_room"],
+                    "finish_current_room_threshold": _bounded_stop_threshold(
+                        stop_policy["finish_current_room_threshold"]
+                    ),
+                }
+            )
         if run_id is not None:
             robot["active_plan"]["run_id"] = run_id
             if isinstance(checkpoint, dict):
@@ -1751,7 +2905,9 @@ class CleaningPlanManager:
         credit each verified room with the robot's own per-room timing.
         """
         now_value = dt_util.utcnow()
-        run = self._robot(serial_number).get("last_run")
+        robot = self._robot(serial_number)
+        before = deepcopy(robot)
+        run = robot.get("last_run")
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         if (
             isinstance(run, dict)
@@ -1806,8 +2962,16 @@ class CleaningPlanManager:
         if duration is not None and duration > 0:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
-        robot = self._robot(serial_number)
         last_run = robot.get("last_run")
+        cadence_by_room = (
+            checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
+        )
+        cadence_state = (
+            cadence_by_room.get(room.room_id)
+            if isinstance(cadence_by_room, Mapping)
+            else None
+        )
+        _apply_verified_cadence(robot, plan_id, room, cadence_state)
         if (
             isinstance(last_run, dict)
             and last_run.get("outcome") == "running"
@@ -1820,7 +2984,11 @@ class CleaningPlanManager:
                 _stored_count(last_run, "room_count"),
             )
         robot["active_plan"] = None
-        await self._async_save_and_notify(serial_number)
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, deepcopy(robot))
+            raise
 
     async def async_mark_ended_unverified(
         self, serial_number: str, plan_id: str, room: CleaningRoom
@@ -1860,6 +3028,7 @@ class CleaningPlanManager:
                 native_reconciliation, create_expiry=True
             )
             if pending is not None:
+                _attach_cadence_state(robot, pending)
                 robot["pending_native_reconciliation"] = pending
         robot["active_plan"] = None
         await self._async_save_and_notify(serial_number)
@@ -1873,6 +3042,7 @@ class CleaningPlanManager:
         dispatched_at: datetime,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
+        room_identity: str | None = None,
     ) -> bool:
         """Credit a native completion that arrived after managed cleanup.
 
@@ -1899,12 +3069,12 @@ class CleaningPlanManager:
             or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
         ):
             return False
-        record = self._room(serial_number, plan_id, room)
-        if record.get("last_result") == "completed":
+        if _native_reconciliation_was_committed(robot, pending):
             robot.pop("pending_native_reconciliation", None)
             await self._async_save_native_history(serial_number, before)
             self._notify_listeners(serial_number)
             return False
+        record = self._room(serial_number, plan_id, room)
         completed_value = (
             completed_at
             if _latest_timestamp(completed_at) is not None
@@ -1936,6 +3106,15 @@ class CleaningPlanManager:
         if duration is not None:
             global_room["last_duration_seconds"] = duration
         global_room["completed_runs"] = _stored_count(global_room, "completed_runs") + 1
+        _remember_native_reconciliation(robot, pending)
+        _apply_verified_cadence(
+            robot,
+            plan_id,
+            room,
+            pending.get("cadence_state"),
+            current_identity=room_identity,
+            validate_current_identity=True,
+        )
         _repair_native_reconciled_run(robot, pending, plan_id)
         robot.pop("pending_native_reconciliation", None)
         await self._async_save_native_history(serial_number, before)
@@ -1962,8 +3141,13 @@ class CleaningPlanManager:
                 or dt_util.parse_datetime(pending["dispatched_at"]) != dispatched_at
             ):
                 return False
+            before = deepcopy(robot)
             robot.pop("pending_native_reconciliation", None)
-            await self._async_save_and_notify(serial_number)
+            try:
+                await self._async_save_and_notify(serial_number)
+            except Exception, asyncio.CancelledError:
+                _restore_unsaved_changes(robot, before, deepcopy(robot))
+                raise
             return True
 
     async def async_mark_suspended(
@@ -2062,6 +3246,7 @@ class CleaningPlanManager:
                 native_reconciliation, create_expiry=True
             )
             if pending is not None:
+                _attach_cadence_state(robot, pending)
                 robot["pending_native_reconciliation"] = pending
         active = robot.get("active_plan")
         if active is not None:
@@ -2181,9 +3366,32 @@ class CleaningPlanManager:
     def _normalize_robot(robot: dict[str, Any]) -> bool:
         """Repair malformed storage containers without inventing room history."""
         changed = False
-        for key in ("rotations", "rooms", "plans", "areas", "rotation_resets"):
+        for key in (
+            "rotations",
+            "rooms",
+            "plans",
+            "areas",
+            "rotation_resets",
+            "shared_room_cadence",
+            "plan_room_cadence",
+        ):
             if not isinstance(robot.get(key), dict):
                 robot[key] = {}
+                changed = True
+        dedup = robot.get("native_completion_dedup")
+        if not isinstance(dedup, list):
+            robot["native_completion_dedup"] = []
+            changed = True
+        else:
+            normalized_dedup = [
+                key
+                for key in dedup[-NATIVE_COMPLETION_DEDUP_MAX_KEYS:]
+                if isinstance(key, str)
+                and len(key) == 64
+                and all(char in "0123456789abcdef" for char in key)
+            ]
+            if normalized_dedup != dedup:
+                robot["native_completion_dedup"] = normalized_dedup
                 changed = True
         for key in ("rooms", "plans", "areas"):
             records = robot[key]
@@ -2191,6 +3399,45 @@ class CleaningPlanManager:
                 if not isinstance(record, dict):
                     records.pop(record_id)
                     changed = True
+        for plan_id, room_records in tuple(robot["plan_room_cadence"].items()):
+            if not isinstance(room_records, dict):
+                robot["plan_room_cadence"].pop(plan_id)
+                changed = True
+                continue
+            for room_id, record in tuple(room_records.items()):
+                if not isinstance(record, dict):
+                    room_records.pop(room_id)
+                    changed = True
+                    continue
+                progress = record.get("progress")
+                normalized = {
+                    "mop": _stored_count(progress, "mop"),
+                    "coverage": _stored_count(progress, "coverage"),
+                }
+                if progress != normalized:
+                    record["progress"] = normalized
+                    changed = True
+                identity = record.get("identity")
+                if identity is not None and (
+                    not isinstance(identity, str) or len(identity) != 64
+                ):
+                    record.pop("identity", None)
+                    changed = True
+        for room_id, record in tuple(robot["shared_room_cadence"].items()):
+            if not isinstance(record, dict) or not isinstance(
+                record.get("policy"), dict
+            ):
+                robot["shared_room_cadence"].pop(room_id)
+                changed = True
+                continue
+            progress = record.get("progress")
+            normalized = {
+                "mop": _stored_count(progress, "mop"),
+                "coverage": _stored_count(progress, "coverage"),
+            }
+            if progress != normalized:
+                record["progress"] = normalized
+                changed = True
         rotations = robot["rotations"]
         for plan_id, rotation in tuple(rotations.items()):
             if not isinstance(rotation, dict):
@@ -2456,9 +3703,9 @@ def _elapsed_seconds(started: object, now: datetime) -> int | None:
     return max(1, round(elapsed))
 
 
-def _stored_count(record: Mapping[str, Any], key: str) -> int:
+def _stored_count(record: object, key: str) -> int:
     """Return a nonnegative persisted counter or zero."""
-    value = record.get(key)
+    value = record.get(key) if isinstance(record, Mapping) else None
     return (
         value
         if isinstance(value, int) and not isinstance(value, bool) and value >= 0
@@ -2519,7 +3766,7 @@ def _sync_verified_global_room_history(robot: dict[str, Any]) -> bool:
 
 def _validated_native_reconciliation(
     value: object, *, create_expiry: bool = False
-) -> dict[str, str] | None:
+) -> dict[str, Any] | None:
     """Validate the small durable marker used to recover a late native stop."""
     if not isinstance(value, Mapping):
         return None
@@ -2552,7 +3799,7 @@ def _validated_native_reconciliation(
         return None
     cleaning_mode = value.get("cleaning_mode")
     run_id = value.get("run_id")
-    return {
+    result: dict[str, Any] = {
         "plan_id": plan_id,
         "room_id": room_id,
         "room": room,
@@ -2570,9 +3817,71 @@ def _validated_native_reconciliation(
             else {}
         ),
     }
+    cadence_state = _validated_cadence_snapshot(value.get("cadence_state"))
+    if cadence_state is not None:
+        result["cadence_state"] = cadence_state
+    return result
 
 
-def _native_reconciliation_expired(pending: Mapping[str, str]) -> bool:
+def _attach_cadence_state(robot: dict[str, Any], pending: dict[str, Any]) -> None:
+    """Freeze the dispatched schedule into its exact late-history marker."""
+    run = robot.get("last_run")
+    if (
+        not isinstance(run, dict)
+        or run.get("run_id") != pending.get("run_id")
+        or run.get("plan_id") != pending.get("plan_id")
+    ):
+        return
+    checkpoint = run.get("recovery_checkpoint")
+    by_room = (
+        checkpoint.get("cadence_by_room") if isinstance(checkpoint, dict) else None
+    )
+    state = (
+        by_room.get(pending.get("room_id")) if isinstance(by_room, Mapping) else None
+    )
+    cadence_state = _validated_cadence_snapshot(state)
+    if cadence_state is not None:
+        pending["cadence_state"] = cadence_state
+
+
+def _native_reconciliation_key(pending: Mapping[str, Any]) -> str:
+    """Build a bounded opaque key for one room dispatch's native completion."""
+    digest = hashlib.sha256(b"matic-native-reconciliation-v1\0")
+    for value in (
+        str(pending["plan_id"]),
+        str(pending["room_id"]),
+        str(pending.get("run_id", "")),
+        str(pending["dispatched_at"]),
+    ):
+        raw = value.encode("utf-8", "surrogatepass")
+        digest.update(struct.pack(">I", len(raw)))
+        digest.update(raw)
+    return digest.hexdigest()
+
+
+def _native_reconciliation_was_committed(
+    robot: Mapping[str, Any], pending: Mapping[str, Any]
+) -> bool:
+    """Check dispatch-scoped deduplication, never a room's unrelated history."""
+    keys = robot.get("native_completion_dedup")
+    return isinstance(keys, list) and _native_reconciliation_key(pending) in keys
+
+
+def _remember_native_reconciliation(
+    robot: dict[str, Any], pending: Mapping[str, Any]
+) -> None:
+    """Retain a bounded completion receipt alongside native plan history."""
+    keys = robot.setdefault("native_completion_dedup", [])
+    if not isinstance(keys, list):
+        keys = []
+        robot["native_completion_dedup"] = keys
+    key = _native_reconciliation_key(pending)
+    if key not in keys:
+        keys.append(key)
+        del keys[:-NATIVE_COMPLETION_DEDUP_MAX_KEYS]
+
+
+def _native_reconciliation_expired(pending: Mapping[str, Any]) -> bool:
     """Return whether a durable late-completion marker passed its fixed window."""
     return _native_reconciliation_remaining_seconds(pending) <= 0
 
@@ -2588,7 +3897,7 @@ def _stop_fence_remaining_seconds(value: object) -> float | None:
 
 
 def _native_reconciliation_remaining_seconds(
-    pending: Mapping[str, str],
+    pending: Mapping[str, Any],
 ) -> float:
     """Return wall-clock seconds left for durable stop reconciliation."""
     expires_at = cast(datetime, dt_util.parse_datetime(pending["expires_at"]))
@@ -2600,7 +3909,7 @@ def _reconcile_pending_native_history(
     floor_plan: FloorPlan,
     records: Iterable[CleaningSessionRecord],
     *,
-    on_reconciled: Callable[[dict[str, str]], None] | None = None,
+    on_reconciled: Callable[[dict[str, Any]], None] | None = None,
 ) -> bool:
     """Apply exactly one retained native completion to a pending plan room."""
     pending = _validated_native_reconciliation(
@@ -2623,63 +3932,53 @@ def _reconcile_pending_native_history(
     )
     if room is None:
         return False
-    target = _native_room_key(room.name)
-    now = dt_util.utcnow()
-    matches: list[tuple[CleaningSessionRecord, str, int]] = []
-    for record in records:
-        session = record.session
-        vacuum_proven = pending.get("cleaning_mode") == "vacuum" and target in {
-            _native_room_key(name) for name in session.vacuum_completed_rooms
-        }
-        if (
-            not session.mode_results
-            and session.completed is not True
-            and not vacuum_proven
-        ):
-            continue
-        started = dt_util.parse_datetime(session.started_at or "")
-        ended = dt_util.parse_datetime(session.ended_at or "")
-        if (
-            started is None
-            or ended is None
-            or started > ended
-            or ended < dispatched_at
-            or ended > now
-        ):
-            continue
-        native_rooms = tuple(_native_room_key(name) for name in session.rooms)
-        if native_rooms != (target,):
-            continue
-        completed_rooms = {
-            _native_room_key(name)
-            for name in session.completed_rooms_for_mode(pending.get("cleaning_mode"))
-        }
-        if target not in completed_rooms:
-            continue
-        duration = next(
-            (
-                value
-                for name, value in session.room_durations_for_mode(
-                    pending.get("cleaning_mode")
-                )
-                if _native_room_key(name) == target
-                and isinstance(value, int)
-                and not isinstance(value, bool)
-                and value > 0
-            ),
-            None,
-        )
-        if duration is not None and isinstance(session.ended_at, str):
-            matches.append((record, session.ended_at, duration))
+    matches = match_single_room_completions(
+        records,
+        room_name=room.name,
+        cleaning_mode=cast(str | None, pending.get("cleaning_mode")),
+        dispatched_at=dispatched_at,
+        now=dt_util.utcnow(),
+        legacy_policy="room_list",
+    )
     if len(matches) != 1:
         return False
+    if _native_reconciliation_was_committed(robot, pending):
+        # A prior write may have committed the room before the pending marker
+        # was removed. Clear that stale marker without adding history or
+        # cadence credit a second time.
+        _repair_native_reconciled_run(robot, pending, pending["plan_id"])
+        robot.pop("pending_native_reconciliation", None)
+        if on_reconciled is not None:
+            on_reconciled(pending)
+        return True
     _record_native_completion(
         robot,
         pending["plan_id"],
         room,
-        completed_at=matches[0][1],
-        duration_seconds=matches[0][2],
+        completed_at=matches[0].ended_at,
+        duration_seconds=matches[0].duration_seconds,
     )
+    _remember_native_reconciliation(robot, pending)
+    cadence_state = pending.get("cadence_state")
+    if isinstance(cadence_state, Mapping):
+        cadence_room = CleaningRoom(
+            room.id,
+            room.name,
+            str(cadence_state["effective_cleaning_mode"]),
+            str(cadence_state["effective_coverage_setting"]),
+        )
+        try:
+            current_identity = room_cadence_identity(floor_plan, room.id)
+        except ValueError:
+            current_identity = None
+        _apply_verified_cadence(
+            robot,
+            pending["plan_id"],
+            cadence_room,
+            cadence_state,
+            current_identity=current_identity,
+            validate_current_identity=True,
+        )
     _repair_native_reconciled_run(robot, pending, pending["plan_id"])
     robot.pop("pending_native_reconciliation", None)
     if on_reconciled is not None:
@@ -2688,7 +3987,7 @@ def _reconcile_pending_native_history(
 
 
 def _repair_native_reconciled_run(
-    robot: dict[str, Any], pending: Mapping[str, str], plan_id: str
+    robot: dict[str, Any], pending: Mapping[str, Any], plan_id: str
 ) -> None:
     """Repair the matching managed run after a late native completion."""
     last_run = robot.get("last_run")
@@ -2812,11 +4111,6 @@ def _import_native_room_activity(
             global_room.update(updates)
             changed = True
     return changed
-
-
-def _native_room_key(value: str) -> str:
-    """Return a stable comparison key for native and mapped room names."""
-    return " ".join(value.strip().casefold().split()).removeprefix("the ")
 
 
 def _rotation_sort_key(candidate: _RotationCandidate) -> tuple[bool, float, int]:
@@ -2988,6 +4282,33 @@ def _estimated_progress(active: object, expected: object) -> int | None:
         return None
     elapsed = _active_elapsed_seconds(active, dt_util.utcnow())
     return max(0, min(100, math.floor((elapsed / expected) * 100)))
+
+
+def _bounded_stop_threshold(value: object) -> int:
+    """Normalize a persisted room-finish threshold to its supported range."""
+    try:
+        return max(0, min(100, int(cast(Any, value))))
+    except TypeError, ValueError:
+        return 50
+
+
+def _managed_stop_policy(value: object) -> tuple[bool, int]:
+    """Read one saved or frozen managed-run stop policy."""
+    if not isinstance(value, Mapping):
+        return False, 50
+    return (
+        bool(value.get("finish_current_room", False)),
+        _bounded_stop_threshold(value.get("finish_current_room_threshold", 50)),
+    )
+
+
+def _has_frozen_stop_policy(value: object) -> bool:
+    """Distinguish new frozen run state from legacy checkpoints."""
+    return (
+        isinstance(value, Mapping)
+        and isinstance(value.get("finish_current_room"), bool)
+        and "finish_current_room_threshold" in value
+    )
 
 
 def resolve_room_reference(

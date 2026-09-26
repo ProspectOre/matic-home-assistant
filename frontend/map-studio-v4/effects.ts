@@ -2,6 +2,7 @@ import type {
   HassProjection,
   PanelLike,
   ResourceStamp,
+  ResetCadenceAction,
   WorkspaceState,
   Workflow,
 } from "./contracts";
@@ -10,6 +11,7 @@ import {
   type HistoryFloor,
   type HistorySnapshot,
   type MapEntry,
+  type ManualRoomSequencePreview,
   type PlanRoom,
   type SavedArea,
 } from "./backend-contracts";
@@ -20,12 +22,20 @@ import {
   canResumeMotion,
   canStartMotion,
   canStopMotion,
+  admittedManualRoomPreview,
   CoherenceMachine,
   initialWorkspaceState,
   draftForPlan,
+  manualRoomPreviewKey,
   WorkspaceStore,
 } from "./state";
 import { PreferenceStore, type MapPreferences } from "./preferences";
+import { WorkspaceTransport, type WorkspaceConnection } from "./workspace-transport";
+
+// Transport switchover remains disabled until snapshot parity and performance
+// evidence are recorded. The lifecycle is wired so enabling it is one policy
+// change rather than a second state path.
+export const WORKSPACE_TRANSPORT_ENABLED = false;
 
 const resource = <T>(
   status: "idle" | "loading" | "ready" | "empty" | "error",
@@ -88,6 +98,23 @@ const RECONNECT_NOTICE = "Reconnecting. The last verified map remains read only.
 const POSE_POLL_INTERVAL_MS = 1_000;
 const READ_ONLY_WORKFLOWS: readonly Workflow[] = ["rooms", "plans", "plan", "draw", "areaReview"];
 
+interface ManualPreviewCapture {
+  readonly key: string;
+  readonly generation: number;
+  readonly retryRevision: number;
+  readonly floorKey: string;
+  readonly missionKey: string;
+  readonly entryId: string;
+  readonly entityId: string;
+  readonly rooms: readonly { readonly room: string; readonly cleaning_mode: PlanRoom["cleaningMode"]; readonly coverage_setting: PlanRoom["coverageSetting"] }[];
+  readonly overrideRoomSchedule: boolean;
+}
+
+const manualPreviewValue = (preview: ManualRoomSequencePreview): string => JSON.stringify({
+  ...preview,
+  previewToken: undefined,
+});
+
 const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => {
   if (floor.label) return floor.label;
   if (floor.active) return "Current floor";
@@ -109,6 +136,7 @@ export class EffectController {
   #catalogLoading = false;
   #catalogForceInFlight = false;
   #catalogRefreshQueued = false;
+  #catalogRefreshQueuedPreserveGeneration = false;
   #catalogSettled: Promise<void> = Promise.resolve();
   #poseLoading = false;
   #poseQueued = false;
@@ -117,10 +145,121 @@ export class EffectController {
   #preferenceUser = "";
   #disposed = false;
   #hostConnected = true;
+  #workspaceTransport: WorkspaceTransport | null = null;
+  #workspaceTransportEntry: string | null = null;
+  #workspaceFence: { entryId: string; epoch: string; sequence: number; coherenceGeneration: number; revisions: Readonly<Record<string, number>> } | null = null;
+  #manualPreviewUnsubscribe: (() => void) | null = null;
+  #manualPreviewRequestIdentity = "";
+  #manualPreviewPreflight = false;
+  readonly #workspaceConnection: WorkspaceConnection | null;
+  readonly #workspaceTransportEnabled: boolean;
 
-  constructor(store: WorkspaceStore, backend: MaticBackend) {
+  constructor(store: WorkspaceStore, backend: MaticBackend, workspaceConnection: WorkspaceConnection | null = null, workspaceTransportEnabled = WORKSPACE_TRANSPORT_ENABLED) {
     this.#store = store;
     this.#backend = backend;
+    this.#workspaceConnection = workspaceConnection;
+    this.#workspaceTransportEnabled = workspaceTransportEnabled;
+    this.#manualPreviewUnsubscribe = store.subscribe(() => this.#reconcileManualRoomPreview());
+  }
+
+  #manualPreviewCapture(state: WorkspaceState): ManualPreviewCapture | null {
+    const key = manualRoomPreviewKey(state);
+    const entry = state.resources.entry;
+    const entityId = this.#projection?.vacuumEntityId;
+    if (!key || !entry || !entityId || !state.selection.entryId || state.workflow !== "rooms"
+      || state.dataMode !== "live" || state.floor.readOnly || state.coherence !== "current"
+      || !state.host.connected || !state.host.administrator || !state.host.robotConnected
+      || state.command !== "idle" || state.resources.plans.status !== "ready") return null;
+    const rooms = state.selection.roomIds.map((roomId) => {
+      const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
+      return settings ? {
+        room: roomId,
+        cleaning_mode: settings.cleaningMode,
+        coverage_setting: settings.coverageSetting,
+      } : null;
+    });
+    if (rooms.some((room) => room === null)) return null;
+    return {
+      key,
+      generation: state.generation,
+      retryRevision: state.manualRoomPreviewRetry,
+      floorKey: entryFloorKey(entry),
+      missionKey: entryMissionKey(entry),
+      entryId: state.selection.entryId,
+      entityId,
+      rooms: rooms as ManualPreviewCapture["rooms"],
+      overrideRoomSchedule: !state.selection.useRoomSchedule,
+    };
+  }
+
+  #manualPreviewIdentity(capture: ManualPreviewCapture): string {
+    return JSON.stringify([capture.key, capture.generation, capture.retryRevision, capture.floorKey, capture.missionKey, capture.entryId, capture.entityId]);
+  }
+
+  #manualPreviewCaptureCurrent(capture: ManualPreviewCapture): boolean {
+    const current = this.#manualPreviewCapture(this.#store.value);
+    return !this.#disposed && current !== null
+      && this.#manualPreviewIdentity(current) === this.#manualPreviewIdentity(capture);
+  }
+
+  #reconcileManualRoomPreview(): void {
+    if (this.#disposed) return;
+    // The store listener fires in the constructor, before sync supplies the
+    // owning HA projection. Preserve seeded gallery state until that boundary.
+    if (!this.#projection) return;
+    const state = this.#store.value;
+    const capture = this.#manualPreviewCapture(state);
+    if (!capture) {
+      const active = this.#controllers.get("room-preview");
+      active?.abort();
+      this.#controllers.delete("room-preview");
+      this.#manualPreviewRequestIdentity = "";
+      if (state.manualRoomPreview.status !== "idle" || state.manualRoomPreview.value !== null) {
+        this.#store.patch({ manualRoomPreview: resource("idle", null) });
+      }
+      return;
+    }
+    const identity = this.#manualPreviewIdentity(capture);
+    const admitted = admittedManualRoomPreview(state);
+    if (admitted && admitted.key === capture.key && admitted.generation === capture.generation
+      && admitted.floorKey === capture.floorKey && admitted.missionKey === capture.missionKey
+      && admitted.preview.entryId === capture.entryId) {
+      this.#manualPreviewRequestIdentity = identity;
+      return;
+    }
+    if (this.#manualPreviewRequestIdentity === identity) return;
+    this.#controllers.get("room-preview")?.abort();
+    this.#manualPreviewRequestIdentity = identity;
+    const controller = this.#controller("room-preview");
+    this.#store.patch({ manualRoomPreview: resource("loading", null) });
+    void this.#loadManualRoomPreview(capture, controller);
+  }
+
+  async #loadManualRoomPreview(capture: ManualPreviewCapture, controller: AbortController): Promise<ManualRoomSequencePreview | null> {
+    try {
+      const preview = await this.#backend.previewRoomSequence(
+        capture.entityId,
+        capture.rooms,
+        capture.overrideRoomSchedule,
+        controller.signal,
+      );
+      if (!this.#manualPreviewCaptureCurrent(capture) || controller.signal.aborted
+        || preview.entryId !== capture.entryId) return null;
+      this.#store.patch({ manualRoomPreview: resource("ready", {
+        key: capture.key,
+        generation: capture.generation,
+        floorKey: capture.floorKey,
+        missionKey: capture.missionKey,
+        preview,
+      }) });
+      return preview;
+    } catch (error) {
+      if (isAbort(error) || controller.signal.aborted || !this.#manualPreviewCaptureCurrent(capture)) return null;
+      this.#store.patch({ manualRoomPreview: resource("error", null, problemCode(error, "preview-unavailable")) });
+      return null;
+    } finally {
+      this.#release("room-preview", controller);
+    }
   }
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
@@ -129,12 +268,16 @@ export class EffectController {
     if (owner && (owner.entryKey !== projection.entryKey
       || owner.userKey !== projection.userKey)) {
       this.#clearPrivate("context-changed");
-      if (this.#catalogLoading) this.#catalogRefreshQueued = true;
+      if (this.#catalogLoading) {
+        this.#catalogRefreshQueued = true;
+        this.#catalogRefreshQueuedPreserveGeneration = false;
+      }
     }
     const wasConnected = this.#hostConnected;
     this.#hostConnected = projection.host.connected;
     this.#projection = projection;
     this.#panel = panel;
+    this.#syncWorkspaceTransport(projection);
     this.#store.patch({
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
@@ -163,6 +306,7 @@ export class EffectController {
     if (!projection.host.connected) {
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
+      this.#catalogRefreshQueuedPreserveGeneration = false;
       this.#poseQueued = false;
       this.#abortResources();
       const state = this.#store.value;
@@ -207,6 +351,234 @@ export class EffectController {
     if (this.#store.value.resources.catalog.status === "idle"
       || (projection.entryKey && projection.entryKey !== this.#store.value.selection.entryId)) {
       void this.refreshCatalog(true);
+    }
+  }
+
+  #syncWorkspaceTransport(projection: HassProjection): void {
+    const entryId = projection.entryKey;
+    if (!this.#workspaceTransportEnabled || !this.#workspaceConnection || !projection.host.administrator
+      || !projection.host.connected || !entryId) {
+      this.#workspaceTransport?.dispose();
+      this.#workspaceTransport = null;
+      this.#workspaceTransportEntry = null;
+      this.#workspaceFence = null;
+      return;
+    }
+    if (this.#workspaceTransport && this.#workspaceTransportEntry === entryId) return;
+    this.#workspaceTransport?.dispose();
+    this.#workspaceFence = null;
+    const transport = new WorkspaceTransport(this.#workspaceConnection, {
+      entryId,
+      onEvent: (event) => {
+        // A disposed subscription can still have a queued callback. Its entry
+        // scope must match both the active projection and current transport.
+        if (this.#disposed || this.#workspaceTransport !== transport
+          || this.#workspaceTransportEntry !== entryId
+          || this.#projection?.entryKey !== entryId) return;
+        if (event.type === "resync" && event.reason === "entry_removed") {
+          transport.dispose();
+          if (this.#workspaceTransport === transport) {
+            this.#workspaceTransport = null;
+            this.#workspaceTransportEntry = null;
+            this.#workspaceFence = null;
+          }
+          return;
+        }
+        if (event.type === "snapshot") {
+          const { snapshot } = event;
+          const entry = this.#store.value.resources.entry;
+          const projectedEntry = snapshot.payload.entry;
+          if (snapshot.entry_id !== entryId
+            || snapshot.identity.entry_id !== entryId) return;
+          if (projectedEntry && (projectedEntry.entryId !== entryId
+            || snapshot.identity.floor_verified
+              !== (projectedEntry.mapFloorCoherent && projectedEntry.mapSessionVerified))) {
+            transport.requestResync("invalid_message");
+            return;
+          }
+          if (!projectedEntry && entry?.entryId === entryId
+            && snapshot.identity.floor_verified
+              !== (entry.mapFloorCoherent && entry.mapSessionVerified)) return;
+          if (snapshot.status.reason === "authorization") {
+            this.#workspaceFence = null;
+            return;
+          }
+          const previous = this.#workspaceFence;
+          let changedResources: string[] = [];
+          const epochChanged = previous !== null && previous.epoch !== snapshot.epoch;
+          if (previous && previous.epoch === snapshot.epoch) {
+            const resourceNames = new Set([...Object.keys(previous.revisions), ...Object.keys(snapshot.revisions)]);
+            const regressed = [...resourceNames].some((resource) =>
+              (snapshot.revisions[resource] ?? -1) < (previous.revisions[resource] ?? -1));
+            if (snapshot.coherence_generation < previous.coherenceGeneration
+              || (snapshot.coherence_generation === previous.coherenceGeneration && regressed)) {
+              transport.requestResync("restart");
+              return;
+            }
+            changedResources = [...resourceNames].filter((resource) =>
+              (snapshot.revisions[resource] ?? -1) > (previous.revisions[resource] ?? -1));
+          }
+          if (epochChanged) changedResources = ["plans", "areas", "history"];
+          const spatialFenceChanged = previous !== null
+            && (previous.epoch !== snapshot.epoch
+              || previous.coherenceGeneration !== snapshot.coherence_generation);
+          const projectionIdentityChanged = Boolean(entry && projectedEntry
+            && entry.entryId === entryId && entryIdentity(entry) !== entryIdentity(projectedEntry));
+          this.#workspaceFence = { entryId: snapshot.entry_id, epoch: snapshot.epoch,
+            sequence: snapshot.sequence, coherenceGeneration: snapshot.coherence_generation,
+            revisions: snapshot.revisions };
+          if (spatialFenceChanged || projectionIdentityChanged) {
+            this.#refreshSpatialBoundary(entryId, changedResources);
+            return;
+          }
+          const projectionApplied = projectedEntry !== null
+            && entry?.entryId === entryId
+            && this.#applyCatalogProjection(projectedEntry);
+          if (previous && changedResources.length) {
+            if (snapshot.sequence <= previous.sequence) {
+              transport.requestResync("invalid_message");
+              return;
+            }
+            this.#workspaceFence = previous;
+            this.#acceptWorkspaceInvalidation({
+              epoch: snapshot.epoch,
+              sequence: snapshot.sequence,
+              coherence_generation: snapshot.coherence_generation,
+              revisions: snapshot.revisions,
+              resources: changedResources,
+            }, entryId, transport, projectionApplied);
+          }
+          return;
+        }
+        if (event.type === "resync") {
+          this.#workspaceFence = null;
+          if (event.reason !== "authorization") {
+            // A restart or sequence gap makes every REST-backed workspace
+            // cache potentially stale, even if the catalog identity is stable.
+            this.#refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
+          }
+          return;
+        }
+        this.#acceptWorkspaceInvalidation(event.invalidation, entryId, transport);
+      },
+      onError: () => this.#store.patch({ notice: { tone: "warning", text: RECONNECT_NOTICE } }),
+    });
+    this.#workspaceTransport = transport;
+    this.#workspaceTransportEntry = entryId;
+    void transport.start();
+  }
+
+  #acceptWorkspaceInvalidation(
+    invalidation: import("./workspace-transport").WorkspaceInvalidation,
+    entryId: string,
+    transport: WorkspaceTransport,
+    catalogProjectionFresh = false,
+  ): void {
+    const fence = this.#workspaceFence;
+    if (!fence || fence.entryId !== entryId || this.#workspaceTransport !== transport
+      || invalidation.epoch !== fence.epoch || invalidation.sequence <= fence.sequence) return;
+    const generationChanged = invalidation.coherence_generation !== fence.coherenceGeneration;
+    const revisionNames = new Set([...Object.keys(fence.revisions), ...Object.keys(invalidation.revisions)]);
+    const revisionsRegressed = [...revisionNames].some((resource) =>
+      (invalidation.revisions[resource] ?? -1) < (fence.revisions[resource] ?? -1));
+    if (invalidation.coherence_generation < fence.coherenceGeneration
+      || (!generationChanged && revisionsRegressed)) {
+      transport.requestResync("restart");
+      return;
+    }
+    const resources = new Set(invalidation.resources);
+    const changed = [...resources].some((resource) =>
+      (invalidation.revisions[resource] ?? -1) > (fence.revisions[resource] ?? -1));
+    this.#workspaceFence = { ...fence, sequence: invalidation.sequence,
+      coherenceGeneration: invalidation.coherence_generation, revisions: invalidation.revisions };
+    if (!changed && !generationChanged) return;
+    if (generationChanged || resources.has("scene")) {
+      this.#refreshSpatialBoundary(entryId, invalidation.resources);
+      return;
+    }
+    const entry = this.#store.value.resources.entry;
+    const stamp = this.#coherence.current();
+    if (!entry || entry.entryId !== entryId || !stamp) return;
+    // Each REST loader validates its own entry/generation boundary and owns
+    // the typed visible resource. These invalidations never touch the canvas.
+    this.#loadWorkspaceResources(entry, stamp, resources, !catalogProjectionFresh);
+  }
+
+  #applyCatalogProjection(projectedEntry: MapEntry): boolean {
+    const state = this.#store.value;
+    const currentEntry = state.resources.entry;
+    if (!currentEntry || entryIdentity(currentEntry) !== entryIdentity(projectedEntry)) return false;
+    const catalog = state.resources.catalog;
+    const rows = catalog.value?.map((entry) =>
+      entry.entryId === projectedEntry.entryId ? projectedEntry : entry);
+    const coherent = projectedEntry.mapFloorCoherent && projectedEntry.mapSessionVerified;
+    const degraded = projectedEntry.health === "problem" || projectedEntry.health === "limited";
+    this.#store.patch({
+      managedLock: entryManagedLock(projectedEntry),
+      coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
+      map: {
+        ...state.map,
+        available: state.resources.scene.value !== null,
+        complete: projectedEntry.mapComplete && !projectedEntry.mapTruncated,
+        floorCoherent: projectedEntry.mapFloorCoherent,
+        sessionVerified: projectedEntry.mapSessionVerified,
+        exactPose: coherent ? state.map.exactPose : false,
+      },
+      floor: {
+        ...state.floor,
+        classifiedCount: Math.max(1, projectedEntry.historyFloorCount),
+      },
+      resources: {
+        ...state.resources,
+        entry: projectedEntry,
+        ...(rows ? { catalog: { ...catalog, value: rows } } : {}),
+      },
+    });
+    return true;
+  }
+
+  #invalidateSpatialFence(): void {
+    const generation = this.#coherence.invalidate();
+    const state = this.#store.value;
+    this.#store.patch({ generation, coherence: state.resources.scene.value ? "verifying" : "unavailable",
+      map: { ...state.map, exactPose: false } });
+    // Invalidate the generation before aborting requests so no completion from
+    // the old floor/scene can become visible while REST revalidates identity.
+    this.#abortResources(["catalog"]);
+    this.#entryIdentity = "";
+  }
+
+  #refreshSpatialBoundary(entryId: string, invalidated: readonly string[] = []): void {
+    this.#invalidateSpatialFence();
+    void this.refreshCatalog(true, true).then(() => {
+      if (this.#disposed || this.#projection?.entryKey !== entryId
+        || !this.#projection.host.administrator || !this.#projection.host.connected) return;
+      const entry = this.#store.value.resources.entry;
+      const stamp = this.#coherence.current();
+      if (!entry || entry.entryId !== entryId || !stamp) return;
+      const resources = new Set(invalidated);
+      // A new live generation already reloads history through its owner.
+      resources.delete("history");
+      // The catalog read above already refreshed runner and coordinator state.
+      this.#loadWorkspaceResources(entry, stamp, resources, false);
+    });
+  }
+
+  #loadWorkspaceResources(
+    entry: MapEntry,
+    stamp: ResourceStamp,
+    resources: ReadonlySet<string>,
+    refreshCatalogProjection = true,
+  ): void {
+    if (resources.has("plans") || resources.has("plan_state")) void this.loadPlans();
+    if (resources.has("areas")) void this.loadAreas();
+    if (resources.has("history")) void this.#loadHistory(entry, stamp);
+    if (refreshCatalogProjection
+      && ["status", "robot_state", "activity", "plan_state"].some((resourceName) => resources.has(resourceName))) {
+      // These lightweight catalog fields own runner locks and verified
+      // operational state. Refresh them without changing spatial generation;
+      // floor and scene changes use the separate coherence boundary above.
+      void this.refreshCatalog(true, true, true);
     }
   }
 
@@ -296,6 +668,7 @@ export class EffectController {
         plans: resource("idle", null),
         areas: resource("idle", null),
       },
+      manualRoomPreview: resource("idle", null),
       map: {
         available: false,
         complete: false,
@@ -312,18 +685,36 @@ export class EffectController {
     });
   }
 
-  async refreshCatalog(force = false): Promise<void> {
+  async refreshCatalog(
+    force = false,
+    queueForcedFollowup = false,
+    preserveGeneration = false,
+  ): Promise<void> {
     if (this.#disposed
       || !this.#projection?.host.administrator
       || !this.#projection.host.connected
       || this.#projection.host.robotCount === 0) return;
     if (this.#catalogLoading) {
-      if (force && !this.#catalogForceInFlight) {
-        // A robot switch or reconnect must supersede a stale reattach read.
-        // Abort the old request and let its finally block start one forced
-        // refresh after the loading guard has been released.
-        this.#catalogRefreshQueued = true;
-        this.#controllers.get("catalog")?.abort();
+      if (force) {
+        // Coalesce any number of stream invalidations into exactly one
+        // follow-up read. An older non-forced attach read is superseded now;
+        // a forced read is allowed to settle before its queued successor.
+        if (!this.#catalogForceInFlight) {
+          if (!this.#catalogRefreshQueued) {
+            this.#catalogRefreshQueuedPreserveGeneration = preserveGeneration;
+          } else {
+            this.#catalogRefreshQueuedPreserveGeneration &&= preserveGeneration;
+          }
+          this.#catalogRefreshQueued = true;
+          this.#controllers.get("catalog")?.abort();
+        } else if (queueForcedFollowup) {
+          if (!this.#catalogRefreshQueued) {
+            this.#catalogRefreshQueuedPreserveGeneration = preserveGeneration;
+          } else {
+            this.#catalogRefreshQueuedPreserveGeneration &&= preserveGeneration;
+          }
+          this.#catalogRefreshQueued = true;
+        }
       }
       return this.#catalogSettled;
     }
@@ -379,7 +770,7 @@ export class EffectController {
       }
       if (this.#store.value.selection.floorId !== "current" && !force) return;
       const identity = entryIdentity(selected);
-      if (!force && identity === this.#entryIdentity) {
+      if ((!force || preserveGeneration) && identity === this.#entryIdentity) {
         const state = this.#store.value;
         const coherent = selected.mapFloorCoherent && selected.mapSessionVerified;
         const degraded = selected.health === "problem" || selected.health === "limited";
@@ -438,11 +829,13 @@ export class EffectController {
       this.#release("catalog", controller);
       this.#catalogLoading = false;
       const forceQueued = this.#catalogRefreshQueued;
+      const preserveQueuedGeneration = this.#catalogRefreshQueuedPreserveGeneration;
       this.#catalogForceInFlight = false;
       try {
         if (forceQueued && !this.#disposed) {
           this.#catalogRefreshQueued = false;
-          await this.refreshCatalog(true);
+          this.#catalogRefreshQueuedPreserveGeneration = false;
+          await this.refreshCatalog(true, false, preserveQueuedGeneration);
         }
       } finally {
         settleCatalog();
@@ -1351,6 +1744,16 @@ export class EffectController {
         room: room.roomId,
         cleaning_mode: room.cleaningMode,
         coverage_setting: room.coverageSetting,
+        ...(room.cadence ? {
+          cadence: {
+            scope: room.cadence.scope,
+            mop_every_n: room.cadence.mopEveryN,
+            coverage_every_n: room.cadence.coverageEveryN,
+            periodic_coverage_setting: room.cadence.periodicCoverageSetting,
+            do_mop_next: room.cadence.doMopNext,
+            do_coverage_next: room.cadence.doCoverageNext,
+          },
+        } : {}),
       })),
       return_to_base: draft.returnToBase,
       finish_current_room: draft.finishCurrentRoom,
@@ -1392,7 +1795,10 @@ export class EffectController {
     }
   }
 
-  async executeAction(id: string): Promise<void> {
+  executeAction(id: string): Promise<void>;
+  executeAction(action: ResetCadenceAction): Promise<void>;
+  async executeAction(idOrAction: string | ResetCadenceAction): Promise<void> {
+    const id = typeof idOrAction === "string" ? idOrAction : idOrAction.id;
     switch (id) {
       case "recheck-status": {
         const entryId = this.#store.value.selection.entryId;
@@ -1413,22 +1819,72 @@ export class EffectController {
         await this.#motion("vacuum", "send_command", { command: "resume" });
         return;
       case "run-plan": {
-        const plan = this.#store.value.selection.planId
-          || this.#store.value.resources.plans.value?.selectedPlan;
-        if (plan) await this.#motion("matic_robot", "run_selected_plan", { plan });
+        const initial = this.#store.value;
+        const plan = initial.selection.planId || initial.resources.plans.value?.selectedPlan;
+        if (!plan || initial.workflow !== "plan" || !initial.planDraft.enabled
+          || initial.resources.plans.status !== "ready" || initial.command !== "idle"
+          || !canStartMotion(initial)) return;
+        const entryId = initial.selection.entryId;
+        const generation = initial.generation;
+        const selectedPlanId = initial.selection.planId;
+        const capturedPlanDraft = initial.planDraft;
+        const displayedPreview = initial.resources.plans.value?.plans
+          .find((candidate) => candidate.id === plan)?.nextRunPreview;
+        if (!displayedPreview || !/^[0-9a-f]{64}$/u.test(displayedPreview.previewToken ?? "")) {
+          this.#store.patch({ notice: { tone: "warning", text: "A verified next-run preview is unavailable. Refresh the saved plan before starting it." } });
+          return;
+        }
+        this.#store.patch({ command: "pending", notice: null });
+        await this.loadPlans();
+        const refreshed = this.#store.value;
+        const releasePreflight = (): void => {
+          const current = this.#store.value;
+          if (!this.#disposed && current.selection.entryId === entryId
+            && current.generation === generation && current.command === "pending") {
+            this.#store.patch({ command: "idle" });
+          }
+        };
+        if (this.#disposed || refreshed.selection.entryId !== entryId
+          || refreshed.generation !== generation || refreshed.workflow !== "plan"
+          || refreshed.selection.planId !== selectedPlanId
+          || (refreshed.selection.planId || refreshed.resources.plans.value?.selectedPlan) !== plan
+          || refreshed.planDraft !== capturedPlanDraft) {
+          releasePreflight();
+          return;
+        }
+        if (refreshed.resources.plans.status !== "ready") {
+          releasePreflight();
+          this.#store.patch({
+            notice: { tone: "warning", text: "Plan preview could not be refreshed. Check the plan and try again." },
+          });
+          return;
+        }
+        const refreshedPreview = refreshed.resources.plans.value?.plans
+          .find((candidate) => candidate.id === plan)?.nextRunPreview;
+        if (!refreshedPreview || refreshedPreview.blocker
+          || !/^[0-9a-f]{64}$/u.test(refreshedPreview.previewToken ?? "")) {
+          releasePreflight();
+          this.#store.patch({
+            notice: { tone: "warning", text: "This plan has no valid next-run preview. Review its rooms and schedule." },
+          });
+          return;
+        }
+        if (!displayedPreview || JSON.stringify(displayedPreview) !== JSON.stringify(refreshedPreview)) {
+          releasePreflight();
+          this.#store.patch({
+            notice: { tone: "info", text: "The next-run preview changed. Review the updated settings before starting." },
+          });
+          return;
+        }
+        releasePreflight();
+        await this.#motion("matic_robot", "run_selected_plan", {
+          plan,
+          preview_token: refreshedPreview.previewToken,
+        });
         return;
       }
       case "clean-rooms": {
-        const selected = this.#store.value.selection.roomSettings;
-        const rooms = selected.map((room) => ({
-          room: room.roomId,
-          cleaning_mode: room.cleaningMode,
-          coverage_setting: room.coverageSetting,
-        }));
-        if (rooms.length) await this.#motion("matic_robot", "clean_room_sequence", {
-          rooms,
-          return_to_base: true,
-        });
+        await this.#cleanRoomsFromPreview();
         return;
       }
       case "run-area": {
@@ -1451,6 +1907,95 @@ export class EffectController {
       case "delete-area":
         await this.deleteArea();
         return;
+      case "reset-room-cadence": {
+        if (typeof idOrAction === "string") return;
+        const state = this.#store.value;
+        if (state.selection.planId !== idOrAction.planId || state.planDraft.dirty
+          || state.dataMode !== "live" || state.command !== "idle"
+          || (state.activity !== "idle" && state.activity !== "docked")) return;
+        const reset = await this.#serviceMutation(
+          "reset_room_cadence",
+          { plan: idOrAction.planId, room_id: idOrAction.roomId, modes: [idOrAction.mode] },
+          idOrAction.mode === "mop" ? "Mopping progress reset" : "Coverage progress reset",
+          idOrAction.mode === "mop" ? "Mopping progress could not be reset" : "Coverage progress could not be reset",
+        );
+        if (!reset) return;
+        await this.loadPlans();
+        const latest = this.#store.value;
+        if (!this.#disposed && latest.selection.entryId === state.selection.entryId
+          && latest.selection.planId === idOrAction.planId && !latest.planDraft.dirty) {
+          this.selectPlan(idOrAction.planId, true);
+        }
+        return;
+      }
+    }
+  }
+
+  async #cleanRoomsFromPreview(): Promise<void> {
+    if (this.#manualPreviewPreflight) return;
+    const initial = this.#store.value;
+    const capture = this.#manualPreviewCapture(initial);
+    const admitted = admittedManualRoomPreview(initial);
+    if (!capture || !admitted
+      || admitted.key !== capture.key || admitted.generation !== capture.generation
+      || admitted.floorKey !== capture.floorKey || admitted.missionKey !== capture.missionKey
+      || admitted.preview.entryId !== capture.entryId || admitted.preview.blocker
+      || admitted.preview.rooms.length === 0) return;
+
+    this.#manualPreviewPreflight = true;
+    const controller = this.#controller("room-preview");
+    this.#manualPreviewRequestIdentity = this.#manualPreviewIdentity(capture);
+    this.#store.patch({ manualRoomPreview: resource("loading", null), notice: null });
+    try {
+      const latestPreview = await this.#backend.previewRoomSequence(
+        capture.entityId,
+        capture.rooms,
+        capture.overrideRoomSchedule,
+        controller.signal,
+      );
+      if (controller.signal.aborted || !this.#manualPreviewCaptureCurrent(capture)
+        || latestPreview.entryId !== capture.entryId) return;
+      const latestAdmission = {
+        key: capture.key,
+        generation: capture.generation,
+        floorKey: capture.floorKey,
+        missionKey: capture.missionKey,
+        preview: latestPreview,
+      } as const;
+      if (latestPreview.blocker || latestPreview.rooms.length === 0) {
+        this.#store.patch({
+          manualRoomPreview: resource("ready", latestAdmission),
+          notice: { tone: "warning", text: "The room preview is blocked. Review the current map and schedule before starting." },
+        });
+        return;
+      }
+      if (manualPreviewValue(admitted.preview) !== manualPreviewValue(latestPreview)) {
+        this.#store.patch({
+          manualRoomPreview: resource("ready", latestAdmission),
+          notice: { tone: "info", text: "The room preview changed. Review the updated settings before starting." },
+        });
+        return;
+      }
+      this.#store.patch({ manualRoomPreview: resource("ready", latestAdmission), notice: null });
+      if (!this.#manualPreviewCaptureCurrent(capture) || !canStartMotion(this.#store.value)) return;
+      await this.#motion("matic_robot", "clean_room_sequence", {
+        rooms: capture.rooms,
+        use_room_schedule: true,
+        override_room_schedule: capture.overrideRoomSchedule,
+        return_to_base: true,
+        preview_token: latestPreview.previewToken,
+      });
+    } catch (error) {
+      if (!isAbort(error) && !controller.signal.aborted && this.#manualPreviewCaptureCurrent(capture)) {
+        this.#store.patch({
+          manualRoomPreview: resource("error", null, problemCode(error, "preview-unavailable")),
+          notice: { tone: "warning", text: "The room preview could not be refreshed. No cleaning was started." },
+        });
+      }
+    } finally {
+      this.#release("room-preview", controller);
+      this.#manualPreviewPreflight = false;
+      this.#reconcileManualRoomPreview();
     }
   }
 
@@ -1540,11 +2085,17 @@ export class EffectController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    this.#manualPreviewUnsubscribe?.();
+    this.#manualPreviewUnsubscribe = null;
+    this.#store.patch({ manualRoomPreview: resource("idle", null) });
     this.#stopPolling();
     this.#abortResources();
     if (this.#settleTimer !== null) window.clearTimeout(this.#settleTimer);
     this.#settleTimer = null;
     this.#preferences.dispose();
+    this.#workspaceTransport?.dispose();
+    this.#workspaceTransport = null;
+    this.#workspaceTransportEntry = null;
     this.#backend.dispose();
     this.#coherence.invalidate();
   }

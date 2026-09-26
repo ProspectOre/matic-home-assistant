@@ -58,6 +58,7 @@ include = ["custom_components*"]
   "quality_scale.yaml",
   "*.js",
   "map_studio_v4/*.js",
+  "map_studio_v4/**/*.js",
   "client/matic_intermediate_ca.pem",
   "client/proto/*.proto",
   "services.yaml",

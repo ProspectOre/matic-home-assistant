@@ -898,7 +898,9 @@ async def test_setup_registers_services_without_media_view() -> None:
     hass = SimpleNamespace(
         http=SimpleNamespace(register_view=MagicMock()),
         bus=SimpleNamespace(
-            async_listen=MagicMock(return_value=MagicMock()), async_fire=MagicMock()
+            async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
+            async_fire=MagicMock(),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={},
@@ -922,7 +924,7 @@ async def test_setup_registers_services_without_media_view() -> None:
     ):
         assert await async_setup(hass, {}) is True
 
-    assert hass.services.async_register.call_count == 18
+    assert hass.services.async_register.call_count == 20
     hass.http.register_view.assert_not_called()
     assert hass.data[DOMAIN][DATA_PLAN_MANAGER] is history
     assert hass.data[DOMAIN][DATA_LLM_API].id == "matic_robot_operations"
@@ -936,6 +938,7 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         bus=SimpleNamespace(
             async_fire=MagicMock(),
             async_listen=MagicMock(return_value=MagicMock()),
+            async_listen_once=MagicMock(return_value=MagicMock()),
         ),
         services=SimpleNamespace(async_register=MagicMock()),
         data={frontend.DATA_EXTRA_MODULE_URL: set()},
@@ -1016,6 +1019,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         )
     )
     plans.async_import_native_history = AsyncMock(return_value=False)
+    track_workspace_entry = MagicMock()
     scheduled_state_flushes = []
 
     def capture_state_flush(delay, callback):
@@ -1034,6 +1038,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
             DOMAIN: {
                 DATA_PLAN_MANAGER: plans,
                 DATA_FIRMWARE_TRACKER: MagicMock(),
+                "workspace_socket": SimpleNamespace(track_entry=track_workspace_entry),
             }
         },
     )
@@ -1134,6 +1139,7 @@ async def test_setup_refreshes_before_forwarding_platforms(
         ),
     ):
         assert await async_setup_entry(hass, entry) is True
+        track_workspace_entry.assert_called_once_with(entry)
         observe = client_factory.call_args.kwargs["observation_callback"]
         observe({"kind": "started"})
         with patch(

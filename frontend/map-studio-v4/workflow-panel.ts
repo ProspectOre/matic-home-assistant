@@ -1,18 +1,20 @@
 import { LitElement, css, html, nothing } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { controls } from "./controls";
-import { icon, iconCopy, iconMoveDown, iconMoveUp, iconPlus } from "./icons";
+import { icon, iconMoveDown, iconMoveUp, iconPlus } from "./icons";
 import { base, tokens } from "./tokens";
 
 import type {
   CleaningMode,
+  CadenceReason,
   CoverageSetting,
   PlanRoom,
+  RoomCadencePolicy,
 } from "./backend-contracts";
 import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
 import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
-import { initialWorkspaceState } from "./state";
+import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
 import { translate } from "./localize";
 
 const modes: readonly CleaningMode[] = ["vacuum", "mop", "vacuum_and_mop"];
@@ -25,7 +27,7 @@ export class MaticMapWorkflowV4 extends LitElement {
   static override properties = {
     state: { attribute: false },
     localize: { attribute: false },
-    _copyStatus: { state: true },
+    _diagnosticsLoadFailed: { state: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -51,7 +53,6 @@ line-height: var(--ms-lh-snug);
 .group-heading { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-medium); letter-spacing: 0.04em; line-height: var(--ms-lh-snug); text-transform: uppercase; }
 .floor[aria-current="true"] { border-color: var(--ms-accent); background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local)); }
 .problem p { margin: 0; }
-.copy-status { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
 @media (forced-colors: active) { .floor[aria-current="true"] { forced-color-adjust: none; color: HighlightText; background: Highlight; border-color: Highlight; } }
 .room { display: grid; gap: var(--ms-space-2); }
 .room-choice { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control-sm); }
@@ -68,6 +69,8 @@ line-height: var(--ms-lh-snug);
 .plan-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--ms-space-2); }
 .plan-option input { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
 .plan-option-copy, .plan-threshold-copy { display: grid; gap: var(--ms-space-1); min-inline-size: 0; }
+.cadence-config { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); display: grid; gap: var(--ms-space-2); }
+.cadence-config > summary { cursor: pointer; min-block-size: var(--ms-control-sm); font-weight: var(--ms-w-semibold); }
 .plan-option-copy strong, .plan-threshold-copy strong { font-size: var(--ms-t-sm); line-height: var(--ms-lh-snug); }
 .plan-option-copy small, .plan-threshold-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-snug); }
 .plan-threshold { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-1) var(--ms-space-3); align-items: start; }
@@ -80,21 +83,16 @@ line-height: var(--ms-lh-snug);
 .floor small, .snapshot small, .list-button small { margin-inline-start: auto; color: color-mix(in srgb, var(--ms-text) 78%, var(--ms-local)); font-weight: var(--ms-w-regular); }
 .timeline { display: grid; gap: var(--ms-space-2); }
 .timeline input[type="range"] { inline-size: 100%; min-block-size: var(--ms-control); }
-.diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-2) var(--ms-space-3); margin: 0; font-size: var(--ms-t-xs); }
-.diagnostics dt { color: var(--ms-text-quiet); }
-.diagnostics dd { margin: 0; font-weight: var(--ms-w-medium); }
 @media (max-width: 25rem) { .split { grid-template-columns: 1fr; } }
 @container (max-width: 38rem) { .plan-meta { grid-template-columns: 1fr; } }
 `];
 
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
-  _copyStatus: "idle" | "copied" | "failed" = "idle";
-  #copyTimer: ReturnType<typeof setTimeout> | undefined;
+  _diagnosticsLoadFailed = false;
+  #diagnosticsLoad: Promise<void> | null = null;
 
   override disconnectedCallback(): void {
-    if (this.#copyTimer !== undefined) clearTimeout(this.#copyTimer);
-    this.#copyTimer = undefined;
     super.disconnectedCallback();
   }
 
@@ -112,6 +110,20 @@ line-height: var(--ms-lh-snug);
     if (value === "quick") return this.#t("quick", "Quick");
     if (value === "standard") return this.#t("standard", "Optimal");
     return this.#t("heavy_duty", "Heavy Duty");
+  }
+
+  #cadenceReason(reason: string): string {
+    if (reason === "mop_due") return this.#t("v4_cadence_mop_due_reason", "Vacuum and mop are due");
+    if (reason === "coverage_due") return this.#t("v4_cadence_coverage_due_reason", "Periodic coverage is due");
+    return this.#t("v4_cadence_due_unknown_reason", "Schedule setting due");
+  }
+
+  #previewBlocker(blocker: string): string {
+    if (blocker === "plan_disabled") return this.#t("v4_preview_plan_disabled", "This plan is paused. Enable it to preview and run.");
+    if (blocker === "shared_schedule_unavailable") return this.#t("v4_preview_shared_unavailable", "The shared room schedule cannot be verified on this map.");
+    if (blocker === "cadence_identity_changed" || blocker === "cadence_identity_unavailable") return this.#t("v4_preview_identity_unavailable", "Room identity could not be verified. Check the current map before running.");
+    if (blocker === "plan_has_no_rooms") return this.#t("v4_preview_no_rooms", "Add at least one room to this plan.");
+    return this.#t("v4_preview_invalid", "The saved plan preview is invalid. Review the plan and try again.");
   }
 
   #intent(intent: WorkspaceIntent): void {
@@ -182,6 +194,8 @@ line-height: var(--ms-lh-snug);
 
   #rooms() {
     const plans = this.state.resources.plans;
+    const admitted = admittedManualRoomPreview(this.state);
+    const previewCurrent = admitted !== null;
     return this.#resource(plans.status, plans.problem, html`
       <div class="stack">
         <h3 class="group-heading" id="rooms-heading">${this.#t("v4_rooms_to_clean", "Rooms to clean")}</h3>
@@ -209,9 +223,64 @@ line-height: var(--ms-lh-snug);
           })}
         </div>
         <p class="subtle">${this.#t("v4_room_selection_hint", "Select rooms here or directly on the map. The map and list stay in sync.")}</p>
+        <label class="plan-option">
+          <input type="checkbox" .checked=${!this.state.selection.useRoomSchedule} @change=${(event: Event) => this.#intent({ type: "set-use-room-schedule", value: !eventChecked(event) })}>
+          <span class="plan-option-copy">
+            <strong>${this.#t("v4_override_room_schedule", "Override shared schedule settings")}</strong>
+            <small>${this.#t("v4_override_room_schedule_hint", "By default, this clean applies the shared schedule. Turn this on to use the settings selected here. Omitted due work stays due, and compatible verified work still counts toward shared progress.")}</small>
+          </span>
+        </label>
+        <div class="stack" aria-label=${this.#t("v4_shared_schedule_status", "Shared room schedule status")}>
+          ${this.state.selection.roomIds.map((roomId) => {
+            const room = plans.value?.rooms.find((candidate) => candidate.roomId === roomId);
+            return room?.sharedCadence || room?.sharedCadenceProgress || room?.sharedCadenceReasons?.length
+              ? html`<p class="subtle">${room.name}: ${this.#cadenceSummary(room.sharedCadence, room.sharedCadenceProgress, room.sharedCadenceReasons)}</p>`
+              : nothing;
+          })}
+        </div>
+        ${this.state.manualRoomPreview.status === "loading"
+          ? html`<p role="status" class="subtle">${this.#t("v4_room_preview_loading", "Verifying the effective room settings…")}</p>`
+          : nothing}
+        ${this.state.manualRoomPreview.status === "error"
+          ? html`<div class="stack">
+            <div role="alert" class="problem">${this.#t("v4_room_preview_unavailable", "Your room selections are saved, but the effective settings could not be verified. Retry the preview to enable cleaning.")}</div>
+            <div class="toolbar"><button class="ms-btn ms-btn--secondary" type="button" @click=${() => this.#intent({ type: "retry-room-preview" })}>${this.#t("v4_retry_preview", "Retry preview")}</button></div>
+          </div>`
+          : nothing}
+        ${previewCurrent ? this.#manualRoomPreview(admitted.preview) : nothing}
         ${this.#notice()}
       </div>
     `);
+  }
+
+  #manualRoomPreview(preview: NonNullable<WorkspaceState["manualRoomPreview"]["value"]>["preview"]) {
+    const boundaries = new Set(preview.missionBoundaries);
+    return html`
+      <section class="stack" aria-labelledby="effective-rooms-heading" aria-live="polite">
+        <h3 class="group-heading" id="effective-rooms-heading">${this.#t("v4_effective_room_preview", "Effective cleaning preview")}</h3>
+        ${preview.blocker
+          ? html`<p class="problem" role="alert">${preview.blocker === "invalid_cadence_policy"
+              && this.state.selection.useRoomSchedule
+              && this.state.selection.roomSettings.some((room) => room.cleaningMode !== "vacuum")
+              ? this.#t("v4_room_preview_schedule_override", "The shared schedule cannot apply this selected cleaning system. Turn on Override shared schedule settings or choose a compatible system.")
+              : this.#t("v4_room_preview_blocked", "The effective room sequence is blocked. Review the selected rooms and shared schedule settings, then retry.")}</p>`
+          : nothing}
+        ${preview.rooms.length
+          ? html`<ol class="list" aria-label=${this.#t("v4_effective_room_order", "Effective room order")}>
+            ${preview.rooms.map((room, index) => html`
+              <li class="ms-row ms-row--stack">
+                ${boundaries.has(index) ? html`<strong>${this.#t("v4_room_mission_boundary", "New mission")}</strong>` : nothing}
+                <strong>${room.name}</strong>
+                <span class="subtle">${this.#modeLabel(room.cleaningMode)} · ${this.#coverageLabel(room.coverageSetting)}</span>
+                ${room.cadenceReasons.length
+                  ? html`<span class="subtle">${room.cadenceReasons.map((reason) => this.#cadenceReason(reason)).join("; ")}</span>`
+                  : nothing}
+              </li>
+            `)}
+          </ol>`
+          : nothing}
+      </section>
+    `;
   }
 
   #roomSettings(roomId: string, room: PlanRoom) {
@@ -241,6 +310,189 @@ line-height: var(--ms-lh-snug);
           >${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
         </label>
       </div>
+    `;
+  }
+
+  #cadenceFor(room: PlanRoom): RoomCadencePolicy {
+    return room.cadence || {
+      scope: "plan",
+      mopEveryN: null,
+      coverageEveryN: null,
+      periodicCoverageSetting: null,
+      doMopNext: false,
+      doCoverageNext: false,
+    };
+  }
+
+  #cadenceSummary(
+    policy: RoomCadencePolicy | undefined,
+    progress: PlanRoom["cadenceProgress"] | undefined,
+    reasons: readonly CadenceReason[] = progress?.reasons || [],
+  ): string {
+    if (reasons.includes("identity_changed") || reasons.includes("room_not_on_current_map")) {
+      return this.#t("v4_cadence_identity_blocked", "Schedule identity does not match the current room map. Review this room before cleaning.");
+    }
+    if (reasons.includes("shared_schedule_unavailable")) {
+      return this.#t("v4_cadence_shared_unavailable", "The shared room schedule is unavailable. Review its settings before cleaning.");
+    }
+    if (reasons.includes("invalid_cadence_policy")) {
+      return this.#t("v4_cadence_policy_invalid", "The room schedule needs review before it can be applied.");
+    }
+    if (!policy || (!policy.mopEveryN && !policy.coverageEveryN)) {
+      return this.#t("v4_cadence_not_enabled", "No recurring room schedule is enabled.");
+    }
+    const parts: string[] = [];
+    const mopDue = progress?.mopDue || progress?.reasons.includes("mop_due");
+    const coverageDue = progress?.coverageDue || progress?.reasons.includes("coverage_due");
+    if (policy.mopEveryN) {
+      parts.push(mopDue
+        ? this.#t("v4_cadence_mop_due", "Vacuum and mop is due on this clean.")
+        : this.#t("v4_cadence_mop_progress", "Mop every {interval} cleans; {completed} qualifying cleans since the last mop.", {
+          interval: policy.mopEveryN,
+          completed: progress?.mopProgress ?? 0,
+        }));
+    }
+    if (policy.coverageEveryN) {
+      parts.push(coverageDue
+        ? this.#t("v4_cadence_coverage_due", "{coverage} periodic coverage is due on this clean.", {
+          coverage: this.#coverageLabel(policy.periodicCoverageSetting || "standard"),
+        })
+        : this.#t("v4_cadence_coverage_progress", "Periodic coverage every {interval} cleans; {completed} qualifying cleans so far.", {
+          interval: policy.coverageEveryN,
+          completed: progress?.coverageProgress ?? 0,
+        }));
+    }
+    return parts.join(" ");
+  }
+
+  #patchPlanCadence(index: number, patch: Partial<RoomCadencePolicy>): void {
+    const room = this.state.planDraft.rooms[index];
+    if (!room) return;
+    this.#patchPlanRoom(index, { cadence: { ...this.#cadenceFor(room), ...patch } });
+  }
+
+  #patchCadenceInterval(
+    event: Event,
+    index: number,
+    field: "mopEveryN" | "coverageEveryN",
+  ): void {
+    const input = event.currentTarget as HTMLInputElement;
+    const raw = input.value;
+    if (raw === "") {
+      this.#patchPlanCadence(index, { [field]: null });
+      return;
+    }
+    const value = Number(raw);
+    if (!Number.isInteger(value) || value < 1 || value > 100) {
+      input.reportValidity();
+      return;
+    }
+    const room = this.state.planDraft.rooms[index];
+    if (!room) return;
+    if (field === "coverageEveryN") {
+      this.#patchPlanCadence(index, {
+        coverageEveryN: value,
+        periodicCoverageSetting: room.cadence?.periodicCoverageSetting || room.coverageSetting,
+      });
+      return;
+    }
+    this.#patchPlanCadence(index, { [field]: value });
+  }
+
+  #cadenceControls(room: PlanRoom, index: number, label: string) {
+    const draft = this.state.planDraft;
+    const policy = this.#cadenceFor(room);
+    const progress = room.cadenceProgress;
+    const savedRoom = draft.id
+      ? this.state.resources.plans.value?.plans.find((plan) => plan.id === draft.id)
+        ?.rooms.find((candidate) => candidate.roomId === room.roomId)
+      : undefined;
+    const previousScope = savedRoom?.cadence?.scope ?? null;
+    const sharedRoom = this.state.resources.plans.value?.rooms.find(
+      (candidate) => candidate.roomId === room.roomId,
+    );
+    const hasSharedSchedule = Boolean(sharedRoom?.sharedCadence || sharedRoom?.sharedCadenceProgress);
+    const hasCadence = Boolean(policy.mopEveryN || policy.coverageEveryN);
+    const hasMopProgress = Boolean(progress?.mopProgress || policy.doMopNext);
+    const hasCoverageProgress = Boolean(progress?.coverageProgress || policy.doCoverageNext);
+    const resetDisabled = draft.dirty || this.state.command !== "idle" || this.state.managedLock
+      || (this.state.activity !== "idle" && this.state.activity !== "docked")
+      || this.state.dataMode !== "live";
+    const scopeExplanation = previousScope !== null && previousScope !== policy.scope
+      ? policy.scope === "shared"
+        ? this.#t("v4_cadence_shared_join_effect", "Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero.")
+        : this.#t("v4_cadence_shared_leave_effect", "Saving starts fresh private progress for this plan. The existing shared schedule remains unchanged for other participating plans.")
+      : previousScope === null && hasCadence
+        ? policy.scope === "shared"
+          ? hasSharedSchedule
+            ? this.#t("v4_cadence_shared_join_effect", "Saving makes this schedule shared across participating plans and opted-in room cleans. It adopts existing shared progress when available; a new shared schedule starts at zero.")
+            : this.#t("v4_cadence_new_shared_effect", "Saving creates a shared schedule for participating plans and opted-in room cleans. Its progress starts at zero.")
+          : this.#t("v4_cadence_new_private_effect", "Saving creates private progress for this plan only. It starts at zero when enabled.")
+        : this.#t("v4_cadence_existing_effect", "Interval edits keep progress, and disabling pauses it. Mopping and coverage have separate progress and resets.");
+    const cadenceLabel = this.#t("v4_room_cadence_named", "Room schedule for {room}", { room: label });
+    return html`
+      <details class="plan-option cadence-config">
+        <summary>${cadenceLabel}</summary>
+        <p class="subtle">${this.#t("v4_cadence_description", "Intervals count only fully verified, tracked room cleans. Partial or uncertain work leaves requested cadence due.")}</p>
+        <div class="split room-settings">
+          <label class="field ms-field">${this.#t("v4_cadence_scope", "Schedule scope")}
+            <select aria-label=${this.#t("v4_cadence_scope_named", "Schedule scope for {room}", { room: label })} .value=${policy.scope} @change=${(event: Event) => this.#patchPlanCadence(index, { scope: eventValue(event) as RoomCadencePolicy["scope"] })}>
+              <option value="plan" ?selected=${policy.scope === "plan"}>${this.#t("v4_cadence_this_plan", "This plan (private)")}</option>
+              <option value="shared" ?selected=${policy.scope === "shared"}>${this.#t("v4_cadence_shared", "Shared for this room")}</option>
+            </select>
+          </label>
+          <label class="field ms-field">${this.#t("v4_cadence_mop_interval", "Vacuum and mop every N cleans")}
+            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#t("v4_cadence_mop_interval_named", "Vacuum and mop interval for {room}, from 1 to 100", { room: label })} .value=${policy.mopEveryN?.toString() || ""} ?disabled=${room.cleaningMode !== "vacuum"} @change=${(event: Event) => this.#patchCadenceInterval(event, index, "mopEveryN")}>
+          </label>
+          <label class="field ms-field">${this.#t("v4_cadence_coverage_interval", "Use periodic coverage every N cleans")}
+            <input type="number" min="1" max="100" step="1" inputmode="numeric" aria-label=${this.#t("v4_cadence_coverage_interval_named", "Periodic coverage interval for {room}, from 1 to 100", { room: label })} .value=${policy.coverageEveryN?.toString() || ""} @change=${(event: Event) => this.#patchCadenceInterval(event, index, "coverageEveryN")}>
+          </label>
+          ${policy.coverageEveryN ? html`
+            <label class="field ms-field">${this.#t("v4_cadence_periodic_coverage", "Periodic coverage setting")}
+              <select aria-label=${this.#t("v4_cadence_periodic_coverage_named", "Periodic coverage setting for {room}", { room: label })} .value=${policy.periodicCoverageSetting || "standard"} @change=${(event: Event) => this.#patchPlanCadence(index, { periodicCoverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === policy.periodicCoverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
+            </label>
+          ` : nothing}
+        </div>
+        <p class="subtle" role="status">${scopeExplanation}</p>
+        ${room.cleaningMode !== "vacuum" ? html`<p class="subtle">${this.#t("v4_cadence_mop_requires_vacuum", "Set this room's normal cleaning system to vacuum to enable periodic mopping.")}</p>` : nothing}
+        ${policy.mopEveryN && room.cleaningMode === "vacuum" ? html`<p class="subtle">${this.#t("v4_cadence_clear_mop_to_change_normal", "Clear the mopping interval before changing this room's normal cleaning system.")}</p>` : nothing}
+        <div class="plan-options" role="group" aria-label=${this.#t("v4_cadence_next_actions_named", "Next clean options for {room}", { room: label })}>
+          <label class="plan-option"><input type="checkbox" aria-label=${this.#t("v4_cadence_do_mop_next_named", "Do vacuum and mop on the next clean for {room}", { room: label })} .checked=${policy.doMopNext} ?disabled=${!policy.mopEveryN} @change=${(event: Event) => this.#patchPlanCadence(index, { doMopNext: eventChecked(event) })}><span class="plan-option-copy"><strong>${this.#t("v4_cadence_do_mop_next", "Do vacuum and mop on the next clean")}</strong></span></label>
+          <label class="plan-option"><input type="checkbox" aria-label=${this.#t("v4_cadence_do_coverage_next_named", "Use periodic coverage on the next clean for {room}", { room: label })} .checked=${policy.doCoverageNext} ?disabled=${!policy.coverageEveryN} @change=${(event: Event) => this.#patchPlanCadence(index, { doCoverageNext: eventChecked(event) })}><span class="plan-option-copy"><strong>${this.#t("v4_cadence_do_coverage_next", "Use periodic coverage on the next clean")}</strong></span></label>
+        </div>
+        <p class="subtle" aria-live="polite">${this.#cadenceSummary(policy, progress, room.cadenceReasons)}</p>
+        ${draft.id && (policy.mopEveryN || policy.coverageEveryN || hasMopProgress || hasCoverageProgress) ? html`
+          <div class="toolbar">
+            ${policy.mopEveryN || hasMopProgress ? html`<button
+              class="danger ms-btn ms-btn--secondary ms-btn--danger"
+              type="button"
+              aria-label=${this.#t("v4_reset_mop_cadence_button_named", "Reset mopping progress for {room}", { room: label })}
+              data-dialog-launcher="confirmResetCadence"
+              ?disabled=${resetDisabled}
+              @click=${() => this.#intent({
+                type: "request-room-cadence-reset",
+                planId: draft.id as string,
+                roomId: room.roomId,
+                mode: "mop",
+              })}
+            >${this.#t("v4_reset_mop_cadence_button", "Reset mopping")}</button>` : nothing}
+            ${policy.coverageEveryN || hasCoverageProgress ? html`<button
+              class="danger ms-btn ms-btn--secondary ms-btn--danger"
+              type="button"
+              aria-label=${this.#t("v4_reset_coverage_cadence_button_named", "Reset coverage progress for {room}", { room: label })}
+              data-dialog-launcher="confirmResetCadence"
+              ?disabled=${resetDisabled}
+              @click=${() => this.#intent({
+                type: "request-room-cadence-reset",
+                planId: draft.id as string,
+                roomId: room.roomId,
+                mode: "coverage",
+              })}
+            >${this.#t("v4_reset_coverage_cadence_button", "Reset coverage")}</button>` : nothing}
+          </div>
+          <p class="subtle">${this.#t("v4_reset_cadence_hint", "Reset is available for a saved plan while the robot is idle. Cleaning history is kept separately.")}</p>
+        ` : nothing}
+      </details>
     `;
   }
 
@@ -306,6 +558,8 @@ line-height: var(--ms-lh-snug);
       }));
     const roomRows = [...selectedRows, ...availableRows];
     const mixedSettings = new Set(draft.rooms.map((room) => `${room.cleaningMode}:${room.coverageSetting}`)).size > 1;
+    const savedPlan = draft.id ? catalog?.plans.find((plan) => plan.id === draft.id) : undefined;
+    const nextRunPreview = savedPlan?.nextRunPreview;
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         <label class="field ms-field">${this.#t("plan_name", "Plan name")}
@@ -377,17 +631,39 @@ line-height: var(--ms-lh-snug);
                 ${selected ? html`
                   <div class="split room-settings">
                     <label class="field ms-field">${this.#t("v4_cleaning_system", "Cleaning system")}
-                      <select aria-label=${this.#t("v4_room_cleaning_system_named", "Cleaning system for {room}", { room: label })} .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode}>${this.#modeLabel(mode)}</option>`)}</select>
+                      <select aria-label=${this.#t("v4_room_cleaning_system_named", "Cleaning system for {room}", { room: label })} .value=${room.cleaningMode} @change=${(event: Event) => this.#patchPlanRoom(index, { cleaningMode: eventValue(event) as CleaningMode })}>${modes.map((mode) => html`<option value=${mode} ?selected=${mode === room.cleaningMode} ?disabled=${Boolean("cadence" in room && room.cadence?.mopEveryN && mode !== "vacuum")}>${this.#modeLabel(mode)}</option>`)}</select>
                     </label>
                     <label class="field ms-field">${this.#t("cleaning_mode", "Cleaning mode")}
                       <select aria-label=${this.#t("v4_room_cleaning_mode_named", "Cleaning mode for {room}", { room: label })} .value=${room.coverageSetting} @change=${(event: Event) => this.#patchPlanRoom(index, { coverageSetting: eventValue(event) as CoverageSetting })}>${coverage.map((option) => html`<option value=${option} ?selected=${option === room.coverageSetting}>${this.#coverageLabel(option)}</option>`)}</select>
                     </label>
                   </div>
+                  ${this.#cadenceControls(room, index, label)}
                 ` : nothing}
               </div>
             `;
           })}
         </div>
+        <section class="stack" aria-labelledby="next-run-preview-heading">
+          <h3 class="group-heading" id="next-run-preview-heading">${this.#t("v4_next_run_preview", "Next-run preview")}</h3>
+          <p class="subtle">${this.#t("v4_next_run_preview_hint", "This is the next saved-plan run, separate from any current run. The backend refreshes it before dispatch.")}</p>
+          ${!draft.id ? html`<p class="subtle">${this.#t("v4_next_run_preview_save_first", "Save this plan to calculate its exact room order and effective settings.")}</p>`
+            : !nextRunPreview || !/^[0-9a-f]{64}$/u.test(nextRunPreview.previewToken ?? "") ? html`<p class="problem" role="status">${this.#t("v4_next_run_preview_unavailable", "A verified next-run preview is unavailable. Refresh the saved plan before starting it.")}</p>`
+              : nextRunPreview.blocker ? html`<p class="problem" role="alert">${this.#previewBlocker(nextRunPreview.blocker)}</p>`
+                : html`
+                  ${draft.dirty ? html`<p class="notice" role="status">${this.#t("v4_next_run_preview_stale", "This preview shows the saved plan. Save your edits to calculate the updated order and settings before starting.")}</p>` : nothing}
+                  <ol class="list" aria-label=${this.#t("v4_next_run_preview_order", "Next-run room order and effective settings")}>
+                    ${nextRunPreview.rooms.map((previewRoom, roomIndex) => {
+                      const mission = 1 + nextRunPreview.missionBoundaries.filter((boundary) => boundary <= roomIndex).length;
+                      return html`<li class="ms-row ms-row--stack">
+                        <span class="subtle">${this.#t("v4_next_run_mission", "Mission {number}", { number: mission })}</span>
+                        <strong>${roomIndex + 1}. ${previewRoom.name}</strong>
+                        <span>${this.#modeLabel(previewRoom.cleaningMode)} · ${this.#coverageLabel(previewRoom.coverageSetting)}</span>
+                        ${previewRoom.cadenceReasons.length ? html`<small>${previewRoom.cadenceReasons.map((reason) => this.#cadenceReason(reason)).join(" · ")}</small>` : nothing}
+                      </li>`;
+                    })}
+                  </ol>
+                `}
+        </section>
         <h3 class="group-heading" id="completion-heading">${this.#t("v4_completion_options", "When a run ends")}</h3>
         <div class="plan-options" role="group" aria-labelledby="completion-heading">
           <label class="plan-option">
@@ -567,98 +843,38 @@ line-height: var(--ms-lh-snug);
     }
   }
 
-  #supportRows(): ReadonlyArray<readonly [string, string]> {
-    const entry = this.state.resources.entry;
-    const yes = this.#t("v4_yes", "Yes");
-    const no = this.#t("v4_no", "No");
-    const seen = this.#t("v4_seen", "Seen");
-    const notSeen = this.#t("v4_not_seen", "Not seen");
-    const unknown = this.#t("v4_unknown", "Unknown");
-    return [
-      [this.#t("v4_connection", "Connection"), this.state.host.connected ? this.#t("v4_connected", "Connected") : this.#t("v4_offline", "Offline")],
-      [this.#t("v4_map_state", "Map state"), String(this.state.coherence)],
-      [this.#t("v4_floor_verified", "Floor verified"), this.state.map.floorCoherent ? yes : no],
-      [this.#t("v4_session_verified", "Session verified"), this.state.map.sessionVerified ? yes : no],
-      [this.#t("v4_map_complete", "Map complete"), this.state.map.complete ? yes : no],
-      [this.#t("v4_map_health", "Map health"), entry?.health || unknown],
-      [this.#t("v4_blocked_by", "Blocked by"), entry?.mapBlockReason?.replaceAll("_", " ") || this.#t("v4_nothing", "Nothing")],
-      [this.#t("v4_startup_map", "Startup map check"), entry?.bootstrapState?.replaceAll("_", " ") || unknown],
-      [this.#t("v4_startup_photo", "Startup photo layer"), entry?.bootstrapPhotoSeen ? seen : notSeen],
-      [this.#t("v4_startup_structure", "Startup structure layer"), entry?.bootstrapStructureSeen ? seen : notSeen],
-      [this.#t("v4_startup_failures", "Startup failures"), String(entry?.bootstrapFailures || 0)],
-      [this.#t("v4_stream_failures", "Stream failures"), String(entry?.streamFailures || 0)],
-      [this.#t("v4_saved_floor_count", "Saved floor count"), String(this.state.floor.classifiedCount)],
-    ];
-  }
-
-  #setCopyStatus(status: "idle" | "copied" | "failed"): void {
-    if (this.#copyTimer !== undefined) clearTimeout(this.#copyTimer);
-    this.#copyTimer = undefined;
-    this._copyStatus = status;
-    if (status === "copied") {
-      this.#copyTimer = setTimeout(() => {
-        this.#copyTimer = undefined;
-        this._copyStatus = "idle";
-      }, 2000);
-    }
-  }
-
-  #legacyCopy(summary: string, restoreTarget?: HTMLElement | null): boolean {
-    if (typeof document === "undefined" || typeof document.execCommand !== "function") return false;
-    const active = restoreTarget ?? (document.activeElement instanceof HTMLElement ? document.activeElement : null);
-    const textarea = document.createElement("textarea");
-    textarea.value = summary;
-    textarea.readOnly = true;
-    textarea.setAttribute("aria-hidden", "true");
-    textarea.style.cssText = "position:fixed;inset-block-start:-1000px;inline-size:1px;block-size:1px;opacity:0";
-    document.body.append(textarea);
-    textarea.select();
-    textarea.setSelectionRange(0, summary.length);
-    try {
-      return document.execCommand("copy");
-    } catch {
-      return false;
-    } finally {
-      textarea.remove();
-      active?.focus({ preventScroll: true });
-    }
-  }
-
-  async #copySummary(source?: EventTarget | null): Promise<void> {
-    const summary = this.#supportRows().map(([label, value]) => `${label}: ${value}`).join("\n");
-    const clipboard = typeof navigator === "undefined" ? undefined : navigator.clipboard;
-    if (clipboard && typeof clipboard.writeText === "function") {
-      try {
-        await clipboard.writeText(summary);
-        this.#setCopyStatus("copied");
-        return;
-      } catch {
-        // HTTP LAN origins may expose the API but reject writes. Fall through
-        // to the selection-based copy path supported by those browsers.
-      }
-    }
-    this.#setCopyStatus(this.#legacyCopy(summary, source instanceof HTMLElement ? source : null) ? "copied" : "failed");
+  #loadDiagnostics(): void {
+    if (this.#diagnosticsLoad || customElements.get("matic-map-diagnostics-v4")) return;
+    this._diagnosticsLoadFailed = false;
+    this.#diagnosticsLoad = import("./diagnostics-panel")
+      .then(() => {
+        this.#diagnosticsLoad = null;
+        this.requestUpdate();
+      })
+      .catch(() => {
+        this.#diagnosticsLoad = null;
+        this._diagnosticsLoadFailed = true;
+      });
   }
 
   #support() {
-    const rows = this.#supportRows();
-    const copyStatus = this._copyStatus === "copied"
-      ? this.#t("v4_copied", "Copied")
-      : this._copyStatus === "failed"
-        ? this.#t("v4_copy_failed", "The summary could not be copied. Select the text to copy it by hand.")
-        : "";
-    return html`
-      <div class="stack">
-        <p class="subtle">${this.#t("v4_support_privacy", "This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.")}</p>
-        <dl class="diagnostics">
-          ${rows.map(([label, value]) => html`<dt>${label}</dt><dd>${value}</dd>`)}
-        </dl>
-        <div class="toolbar">
-          <button class="ms-btn ms-btn--secondary" type="button" @click=${(event: Event) => void this.#copySummary(event.currentTarget)}>${icon(iconCopy)}<span>${this.#t("v4_copy_summary", "Copy summary")}</span></button>
-        </div>
-        <p class="copy-status" role="status" aria-live="polite">${copyStatus}</p>
-      </div>
-    `;
+    if (customElements.get("matic-map-diagnostics-v4")) {
+      return html`<matic-map-diagnostics-v4
+        .state=${this.state}
+        .localize=${this.localize}
+        .disabled=${this.state.command !== "idle" && this.state.command !== "failed"}
+      ></matic-map-diagnostics-v4>`;
+    }
+    if (this._diagnosticsLoadFailed) {
+      return html`<div class="problem" role="alert">
+        <p>${this.#t("v4_workflow_load_failed", "Workspace tools could not be loaded.")}</p>
+        <button class="ms-btn ms-btn--secondary" type="button" @click=${this.#loadDiagnostics}>
+          ${this.#t("v4_retry", "Try again")}
+        </button>
+      </div>`;
+    }
+    this.#loadDiagnostics();
+    return html`<p class="loading" role="status" aria-live="polite">${this.#t("v4_workflow_loading", "Loading workspace tools…")}</p>`;
   }
 
   protected override render() {

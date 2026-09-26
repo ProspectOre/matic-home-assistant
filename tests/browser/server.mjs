@@ -1,10 +1,11 @@
-import { createReadStream } from "node:fs";
+import { createReadStream, statSync } from "node:fs";
 import { createServer } from "node:http";
 import { dirname, join, normalize, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const testDirectory = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = join(testDirectory, "..", "..");
+const isFile = (path) => Boolean(path && statSync(path, { throwIfNoEntry: false })?.isFile());
 const scripts = new Map([
   [
     "/matic_icons.js",
@@ -39,7 +40,7 @@ const server = createServer((request, response) => {
   <body>
     <aside style="padding:6px 12px;background:#fff3cd;color:#513d00;font:13px system-ui" role="note">Synthetic test harness — not live Home Assistant. No robot is connected.</aside>
     <script type="module">
-      import "/map_studio_v4/index.js";
+      import "/map_studio_v4-review/review.js";
       await customElements.whenDefined("matic-map-studio-gallery-v0-4-0");
       const gallery = document.createElement("matic-map-studio-gallery-v0-4-0");
       gallery.controls = ${path === "/map-studio-v4-review"};
@@ -64,7 +65,20 @@ const server = createServer((request, response) => {
   if (path.startsWith("/map_studio_v4/")) {
     const root = join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4");
     const candidate = normalize(join(root, path.slice("/map_studio_v4/".length)));
-    if (candidate === root || candidate.startsWith(`${root}${sep}`)) file = candidate;
+    if (candidate.startsWith(`${root}${sep}`)) file = candidate;
+  }
+  if (path.startsWith("/map_studio_v4-review/")) {
+    const relativePath = path.slice("/map_studio_v4-review/".length);
+    for (const root of [
+      join(repositoryRoot, "custom_components", "matic_robot", "map_studio_v4"),
+      join(testDirectory, ".generated", "map-studio-v4-review"),
+    ]) {
+      const candidate = normalize(join(root, relativePath));
+      if (candidate.startsWith(`${root}${sep}`) && isFile(candidate)) {
+        file = candidate;
+        break;
+      }
+    }
   }
   const versionedV4 = path.match(
     /^\/matic_robot\/[^/]+-[a-f0-9]{12}\/map-studio-v4\/(.+)$/u,
@@ -74,7 +88,7 @@ const server = createServer((request, response) => {
     const candidate = normalize(join(root, versionedV4[1]));
     if (candidate.startsWith(`${root}${sep}`)) file = candidate;
   }
-  if (!file) {
+  if (!isFile(file)) {
     response.writeHead(404, { "Content-Type": "text/plain" });
     response.end("not found");
     return;
@@ -83,7 +97,7 @@ const server = createServer((request, response) => {
     "Content-Type": "text/javascript; charset=utf-8",
     "Cache-Control": "no-store",
   });
-  createReadStream(file).pipe(response);
+  createReadStream(file).on("error", () => response.destroy()).pipe(response);
 });
 
 server.listen(4173, "127.0.0.1");

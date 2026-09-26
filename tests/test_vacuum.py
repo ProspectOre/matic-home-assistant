@@ -37,6 +37,12 @@ async def test_managed_clean_token_is_required_until_external_replacement(hass) 
         {"rooms": ["Study"], PLAN_MOTION_TOKEN: token},
     )
     assert manager.managed_motion_is_current("synthetic-serial", token) is True
+    assert (
+        entry.runtime_data.coordinator.client.async_start_coverage.await_args.kwargs[
+            "require_settings_readback"
+        ]
+        is True
+    )
 
     await entity.async_send_command("clean_all")
     assert manager.managed_motion_is_current("synthetic-serial", token) is False

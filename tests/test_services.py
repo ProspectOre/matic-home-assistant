@@ -40,6 +40,22 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
+from custom_components.matic_robot.managed_executor import (
+    PlanCancelledError,
+    _async_dispatch_leg_command,
+    _async_expire_native_reconciliation,
+    _async_mark_run_docked,
+    _async_reconcile_native_stop,
+    _async_run_room,
+    _async_wait_for_vacuum_state,
+    _clear_stop_pending_if_stable,
+    _mark_dispatch_coverage_verified,
+    _native_completion_match,
+    _NativeReconciliation,
+    _PreparedRoomDispatch,
+    _run_provenance,
+    _schedule_native_reconciliation,
+)
 from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     CleaningPlanManager,
@@ -47,36 +63,70 @@ from custom_components.matic_robot.plans import (
     SavedPlanLimitError,
     plan_floor_token,
 )
+from custom_components.matic_robot.room_sequence import (
+    _resolve_room_id as _resolve_sequence_room_id,
+)
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
     CLEAN_ROOM_SEQUENCE_SCHEMA,
     DELETE_PLAN_ROOM_SCHEMA,
     MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
+    PREVIEW_ROOM_SEQUENCE_SCHEMA,
+    RUN_SELECTED_PLAN_SCHEMA,
     SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
     SAVED_PLAN_SERVICE_SCHEMA,
-    PlanCancelledError,
-    _async_dispatch_leg_command,
     _async_execute_rooms,
-    _async_expire_native_reconciliation,
-    _async_mark_run_docked,
-    _async_reconcile_native_stop,
-    _async_run_room,
-    _async_wait_for_vacuum_state,
-    _clear_stop_pending_if_stable,
     _ensure_stop_settled,
     _entry_for_entity,
-    _native_completion_match,
-    _NativeReconciliation,
+    _plan_cadence_bindings,
     _require_matic_control,
     _resolve_loaded_matic_vacuums,
     _resolve_room_id,
-    _run_provenance,
     _saved_plan_context,
-    _schedule_native_reconciliation,
     async_register_services,
 )
+
+
+def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None:
+    room_map = {"room-office": "Office"}
+
+    assert _resolve_sequence_room_id(" ROOM-OFFICE ", room_map) == "room-office"
+    with pytest.raises(ValueError, match="missing"):
+        _resolve_sequence_room_id("missing", room_map)
+
+
+@pytest.mark.parametrize(
+    "cadence_by_room",
+    [None, {"room-a": "invalid"}],
+)
+def test_dispatch_readback_marker_ignores_missing_or_invalid_cadence(
+    cadence_by_room,
+):
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
+    dispatch = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
+    checkpoint = {"cadence_by_room": cadence_by_room}
+
+    _mark_dispatch_coverage_verified(checkpoint, dispatch)
+
+    assert checkpoint["cadence_by_room"] == cadence_by_room
+
+
+def test_dispatch_readback_marker_records_room_setting_evidence():
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
+    dispatch = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
+    checkpoint = {
+        "cadence_by_room": {
+            "room-a": {"effective_coverage_setting": "quick"},
+            "room-b": {"effective_coverage_setting": "heavy_duty"},
+        }
+    }
+
+    _mark_dispatch_coverage_verified(checkpoint, dispatch)
+
+    assert checkpoint["cadence_by_room"]["room-a"]["coverage_setting_verified"]
+    assert "coverage_setting_verified" not in checkpoint["cadence_by_room"]["room-b"]
 
 
 async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
@@ -857,6 +907,9 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             }
         ),
     )
+    # Existing room-sequence callers keep their saved per-room settings unless
+    # they explicitly opt into shared cadence.
+    assert call.data["use_room_schedule"] is False
 
     async def exercise_sequence(*_args, **kwargs) -> None:
         assert kwargs["floor_is_current"]() is True
@@ -883,7 +936,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
             execute,
         ),
         patch(
-            "custom_components.matic_robot.services.schedule_dock_after_stop",
+            "custom_components.matic_robot.managed_executor.schedule_dock_after_stop",
             dock_after_stop,
         ),
     ):
@@ -894,7 +947,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
         CleaningRoom("room-study", "Study", "mop", "heavy_duty"),
         CleaningRoom("room-office", "Office", "vacuum", "standard"),
     ]
-    assert execute.await_args.kwargs["intelligent"] is False
+    assert "intelligent" not in execute.await_args.kwargs
     assert execute.await_args.args[1].data["plan_id"] == "quick_clean"
     assert execute.await_args.args[1].data["return_to_base"] is True
     assert execute.await_args.kwargs["floor_token"] == plan_floor_token(floor_plan)
@@ -903,6 +956,1007 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
     )
     coordinator.async_request_refresh.assert_awaited_once_with()
     dock_after_stop.assert_called_once()
+
+
+async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    identity = _plan_cadence_bindings(
+        SimpleNamespace(
+            runtime_data=SimpleNamespace(
+                coordinator=SimpleNamespace(
+                    data=SimpleNamespace(floor_plan=floor_plan)
+                ),
+                slam_map=SimpleNamespace(
+                    floor_plan_is_current=MagicMock(return_value=True)
+                ),
+            )
+        )
+    )[1][room.id]
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {"scope": "shared", "mop_every_n": 2},
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.id: identity},
+    )
+    schedule = manager._robot("serial")["shared_room_cadence"][room.id]
+    schedule["progress"] = {"mop": 1, "coverage": 0}
+    entry = SimpleNamespace(
+        entry_id="entry-preview",
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor_plan),
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
+            client=SimpleNamespace(
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
+                async_send_user_command=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        ),
+    )
+    services = await _registered_services(hass, manager)
+    input_data = {
+        "entity_id": ["vacuum.test"],
+        "rooms": [
+            {
+                "room": room.id,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            }
+        ],
+        "use_room_schedule": True,
+    }
+    preview_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_room_sequence",
+        PREVIEW_ROOM_SEQUENCE_SCHEMA(input_data),
+    )
+    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        preview = await _registered_handler(services, "preview_room_sequence")(
+            preview_call
+        )
+
+    assert len(preview["preview_token"]) == 64
+    assert preview["rooms"][0]["cleaning_mode"] == "vacuum_and_mop"
+    assert preview["rooms"][0]["cadence_reasons"] == ["mop_due"]
+
+    async def execute_sequence(*_args, **kwargs) -> None:
+        # The managed executor invokes this after its stop/checkpoint awaits;
+        # keep the service regression at the same TOCTOU boundary.
+        kwargs["validate_prepared_run"]()
+
+    execute = AsyncMock(side_effect=execute_sequence)
+    dispatch_data = {**input_data, "preview_token": preview["preview_token"]}
+    dispatch_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(dispatch_data),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(dispatch_call)
+    assert (
+        execute.await_args.args[5][0].cleaning_mode
+        == preview["rooms"][0]["cleaning_mode"]
+    )
+    assert (
+        execute.await_args.args[5][0].coverage_setting
+        == preview["rooms"][0]["coverage_setting"]
+    )
+
+    duplicate_input = {
+        "entity_id": ["vacuum.test"],
+        "rooms": [
+            {
+                "room": room.id,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            },
+            {
+                "room": room.name,
+                "cleaning_mode": "mop",
+                "coverage_setting": "heavy_duty",
+            },
+        ],
+    }
+    duplicate_preview_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_room_sequence",
+        PREVIEW_ROOM_SEQUENCE_SCHEMA(duplicate_input),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+    ):
+        duplicate_preview = await _registered_handler(
+            services, "preview_room_sequence"
+        )(duplicate_preview_call)
+    assert [item["cleaning_mode"] for item in duplicate_preview["rooms"]] == [
+        "vacuum",
+        "mop",
+    ]
+    duplicate_dispatch = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(
+            {
+                **duplicate_input,
+                "preview_token": duplicate_preview["preview_token"],
+            }
+        ),
+    )
+    execute.reset_mock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            execute,
+        ),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(duplicate_dispatch)
+    assert [room.cleaning_mode for room in execute.await_args.args[5]] == [
+        "vacuum",
+        "mop",
+    ]
+
+    tracked_duplicate_input = {**duplicate_input, "use_room_schedule": True}
+    tracked_duplicate_preview = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_room_sequence",
+        PREVIEW_ROOM_SEQUENCE_SCHEMA(tracked_duplicate_input),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError, match="duplicate tracked room"),
+    ):
+        await _registered_handler(services, "preview_room_sequence")(
+            tracked_duplicate_preview
+        )
+    tracked_duplicate_dispatch = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(tracked_duplicate_input),
+    )
+    execute.reset_mock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            execute,
+        ),
+        pytest.raises(ServiceValidationError, match="duplicate tracked room"),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(
+            tracked_duplicate_dispatch
+        )
+    execute.assert_not_awaited()
+
+    async def mutate_before_dispatch(*_args, **kwargs) -> None:
+        schedule["progress"] = {"mop": 0, "coverage": 0}
+        schedule["policy"]["do_mop_next"] = True
+        kwargs["validate_prepared_run"]()
+
+    execute_with_mutation = AsyncMock(side_effect=mutate_before_dispatch)
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            execute_with_mutation,
+        ),
+        pytest.raises(ServiceValidationError, match="resolution changed"),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(dispatch_call)
+    execute_with_mutation.assert_awaited_once()
+
+    schedule["progress"] = {"mop": 1, "coverage": 0}
+    schedule["policy"]["do_mop_next"] = False
+    schedule["identity"] = identity
+
+    async def invalidate_identity(*_args, **kwargs) -> None:
+        schedule["identity"] = "0" * 64
+        kwargs["validate_prepared_run"]()
+
+    execute_with_invalid_map = AsyncMock(side_effect=invalidate_identity)
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            execute_with_invalid_map,
+        ),
+        pytest.raises(ServiceValidationError, match="different map"),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(dispatch_call)
+    execute_with_invalid_map.assert_awaited_once()
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError, match="different map"),
+    ):
+        await _registered_handler(services, "preview_room_sequence")(preview_call)
+
+    schedule["identity"] = identity
+    schedule["progress"] = {"mop": 0, "coverage": 0}
+    schedule["policy"]["do_mop_next"] = True
+    stale_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(dispatch_data),
+    )
+    execute.reset_mock()
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError, match="preview is stale"),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(stale_call)
+    execute.assert_not_awaited()
+
+
+async def test_preview_room_sequence_requires_administrator(hass) -> None:
+    hass.auth = SimpleNamespace(
+        async_get_user=AsyncMock(return_value=SimpleNamespace(is_admin=False))
+    )
+    services = await _registered_services(hass)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_room_sequence",
+        PREVIEW_ROOM_SEQUENCE_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "rooms": [
+                    {
+                        "room": "room-office",
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                    }
+                ],
+            }
+        ),
+        context=Context(user_id="restricted-user"),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        pytest.raises(Unauthorized),
+    ):
+        await _registered_handler(services, "preview_room_sequence")(call)
+
+    hass.auth.async_get_user.return_value = None
+    with pytest.raises(UnknownUser):
+        await _registered_handler(services, "preview_room_sequence")(call)
+
+
+@pytest.mark.parametrize(
+    ("use_room_schedule", "override_room_schedule"),
+    [(False, False), (True, False), (True, True)],
+)
+async def test_clean_room_sequence_schedule_selection_controls_shared_accounting(
+    hass, use_room_schedule, override_room_schedule
+) -> None:
+    """Only a manual run using the room schedule may advance shared progress."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    identity = _plan_cadence_bindings(
+        SimpleNamespace(
+            runtime_data=SimpleNamespace(
+                coordinator=SimpleNamespace(
+                    data=SimpleNamespace(floor_plan=floor_plan)
+                ),
+                slam_map=SimpleNamespace(
+                    floor_plan_is_current=MagicMock(return_value=True)
+                ),
+            )
+        )
+    )[1][room.id]
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 2,
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "quick",
+                    },
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.id: identity},
+    )
+    manager._robot("serial")["shared_room_cadence"][room.id]["progress"] = {
+        "mop": 1,
+        "coverage": 1,
+    }
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+        async_confirm_room_completed=MagicMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=SimpleNamespace(
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_identity=AsyncMock(return_value=b"native"),
+                async_send_user_command=AsyncMock(),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    service_data = {
+        "entity_id": ["vacuum.test"],
+        "use_room_schedule": use_room_schedule,
+        "rooms": [
+            {
+                "room": room.id,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            }
+        ],
+    }
+    if override_room_schedule:
+        service_data["override_room_schedule"] = True
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        CLEAN_ROOM_SEQUENCE_SCHEMA(service_data),
+    )
+
+    async def execute_sequence(*args, **kwargs):
+        run_id = (
+            "manual-with-schedule" if use_room_schedule else "manual-without-schedule"
+        )
+        run_manager = args[2]
+        run_rooms = args[5]
+        await run_manager.async_begin_run(
+            "serial",
+            "quick_clean",
+            run_id,
+            len(run_rooms),
+            trigger="user",
+            service="clean_room_sequence",
+        )
+        await run_manager.async_mark_started(
+            "serial", "quick_clean", run_rooms[0], run_id=run_id
+        )
+        cadence_by_room = kwargs["cadence_by_room"]
+        cadence_by_room[run_rooms[0].room_id]["coverage_setting_verified"] = True
+        await run_manager.async_set_recovery_checkpoint(
+            "serial",
+            run_id,
+            {"cadence_by_room": cadence_by_room},
+        )
+        # This method is the managed executor's verified-completion boundary.
+        await run_manager.async_mark_completed("serial", "quick_clean", run_rooms[0])
+
+    execute = AsyncMock(side_effect=execute_sequence)
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
+        ),
+        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+    ):
+        await _registered_handler(services, "clean_room_sequence")(call)
+
+    assert execute.await_args.args[5] == [
+        CleaningRoom(
+            room.id,
+            room.name,
+            "vacuum_and_mop"
+            if use_room_schedule and not override_room_schedule
+            else "vacuum",
+            "quick" if use_room_schedule and not override_room_schedule else "standard",
+        )
+    ]
+    snapshot = execute.await_args.kwargs["cadence_by_room"][room.id]
+    assert snapshot["scope"] == ("shared" if use_room_schedule else "plan")
+    assert snapshot["schedule_active"] is use_room_schedule
+    assert snapshot["mop_due"] is use_room_schedule
+    assert snapshot["coverage_due"] is use_room_schedule
+    expected_progress = (
+        {"mop": 0, "coverage": 0}
+        if use_room_schedule and not override_room_schedule
+        else {"mop": 1, "coverage": 1}
+    )
+    assert (
+        manager._robot("serial")["shared_room_cadence"][room.id]["progress"]
+        == expected_progress
+    )
+
+
+async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "plan", "mop_every_n": 3},
+                },
+                {
+                    "room_id": "room-study",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                },
+            ],
+        },
+    )
+    manager._robot("serial")["plan_room_cadence"]["home"]["room-office"] = {
+        "identity": None,
+        "progress": {"mop": 2, "coverage": 4},
+    }
+    services = await _registered_services(hass, manager)
+    context = ("vacuum.test", SimpleNamespace(), "serial", {})
+    reset = ServiceCall(
+        hass,
+        DOMAIN,
+        "reset_room_cadence",
+        {
+            "entity_id": ["vacuum.test"],
+            "plan": "Home",
+            "room_id": "room-office",
+            "modes": ["mop"],
+        },
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        result = await _registered_handler(services, "reset_room_cadence")(reset)
+    assert result == {
+        "plan_id": "home",
+        "reset_room_ids": ["room-office"],
+        "reset_modes": ["mop"],
+    }
+    assert manager.cadence_progress("serial", "home", "room-office")["mop"] == 0
+    assert manager.cadence_progress("serial", "home", "room-office")["coverage"] == 4
+
+    manager._robot("serial")["active_plan"] = {
+        "plan_id": "home",
+        "room_id": "room-office",
+    }
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(
+            ServiceValidationError, match="cannot reset while its plan is running"
+        ),
+    ):
+        await _registered_handler(services, "reset_room_cadence")(reset)
+
+
+async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor_plan),
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
+            client=SimpleNamespace(
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_identity=AsyncMock(
+                    return_value=b"native-task"
+                ),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    identity = _plan_cadence_bindings(entry)[1][room.id]
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "shared", "mop_every_n": 3},
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.id: identity},
+    )
+    schedule = manager._robot("serial")["shared_room_cadence"][room.id]
+    schedule["progress"] = {"mop": 2, "coverage": 0}
+    services = await _registered_services(hass, manager)
+    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+    update = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan_room",
+        SAVE_PLAN_ROOM_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Home",
+                "room": {
+                    "room": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "shared", "mop_every_n": 5},
+                },
+            }
+        ),
+    )
+    save.side_effect = OSError("disk unavailable")
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(OSError, match="disk unavailable"),
+    ):
+        await _registered_handler(services, "save_plan_room")(update)
+
+    assert manager.plan("serial", "home")["rooms"][0]["cadence"]["mop_every_n"] == 3
+    assert schedule["progress"] == {"mop": 2, "coverage": 0}
+
+
+async def test_plan_cadence_bindings_uses_verified_current_map() -> None:
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    floor_token, identities = _plan_cadence_bindings(entry)
+    assert floor_token == plan_floor_token(floor_plan)
+    assert set(identities) == {room.id for room in floor_plan.rooms}
+
+
+async def test_late_native_completion_uses_current_room_cadence_identity(hass) -> None:
+    room = CleaningRoom("room-office", "Office", "vacuum", "quick")
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    now = dt_util.utcnow()
+    reconciliation = _NativeReconciliation(
+        "home", room.room_id, room.name, now - timedelta(seconds=10)
+    )
+    record = CleaningSessionRecord(
+        b"late-native-session",
+        CleaningSession(
+            (now - timedelta(seconds=12)).isoformat(),
+            now.isoformat(),
+            12,
+            (room.name,),
+            ((room.name, 12),),
+            True,
+            completed_rooms=(room.name,),
+        ),
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.async_mark_native_completed = AsyncMock(return_value=True)
+    hass.states.async_set("vacuum.test", "docked")
+    with (
+        patch(
+            "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+            0,
+        ),
+        patch(
+            "custom_components.matic_robot.managed_executor.current_room_cadence_identity",
+            return_value=_plan_cadence_bindings(entry)[1][room.room_id],
+        ),
+    ):
+        await _async_reconcile_native_stop(
+            hass,
+            manager,
+            "serial",
+            "vacuum.test",
+            room,
+            reconciliation,
+            frozenset(),
+            None,
+            AsyncMock(return_value=(record,)),
+            None,
+            None,
+        )
+    assert (
+        manager.async_mark_native_completed.await_args.kwargs["room_identity"]
+        == _plan_cadence_bindings(entry)[1][room.room_id]
+    )
+
+
+async def test_tracked_run_checkpoints_its_cadence_snapshot_before_dispatch(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    cancel = asyncio.Event()
+    cancel.set()
+    manager.prepare_run = MagicMock(return_value=cancel)
+    checkpoint_write = AsyncMock(wraps=manager.async_set_recovery_checkpoint)
+    manager.async_set_recovery_checkpoint = checkpoint_write
+    room = CleaningRoom("room-office", "Office", "vacuum", "quick")
+    cadence_snapshot = {
+        room.room_id: {
+            "scope": "shared",
+            "mop_due": True,
+            "coverage_due": False,
+            "identity": "synthetic-room-identity",
+        }
+    }
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_room_sequence",
+        {
+            "plan_id": "quick_clean",
+            "return_to_base": False,
+            "start_timeout": 120,
+            "completion_timeout": 21600,
+        },
+    )
+    with patch(
+        "custom_components.matic_robot.managed_executor._ensure_stop_settled",
+        new=AsyncMock(),
+    ):
+        await _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.test",
+            "serial",
+            [room],
+            cadence_by_room=cadence_snapshot,
+            floor_token="synthetic-floor-token",
+            session_identity=AsyncMock(return_value=b"native-session"),
+        )
+
+    checkpoint_write.assert_awaited()
+    checkpoint = checkpoint_write.await_args.args[2]
+    assert checkpoint["cadence_by_room"] == cadence_snapshot
+    assert checkpoint["rooms"] == [
+        {
+            "room_id": room.room_id,
+            "name": room.name,
+            "cleaning_mode": room.cleaning_mode,
+            "coverage_setting": room.coverage_setting,
+        }
+    ]
+
+
+@pytest.mark.parametrize("service", ["run_selected_plan", "clean_room_sequence"])
+async def test_cleaning_service_rejects_invalid_cadence_resolution(
+    hass, service: str
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    manager.resolve_cadence = MagicMock(side_effect=ValueError("invalid cadence"))
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    context = (
+        "vacuum.test",
+        entry,
+        "serial",
+        {"room-office": "Office"},
+    )
+    if service == "run_selected_plan":
+        call = ServiceCall(
+            hass,
+            DOMAIN,
+            service,
+            {"entity_id": ["vacuum.test"], "plan": "Home"},
+        )
+    else:
+        call = ServiceCall(
+            hass,
+            DOMAIN,
+            service,
+            CLEAN_ROOM_SEQUENCE_SCHEMA(
+                {
+                    "entity_id": ["vacuum.test"],
+                    "rooms": [
+                        {
+                            "room": "Office",
+                            "cleaning_mode": "vacuum",
+                            "coverage_setting": "quick",
+                        }
+                    ],
+                }
+            ),
+        )
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        pytest.raises(ServiceValidationError, match="invalid cadence") as raised,
+    ):
+        await _registered_handler(services, service)(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+
+
+@pytest.mark.parametrize(
+    "rooms, message",
+    [([], "plan has no rooms"), (["malformed"], "plan contains an invalid room")],
+)
+async def test_run_selected_plan_rejects_malformed_authoritative_preview(
+    hass, rooms, message: str
+) -> None:
+    """Never dispatch data that failed authoritative preview materialization."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    manager.preview = MagicMock(return_value={"plan_id": "home", "rooms": rooms})
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    context = ("vacuum.test", entry, "serial", {"room-office": "Office"})
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {"entity_id": ["vacuum.test"], "plan": "Home"},
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(),
+        ) as execute,
+        pytest.raises(ServiceValidationError, match=message) as raised,
+    ):
+        await _registered_handler(services, "run_selected_plan")(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    execute.assert_not_awaited()
+
+
+async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
+    hass,
+) -> None:
+    """A preview failure after executor settlement remains recoverable."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    floor_plan = _area_floor_plan()
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(
+                data=SimpleNamespace(floor_plan=floor_plan),
+                async_request_refresh=AsyncMock(),
+                async_confirm_room_completed=MagicMock(),
+            ),
+            client=SimpleNamespace(
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+                async_get_cleaning_session_records=AsyncMock(return_value=()),
+                async_get_cleaning_session_identity=AsyncMock(
+                    return_value=b"native-task"
+                ),
+            ),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    context = ("vacuum.test", entry, "serial", {"room-office": "Office"})
+    preview_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_plan",
+        SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        preview = await _registered_handler(services, "preview_plan")(preview_call)
+
+    original_preview = manager.preview
+    preview_calls = 0
+
+    def fail_after_initial_preview(*args, **kwargs):
+        nonlocal preview_calls
+        preview_calls += 1
+        if preview_calls > 1:
+            raise ValueError("authoritative preview unavailable")
+        return original_preview(*args, **kwargs)
+
+    manager.preview = MagicMock(side_effect=fail_after_initial_preview)
+    token_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        RUN_SELECTED_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Home",
+                "preview_token": preview["preview_token"],
+            }
+        ),
+    )
+
+    async def invoke_validation(*_args, **kwargs) -> None:
+        kwargs["validate_prepared_run"]()
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(side_effect=invoke_validation),
+        ) as execute,
+        pytest.raises(
+            ServiceValidationError, match="authoritative preview unavailable"
+        ) as raised,
+    ):
+        await _registered_handler(services, "run_selected_plan")(token_call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    execute.assert_awaited_once()
 
 
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
@@ -927,6 +1981,10 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     )
     services = await _registered_services(hass, manager)
     floor_plan = _area_floor_plan()
+    floor_plan = replace(
+        floor_plan,
+        rooms=(replace(floor_plan.rooms[0], id="room-study", name="Study"),),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
@@ -979,12 +2037,12 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
         preview = await _registered_handler(services, "preview_plan")(call)
 
     assert execute.await_count == 3
-    assert execute.await_args_list[0].kwargs["intelligent"] is True
+    assert "intelligent" not in execute.await_args_list[0].kwargs
     assert execute.await_args_list[0].kwargs["refresh"] is (
         coordinator.async_request_refresh
     )
-    assert execute.await_args_list[1].kwargs["intelligent"] is False
-    assert execute.await_args_list[2].kwargs["intelligent"] is False
+    assert "intelligent" not in execute.await_args_list[1].kwargs
+    assert "intelligent" not in execute.await_args_list[2].kwargs
     floor_guard = execute.await_args_list[0].kwargs["floor_is_current"]
     assert execute.await_args_list[0].kwargs["floor_token"] == plan_floor_token(
         floor_plan
@@ -1006,6 +2064,72 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     assert preview["plan_name"] == "Upstairs"
     assert preview["run_behavior"] == "ordered"
     assert preview["rooms"][0]["room_id"] == "room-study"
+    assert len(preview["preview_token"]) == 64
+
+    token_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        RUN_SELECTED_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Upstairs",
+                "preview_token": preview["preview_token"],
+            }
+        ),
+    )
+
+    async def validate_tokenized_run(*_args, **kwargs) -> None:
+        assert "intelligent" not in kwargs
+        kwargs["validate_prepared_run"]()
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(side_effect=validate_tokenized_run),
+        ) as token_execute,
+    ):
+        await _registered_handler(services, "run_selected_plan")(token_call)
+    token_execute.assert_awaited_once()
+
+    async def mutate_saved_plan_before_dispatch(*_args, **kwargs) -> None:
+        manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = False
+        kwargs["validate_prepared_run"]()
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(side_effect=mutate_saved_plan_before_dispatch),
+        ) as changed_execute,
+        pytest.raises(ServiceValidationError, match="resolution changed"),
+    ):
+        await _registered_handler(services, "run_selected_plan")(token_call)
+    changed_execute.assert_awaited_once()
+
+    manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = True
+    manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = False
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(),
+        ) as stale_execute,
+        pytest.raises(ServiceValidationError, match="preview is stale"),
+    ):
+        await _registered_handler(services, "run_selected_plan")(token_call)
+    stale_execute.assert_not_awaited()
+    manager._robot("serial")["plans"]["upstairs"]["return_to_base"] = True
 
     lock = manager.lock("serial")
     await lock.acquire()
@@ -1329,6 +2453,104 @@ async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
 
     assert isinstance(raised.value.__cause__, SavedPlanLimitError)
     manager._store.async_save.assert_not_awaited()
+
+
+async def test_save_plan_translates_cadence_edit_blocked_during_run(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    manager._robot("serial")["active_plan"] = {
+        "plan_id": "home",
+        "room_id": room.id,
+    }
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan_id": "home",
+                "name": "Home",
+                "rooms": [
+                    {
+                        "room": room.id,
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                        "cadence": {"scope": "plan", "mop_every_n": 3},
+                    }
+                ],
+            }
+        ),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", {room.id: room.name}),
+        ),
+        pytest.raises(
+            ServiceValidationError, match="cannot change while its plan is running"
+        ) as raised,
+    ):
+        await _registered_handler(services, "save_plan")(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    assert isinstance(raised.value.__cause__, ValueError)
+
+
+async def test_delete_plan_translates_running_plan_lock(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan("serial", "home", {"name": "Home", "rooms": []})
+    manager._robot("serial")["active_plan"] = {
+        "plan_id": "home",
+        "room_id": "room-office",
+    }
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "delete_plan",
+        PLAN_REFERENCE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", SimpleNamespace(), "serial", {}),
+        ),
+        pytest.raises(
+            ServiceValidationError, match="cannot be deleted while it is running"
+        ) as raised,
+    ):
+        await _registered_handler(services, "delete_plan")(call)
+
+    assert raised.value.translation_key == "plan_locked"
+    assert isinstance(raised.value.__cause__, ValueError)
+    assert manager.plan("serial", "home")["name"] == "Home"
 
 
 async def test_room_crud_rejects_unknown_rooms_membership_and_positions(hass) -> None:
@@ -2083,7 +3305,7 @@ async def test_room_cancellation_records_history_and_reraises() -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         pytest.raises(PlanCancelledError),
@@ -2120,7 +3342,7 @@ async def test_room_cancellation_preserves_low_charge_reason() -> None:
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(side_effect=PlanCancelledError),
         ),
         pytest.raises(PlanCancelledError) as excinfo,
@@ -2195,7 +3417,9 @@ async def test_room_handoff_after_returning_does_not_credit_completion(hass) -> 
     )
     refresh = AsyncMock()
 
-    with patch("custom_components.matic_robot.services.ROOM_STATUS_REFRESH_SECONDS", 0):
+    with patch(
+        "custom_components.matic_robot.managed_executor.ROOM_STATUS_REFRESH_SECONDS", 0
+    ):
         await _async_run_room(
             hass,
             _execution_call(hass),
@@ -2293,7 +3517,7 @@ async def test_room_failures_translate_client_errors_at_boundary(
     room = CleaningRoom("room-study", "Study", "vacuum", "quick")
     with (
         patch(
-            "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+            "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
             AsyncMock(side_effect=error),
         ),
         pytest.raises(expected_type) as excinfo,
@@ -2363,7 +3587,7 @@ async def test_oem_stop_reconciliation_credits_late_native_session(
         "away", room.room_id, room.name, now - timedelta(seconds=5), run_id=run_id
     )
     with patch(
-        "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+        "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_POLL_SECONDS",
         0,
     ):
         await _async_reconcile_native_stop(
@@ -2420,11 +3644,11 @@ async def test_reconciliation_abandons_a_room_seen_ending_in_place(hass) -> None
 
     with (
         patch(
-            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_SECONDS",
             0.05,
         ),
         patch(
-            "custom_components.matic_robot.services."
+            "custom_components.matic_robot.managed_executor."
             "OEM_STOP_RECONCILIATION_POLL_SECONDS",
             0,
         ),
@@ -2475,15 +3699,15 @@ async def test_native_stop_reconciliation_handles_transport_and_timeout(hass) ->
     )
     with (
         patch(
-            "custom_components.matic_robot.services.monotonic",
+            "custom_components.matic_robot.managed_executor.monotonic",
             side_effect=[0, 0, 1],
         ),
         patch(
-            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_SECONDS",
             1,
         ),
         patch(
-            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_POLL_SECONDS",
+            "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_POLL_SECONDS",
             0,
         ),
     ):
@@ -2535,11 +3759,11 @@ async def test_native_stop_reconciliation_expires_without_history_baseline(
 
     with (
         patch(
-            "custom_components.matic_robot.services.OEM_STOP_RECONCILIATION_SECONDS",
+            "custom_components.matic_robot.managed_executor.OEM_STOP_RECONCILIATION_SECONDS",
             1,
         ),
         patch(
-            "custom_components.matic_robot.services.asyncio.sleep", AsyncMock()
+            "custom_components.matic_robot.managed_executor.asyncio.sleep", AsyncMock()
         ) as sleep,
     ):
         await _async_expire_native_reconciliation(
@@ -2587,6 +3811,14 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
     assert manager.snapshot("serial")["native_reconciliation_pending"] is True
     save.assert_not_awaited()
 
+    save.side_effect = OSError("disk unavailable")
+    with pytest.raises(OSError, match="disk unavailable"):
+        await manager.async_clear_native_reconciliation(
+            "serial", "away", room.room_id, dispatched_at
+        )
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is True
+    save.side_effect = None
+
     assert (
         await manager.async_clear_native_reconciliation(
             "serial", "away", room.room_id, dispatched_at
@@ -2594,7 +3826,7 @@ async def test_clear_native_reconciliation_requires_the_exact_marker(hass) -> No
         is True
     )
     assert manager.snapshot("serial")["native_reconciliation_pending"] is False
-    save.assert_awaited_once()
+    assert save.await_count == 2  # failed clear plus successful retry
 
 
 async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> None:
@@ -2603,7 +3835,8 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     reconciliation = _NativeReconciliation(
         "away", room.room_id, room.name, now - timedelta(seconds=5)
     )
-    manager = SimpleNamespace(async_mark_native_completed=AsyncMock())
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
     _schedule_native_reconciliation(
         SimpleNamespace(),
         manager,
@@ -2663,14 +3896,12 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
     assert manager_with_fence.stop_pending("serial") is False
 
-    synchronous_clear = MagicMock()
-    legacy_manager = SimpleNamespace(
-        stop_pending=MagicMock(return_value=True),
-        clear_stop_pending=synchronous_clear,
+    manager_with_fence.mark_stop_pending("serial")
+    await _clear_stop_pending_if_stable(
+        manager_with_fence, "serial", hass, "vacuum.test"
     )
-    await _clear_stop_pending_if_stable(legacy_manager, "serial", hass, "vacuum.test")
-    await _ensure_stop_settled(hass, legacy_manager, "serial", "vacuum.test")
-    assert synchronous_clear.call_count == 2
+    await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+    assert manager_with_fence.stop_pending("serial") is False
 
 
 async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None:
@@ -2688,7 +3919,7 @@ async def test_native_reconciliation_schedule_registers_lifecycle_task() -> None
         return asyncio.create_task(coro, name=name)
 
     with patch(
-        "custom_components.matic_robot.services._async_reconcile_native_stop",
+        "custom_components.matic_robot.managed_executor._async_reconcile_native_stop",
         AsyncMock(),
     ):
         _schedule_native_reconciliation(
@@ -2788,20 +4019,26 @@ async def test_wait_returns_reached_state_while_cancel_stays_pending(hass) -> No
     assert not cancel.is_set()
 
 
-async def test_execute_rooms_skips_every_room_once_cancellation_is_set() -> None:
+async def test_execute_rooms_skips_every_room_once_cancellation_is_set(hass) -> None:
     cancel_event = asyncio.Event()
     cancel_event.set()
-    manager = SimpleNamespace(
-        lock=MagicMock(return_value=asyncio.Lock()),
-        prepare_run=MagicMock(return_value=cancel_event),
-        finish_room_event=MagicMock(return_value=asyncio.Event()),
-        begin_managed_motion=MagicMock(return_value=1),
-        end_managed_motion=MagicMock(),
-        register_run_task=MagicMock(),
-        unregister_run_task=MagicMock(),
-        managed_motion_is_current=MagicMock(return_value=True),
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan(
+        "serial",
+        "away",
+        {
+            "name": "Away",
+            "rooms": [
+                {
+                    "room_id": "room-kitchen",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
     )
-    hass = SimpleNamespace()
+    manager.prepare_run = MagicMock(return_value=cancel_event)
     call = ServiceCall(
         hass,
         DOMAIN,
@@ -2815,11 +4052,9 @@ async def test_execute_rooms_skips_every_room_once_cancellation_is_set() -> None
     )
     room = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "quick")
     with patch(
-        "custom_components.matic_robot.services._async_run_room", AsyncMock()
+        "custom_components.matic_robot.managed_executor._async_run_room", AsyncMock()
     ) as run:
-        await _async_execute_rooms(
-            hass, call, manager, "vacuum.test", "serial", [room], intelligent=False
-        )
+        await _async_execute_rooms(hass, call, manager, "vacuum.test", "serial", [room])
     run.assert_not_awaited()
 
 
@@ -2851,10 +4086,10 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
     command = AsyncMock()
     with (
         patch(
-            "custom_components.matic_robot.services._ensure_stop_settled",
+            "custom_components.matic_robot.managed_executor._ensure_stop_settled",
             side_effect=delayed_check,
         ),
-        patch("custom_components.matic_robot.services._async_run_leg") as run,
+        patch("custom_components.matic_robot.managed_executor._async_run_leg") as run,
     ):
         task = asyncio.create_task(
             _async_execute_rooms(
@@ -2864,7 +4099,6 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
                 "vacuum.test",
                 "serial",
                 [room],
-                intelligent=False,
                 managed_user_command=command,
             )
         )
@@ -2883,7 +4117,6 @@ async def test_stop_owns_a_start_waiting_for_its_initial_settlement_check(
                     "vacuum.test",
                     "serial",
                     [room],
-                    intelligent=False,
                 )
         finally:
             release.set()
