@@ -42,7 +42,7 @@ clean_room_sequence:
     override_room_schedule:
       default: false
       selector:
-        boolean
+        boolean:
 
 preview_room_sequence:
   target: *vacuum_target
@@ -62,7 +62,7 @@ preview_room_sequence:
     override_room_schedule:
       default: false
       selector:
-        boolean
+        boolean:
 
 clean_area:
   target: *vacuum_target
