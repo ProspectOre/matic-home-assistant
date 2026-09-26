@@ -1,8 +1,8 @@
 # Matic 0.5 evidence matrix
 
 Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25. This matrix is
-the release ledger for the contract in `architecture-0.5.md`. No 0.5 exact
-candidate evidence is recorded yet. Disposition and evidence are separate. “Preserved and verified” means the
+the release ledger for the contract in `architecture-0.5.md`. No 0.5 RC runtime
+evidence is recorded yet. Disposition and evidence are separate. “Preserved and verified” means the
 accepted v0.4.5 contract remains covered by local source/regression checks; it
 does not claim that each named 0.5 scenario has passed.
 “Implementation required” means acceptance remains open even where partial
@@ -12,7 +12,7 @@ unverified until its evidence is recorded.
 
 ## Current implementation-worktree evidence
 
-Local source evidence and previous-head CI are distinct from an RC, owner
+Local source evidence and exact-head CI are distinct from an RC, owner
 acceptance, or release proof. On 2026-09-25:
 
 - `.venv/bin/pytest --cov=custom_components/matic_robot --cov-report=term-missing`:
@@ -29,11 +29,11 @@ acceptance, or release proof. On 2026-09-25:
   change the immutable draft. Generation, tool, permission, and baseline changes
   reject obsolete edits. Independent local review identified the preview/store
   ownership defect; cancellation and retained-draft regressions cover its repair.
-- The preceding head `6e51dfd` passed all required checks, 724 browser cases,
+- Head `fd4796c` passed all required checks, all 740 browser cases,
   official Hassfest/HACS, and clean regular review after two repaired finding
-  rounds. Its wheel/sdist/fresh-install checks matched 91 integration files.
-  These results do not qualify the current follow-up changes: fresh packaging,
-  exact-head CI, and regular review are required before merge.
+  rounds. Its wheel/sdist/fresh-install checks matched all 91 integration files.
+  These results qualify that source head; later changes require refreshed review
+  and their relevant checks. RC runtime and physical acceptance remain separate.
 - The [paired performance comparison](performance-0.5.md) records the compiled
   asset fingerprints, identical synthetic scenes, size/input measurements, and
   unresolved task-duration gate. Desktop lab measurements do not establish
@@ -49,7 +49,8 @@ acceptance, or release proof. On 2026-09-25:
   resource budgets, and switchover evidence pass.
 - Exact-candidate install, owner walkthrough, assistive technology, physical
   Android/iOS, live transport baseline, and robot acceptance remain open.
-  The separately owned review-infrastructure prerequisite #138 remains open.
+  Review-infrastructure prerequisite #138 is reconciled onto current main using
+  the landed canonical policy; its new head still requires CI and regular review.
 
 | Requirement | Contract disposition | 0.5 evidence status | Evidence required; current gap |
 |---|---|---|

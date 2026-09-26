@@ -1,5 +1,5 @@
 // Offline, synthetic lab comparison. Build the candidate first, then run:
-// node scripts/measure_map_studio_performance.mjs [baseline-ref]
+// node scripts/measure_map_studio_performance.mjs [baseline-ref] [--headed]
 // Prints JSON; does not contact HA, a robot, or external origins. Lab Event
 // Timing samples do not establish field INP, mobile performance, or GPU FPS.
 import { execFileSync } from "node:child_process";
@@ -9,14 +9,18 @@ import { createServer } from "node:http";
 import { cpus, platform, arch } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
 import { chromium } from "@playwright/test";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const bundlePath = "custom_components/matic_robot/map_studio_v4";
 const reviewBundlePath = "tests/browser/.generated/map-studio-v4-review";
+const { values, positionals } = parseArgs({ options: { headed: { type: "boolean", default: false } }, allowPositionals: true });
+if (positionals.length > 1) throw new Error("Expected at most one baseline ref");
+const headless = !values.headed;
 const git = (...args) => execFileSync("git", args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
-const baseline = git("rev-parse", "--verify", "--end-of-options", `${process.argv[2] || "v0.4.5"}^{commit}`).toString().trim();
+const baseline = git("rev-parse", "--verify", "--end-of-options", `${positionals[0] || "v0.4.5"}^{commit}`).toString().trim();
 const assets = { baseline: new Map(), candidate: new Map() };
 const reviewAssets = new Map();
 for (const path of git("ls-tree", "-r", "--name-only", baseline, "--", bundlePath).toString().trim().split("\n")) {
@@ -62,7 +66,7 @@ const settle = (page) => page.evaluate(() => new Promise(resolve => requestAnima
 const quantile = (values, probability) => [...values].sort((a, b) => a - b)[Math.ceil(values.length * probability) - 1] ?? null;
 
 try {
-  browser = await chromium.launch({ headless: true });
+  browser = await chromium.launch({ headless });
   // Alternate pair order to reduce consistent warm-up and system-load bias.
   for (const order of [["baseline", "candidate"], ["candidate", "baseline"], ["baseline", "candidate"]]) {
     for (const variant of order) {
@@ -165,7 +169,7 @@ try {
     bundles: Object.fromEntries(Object.entries(assets).map(([name, files]) => [name, fingerprint(files)])),
     reviewOnlyBundle: fingerprint(reviewAssets),
     conditions: { browser: browser.version(), platform: platform(), arch: arch(), cpuModel: cpus()[0]?.model,
-      viewport: "1280x900", dpr: 1, headless: true, network: "loopback, unthrottled", cpuThrottle: 1,
+      viewport: "1280x900", dpr: 1, headless, network: "loopback, unthrottled", cpuThrottle: 1,
       cache: "new browser context per sample; no-store assets", order: "AB BA AB",
       journey: "60 2D/3D toggles, 5 plan-preview/edit/back loops, 10 room-list/back loops; lazy workflow warmed first" },
     limits: ["Synthetic lab proxy; not field INP or mobile/robot acceptance", "Scene hash must match between builds",

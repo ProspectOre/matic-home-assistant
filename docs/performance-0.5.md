@@ -1,13 +1,15 @@
 # Matic 0.5 performance evidence
 
-This is reproducible local worktree evidence, not exact-candidate, field,
-mobile, transport, or physical acceptance. The release ledger is
+This is source and compiled-asset evidence for `fd4796c`, not RC runtime,
+field, mobile, transport, or physical acceptance. The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
 ## Method
 
 Build with `npm run build:map-studio-v4`, then run
 `node scripts/measure_map_studio_performance.mjs v0.4.5 > result.json`.
+Add `--headed` to measure a visible Chromium window. Launch and reported mode
+share the same option; never relabel a headless measurement as headed.
 The script serves the tag and current compiled assets on loopback, blocks
 external requests, and requires identical synthetic scene SHA-256 hashes.
 It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
@@ -72,6 +74,33 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 | Candidate production bundle | `7186581d0ed2bc31247a038a8def77d35380389880b7fcf288d57c40fb623e00` |
 | Candidate review-only bundle | `3640c014953d9c49451a2f6bde7eeb05ef164be356922dc44fc215870f6efc54` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
+
+## Drawing and compositor follow-up
+
+At 10:23–10:25 p.m. Pacific on September 25, a trace-enabled probe repeated
+AB/BA/AB in both headless and headed Chromium, using the same hashes above.
+Before the common 100-input journey, each sample performed three browser-input
+Paint drags and three Erase drags interrupted with an injected pointer-cancel.
+Each Paint changed the draft. All nine candidate cancellations per mode preserved
+the committed draft; all nine baseline cancellations changed it. This verifies
+the ownership repair under pointer input, beyond the synthetic event regressions.
+
+No drawing interval produced a task over 50 ms. Observed drawing interaction
+maxima were 32 ms for the headless candidate and 56 ms for the headed candidate;
+these are observed Event Timing samples, without imputing missing pointer events.
+Navigation p95 remained 32 ms headless and 56 ms headed for both builds.
+The candidate had one 147 ms headless navigation task; the headed samples had
+none. Markers place that task inside the measured navigation interval:
+147.262 ms wall / 4.347 ms renderer CPU, including a 146.359 ms compositor
+Commit / 3.467 ms CPU and overlapping 145.500 ms GPU task / 0.394 ms CPU.
+Nested JavaScript, paint, and layout events were each below 0.3 ms.
+This identifies another compositor wait, not a sustained JavaScript workload;
+it does not establish why the wait occurred or waive the task-duration gate.
+
+Drawing rAF interval p95 ranged from 16.8–17.7 ms for the candidate. Callback
+cadence is not presented-frame throughput. Earlier exploratory probes with
+synthetic gestures, incomplete trace persistence, or incorrect input counts
+are excluded from these measurements. Raw traces and timings remain local.
 
 ## Remaining measurements
 
