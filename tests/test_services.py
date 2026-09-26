@@ -965,6 +965,14 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     manager._store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
+    second_room = Room(
+        "room-study",
+        "Study",
+        "protocol-study",
+        b"study",
+        ((5, 0), (9, 0), (9, 4), (5, 4)),
+    )
+    floor_plan = replace(floor_plan, rooms=(room, second_room))
     identity = _plan_cadence_bindings(
         SimpleNamespace(
             runtime_data=SimpleNamespace(
@@ -1023,7 +1031,12 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                 "room": room.id,
                 "cleaning_mode": "vacuum",
                 "coverage_setting": "standard",
-            }
+            },
+            {
+                "room": second_room.id,
+                "cleaning_mode": "mop",
+                "coverage_setting": "heavy_duty",
+            },
         ],
         "use_room_schedule": True,
     }
@@ -1033,7 +1046,12 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         "preview_room_sequence",
         PREVIEW_ROOM_SEQUENCE_SCHEMA(input_data),
     )
-    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+    context = (
+        "vacuum.test",
+        entry,
+        "serial",
+        {room.id: room.name, second_room.id: second_room.name},
+    )
     with patch(
         "custom_components.matic_robot.services._saved_plan_context",
         return_value=context,
@@ -1045,6 +1063,11 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     assert len(preview["preview_token"]) == 64
     assert preview["rooms"][0]["cleaning_mode"] == "vacuum_and_mop"
     assert preview["rooms"][0]["cadence_reasons"] == ["mop_due"]
+    assert [item["room_id"] for item in preview["rooms"]] == [
+        room.id,
+        second_room.id,
+    ]
+    assert preview["rooms"][1]["cleaning_mode"] == "mop"
 
     async def execute_sequence(*_args, **kwargs) -> None:
         # The managed executor invokes this after its stop/checkpoint awaits;
@@ -1075,6 +1098,10 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         execute.await_args.args[5][0].coverage_setting
         == preview["rooms"][0]["coverage_setting"]
     )
+    assert [item.room_id for item in execute.await_args.args[5]] == [
+        room.id,
+        second_room.id,
+    ]
 
     duplicate_input = {
         "entity_id": ["vacuum.test"],
@@ -1091,92 +1118,53 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             },
         ],
     }
-    duplicate_preview_call = ServiceCall(
-        hass,
-        DOMAIN,
-        "preview_room_sequence",
-        PREVIEW_ROOM_SEQUENCE_SCHEMA(duplicate_input),
-    )
-    with (
-        patch(
-            "custom_components.matic_robot.services._saved_plan_context",
-            return_value=context,
-        ),
+    for duplicate_data in (
+        duplicate_input,
+        {**duplicate_input, "use_room_schedule": True},
     ):
-        duplicate_preview = await _registered_handler(
-            services, "preview_room_sequence"
-        )(duplicate_preview_call)
-    assert [item["cleaning_mode"] for item in duplicate_preview["rooms"]] == [
-        "vacuum",
-        "mop",
-    ]
-    duplicate_dispatch = ServiceCall(
-        hass,
-        DOMAIN,
-        "clean_room_sequence",
-        CLEAN_ROOM_SEQUENCE_SCHEMA(
-            {
-                **duplicate_input,
-                "preview_token": duplicate_preview["preview_token"],
-            }
-        ),
-    )
-    execute.reset_mock()
-    with (
-        patch(
-            "custom_components.matic_robot.services._saved_plan_context",
-            return_value=context,
-        ),
-        patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
-            execute,
-        ),
-    ):
-        await _registered_handler(services, "clean_room_sequence")(duplicate_dispatch)
-    assert [room.cleaning_mode for room in execute.await_args.args[5]] == [
-        "vacuum",
-        "mop",
-    ]
+        duplicate_preview_call = ServiceCall(
+            hass,
+            DOMAIN,
+            "preview_room_sequence",
+            PREVIEW_ROOM_SEQUENCE_SCHEMA(duplicate_data),
+        )
+        with (
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=context,
+            ),
+            pytest.raises(
+                ServiceValidationError, match="Each room can appear only once"
+            ),
+        ):
+            await _registered_handler(services, "preview_room_sequence")(
+                duplicate_preview_call
+            )
 
-    tracked_duplicate_input = {**duplicate_input, "use_room_schedule": True}
-    tracked_duplicate_preview = ServiceCall(
-        hass,
-        DOMAIN,
-        "preview_room_sequence",
-        PREVIEW_ROOM_SEQUENCE_SCHEMA(tracked_duplicate_input),
-    )
-    with (
-        patch(
-            "custom_components.matic_robot.services._saved_plan_context",
-            return_value=context,
-        ),
-        pytest.raises(ServiceValidationError, match="duplicate tracked room"),
-    ):
-        await _registered_handler(services, "preview_room_sequence")(
-            tracked_duplicate_preview
+        duplicate_dispatch = ServiceCall(
+            hass,
+            DOMAIN,
+            "clean_room_sequence",
+            CLEAN_ROOM_SEQUENCE_SCHEMA(duplicate_data),
         )
-    tracked_duplicate_dispatch = ServiceCall(
-        hass,
-        DOMAIN,
-        "clean_room_sequence",
-        CLEAN_ROOM_SEQUENCE_SCHEMA(tracked_duplicate_input),
-    )
-    execute.reset_mock()
-    with (
-        patch(
-            "custom_components.matic_robot.services._saved_plan_context",
-            return_value=context,
-        ),
-        patch(
-            "custom_components.matic_robot.services._async_execute_rooms",
-            execute,
-        ),
-        pytest.raises(ServiceValidationError, match="duplicate tracked room"),
-    ):
-        await _registered_handler(services, "clean_room_sequence")(
-            tracked_duplicate_dispatch
-        )
-    execute.assert_not_awaited()
+        execute.reset_mock()
+        with (
+            patch(
+                "custom_components.matic_robot.services._saved_plan_context",
+                return_value=context,
+            ),
+            patch(
+                "custom_components.matic_robot.services._async_execute_rooms",
+                execute,
+            ),
+            pytest.raises(
+                ServiceValidationError, match="Each room can appear only once"
+            ),
+        ):
+            await _registered_handler(services, "clean_room_sequence")(
+                duplicate_dispatch
+            )
+        execute.assert_not_awaited()
 
     async def mutate_before_dispatch(*_args, **kwargs) -> None:
         schedule["progress"] = {"mop": 0, "coverage": 0}

@@ -37,9 +37,9 @@ def resolve_room_sequence(
     seen_room_ids: set[str] = set()
     for item in requested_rooms:
         room_id = resolve_room(str(item["room"]), room_map)
-        if use_room_schedule and room_id in seen_room_ids:
+        if room_id in seen_room_ids:
             raise ValueError(
-                f"room sequence contains duplicate tracked room: {room_id}"
+                "Each room can appear only once. Remove repeated rooms and try again."
             )
         seen_room_ids.add(room_id)
         requested_item = {

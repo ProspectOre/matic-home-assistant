@@ -51,6 +51,8 @@ advance room schedules. Existing Home Assistant service calls keep their
 behavior; tracked schedule use is explicit through `use_room_schedule` on
 `matic_robot.clean_room_sequence`. Its `override_room_schedule` option keeps
 your supplied settings while retaining compatible completion accounting.
+Each room may appear only once in a room sequence. Repeated IDs or room-name
+aliases are rejected because completion and recovery are recorded per room.
 
 ## Understand progress and results
 

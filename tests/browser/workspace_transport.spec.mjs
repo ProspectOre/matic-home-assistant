@@ -82,6 +82,65 @@ test("rejects duplicates and stale events, and requests recovery for gaps and ep
   expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").length)).toBe(0);
 });
 
+for (const firstResources of [["plans", "areas"], ["areas", "plans"]]) {
+  test(`coalesces resource updates with the newest revision fence (${firstResources.join(", ")})`, async ({ page }) => {
+    await load(page);
+    await page.evaluate(async value => {
+      const p = window.workspaceHarness.transport.start();
+      window.workspaceHarness.snapshotResolve(value);
+      await p;
+    }, snapshot(0));
+
+    const result = await page.evaluate(async firstResources => {
+      const h = window.workspaceHarness;
+      const emit = (sequence, resources, revisions) => h.callback({
+        type: "invalidate", schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch-a",
+        sequence, coherence_generation: 1, revisions, resources,
+      });
+      const flush = () => new Promise(resolve => queueMicrotask(resolve));
+
+      // The second `plans` update overwrites that key without moving it in
+      // Map order. The resulting aggregate must still carry sequence 2.
+      emit(1, firstResources, { plans: 1, areas: 1 });
+      emit(2, ["plans"], { plans: 2, areas: 1 });
+      await flush();
+      const first = h.events.filter(event => event.type === "invalidation").map(event => ({
+        ...event.invalidation, resources: [...event.invalidation.resources].sort(),
+      }));
+
+      // Duplicates and stale events cannot produce another aggregate or
+      // regress the cursor after the coalesced sequence was emitted.
+      emit(2, ["history"], { plans: 2, areas: 1, history: 2 });
+      emit(1, ["history"], { plans: 1, areas: 1, history: 1 });
+      await flush();
+      const afterStale = h.events.filter(event => event.type === "invalidation").length;
+
+      // A three-sequence overlap checks that unioning resources still uses
+      // the complete revision fence from the greatest accepted sequence.
+      emit(3, ["plans", "history"], { plans: 3, areas: 1, history: 3 });
+      emit(4, ["areas"], { plans: 3, areas: 4, history: 3 });
+      emit(5, ["history"], { plans: 3, areas: 4, history: 5 });
+      await flush();
+      const all = h.events.filter(event => event.type === "invalidation").map(event => ({
+        ...event.invalidation, resources: [...event.invalidation.resources].sort(),
+      }));
+      h.transport.dispose();
+      return { first, afterStale, all };
+    }, firstResources);
+
+    expect(result.first).toEqual([{
+      epoch: "epoch-a", sequence: 2, coherence_generation: 1,
+      revisions: { plans: 2, areas: 1 }, resources: ["areas", "plans"],
+    }]);
+    expect(result.afterStale).toBe(1);
+    expect(result.all[1]).toEqual({
+      epoch: "epoch-a", sequence: 5, coherence_generation: 1,
+      revisions: { plans: 3, areas: 4, history: 5 },
+      resources: ["areas", "history", "plans"],
+    });
+  });
+}
+
 test("a wrong-entry subscription snapshot cannot poison the active entry cursor", async ({ page }) => {
   await load(page);
   await page.evaluate(async value => { const p = window.workspaceHarness.transport.start(); window.workspaceHarness.snapshotResolve(value); await p; }, snapshot(0));

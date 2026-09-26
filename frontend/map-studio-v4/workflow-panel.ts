@@ -67,10 +67,12 @@ line-height: var(--ms-lh-snug);
 .plan-room-label { display: flex; align-items: center; gap: var(--ms-space-2); min-block-size: var(--ms-control); }
 .plan-room { display: grid; gap: var(--ms-space-2); }
 .plan-option { display: grid; grid-template-columns: auto minmax(0, 1fr); align-items: start; gap: var(--ms-space-2); }
-.plan-option input { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
+.plan-option input[type="checkbox"] { inline-size: 1.2rem; block-size: 1.2rem; margin: 0.1rem 0 0; accent-color: var(--ms-accent); }
 .plan-option-copy, .plan-threshold-copy { display: grid; gap: var(--ms-space-1); min-inline-size: 0; }
 .cadence-config { grid-column: 1 / -1; grid-template-columns: minmax(0, 1fr); display: grid; gap: var(--ms-space-2); }
 .cadence-config > summary { cursor: pointer; min-block-size: var(--ms-control-sm); font-weight: var(--ms-w-semibold); }
+.cadence-fields { display: grid; grid-template-columns: minmax(0, 1fr); gap: var(--ms-space-2); min-inline-size: 0; }
+.cadence-fields > .ms-field { min-inline-size: 0; }
 .plan-option-copy strong, .plan-threshold-copy strong { font-size: var(--ms-t-sm); line-height: var(--ms-lh-snug); }
 .plan-option-copy small, .plan-threshold-copy small { color: var(--ms-text-quiet); font-size: var(--ms-t-xs); font-weight: var(--ms-w-regular); line-height: var(--ms-lh-snug); }
 .plan-threshold { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-1) var(--ms-space-3); align-items: start; }
@@ -433,8 +435,8 @@ line-height: var(--ms-lh-snug);
     return html`
       <details class="plan-option cadence-config">
         <summary>${cadenceLabel}</summary>
-        <p class="subtle">${this.#t("v4_cadence_description", "Intervals count only fully verified, tracked room cleans. Partial or uncertain work leaves requested cadence due.")}</p>
-        <div class="split room-settings">
+        <p class="subtle">${this.#t("v4_cadence_description", "Only verified room cleans count toward these intervals. Due work stays due until it is verified.")}</p>
+        <div class="cadence-fields">
           <label class="field ms-field">${this.#t("v4_cadence_scope", "Schedule scope")}
             <select aria-label=${this.#t("v4_cadence_scope_named", "Schedule scope for {room}", { room: label })} .value=${policy.scope} @change=${(event: Event) => this.#patchPlanCadence(index, { scope: eventValue(event) as RoomCadencePolicy["scope"] })}>
               <option value="plan" ?selected=${policy.scope === "plan"}>${this.#t("v4_cadence_this_plan", "This plan (private)")}</option>

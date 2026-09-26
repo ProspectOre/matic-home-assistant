@@ -389,7 +389,14 @@ export class WorkspaceTransport {
     if (this.#disposed || this.#pending.size === 0) return;
     const entries = [...this.#pending.values()];
     this.#pending.clear();
-    const latest = entries.at(-1);
+    // Map.set preserves a resource's original insertion order when a later
+    // invalidation overwrites its value. Pick the newest cursor explicitly;
+    // the final map value can belong to an older sequence than an earlier
+    // entry when resources overlap across coalesced updates.
+    const latest = entries.reduce<WorkspaceInvalidation | null>(
+      (current, entry) => !current || entry.sequence > current.sequence ? entry : current,
+      null,
+    );
     if (!latest) return;
     const resources = [...new Set(entries.flatMap((entry) => entry.resources))];
     this.#options.onEvent({ type: "invalidation", invalidation: { ...latest, resources } });

@@ -31,26 +31,27 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 
 ## Results
 
-Measured September 25 at 8:12 p.m. Pacific (`2026-09-26T03:12:17.508Z`):
+Measured September 25 at 8:26 p.m. Pacific (`2026-09-26T03:26:55.942Z`):
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 79,156 |
+| Initial production JS, estimated gzip bytes | 79,821 | 79,174 |
 | Initial distinct production JS resources | 1 | 4 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,361 |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,382 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,489 (not shipped) |
-| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 40 |
-| Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–40 |
-| Maximum observed input estimates, ms | 48 / 48 / 48 | 32 / 40 / 40 |
-| Tasks over 50 ms, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
-| Longest task over 50 ms | None observed | None observed |
-| Post-journey JS heap range, bytes | 5,178,756–6,763,004 | 5,890,920–7,443,440 |
+| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 40 / 32 / 40 |
+| Median / range of p95 estimates, ms | 32 / 32–32 | 40 / 32–40 |
+| Maximum observed input estimates, ms | 64 / 40 / 48 | 72 / 40 / 64 |
+| Tasks over 50 ms, three runs | 0 / 0 / 0 | 1 / 0 / 1 |
+| Longest task over 50 ms | None observed | 54 ms |
+| Post-journey JS heap range, bytes | 5,231,380–7,917,400 | 5,747,820–7,693,356 |
 
-The 90 KiB initial and 30 KiB workflow size budgets pass. This sample's
-candidate input p95 estimates are below 100 ms and it observed no routine task
-over 50 ms. The equal median does not establish an input-speed improvement.
-A prior trial overlapping other test execution showed candidate tasks up to
-55 ms; system load matters and this result does not close runtime task gates.
+The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
+are below 100 ms. Candidate tasks of 52 and 54 ms keep the task-duration gate
+open. Three subsequent candidate-only diagnostic traces did not reproduce the
+stalls (largest main-thread tasks 14.3, 35.13, and 15.39 ms); no source bottleneck
+was attributed. Non-reproduction does not close the gate or establish a speedup.
+A prior trial under concurrent test load observed tasks up to 55 ms.
 The separately loaded diagnostics chunk is 1,897 gzip bytes.
 Earlier Chrome 153 synthetic DevTools evidence recorded LCP 217 ms, CLS 0,
 and one 171 ms interaction (168 ms presentation delay); CrUX was unavailable.
@@ -62,8 +63,8 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate production bundle | `ed53b0adad2778676757fd122b7d37b473bc1a9310cd6f8c5620a584f8cfb732` |
-| Candidate review-only bundle | `18799769b04b558498f435251616e2a43c99bab3c32aa394dd498a195a0a2570` |
+| Candidate production bundle | `2b575b3e52a2ebe8ade02abe052c296936c473840c8216f566c43d822cbe2c18` |
+| Candidate review-only bundle | `304ad6467f611a43439d69d92507747896fca3311f9692f5b65ff2aebbfafa96` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Remaining measurements

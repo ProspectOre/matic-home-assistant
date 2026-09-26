@@ -18,18 +18,18 @@ proof. On 2026-09-25:
 - `.venv/bin/pytest --cov=custom_components/matic_robot --cov-report=term-missing`:
   2,401 passed; 15,628 statements at 100.00% coverage, with no warnings.
 - TypeScript typecheck and compiled bundle parity pass. The same-condition
-  [performance comparison](performance-0.5.md) records 79,156 initial gzip bytes,
-  11,361 lazy workflow bytes, and 1,897 lazy diagnostics bytes. The 90/30 KiB
-  budgets pass. Three paired v0.4.5/worktree Chromium 151 desktop journeys each
-  have a median estimated input p95 of 32 ms (candidate range 32–40 ms). Candidate runs
-  observe zero tasks over 50 ms; an earlier trial under concurrent test load
-  observed tasks up to 55 ms. These synthetic samples do not close runtime,
+  [performance comparison](performance-0.5.md) records 79,174 initial gzip bytes,
+  11,382 lazy workflow bytes, and 1,897 lazy diagnostics bytes. The 90/30 KiB
+  budgets pass. Three paired v0.4.5/worktree Chromium 151 desktop journeys show
+  estimated input p95 of 32 ms baseline and 32–40 ms candidate. Two candidate
+  tasks of 52–54 ms keep the task-duration gate open; three later traced runs
+  did not reproduce them. These synthetic samples do not close runtime,
   mobile, frame/GPU, sustained-memory, or live transport performance gates.
 - Ruff check/format, mypy, privacy scan, translation JSON/copy parity, and
   `git diff --check` pass. A clean sdist/wheel build passed release-artifact
   parity and fresh-install import checks, with 91 integration files matching
-  byte-for-byte. All 717 browser cases pass across the full run and a two-case
-  fixture repair rerun: Chromium 355, desktop WebKit 276, Firefox safety 22,
+  byte-for-byte. All 722 browser cases pass across the full run and focused
+  repairs: Chromium 358, desktop WebKit 277, Firefox safety 23,
   and mobile Chrome/WebKit emulation 32 each. Local and CI runs use two workers.
   Browser emulation does not establish real iOS Safari/Android Chrome acceptance;
   assistive-technology and owner acceptance remain open.
@@ -63,7 +63,7 @@ proof. On 2026-09-25:
 | History is dated, floor-scoped, read-only, pose-free, and bounded | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | `slam_history.py` bounds of 12 items and 48 MiB compressed, eviction, live/history races, explicit Return to Live, and oversized-scene rejection; candidate unknown. |
 | Room/list parity, accessible forms for every new behavior, map-space drawing, geometry invariance, and precision envelope | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Every cadence/setup/recovery/history action works without map input; numeric zoom, explicit Pan, focal zoom, scale bar, brush cursor, pointer cancellation, 100/400/1000% zoom, 0.20–2.50 m brush, undo, and no accidental paint. |
 | HA semantics, safe areas, RTL, localization, zoom/reflow, reduced motion, forced colors, and screen readers | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Chromium/WebKit/Firefox safety workflows, light/dark/RTL/forced colors, 2.5x text, 200/400% zoom, VoiceOver/NVDA, and serious/critical scan count zero; unknown. Confirm HA-native tokens and supported panel interfaces, local dependency bundling, and capability-tested internal HA component fallbacks. |
-| Shell, lazy workflows/diagnostics, input, main-thread, frame, memory, and GPU budgets | Preserved and verified (baseline) | Bundle budgets pass; synthetic input/task sample recorded; runtime acceptance open | Same-condition tag/worktree desktop journeys and split-chunk measurements are in performance-0.5.md. Candidate estimated p95 is 32–40 ms across three 100-input runs, with no observed task over 50 ms. The synthetic gallery is excluded from production; harness and panel share compiled modules. Tablet/live baseline, ≥55/≥30 fps, and heap/GPU stability remain unmeasured. |
+| Shell, lazy workflows/diagnostics, input, main-thread, frame, memory, and GPU budgets | Preserved and verified (baseline) | Bundle/input budgets pass; task-duration and runtime acceptance open | Same-condition tag/worktree desktop journeys and split-chunk measurements are in performance-0.5.md. Candidate estimated p95 is 32–40 ms across three 100-input runs; two 52–54 ms tasks were not reproduced by diagnostic traces and remain open. The synthetic gallery is excluded from production; harness and panel share compiled modules. Tablet/live baseline, ≥55/≥30 fps, and heap/GPU stability remain unmeasured. |
 | Worker fallback, bounded parsing, transferable buffers, incremental uploads, WebGL loss, and cleanup | Preserved and verified (baseline) | Parser boundaries and fallback/disposal regressions pass; runtime acceptance open | Five local tests cover no-worker fallback, worker error recovery, transfer ownership, six idempotent dispose cycles, and real-worker 1.5M accept/1.500001M reject. A connected-admin lifecycle regression adds 20 real plan/draw/history/floor transitions and unmounts: workers and object URLs balance, popstate listeners return to zero, and late floor results cannot revive disposed state. Decompression/WebGL runtime failures and bounded heap/GPU remain unverified. |
 | HA adapter avoids unrelated fetch/store/render churn | Preserved and verified (baseline) | Local 100-update regression passes; sustained runtime acceptance open | 100 sequential unrelated HA state replacements produce zero workspace commits, panel updates/renders, or service calls. Sustained 100 updates/s and live HA instrumentation remain unmeasured. |
 | Local-only privacy, admin access, pinned identity, bounded data, and redaction | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Auth loss, hostile payload/geometry, multi-entry isolation, diagnostics allowlist, privacy scan, and no private identifiers/maps in evidence; candidate unknown. |

@@ -1180,7 +1180,7 @@
       "message": "No managed Matic cleaning plan is running."
     },
     "invalid_plan": {
-      "message": "The saved cleaning plan is invalid: {error}"
+      "message": "The cleaning request is invalid: {error}"
     },
     "plan_limit_reached": {
       "message": "This robot has reached the saved-plan limit. Delete an existing plan before creating another one."

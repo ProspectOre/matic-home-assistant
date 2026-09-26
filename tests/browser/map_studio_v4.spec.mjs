@@ -2624,6 +2624,62 @@ test.describe("Map Studio v0.4 foundation", () => {
     )).toBe(true);
   });
 
+  test("@safety keeps room schedule controls readable in desktop and narrow inspectors", async ({ page }) => {
+    for (const viewport of [
+      { width: 1280, height: 900, narrow: false },
+      { width: 390, height: 844, narrow: true },
+      { width: 320, height: 700, narrow: true },
+    ]) {
+      await page.setViewportSize({ width: viewport.width, height: viewport.height });
+      const gallery = await loadGallery(page, { scenario: "ready", narrow: viewport.narrow });
+      await gallery.evaluate(async (element) => {
+        const module = await import("/map_studio_v4-review/review.js");
+        const state = module.createGalleryState("ready");
+        const catalog = state.resources.plans.value;
+        const plan = catalog.plans[0];
+        const rooms = plan.rooms.map((room) => room.roomId === "room-a" ? {
+          ...room,
+          cadence: {
+            scope: "shared",
+            mopEveryN: 100,
+            coverageEveryN: 2,
+            periodicCoverageSetting: "heavy_duty",
+            doMopNext: false,
+            doCoverageNext: false,
+          },
+        } : room);
+        element.replaceWorkspaceState({ ...state, resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...catalog, plans: [{ ...plan, rooms }] } },
+        } });
+      });
+      await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+      await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+      const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
+      await cadence.locator("summary").click();
+      const scope = cadence.getByLabel("Schedule scope for Kitchen");
+      const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
+      const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
+      const coverage = cadence.getByLabel("Periodic coverage setting for Kitchen");
+      const layout = await cadence.locator(".cadence-fields").evaluate((settings) => {
+        const bounds = settings.getBoundingClientRect();
+        const fields = [...settings.querySelectorAll("input[type=number], select")].map((control) => {
+          const rect = control.getBoundingClientRect();
+          return { width: rect.width, left: rect.left, right: rect.right };
+        });
+        return { width: bounds.width, clientWidth: settings.clientWidth, scrollWidth: settings.scrollWidth,
+          fields: fields.map((field) => ({ ...field, inside: field.left >= bounds.left - 1 && field.right <= bounds.right + 1 })) };
+      });
+      expect(await mopInterval.inputValue()).toBe("100");
+      expect(await coverageInterval.inputValue()).toBe("2");
+      expect(await scope.inputValue()).toBe("shared");
+      expect(await coverage.inputValue()).toBe("heavy_duty");
+      expect(layout.fields).toHaveLength(4);
+      expect(layout.fields.every((field) => field.width >= 180 && field.inside), JSON.stringify({ ...viewport, layout })).toBe(true);
+      expect(layout.scrollWidth, JSON.stringify({ ...viewport, layout })).toBeLessThanOrEqual(layout.clientWidth + 1);
+    }
+  });
+
   test("keeps plan choices available after catalog loading", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await gallery.getByRole("button", { name: /^Run a plan/ }).click();
