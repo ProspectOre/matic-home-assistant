@@ -2138,16 +2138,19 @@ class CleaningPlanManager:
         room_ids: Sequence[str] | None = None,
         *,
         modes: Sequence[str] | None = None,
-    ) -> None:
+    ) -> dict[str, list[str]]:
         """Reset selected cadence modes separately from cleaning history.
 
         Omitting ``modes`` preserves the original full-reset behavior. A caller
         can reset only mop or coverage cadence while retaining the other
         counter and its one-time due request.
         """
-        reset_modes = set(("mop", "coverage") if modes is None else modes)
-        if not reset_modes or reset_modes - {"mop", "coverage"}:
+        requested_modes = set(("mop", "coverage") if modes is None else modes)
+        if not requested_modes or requested_modes - {"mop", "coverage"}:
             raise ValueError("cadence reset modes must be mop and/or coverage")
+        reset_modes: list[str] = [
+            mode for mode in ("mop", "coverage") if mode in requested_modes
+        ]
         robot = self._robot(serial_number)
         active = robot.get("active_plan")
         pending = _validated_native_reconciliation(
@@ -2160,7 +2163,9 @@ class CleaningPlanManager:
             for room in plan.get("rooms", [])
             if isinstance(room, Mapping) and room.get("room_id")
         }
-        target_ids = selected or set(plan_rooms)
+        target_ids = [
+            room_id for room_id in plan_rooms if not selected or room_id in selected
+        ]
         shared_ids = {
             room_id
             for room_id in target_ids
@@ -2221,7 +2226,7 @@ class CleaningPlanManager:
             serial_number,
             _CadenceMutation(
                 plan_id,
-                frozenset(target_ids - shared_ids),
+                frozenset(set(target_ids) - shared_ids),
                 frozenset(shared_ids),
             ),
         )
@@ -2232,6 +2237,7 @@ class CleaningPlanManager:
             raise
         finally:
             self._end_cadence_mutation(serial_number, mutation_token)
+        return {"reset_room_ids": target_ids, "reset_modes": reset_modes}
 
     def _assert_cadence_edit_allowed(
         self,

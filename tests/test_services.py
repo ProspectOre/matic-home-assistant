@@ -1,12 +1,14 @@
 """Automation action coverage for room-native cleaning plans."""
 
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 from datetime import timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+import voluptuous as vol
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.core import Context, ServiceCall
 from homeassistant.exceptions import (
@@ -73,6 +75,7 @@ from custom_components.matic_robot.services import (
     MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
     PREVIEW_ROOM_SEQUENCE_SCHEMA,
+    ROOM_CADENCE_SCHEMA,
     RUN_SELECTED_PLAN_SCHEMA,
     SAVE_PLAN_ROOM_SCHEMA,
     SAVE_PLAN_SCHEMA,
@@ -1484,6 +1487,29 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
     assert manager.cadence_progress("serial", "home", "room-office")["mop"] == 0
     assert manager.cadence_progress("serial", "home", "room-office")["coverage"] == 4
 
+    all_rooms = ServiceCall(
+        hass,
+        DOMAIN,
+        "reset_room_cadence",
+        {
+            "entity_id": ["vacuum.test"],
+            "plan": "Home",
+            "modes": ["coverage", "mop", "mop"],
+        },
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        all_result = await _registered_handler(services, "reset_room_cadence")(
+            all_rooms
+        )
+    assert all_result == {
+        "plan_id": "home",
+        "reset_room_ids": ["room-office", "room-study"],
+        "reset_modes": ["mop", "coverage"],
+    }
+
     manager._robot("serial")["active_plan"] = {
         "plan_id": "home",
         "room_id": "room-office",
@@ -1498,6 +1524,44 @@ async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(
         ),
     ):
         await _registered_handler(services, "reset_room_cadence")(reset)
+
+
+async def test_reset_room_cadence_service_returns_no_receipt_on_save_failure(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    save = AsyncMock()
+    manager._store = SimpleNamespace(async_save=save)
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                }
+            ],
+        },
+    )
+    save.side_effect = OSError("disk unavailable")
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "reset_room_cadence",
+        {"entity_id": ["vacuum.test"], "plan": "Home"},
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", SimpleNamespace(), "serial", {}),
+        ),
+        pytest.raises(OSError, match="disk unavailable"),
+    ):
+        await _registered_handler(services, "reset_room_cadence")(call)
 
 
 async def test_cadence_room_edit_rolls_back_when_persistence_fails(hass) -> None:
@@ -2275,6 +2339,120 @@ async def test_stop_resolves_unmanaged_cleaning_without_a_room_map(
         services.async_call.assert_not_awaited()
 
 
+@pytest.mark.parametrize("field", ["mop_every_n", "coverage_every_n"])
+@pytest.mark.parametrize("value", [True, False, 2.9, "3", 0, 101])
+def test_service_cadence_schema_rejects_non_integer_or_out_of_range_intervals(
+    field: str, value: object
+) -> None:
+    payload = {"scope": "shared", field: value}
+    original = deepcopy(payload)
+
+    with pytest.raises(vol.Invalid):
+        ROOM_CADENCE_SCHEMA(payload)
+
+    assert payload == original
+
+
+@pytest.mark.parametrize("field", ["mop_every_n", "coverage_every_n"])
+@pytest.mark.parametrize("value", [1, 100])
+def test_service_cadence_schema_preserves_valid_integer_intervals(
+    field: str, value: int
+) -> None:
+    payload = {"scope": "shared", field: value}
+
+    normalized = ROOM_CADENCE_SCHEMA(payload)
+
+    assert normalized[field] == value
+
+
+async def test_save_services_return_manager_normalized_shared_cadence(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    floor_token, room_identities = _plan_cadence_bindings(entry)
+    await manager.async_save_plan(
+        "serial",
+        "source",
+        {
+            "name": "Source",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "shared", "mop_every_n": 3},
+                }
+            ],
+        },
+        floor_token=floor_token,
+        room_identities=room_identities,
+    )
+    await manager.async_save_plan(
+        "serial", "target", {"name": "Target", "rooms": []}, select=False
+    )
+    services = await _registered_services(hass, manager)
+    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+
+    save = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "name": "Joined",
+                "rooms": [
+                    {
+                        "room": room.id,
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "quick",
+                        "cadence": {"scope": "shared", "mop_every_n": 7},
+                    }
+                ],
+            }
+        ),
+    )
+    add = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan_room",
+        SAVE_PLAN_ROOM_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Target",
+                "room": {
+                    "room": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "quick",
+                    "cadence": {"scope": "shared", "mop_every_n": 7},
+                },
+            }
+        ),
+    )
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        saved = await _registered_handler(services, "save_plan")(save)
+        added = await _registered_handler(services, "save_plan_room")(add)
+
+    persisted_joined = manager.plan("serial", "joined")
+    persisted_target = manager.plan("serial", "target")
+    assert saved["plan"] == persisted_joined
+    assert saved["plan"]["rooms"][0]["cadence"]["mop_every_n"] == 3
+    assert added["room"] == persisted_target["rooms"][0]
+    assert added["room"]["cadence"]["mop_every_n"] == 3
+
+
 async def test_room_native_plan_crud_is_complete(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -2363,6 +2541,7 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
         "room-study",
         "room-kitchen",
     ]
+    assert moved["room"] == plans["plans"][0]["rooms"][0]
 
     remove = ServiceCall(
         hass,

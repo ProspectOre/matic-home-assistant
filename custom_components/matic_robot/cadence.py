@@ -23,8 +23,10 @@ def normalize_cadence_policy(
     scope = value.get("scope", "plan")
     if scope not in {"plan", "shared"}:
         raise ValueError("room cadence scope must be plan or shared")
-    mop_interval = _interval(value.get("mop_every_n"), "mop_every_n")
-    coverage_interval = _interval(value.get("coverage_every_n"), "coverage_every_n")
+    mop_interval = validate_cadence_interval(value.get("mop_every_n"), "mop_every_n")
+    coverage_interval = validate_cadence_interval(
+        value.get("coverage_every_n"), "coverage_every_n"
+    )
     periodic_coverage = value.get("periodic_coverage_setting")
     if coverage_interval is None:
         periodic_coverage = None
@@ -134,7 +136,7 @@ def advance_cadence(
     return result
 
 
-def _interval(value: object, field: str) -> int | None:
+def validate_cadence_interval(value: object, field: str) -> int | None:
     if value is None:
         return None
     if (

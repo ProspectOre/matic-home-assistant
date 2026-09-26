@@ -31,26 +31,32 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 
 ## Results
 
-Measured September 25 at 8:26 p.m. Pacific (`2026-09-26T03:26:55.942Z`):
+Measured September 25 at 8:54 p.m. Pacific (`2026-09-26T03:54:25.926Z`):
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 79,174 |
+| Initial production JS, estimated gzip bytes | 79,821 | 79,204 |
 | Initial distinct production JS resources | 1 | 4 |
 | Added workflow JS, estimated gzip bytes | 0 (eager) | 11,382 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,489 (not shipped) |
-| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 40 / 32 / 40 |
-| Median / range of p95 estimates, ms | 32 / 32–32 | 40 / 32–40 |
-| Maximum observed input estimates, ms | 64 / 40 / 48 | 72 / 40 / 64 |
-| Tasks over 50 ms, three runs | 0 / 0 / 0 | 1 / 0 / 1 |
-| Longest task over 50 ms | None observed | 54 ms |
-| Post-journey JS heap range, bytes | 5,231,380–7,917,400 | 5,747,820–7,693,356 |
+| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
+| Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
+| Maximum observed input estimates, ms | 40 / 32 / 32 | 120 / 40 / 56 |
+| Tasks over 50 ms, three runs | 0 / 0 / 0 | 1 / 0 / 0 |
+| Longest task over 50 ms | None observed | 85 ms |
+| Post-journey JS heap range, bytes | 5,191,984–5,842,672 | 5,898,668–6,818,012 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
-are below 100 ms. Candidate tasks of 52 and 54 ms keep the task-duration gate
-open. Three subsequent candidate-only diagnostic traces did not reproduce the
-stalls (largest main-thread tasks 14.3, 35.13, and 15.39 ms); no source bottleneck
-was attributed. Non-reproduction does not close the gate or establish a speedup.
+are below 100 ms. The 85 ms candidate task keeps the task-duration gate open.
+An earlier paired run observed 52 and 54 ms tasks; three candidate-only traces
+did not reproduce them. Subsequent paired traces recorded 70 and 98 ms tasks.
+The 98.76 ms frame
+task: Chromium Commit occupied 98.09 ms wall time but 3.49 ms thread CPU time,
+with nested JavaScript/layout events below 0.2 ms. This narrows the stall to
+the compositor commit interval, overlapping a 97.22 ms GPU scheduler event
+(0.417 ms thread CPU), without proving the underlying cause. It does not
+attribute the earlier untraced 85 ms sample.
+No source optimization or speedup is established; the gate remains open.
 A prior trial under concurrent test load observed tasks up to 55 ms.
 The separately loaded diagnostics chunk is 1,897 gzip bytes.
 Earlier Chrome 153 synthetic DevTools evidence recorded LCP 217 ms, CLS 0,
@@ -63,8 +69,8 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate production bundle | `2b575b3e52a2ebe8ade02abe052c296936c473840c8216f566c43d822cbe2c18` |
-| Candidate review-only bundle | `304ad6467f611a43439d69d92507747896fca3311f9692f5b65ff2aebbfafa96` |
+| Candidate production bundle | `e3f76b237828608de617c22ffb332da4e63e4ee93b4839c4d4496d144f6fb22f` |
+| Candidate review-only bundle | `eac1109ca5b2a0c4ea20138ba5b2a179ced3c15aa9382170dd6d76e559916797` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Remaining measurements

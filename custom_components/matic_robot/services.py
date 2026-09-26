@@ -7,7 +7,6 @@ from collections.abc import (
     Coroutine,
     Mapping,
 )
-from copy import deepcopy
 from functools import partial, wraps
 from typing import Any
 
@@ -39,6 +38,7 @@ from homeassistant.helpers import target
 from homeassistant.util import slugify
 
 from .area_binding import AreaBindingStatus, area_binding_status
+from .cadence import validate_cadence_interval
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.endpoints import HERMES_ENDPOINT_MAP, HERMES_ENDPOINT_NAMES
 from .client.exceptions import MaticError
@@ -121,14 +121,29 @@ CLEAN_AREA_SERVICE_SCHEMA = cv.make_entity_service_schema(
     }
 )
 
+
+def _cadence_interval_validator(field: str) -> Callable[[object], int | None]:
+    """Adapt the shared cadence validator to voluptuous errors."""
+
+    def validate(value: object) -> int | None:
+        try:
+            return validate_cadence_interval(value, field)
+        except ValueError as err:
+            raise vol.Invalid(str(err)) from err
+
+    return validate
+
+
 ROOM_CADENCE_SCHEMA = vol.Schema(
     {
         vol.Optional("scope", default="plan"): vol.In(("plan", "shared")),
         vol.Optional("mop_every_n"): vol.Any(
-            None, vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+            None,
+            _cadence_interval_validator("mop_every_n"),
         ),
         vol.Optional("coverage_every_n"): vol.Any(
-            None, vol.All(vol.Coerce(int), vol.Range(min=1, max=100))
+            None,
+            _cadence_interval_validator("coverage_every_n"),
         ),
         vol.Optional("periodic_coverage_setting"): vol.Any(
             None, vol.In([value.value for value in CoverageSetting])
@@ -916,15 +931,14 @@ async def async_register_services(hass: HomeAssistant) -> None:
         room_ids = [call.data["room_id"]] if call.data.get("room_id") else None
         modes = call.data.get("modes")
         try:
-            await manager.async_reset_cadence(
+            receipt = await manager.async_reset_cadence(
                 serial_number, plan["id"], room_ids=room_ids, modes=modes
             )
         except ValueError as err:
             raise _validation_error(str(err), "cadence_reset_blocked") from err
         return {
             "plan_id": plan["id"],
-            "reset_room_ids": room_ids,
-            "reset_modes": modes or ["mop", "coverage"],
+            **receipt,
         }
 
     hass.services.async_register(
@@ -996,7 +1010,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
             raise _validation_error(str(err), "plan_limit_reached") from err
         except ValueError as err:
             raise _validation_error(str(err), "invalid_plan") from err
-        return {"plan": {"id": plan_id, **deepcopy(plan)}}
+        return {"plan": manager.plan(serial_number, plan_id)}
 
     hass.services.async_register(
         DOMAIN,
@@ -1073,7 +1087,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
             floor_token=cadence_floor_token,
             room_identities=room_identities,
         )
-        return {"plan_id": plan_id, "position": position + 1, "room": room}
+        persisted = manager.plan(serial_number, plan_id)
+        persisted_room = next(
+            saved for saved in persisted["rooms"] if saved["room_id"] == room["room_id"]
+        )
+        return {
+            "plan_id": plan_id,
+            "position": position + 1,
+            "room": persisted_room,
+        }
 
     hass.services.async_register(
         DOMAIN,
@@ -1159,11 +1181,15 @@ async def async_register_services(hass: HomeAssistant) -> None:
             floor_token=cadence_floor_token,
             room_identities=room_identities,
         )
+        persisted = manager.plan(serial_number, plan_id)
+        persisted_room = next(
+            saved for saved in persisted["rooms"] if saved["room_id"] == room["room_id"]
+        )
         return {
             "plan_id": plan_id,
             "previous_position": position,
             "position": new_position,
-            "room": room,
+            "room": persisted_room,
         }
 
     hass.services.async_register(

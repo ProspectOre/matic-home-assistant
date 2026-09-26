@@ -302,6 +302,9 @@ const booleanValue = (value: unknown, code: string): boolean => {
   return value;
 };
 
+const optionalBooleanDefaultFalse = (value: unknown, code: string): boolean =>
+  value === undefined ? false : booleanValue(value, code);
+
 const nullableBoolean = (value: unknown, code: string): boolean | null => {
   if (value === null) return null;
   return booleanValue(value, code);
@@ -531,8 +534,8 @@ const parseCadencePolicy = (value: unknown): RoomCadencePolicy | undefined => {
     periodicCoverageSetting: rawPeriodicCoverage === null || rawPeriodicCoverage === undefined
       ? null
       : parseCoverage(rawPeriodicCoverage),
-    doMopNext: policy.do_mop_next === true,
-    doCoverageNext: policy.do_coverage_next === true,
+    doMopNext: optionalBooleanDefaultFalse(policy.do_mop_next, "invalid-do-mop-next"),
+    doCoverageNext: optionalBooleanDefaultFalse(policy.do_coverage_next, "invalid-do-coverage-next"),
   };
 };
 
@@ -545,8 +548,8 @@ const parseCadenceProgress = (value: unknown, reasonsValue?: unknown): RoomCaden
   return {
     mopProgress: boundedInteger(progress.mop_progress ?? 0, 0, 100, "invalid-mop-progress"),
     coverageProgress: boundedInteger(progress.coverage_progress ?? 0, 0, 100, "invalid-coverage-progress"),
-    mopDue: progress.mop_due === true,
-    coverageDue: progress.coverage_due === true,
+    mopDue: optionalBooleanDefaultFalse(progress.mop_due, "invalid-mop-due"),
+    coverageDue: optionalBooleanDefaultFalse(progress.coverage_due, "invalid-coverage-due"),
     nextMopIn: nullableInterval(progress.next_mop_in, "invalid-next-mop"),
     nextCoverageIn: nullableInterval(progress.next_coverage_in, "invalid-next-coverage"),
     reasons,
