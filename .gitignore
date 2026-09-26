@@ -10,6 +10,7 @@ __pycache__/
 coverage.xml
 htmlcov/
 node_modules/
+tests/browser/.generated/
 playwright-report/
 test-results/
 build/

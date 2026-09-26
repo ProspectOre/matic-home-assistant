@@ -27,7 +27,13 @@ from .const import (
     EVENT_PLAN_DOCKED,
     EVENT_PLAN_FINISHED,
 )
-from .plans import CleaningPlanManager, leg_groups
+from .plans import (
+    CleaningPlanManager,
+    CleaningRoom,
+    leg_groups,
+    plan_floor_token,
+    room_cadence_identity,
+)
 
 LLM_API_ID = f"{DOMAIN}_operations"
 LLM_API_NAME = "Matic operations"
@@ -294,66 +300,46 @@ class MaticGetPlanTool(_MaticTool):
         floor_plan = state.floor_plan
         if floor_plan is None or not floor_plan.rooms:
             raise HomeAssistantError("The Matic room map is unavailable")
+        if not runtime.slam_map.floor_plan_is_current(floor_plan):
+            raise HomeAssistantError("The Matic room map is being rechecked")
         serial_number = state.info.serial_number
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
             plan_id = _resolve_plan_id(
                 runtime.cleaning_plans, serial_number, args.get("plan")
             )
-            plan, rooms = runtime.cleaning_plans.rooms_for_plan(
-                serial_number, room_map, plan_id
+            preview = runtime.cleaning_plans.preview(
+                serial_number,
+                room_map,
+                plan_id,
+                floor_token=plan_floor_token(floor_plan),
+                room_identities={
+                    room.id: room_cadence_identity(floor_plan, room.id)
+                    for room in floor_plan.rooms
+                },
             )
         except (KeyError, ValueError) as err:
             raise HomeAssistantError(f"The Matic plan is unavailable: {err}") from err
-        intelligent = plan.get("run_behavior", "intelligent") == "intelligent"
-        chosen = (
-            runtime.cleaning_plans.choose(serial_number, plan["id"], rooms)
-            if intelligent
-            else rooms
-        )
-        if intelligent:
-            rotation_value = runtime.cleaning_plans.rotation_details(
-                serial_number, plan["id"], rooms
+        plan_id = preview["plan_id"]
+        effective = [
+            CleaningRoom(
+                room["room_id"],
+                room["name"],
+                room["cleaning_mode"],
+                room["coverage_setting"],
             )
-            rotation = rotation_value if isinstance(rotation_value, list) else []
-        else:
-            history_value = runtime.cleaning_plans.rotation_details(
-                serial_number, plan["id"], rooms
-            )
-            history = (
-                {
-                    item["room_id"]: item
-                    for item in history_value
-                    if isinstance(item, dict) and isinstance(item.get("room_id"), str)
-                }
-                if isinstance(history_value, list)
-                else {}
-            )
-            rotation = [
-                {
-                    "rank": rank,
-                    "room_id": room.room_id,
-                    "room": room.name,
-                    "last_result": history.get(room.room_id, {}).get("last_result"),
-                    "last_opportunity": history.get(room.room_id, {}).get(
-                        "last_opportunity"
-                    ),
-                    "last_opportunity_source": history.get(room.room_id, {}).get(
-                        "last_opportunity_source"
-                    ),
-                    "last_completion": history.get(room.room_id, {}).get(
-                        "last_completion"
-                    ),
-                    "selection_reason": "saved_order",
-                }
-                for rank, room in enumerate(rooms, start=1)
-            ]
-        groups = leg_groups(chosen, mixed_settings=True)
+            for room in preview["rooms"]
+        ]
+        cadence_by_room = {
+            room["room_id"]: room["cadence"] for room in preview["rooms"]
+        }
+        groups = leg_groups(effective, mixed_settings=True)
+        rotation = preview["rotation"]
         snapshot = runtime.cleaning_plans.snapshot(serial_number)
         active = snapshot.get("active_plan")
         active_plan_id = active.get("plan_id") if isinstance(active, dict) else None
         active_run_for_plan = (
-            active_plan_id == plan["id"]
+            active_plan_id == plan_id
             if active_plan_id is not None
             else (
                 None if runtime.cleaning_plans.lock(serial_number).locked() else False
@@ -367,10 +353,10 @@ class MaticGetPlanTool(_MaticTool):
                 "preview_scope": "next_run",
                 "active_run_for_plan": active_run_for_plan,
                 "plan": {
-                    "id": plan["id"],
-                    "name": plan.get("name", plan["id"]),
-                    "run_behavior": plan.get("run_behavior", "intelligent"),
-                    "return_to_base": bool(plan.get("return_to_base", True)),
+                    "id": plan_id,
+                    "name": preview["plan_name"],
+                    "run_behavior": preview["run_behavior"],
+                    "return_to_base": preview["return_to_base"],
                 },
                 "rotation": rotation,
                 "settings_boundary_count": max(0, len(groups) - 1),
@@ -383,6 +369,25 @@ class MaticGetPlanTool(_MaticTool):
                                 "name": room.name,
                                 "cleaning_mode": room.cleaning_mode,
                                 "coverage_setting": room.coverage_setting,
+                                "cadence": cadence_by_room.get(room.room_id),
+                                "cadence_reasons": [
+                                    reason
+                                    for reason, due in (
+                                        (
+                                            "mop_due",
+                                            cadence_by_room.get(room.room_id, {}).get(
+                                                "mop_due"
+                                            ),
+                                        ),
+                                        (
+                                            "coverage_due",
+                                            cadence_by_room.get(room.room_id, {}).get(
+                                                "coverage_due"
+                                            ),
+                                        ),
+                                    )
+                                    if due is True
+                                ],
                             }
                             for room in group
                         ],

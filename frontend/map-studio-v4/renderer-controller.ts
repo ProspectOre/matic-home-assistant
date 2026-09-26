@@ -1,6 +1,6 @@
 import type { AreaCircle, SceneModel, SceneRoom } from "./backend-contracts";
-import type { CameraPreference, MapQuality, MapView, WorkspaceState } from "./contracts";
-import { canShowExactPose } from "./state";
+import type { CameraPreference, CoordinateEditCapture, MapQuality, MapView, WorkspaceState } from "./contracts";
+import { canShowExactPose, hasCoordinateEditAdmission } from "./state";
 import { rgba, type CanvasPalette } from "./theme-probe";
 
 export interface MapPoint {
@@ -280,6 +280,7 @@ export class RendererController {
   #pointPixels: WebGLUniformLocation | null = null;
   #maxPointPixels: WebGLUniformLocation | null = null;
   #state: WorkspaceState | null = null;
+  #circlePreview: { readonly circles: readonly AreaCircle[]; readonly capture: CoordinateEditCapture } | null = null;
   #scene: SceneModel | null = null;
   #sceneContext: string | null = null;
   #frame: number | null = null;
@@ -452,6 +453,11 @@ export class RendererController {
     // Publish only the final effective camera. Its percentage also updates the
     // draw control; echoing that rounded percentage must not move the camera.
     if (rebasedPreferences || enteredDraw) this.#notifyCamera();
+    this.requestRender();
+  }
+
+  setCirclePreview(circles: readonly AreaCircle[] | null, capture?: CoordinateEditCapture): void {
+    this.#circlePreview = circles && capture ? { circles, capture } : null;
     this.requestRender();
   }
 
@@ -936,7 +942,10 @@ export class RendererController {
         context.fillText(room.name, center.x, center.y);
       }
     }
-    const circles = state.draw.circles;
+    const preview = this.#circlePreview;
+    const circles = preview && hasCoordinateEditAdmission(state, preview.capture)
+      ? preview.circles
+      : state.draw.circles;
     if ((state.workflow === "draw" || state.workflow === "areaReview") && circles.length) {
       context.fillStyle = rgba(palette.accent, .22);
       context.strokeStyle = rgba(palette.accent, .92);
@@ -1232,6 +1241,7 @@ export class RendererController {
     this.#fallbackCanvas = null;
     this.#fallback = null;
     this.#overlay = null;
+    this.#circlePreview = null;
     this.#scene = null;
     this.#state = null;
   }

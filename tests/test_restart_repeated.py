@@ -78,7 +78,7 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
         raise asyncio.CancelledError
 
     with patch(
-        "custom_components.matic_robot.services._async_wait_with_native_identity",
+        "custom_components.matic_robot.managed_executor._async_wait_with_native_identity",
         side_effect=shutdown_monitor,
     ):
         with pytest.raises(asyncio.CancelledError):
@@ -106,11 +106,11 @@ async def test_two_restarts_rejoin_real_executor_without_replaying(
     entry.runtime_data.client.async_get_cleaning_session_identity.side_effect = identity
     with (
         patch(
-            "custom_components.matic_robot.services._async_verify_room_completion",
+            "custom_components.matic_robot.managed_executor._async_verify_room_completion",
             AsyncMock(return_value=True),
         ),
         patch(
-            "custom_components.matic_robot.services._async_dispatch_leg_command",
+            "custom_components.matic_robot.managed_executor._async_dispatch_leg_command",
             new_callable=AsyncMock,
         ) as dispatch,
     ):

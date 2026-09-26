@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
+from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
+
+import pytest
 
 from custom_components.matic_robot.client.models import HermesCollectionEntry
 from custom_components.matic_robot.firmware import (
@@ -53,6 +57,83 @@ def _snapshot(
     }
 
 
+@pytest.mark.parametrize("operation", ["version", "snapshot", "remove"])
+@pytest.mark.parametrize("failure", [OSError, asyncio.CancelledError])
+async def test_firmware_changes_publish_only_after_persistence(
+    hass, operation: str, failure: type[BaseException]
+) -> None:
+    tracker = FirmwareTracker(hass)
+    tracker._store = SimpleNamespace(async_save=AsyncMock())
+    await tracker.async_observe_version("entry", "v168.11", 25)
+    await tracker.async_record_snapshot("entry", _snapshot())
+    before = deepcopy(tracker._data)
+    summary = tracker.summary("entry")
+    listener = MagicMock()
+    tracker.async_add_listener("entry", listener)
+    events = []
+    for event_type in ("matic_robot_firmware_changed", "matic_robot_firmware_analyzed"):
+        hass.bus.async_listen(event_type, events.append)
+
+    started = asyncio.Event()
+    finish = asyncio.Event()
+
+    async def fail_save(candidate):
+        assert candidate != before
+        started.set()
+        await finish.wait()
+        raise failure()
+
+    tracker._store.async_save.side_effect = fail_save
+
+    async def mutate():
+        if operation == "version":
+            return await tracker.async_observe_version("entry", "v169.0", 26)
+        if operation == "snapshot":
+            return await tracker.async_record_snapshot(
+                "entry", _snapshot("v169.0", status="error")
+            )
+        return await tracker.async_remove_robot("entry")
+
+    with (
+        patch("custom_components.matic_robot.firmware.ir.async_create_issue") as create,
+        patch("custom_components.matic_robot.firmware.ir.async_delete_issue") as delete,
+    ):
+        pending = asyncio.create_task(mutate())
+        await started.wait()
+        assert tracker.summary("entry") == summary
+        assert tracker._data == before
+        listener.assert_not_called()
+        create.assert_not_called()
+        delete.assert_not_called()
+        finish.set()
+        with pytest.raises(failure):
+            await pending
+        assert tracker._data == before
+        assert events == []
+
+        tracker._store.async_save.side_effect = None
+        result = await mutate()
+        await hass.async_block_till_done()
+        assert tracker._data != before
+        if operation == "version":
+            assert result is True
+            assert [event.event_type for event in events] == [
+                "matic_robot_firmware_changed"
+            ]
+            listener.assert_called_once()
+        elif operation == "snapshot":
+            assert result["firmware_changed"] is True
+            assert tracker.summary("entry")["snapshot_count"] == 2
+            assert [event.event_type for event in events] == [
+                "matic_robot_firmware_analyzed"
+            ]
+            create.assert_called_once()
+            listener.assert_called_once()
+        else:
+            assert "entry" not in tracker._data["robots"]
+            delete.assert_called_once()
+
+
 async def test_tracker_loads_observes_and_signals_version_changes(hass) -> None:
     tracker = FirmwareTracker(hass)
     tracker._store = SimpleNamespace(
@@ -84,6 +165,34 @@ async def test_tracker_loads_observes_and_signals_version_changes(hass) -> None:
         "previous_protocol": 25,
         "protocol_version": 26,
     }
+
+
+async def test_firmware_writers_serialize_commits_without_lost_updates(hass) -> None:
+    tracker = FirmwareTracker(hass)
+    started = asyncio.Event()
+    finish = asyncio.Event()
+    saved = []
+
+    async def save(candidate):
+        saved.append(deepcopy(candidate))
+        if len(saved) == 1:
+            started.set()
+            await finish.wait()
+
+    tracker._store = SimpleNamespace(async_save=AsyncMock(side_effect=save))
+    first = asyncio.create_task(tracker.async_observe_version("first", "v169", 25))
+    await started.wait()
+    second = asyncio.create_task(tracker.async_observe_version("second", "v170", 26))
+    await asyncio.sleep(0)
+    assert tracker._store.async_save.await_count == 1
+    assert tracker.summary("first")["observed_version"] is None
+    assert tracker.summary("second")["observed_version"] is None
+    finish.set()
+    await asyncio.gather(first, second)
+    assert len(saved) == 2
+    assert saved[-1] == tracker._data
+    assert tracker.summary("first")["observed_version"] == "v169"
+    assert tracker.summary("second")["observed_version"] == "v170"
 
 
 async def test_tracker_persists_snapshots_caps_history_and_summarizes(hass) -> None:

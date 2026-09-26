@@ -20,8 +20,7 @@ from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
-from .plans import CleaningRoom, leg_groups, plan_floor_token
-from .services import (
+from .managed_executor import (
     LEG_HANDOFF_TIMEOUT_SECONDS,
     _async_execute_rooms,
     _async_managed_user_command,
@@ -31,6 +30,7 @@ from .services import (
     _schedule_managed_dock_after_stop,
     _shutdown_suspends_run,
 )
+from .plans import CleaningRoom, leg_groups, plan_floor_token
 
 if TYPE_CHECKING:
     from . import MaticConfigEntry
@@ -436,7 +436,6 @@ async def async_recover_managed_run(
                 entity_id,
                 serial_number,
                 rooms,
-                intelligent=False,
                 refresh=runtime.coordinator.async_request_refresh,
                 active_session=runtime.client.async_has_active_cleaning_session,
                 session_history=partial(
@@ -568,7 +567,6 @@ async def async_recover_managed_run(
             entity_id,
             serial_number,
             rooms,
-            intelligent=False,
             refresh=runtime.coordinator.async_request_refresh,
             active_session=runtime.client.async_has_active_cleaning_session,
             session_history=partial(

@@ -138,6 +138,18 @@ export const syntheticPlans = (): PlansCatalog => ({
       cleaningMode: "vacuum",
       coverageSetting: "standard",
     })),
+    nextRunPreview: {
+      previewToken: "e".repeat(64),
+      rooms: rooms.slice(0, 3).map((room) => ({
+        roomId: room.roomId,
+        name: room.name,
+        cleaningMode: "vacuum",
+        coverageSetting: "standard",
+        cadenceReasons: [],
+      })),
+      missionBoundaries: [],
+      blocker: null,
+    },
     roomOrder: rooms.slice(0, 3).map(({ roomId }) => roomId),
     returnToBase: true,
     finishCurrentRoom: false,

@@ -45,7 +45,7 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
-from custom_components.matic_robot.plans import PlanStopDecision
+from custom_components.matic_robot.plans import PLAN_MOTION_TOKEN, PlanStopDecision
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
@@ -1154,6 +1154,13 @@ def test_next_room_preview_hides_stale_plan_errors() -> None:
         assert next_room.native_value is None
         assert next_room.extra_state_attributes is None
 
+    entry = _entry()
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = False
+    entry.runtime_data.cleaning_plans.preview = MagicMock()
+    next_room = sensor.MaticNextCleaningRoomSensor(entry)
+    assert next_room.native_value is None
+    entry.runtime_data.cleaning_plans.preview.assert_not_called()
+
 
 async def test_storage_backed_sensors_track_history_and_stay_available() -> None:
     entry = _entry()
@@ -1840,6 +1847,7 @@ async def test_vacuum_controls_refresh_and_preserve_room_order() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
+    assert "require_settings_readback" not in coverage_call.kwargs
     assert coordinator.async_request_refresh.await_count == 4
 
 
@@ -1854,6 +1862,30 @@ async def test_vacuum_stop_can_leave_the_current_managed_room_running() -> None:
 
     assert plans.request_stop.call_count == 2
     entry.runtime_data.coordinator.client.async_send_user_command.assert_not_awaited()
+
+
+async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
+    entry = _entry()
+    entity = vacuum.MaticVacuum(entry)
+
+    await entity.async_send_command(
+        "clean_rooms",
+        {"rooms": ["room-2"], PLAN_MOTION_TOKEN: 7},
+    )
+
+    coverage_call = (
+        entry.runtime_data.coordinator.client.async_start_coverage.await_args
+    )
+    assert coverage_call.args[1] == ["protocol-2"]
+    assert coverage_call.kwargs == {
+        "cleaning_mode": CleaningMode.BOTH,
+        "coverage_setting": CoverageSetting.STANDARD,
+        "ordered": False,
+        "require_settings_readback": True,
+    }
+    entry.runtime_data.cleaning_plans.managed_command.assert_called_once_with(
+        "synthetic-serial", 7
+    )
 
 
 async def test_vacuum_start_resumes_or_cleans_all_rooms() -> None:
@@ -1895,6 +1927,7 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
         "coverage_setting": CoverageSetting.QUICK,
         "ordered": True,
     }
+    assert "require_settings_readback" not in call.kwargs
 
     await entity.async_send_command(
         "clean_all",
@@ -1909,6 +1942,7 @@ async def test_clean_action_supports_the_complete_verified_option_matrix() -> No
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
+    assert "require_settings_readback" not in call.kwargs
 
 
 async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> None:
@@ -1941,6 +1975,21 @@ async def test_vacuum_attributes_and_segments_survive_a_missing_floor_plan() -> 
     assert await bare.async_get_segments() == []
 
 
+def test_vacuum_rejects_a_missing_or_empty_room_map() -> None:
+    floor_plans = (None, replace(_floor_plan(), rooms=()))
+    for floor_plan in floor_plans:
+        entry = _entry(with_floor_plan=False)
+        if floor_plan is not None:
+            entry.runtime_data.coordinator.data = replace(
+                entry.runtime_data.coordinator.data,
+                floor_plan=floor_plan,
+            )
+        entity = vacuum.MaticVacuum(entry)
+        with pytest.raises(ServiceValidationError) as raised:
+            entity._floor_plan()
+        assert raised.value.translation_key == "room_plan_unavailable"
+
+
 async def test_send_command_defaults_and_option_type_validation() -> None:
     entry = _entry()
     entity = vacuum.MaticVacuum(entry)
@@ -1955,6 +2004,7 @@ async def test_send_command_defaults_and_option_type_validation() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
     }
+    assert "require_settings_readback" not in coverage_call.kwargs
 
     await entity.async_send_command("clean_segments", ["Study"])
     coverage_call = (
@@ -1990,17 +2040,42 @@ async def test_vacuum_named_commands_and_validation() -> None:
         "coverage_setting": CoverageSetting.QUICK,
         "ordered": True,
     }
+    assert "require_settings_readback" not in call.kwargs
 
-    for command, params, message in (
-        ("clean_rooms", {"rooms": []}, "Select at least one"),
-        ("clean_rooms", {"rooms": ["Garage"]}, "Unknown Matic room"),
-        ("clean_rooms", {"rooms": "Kitchen"}, "requires params.rooms"),
-        ("clean_all", {"ordered": "yes"}, "ordered must be"),
-        ("clean_all", {"coverage": "unknown"}, "Invalid CoverageSetting"),
-        ("unknown", None, "Unsupported Matic command"),
+    for command, params, message, translation_key in (
+        ("clean_rooms", {"rooms": []}, "Select at least one", "no_rooms"),
+        ("clean_rooms", {"rooms": ["Garage"]}, "Unknown Matic room", "unknown_rooms"),
+        (
+            "clean_rooms",
+            {"rooms": "Kitchen"},
+            "requires params.rooms",
+            "rooms_must_be_list",
+        ),
+        (
+            "clean_rooms",
+            {"rooms": ["Kitchen", 7]},
+            "requires params.rooms",
+            "rooms_must_be_list",
+        ),
+        ("clean_all", {"ordered": "yes"}, "ordered must be", "ordered_must_be_boolean"),
+        ("clean_all", {"ordered": None}, "ordered must be", "ordered_must_be_boolean"),
+        (
+            "clean_all",
+            {"coverage": "unknown"},
+            "Invalid CoverageSetting",
+            "invalid_cleaning_option",
+        ),
+        (
+            "clean_all",
+            {"coverage": 7},
+            "CoverageSetting must be a string",
+            "invalid_cleaning_option",
+        ),
+        ("unknown", None, "Unsupported Matic command", "unsupported_command"),
     ):
-        with pytest.raises(ServiceValidationError, match=message):
+        with pytest.raises(ServiceValidationError, match=message) as raised:
             await entity.async_send_command(command, params)
+        assert raised.value.translation_key == translation_key
 
     with pytest.raises(ServiceValidationError, match="room map is unavailable"):
         await vacuum.MaticVacuum(_entry(with_floor_plan=False)).async_start()

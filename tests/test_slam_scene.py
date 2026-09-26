@@ -24,6 +24,7 @@ from custom_components.matic_robot.area_binding import (
     binding_for_floor_plan,
 )
 from custom_components.matic_robot.area_selector import _RoomGeometryIndex
+from custom_components.matic_robot.client.commands import CleaningMode, CoverageSetting
 from custom_components.matic_robot.client.exceptions import CannotConnectError
 from custom_components.matic_robot.client.models import (
     FloorPlan,
@@ -33,6 +34,9 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
+from custom_components.matic_robot.plans import plan_floor_token, room_cadence_identity
+from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
 from custom_components.matic_robot.slam_scene import (
@@ -62,6 +66,7 @@ from custom_components.matic_robot.slam_scene import (
     pose_api_url,
     scene_api_url,
 )
+from custom_components.matic_robot.workspace_socket import WorkspaceSocket
 from tests.test_slam_map import synthetic_slam_entry
 
 
@@ -99,6 +104,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
     slam_map = SimpleNamespace(
         revision=revision,
         mission_identity=identity,
+        live_session_verified=True,
         map_complete=True,
         tile_count=2,
         structure_tile_count=1,
@@ -151,6 +157,7 @@ def _runtime(*, entries=None, revision: int = 7, pose=True) -> SimpleNamespace:
         cleaning_plans=SimpleNamespace(
             areas=MagicMock(return_value={}),
             plans=MagicMock(return_value={}),
+            preview=MagicMock(return_value={"rooms": []}),
             snapshot=MagicMock(
                 return_value={"selected_plan": None, "active_plan": None}
             ),
@@ -814,6 +821,20 @@ async def test_scene_view_rechecks_live_session_before_encoding() -> None:
     hass.async_add_executor_job.assert_not_awaited()
 
 
+async def test_scene_view_requires_explicit_live_session_verification() -> None:
+    """An adapter missing the production proof property fails closed."""
+    runtime = _runtime()
+    del runtime.slam_map.live_session_verified
+    hass = _hass(_entry(runtime))
+    view = MaticSlamSceneView()
+
+    response = await view.get(_request(hass), "entry")
+
+    assert response.status == HTTPStatus.NOT_FOUND
+    assert not view._cache
+    hass.async_add_executor_job.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "entry",
     [
@@ -1014,9 +1035,10 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
             _request(hass, admin=False)
         )
 
-    response = await MaticSlamCatalogView("/matic_robot/test/room-plan-editor.js").get(
-        _request(hass)
-    )
+    scene_view = MaticSlamSceneView()
+    response = await MaticSlamCatalogView(
+        "/matic_robot/test/room-plan-editor.js", scene_view
+    ).get(_request(hass))
 
     assert response.status == HTTPStatus.OK
     assert (
@@ -1066,6 +1088,14 @@ async def test_scene_and_catalog_require_admin_and_loaded_catalog_entries() -> N
             }
         ]
     }
+
+    loaded.runtime_data.coordinator.last_update_success = True
+    hass.data = {DATA_SLAM_SCENE_VIEW: scene_view}
+    workspace_snapshot = WorkspaceSocket(hass).snapshot(loaded.entry_id)
+    rest_entry = json.loads(response.body)["entries"][0]
+    snapshot_entry = workspace_snapshot["payload"]["entry"]
+    assert snapshot_entry is not None
+    assert snapshot_entry == {key: rest_entry[key] for key in snapshot_entry}
 
     runtime.cleaning_plans.lock.return_value.locked.return_value = True
     runtime.cleaning_plans.stop_pending.return_value = True
@@ -1316,8 +1346,29 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
         }
     }
     runtime.cleaning_plans.snapshot.return_value = {"selected_plan": "weekday"}
+    runtime.cleaning_plans.preview.return_value = {
+        "rooms": [
+            {
+                "room_id": "room-1",
+                "name": "Kitchen",
+                "cleaning_mode": "vacuum_and_mop",
+                "coverage_setting": "standard",
+                "cadence": {"mop_due": False, "coverage_due": False},
+            }
+        ]
+    }
+    runtime.cleaning_plans.preview.side_effect = None
     hass = _hass(_entry(runtime))
     view = MaticPlansView()
+    preview_token = saved_plan_preview_token(
+        runtime.cleaning_plans.preview.return_value,
+        entry_id="entry",
+        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        room_identities={
+            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
+            for room in runtime.coordinator.data.floor_plan.rooms
+        },
+    )
 
     response = await view.get(_request(hass), "entry")
 
@@ -1344,6 +1395,20 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
                 "return_to_base": False,
                 "finish_current_room": True,
                 "finish_current_room_threshold": 60,
+                "next_run_preview": {
+                    "rooms": [
+                        {
+                            "room_id": "room-1",
+                            "name": "Kitchen",
+                            "cleaning_mode": "vacuum_and_mop",
+                            "coverage_setting": "standard",
+                            "cadence_reasons": [],
+                        }
+                    ],
+                    "mission_boundaries": [],
+                    "preview_token": preview_token,
+                    "blocker": None,
+                },
             }
         ],
         "selected_plan": "weekday",
@@ -1351,6 +1416,245 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
     assert plans_api_url("entry") == PLANS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):
         await view.get(_request(hass, admin=False), "entry")
+
+
+async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "weekday": {
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ]
+        }
+    }
+    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+        return_value={
+            "cadence": {"scope": "plan", "mop_every_n": 3},
+            "cadence_progress": {"mop": 2},
+            "cadence_reasons": ["mop_due"],
+        }
+    )
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    payload = json.loads(response.body)
+    assert payload["plans"][0]["rooms"][0] == {
+        "room_id": "room-1",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+        "cadence": {"scope": "plan", "mop_every_n": 3},
+        "cadence_progress": {"mop": 2},
+        "cadence_reasons": ["mop_due"],
+    }
+    assert payload["rooms"][0] == {
+        "room_id": "room-1",
+        "name": "Kitchen",
+        "shared_cadence": {"scope": "plan", "mop_every_n": 3},
+        "shared_cadence_progress": {"mop": 2},
+        "shared_cadence_reasons": ["mop_due"],
+    }
+    assert runtime.cleaning_plans.cadence_editor_state.call_count == 2
+    saved_call, shared_call = runtime.cleaning_plans.cadence_editor_state.call_args_list
+    assert saved_call.kwargs["use_shared_schedule"] is False
+    assert shared_call.kwargs["use_shared_schedule"] is True
+    assert saved_call.kwargs["floor_token"] == shared_call.kwargs["floor_token"]
+    assert saved_call.kwargs["identity"] == shared_call.kwargs["identity"]
+
+
+async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(
+        "custom_components.matic_robot.slam_scene.leg_groups",
+        lambda rooms, mixed_settings=False: [[room] for room in rooms],
+    )
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "weekday": {
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                },
+                {
+                    "room_id": "room-2",
+                    "cleaning_mode": "vacuum_and_mop",
+                    "coverage_setting": "quick",
+                },
+            ],
+            "room_order": ["room-1", "room-2"],
+        }
+    }
+    runtime.coordinator.data.floor_plan = replace(
+        runtime.coordinator.data.floor_plan,
+        rooms=(
+            *runtime.coordinator.data.floor_plan.rooms,
+            Room(
+                "room-2",
+                "Study",
+                "protocol-2",
+                b"room-2",
+                ((0.4, 0.0), (0.7, 0.0), (0.7, 0.3), (0.4, 0.3)),
+            ),
+        ),
+    )
+    runtime.slam_map.floor_plan_is_current.return_value = True
+    preview_result = {
+        "rooms": [
+            {
+                "room_id": "room-2",
+                "name": "Study",
+                "cleaning_mode": "vacuum_and_mop",
+                "coverage_setting": "heavy_duty",
+                "cadence": {"mop_due": True, "coverage_due": True},
+            },
+            {
+                "room_id": "room-1",
+                "name": "Kitchen",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {"mop_due": False, "coverage_due": False},
+            },
+        ]
+    }
+    runtime.cleaning_plans.preview.return_value = preview_result
+    runtime.cleaning_plans.preview.side_effect = None
+    request_hass = _hass(_entry(runtime))
+    view = MaticPlansView()
+    preview_token = saved_plan_preview_token(
+        preview_result,
+        entry_id="entry",
+        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        room_identities={
+            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
+            for room in runtime.coordinator.data.floor_plan.rooms
+        },
+    )
+
+    first = await view.get(_request(request_hass), "entry")
+    second = await view.get(_request(request_hass), "entry")
+
+    projected = json.loads(first.body)["plans"][0]["next_run_preview"]
+    assert projected == json.loads(second.body)["plans"][0]["next_run_preview"]
+    assert projected == {
+        "rooms": [
+            {
+                "room_id": "room-2",
+                "name": "Study",
+                "cleaning_mode": "vacuum_and_mop",
+                "coverage_setting": "heavy_duty",
+                "cadence_reasons": ["mop_due", "coverage_due"],
+            },
+            {
+                "room_id": "room-1",
+                "name": "Kitchen",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence_reasons": [],
+            },
+        ],
+        "mission_boundaries": [1],
+        "preview_token": preview_token,
+        "blocker": None,
+    }
+    runtime.cleaning_plans.preview.assert_any_call(
+        "synthetic-serial",
+        {"room-1": "Kitchen", "room-2": "Study"},
+        "weekday",
+        floor_token=plan_floor_token(runtime.coordinator.data.floor_plan),
+        room_identities={
+            room.id: room_cadence_identity(runtime.coordinator.data.floor_plan, room.id)
+            for room in runtime.coordinator.data.floor_plan.rooms
+        },
+    )
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    runtime.cleaning_plans.async_delete_area.assert_not_awaited()
+
+
+async def test_plan_workspace_reports_preview_unavailable() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "weekday": {
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+            "room_order": ["room-1"],
+        }
+    }
+    runtime.slam_map.floor_plan_is_current.return_value = True
+    runtime.cleaning_plans.preview = None
+    request_hass = _hass(_entry(runtime))
+
+    response = await MaticPlansView().get(_request(request_hass), "entry")
+
+    preview = json.loads(response.body)["plans"][0]["next_run_preview"]
+    assert preview == {
+        "rooms": [],
+        "mission_boundaries": [],
+        "blocker": "preview_unavailable",
+    }
+
+
+async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "legacy": {"rooms": [None, {}, {"room_id": ""}, {"room_id": "room-1"}]}
+    }
+    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+        return_value={"cadence": None}
+    )
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    payload = json.loads(response.body)
+    legacy = payload["plans"][0]
+    assert legacy["enabled"] is True
+    assert legacy["rooms"] == [
+        {
+            "room_id": "room-1",
+            "cleaning_mode": CleaningMode.VACUUM.value,
+            "coverage_setting": CoverageSetting.OPTIMAL.value,
+        }
+    ]
+    calls = runtime.cleaning_plans.cadence_editor_state.call_args_list
+    assert len(calls) == 2
+    assert calls[0].args[1] == "legacy"
+    assert calls[1].args[1] == "quick_clean"
+
+
+async def test_plan_workspace_projects_unavailable_cadence_identity() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "weekday": {"rooms": [{"room_id": "room-1"}]}
+    }
+    runtime.cleaning_plans.cadence_editor_state = MagicMock(
+        side_effect=AssertionError("unavailable identities must not be projected")
+    )
+    hass = _hass(_entry(runtime))
+
+    with patch(
+        "custom_components.matic_robot.slam_scene.room_cadence_identity",
+        side_effect=ValueError("room identity unavailable"),
+    ):
+        response = await MaticPlansView().get(_request(hass), "entry")
+
+    payload = json.loads(response.body)
+    assert payload["plans"][0]["rooms"][0] == {
+        "room_id": "room-1",
+        "cleaning_mode": CleaningMode.VACUUM.value,
+        "coverage_setting": CoverageSetting.OPTIMAL.value,
+    }
+    assert payload["rooms"][0] == {"room_id": "room-1", "name": "Kitchen"}
+    runtime.cleaning_plans.cadence_editor_state.assert_not_called()
 
 
 async def test_plan_workspace_handles_missing_entry_and_floor_plan() -> None:
@@ -1420,6 +1724,77 @@ async def test_area_workspace_saves_updates_and_deletes_validated_areas() -> Non
     )
 
 
+async def test_area_workspace_rejects_floor_change_during_request_body_read() -> None:
+    """A body authored for one floor cannot be rebound to a later selection."""
+    runtime = _runtime()
+    hass = _hass(_entry(runtime))
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+    original_floor = runtime.coordinator.data.floor_plan
+
+    async def read_body_after_floor_change(**_kwargs):
+        runtime.coordinator.data.floor_plan = replace(
+            original_floor,
+            partition_protocol_id="synthetic-replacement-partition",
+            partition_id_wire=b"synthetic-replacement-partition",
+        )
+        return {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+
+    request.json = AsyncMock(side_effect=read_body_after_floor_change)
+
+    response = await MaticAreasView().post(request, "entry")
+
+    assert response.status == HTTPStatus.CONFLICT
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+
+
+async def test_area_workspace_rejects_runtime_replacement_during_body_read() -> None:
+    """A request cannot mutate a detached runtime after entry reload."""
+    runtime = _runtime()
+    entry = _entry(runtime)
+    hass = _hass(entry)
+    request = _json_request(
+        hass,
+        "POST",
+        {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        },
+    )
+
+    async def read_body_after_entry_reload(**_kwargs):
+        entry.runtime_data = _runtime()
+        return {
+            "name": "Under table",
+            "circles": [{"x": 0.1, "y": 0.1, "radius": 0.2}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+
+    request.json = AsyncMock(side_effect=read_body_after_entry_reload)
+
+    response = await MaticAreasView().post(request, "entry")
+
+    assert response.status == HTTPStatus.CONFLICT
+    runtime.cleaning_plans.async_save_area.assert_not_awaited()
+    entry.runtime_data.cleaning_plans.async_save_area.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "body",
     [
@@ -1467,7 +1842,7 @@ async def test_area_workspace_handles_missing_maps_entries_and_conflicts() -> No
     runtime = _runtime()
     hass = _hass(_entry(runtime))
     runtime.coordinator.data.floor_plan = None
-    assert MaticAreasView._rooms(runtime) == []
+    assert MaticAreasView._rooms(None) == []
     assert (await view.get(_request(hass), "entry")).status == 409
     assert (await view.post(_json_request(hass, "POST", {}), "entry")).status == 409
     runtime.coordinator.data.floor_plan = _floor_plan()

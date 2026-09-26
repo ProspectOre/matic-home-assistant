@@ -141,6 +141,76 @@ export interface PlanRoom {
   readonly roomId: string;
   readonly cleaningMode: CleaningMode;
   readonly coverageSetting: CoverageSetting;
+  readonly cadence?: RoomCadencePolicy;
+  readonly cadenceProgress?: RoomCadenceProgress;
+  readonly cadenceReasons?: readonly CadenceReason[];
+}
+
+export type CadenceReason =
+  | "mop_due"
+  | "coverage_due"
+  | "room_not_on_current_map"
+  | "identity_changed"
+  | "shared_schedule_unavailable"
+  | "invalid_cadence_policy";
+
+export interface NextRunPreviewRoom {
+  readonly roomId: string;
+  readonly name: string;
+  readonly cleaningMode: CleaningMode;
+  readonly coverageSetting: CoverageSetting;
+  readonly cadenceReasons: readonly CadenceReason[];
+}
+
+export type NextRunPreviewBlocker =
+  | "cadence_identity_unavailable"
+  | "preview_unavailable"
+  | "plan_disabled"
+  | "plan_has_no_rooms"
+  | "cadence_identity_changed"
+  | "shared_schedule_unavailable"
+  | "invalid_cadence_policy"
+  | "invalid_plan";
+
+export interface NextRunPreview {
+  readonly rooms: readonly NextRunPreviewRoom[];
+  readonly missionBoundaries: readonly number[];
+  readonly blocker: NextRunPreviewBlocker | null;
+  readonly previewToken?: string;
+}
+
+export interface ManualRoomSequencePreviewRoom extends NextRunPreviewRoom {
+  readonly cadenceProgress?: RoomCadenceProgress;
+}
+
+export interface ManualRoomSequencePreview {
+  readonly entryId: string;
+  readonly floorToken: string;
+  readonly previewToken: string;
+  readonly rooms: readonly ManualRoomSequencePreviewRoom[];
+  readonly missionBoundaries: readonly number[];
+  readonly blocker: NextRunPreviewBlocker | null;
+}
+
+export interface RoomCadencePolicy {
+  readonly scope: "plan" | "shared";
+  readonly mopEveryN: number | null;
+  readonly coverageEveryN: number | null;
+  readonly periodicCoverageSetting: CoverageSetting | null;
+  readonly doMopNext: boolean;
+  readonly doCoverageNext: boolean;
+}
+
+export interface RoomCadenceProgress {
+  readonly mopProgress: number;
+  readonly coverageProgress: number;
+  readonly mopDue: boolean;
+  readonly coverageDue: boolean;
+  readonly nextMopIn: number | null;
+  readonly nextCoverageIn: number | null;
+  readonly reasons: readonly CadenceReason[];
+  readonly effectiveCleaningMode?: CleaningMode;
+  readonly effectiveCoverageSetting?: CoverageSetting;
 }
 
 export interface SavedPlan {
@@ -153,10 +223,15 @@ export interface SavedPlan {
   readonly returnToBase: boolean;
   readonly finishCurrentRoom: boolean;
   readonly finishCurrentRoomThreshold: number;
+  readonly nextRunPreview?: NextRunPreview;
 }
 
 export interface PlansCatalog {
-  readonly rooms: readonly Pick<MapRoom, "roomId" | "name">[];
+  readonly rooms: readonly (Pick<MapRoom, "roomId" | "name"> & {
+    readonly sharedCadence?: RoomCadencePolicy;
+    readonly sharedCadenceProgress?: RoomCadenceProgress;
+    readonly sharedCadenceReasons?: readonly CadenceReason[];
+  })[];
   readonly plans: readonly SavedPlan[];
   readonly selectedPlan: string | null;
 }
@@ -226,6 +301,9 @@ const booleanValue = (value: unknown, code: string): boolean => {
   if (typeof value !== "boolean") throw new ContractError(code);
   return value;
 };
+
+const optionalBooleanDefaultFalse = (value: unknown, code: string): boolean =>
+  value === undefined ? false : booleanValue(value, code);
 
 const nullableBoolean = (value: unknown, code: string): boolean | null => {
   if (value === null) return null;
@@ -421,6 +499,161 @@ const parseCoverage = (value: unknown): CoverageSetting => {
   throw new ContractError("invalid-coverage-setting");
 };
 
+const nullableInterval = (value: unknown, code: string): number | null =>
+  value === null || value === undefined
+    ? null
+    : boundedInteger(value, 1, 100, code);
+
+const parseCadenceReasons = (value: unknown): readonly CadenceReason[] => {
+  if (value === undefined || value === null) return [];
+  const validReasons: readonly CadenceReason[] = [
+    "mop_due",
+    "coverage_due",
+    "room_not_on_current_map",
+    "identity_changed",
+    "shared_schedule_unavailable",
+    "invalid_cadence_policy",
+  ];
+  if (!Array.isArray(value) || value.length > validReasons.length
+    || value.some((reason) => !validReasons.includes(reason as CadenceReason))) {
+    throw new ContractError("invalid-cadence-reasons");
+  }
+  return [...new Set(value as CadenceReason[])];
+};
+
+const parseCadencePolicy = (value: unknown): RoomCadencePolicy | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const policy = objectValue(value, "invalid-room-cadence");
+  const scope = policy.scope === undefined ? "plan" : policy.scope;
+  if (scope !== "plan" && scope !== "shared") throw new ContractError("invalid-room-cadence-scope");
+  const rawPeriodicCoverage = policy.periodic_coverage_setting;
+  return {
+    scope,
+    mopEveryN: nullableInterval(policy.mop_every_n, "invalid-mop-interval"),
+    coverageEveryN: nullableInterval(policy.coverage_every_n, "invalid-coverage-interval"),
+    periodicCoverageSetting: rawPeriodicCoverage === null || rawPeriodicCoverage === undefined
+      ? null
+      : parseCoverage(rawPeriodicCoverage),
+    doMopNext: optionalBooleanDefaultFalse(policy.do_mop_next, "invalid-do-mop-next"),
+    doCoverageNext: optionalBooleanDefaultFalse(policy.do_coverage_next, "invalid-do-coverage-next"),
+  };
+};
+
+const parseCadenceProgress = (value: unknown, reasonsValue?: unknown): RoomCadenceProgress | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const progress = objectValue(value, "invalid-room-cadence-progress");
+  const effectiveMode = progress.effective_cleaning_mode;
+  const effectiveCoverage = progress.effective_coverage_setting;
+  const reasons = parseCadenceReasons(reasonsValue ?? progress.cadence_reasons);
+  return {
+    mopProgress: boundedInteger(progress.mop_progress ?? 0, 0, 100, "invalid-mop-progress"),
+    coverageProgress: boundedInteger(progress.coverage_progress ?? 0, 0, 100, "invalid-coverage-progress"),
+    mopDue: optionalBooleanDefaultFalse(progress.mop_due, "invalid-mop-due"),
+    coverageDue: optionalBooleanDefaultFalse(progress.coverage_due, "invalid-coverage-due"),
+    nextMopIn: nullableInterval(progress.next_mop_in, "invalid-next-mop"),
+    nextCoverageIn: nullableInterval(progress.next_coverage_in, "invalid-next-coverage"),
+    reasons,
+    ...(effectiveMode === undefined ? {} : { effectiveCleaningMode: parseCleaningMode(effectiveMode) }),
+    ...(effectiveCoverage === undefined ? {} : { effectiveCoverageSetting: parseCoverage(effectiveCoverage) }),
+  };
+};
+
+const parsePlanRoom = (value: unknown): PlanRoom => {
+  const room = objectValue(value, "invalid-plan-room");
+  const cadence = parseCadencePolicy(room.cadence);
+  const cadenceProgress = parseCadenceProgress(room.cadence_progress, room.cadence_reasons);
+  const cadenceReasons = parseCadenceReasons(room.cadence_reasons);
+  return {
+    roomId: boundedString(room.room_id, 128, "invalid-plan-room-id"),
+    cleaningMode: parseCleaningMode(room.cleaning_mode),
+    coverageSetting: parseCoverage(room.coverage_setting),
+    ...(cadence === undefined ? {} : { cadence }),
+    ...(cadenceProgress === undefined ? {} : { cadenceProgress }),
+    ...(cadenceReasons.length ? { cadenceReasons } : {}),
+  };
+};
+
+const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
+  if (value === undefined || value === null) return undefined;
+  const preview = objectValue(value, "invalid-plan-preview");
+  if (!Array.isArray(preview.rooms) || preview.rooms.length > 256
+    || !Array.isArray(preview.mission_boundaries) || preview.mission_boundaries.length > 255) {
+    throw new ContractError("invalid-plan-preview");
+  }
+  const rooms: NextRunPreviewRoom[] = preview.rooms.map((candidate) => {
+    const room = objectValue(candidate, "invalid-plan-preview-room");
+    return {
+      roomId: boundedString(room.room_id, 128, "invalid-plan-preview-room-id"),
+      name: boundedString(room.name, 128, "invalid-plan-preview-room-name"),
+      cleaningMode: parseCleaningMode(room.cleaning_mode),
+      coverageSetting: parseCoverage(room.coverage_setting),
+      cadenceReasons: parseCadenceReasons(room.cadence_reasons),
+    };
+  });
+  const boundaries = preview.mission_boundaries.map((value) =>
+    boundedInteger(value, 1, Math.max(1, rooms.length - 1), "invalid-plan-preview-boundary"));
+  if (boundaries.some((value, index) => value >= rooms.length
+    || value <= (boundaries[index - 1] ?? 0))) {
+    throw new ContractError("invalid-plan-preview-boundary-order");
+  }
+  const blockers: readonly NextRunPreviewBlocker[] = [
+    "cadence_identity_unavailable",
+    "preview_unavailable",
+    "plan_disabled",
+    "plan_has_no_rooms",
+    "cadence_identity_changed",
+    "shared_schedule_unavailable",
+    "invalid_cadence_policy",
+    "invalid_plan",
+  ];
+  const rawBlocker = preview.blocker;
+  if (rawBlocker !== null && !blockers.includes(rawBlocker as NextRunPreviewBlocker)) {
+    throw new ContractError("invalid-plan-preview-blocker");
+  }
+  if (rawBlocker === null && rooms.length === 0) throw new ContractError("empty-plan-preview");
+  const previewToken = preview.preview_token;
+  if (previewToken !== undefined && (typeof previewToken !== "string" || !/^[0-9a-f]{64}$/u.test(previewToken))) {
+    throw new ContractError("invalid-plan-preview-token");
+  }
+  return {
+    rooms,
+    missionBoundaries: boundaries,
+    blocker: rawBlocker as NextRunPreviewBlocker | null,
+    ...(typeof previewToken === "string" ? { previewToken } : {}),
+  };
+};
+
+export const parseManualRoomSequencePreview = (value: unknown): ManualRoomSequencePreview => {
+  const response = objectValue(value, "invalid-room-sequence-preview");
+  const entryId = boundedString(response.entry_id, 128, "invalid-room-sequence-preview-entry");
+  const floorToken = boundedString(response.floor_token, 128, "invalid-room-sequence-preview-floor");
+  const previewToken = boundedString(response.preview_token, 64, "invalid-room-sequence-preview-token");
+  if (!/^[0-9a-f]{64}$/u.test(floorToken) || !/^[0-9a-f]{64}$/u.test(previewToken)) {
+    throw new ContractError("invalid-room-sequence-preview-token");
+  }
+  const preview = parseNextRunPreview({
+    rooms: response.rooms,
+    mission_boundaries: response.mission_boundaries,
+    blocker: response.blocker,
+  });
+  if (!preview) throw new ContractError("invalid-room-sequence-preview");
+  const rawRooms = response.rooms;
+  if (!Array.isArray(rawRooms)) throw new ContractError("invalid-room-sequence-preview-rooms");
+  const rooms = preview.rooms.map((room, index): ManualRoomSequencePreviewRoom => {
+    const source = objectValue(rawRooms[index], "invalid-room-sequence-preview-room");
+    const cadenceProgress = parseCadenceProgress(source.cadence_progress, source.cadence_reasons);
+    return { ...room, ...(cadenceProgress === undefined ? {} : { cadenceProgress }) };
+  });
+  return {
+    entryId,
+    floorToken,
+    previewToken,
+    rooms,
+    missionBoundaries: preview.missionBoundaries,
+    blocker: preview.blocker,
+  };
+};
+
 const parseOutline = (value: unknown): AreaOutline | null => {
   if (value === undefined || value === null) return null;
   if (!Array.isArray(value) || value.length < 3 || value.length > 64) throw new ContractError("invalid-area-outline");
@@ -479,7 +712,24 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
   if (!Array.isArray(payload.plans) || payload.plans.length > 256) {
     throw new ContractError("invalid-plan-list");
   }
-  const rooms = parseRooms(payload.rooms, false).map(({ roomId, name }) => ({ roomId, name }));
+  const rawRooms = payload.rooms;
+  const rooms = parseRooms(rawRooms, false).map((room, index): PlansCatalog["rooms"][number] => {
+    const raw = Array.isArray(rawRooms) ? rawRooms[index] : undefined;
+    const value = objectValue(raw, "invalid-room");
+    const sharedCadence = parseCadencePolicy(value.shared_cadence);
+    const sharedCadenceProgress = parseCadenceProgress(
+      value.shared_cadence_progress,
+      value.shared_cadence_reasons,
+    );
+    const sharedCadenceReasons = parseCadenceReasons(value.shared_cadence_reasons);
+    return {
+      roomId: room.roomId,
+      name: room.name,
+      ...(sharedCadence === undefined ? {} : { sharedCadence }),
+      ...(sharedCadenceProgress === undefined ? {} : { sharedCadenceProgress }),
+      ...(sharedCadenceReasons.length ? { sharedCadenceReasons } : {}),
+    };
+  });
   return {
     rooms,
     selectedPlan: payload.selected_plan === null || payload.selected_plan === undefined
@@ -494,18 +744,14 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
       if (runBehavior !== "intelligent" && runBehavior !== "ordered") {
         throw new ContractError("invalid-run-behavior");
       }
+      const nextRunPreview = parseNextRunPreview(plan.next_run_preview);
       return {
         id: boundedString(plan.id, 128, "invalid-plan-id"),
         name: boundedString(plan.name, 128, "invalid-plan-name"),
         enabled: booleanValue(plan.enabled, "invalid-plan-enabled"),
         runBehavior,
         rooms: plan.rooms.map((roomCandidate) => {
-          const room = objectValue(roomCandidate, "invalid-plan-room");
-          return {
-            roomId: boundedString(room.room_id, 128, "invalid-plan-room-id"),
-            cleaningMode: parseCleaningMode(room.cleaning_mode),
-            coverageSetting: parseCoverage(room.coverage_setting),
-          } satisfies PlanRoom;
+          return parsePlanRoom(roomCandidate);
         }),
         roomOrder: plan.room_order.slice(0, 256).map((roomId) =>
           boundedString(roomId, 128, "invalid-room-order")),
@@ -517,6 +763,7 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
           100,
           "invalid-finish-threshold",
         ),
+        ...(nextRunPreview === undefined ? {} : { nextRunPreview }),
       } satisfies SavedPlan;
     }),
   };

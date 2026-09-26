@@ -1,0 +1,22 @@
+import{E as l,F as a,L as d,M as p,N as u,O as m,j as c,la as h,ua as f,va as v}from"./chunk-EGXTIAOX.js";var y="matic-map-diagnostics-v4",n=class extends d{constructor(){super(...arguments);this.state=c();this.disabled=!1;this._copyStatus="idle"}static{this.properties={state:{attribute:!1},localize:{attribute:!1},disabled:{type:Boolean},_copyStatus:{state:!0}}}static{this.styles=[p,u,m,l`
+:host { display: block; min-inline-size: 0; }
+.stack { display: grid; gap: var(--ms-space-3); }
+.subtle { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+.diagnostics { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--ms-space-2) var(--ms-space-3); margin: 0; font-size: var(--ms-t-xs); }
+.diagnostics dt { color: var(--ms-text-quiet); }
+.diagnostics dd { margin: 0; font-weight: var(--ms-w-medium); }
+.toolbar { display: flex; flex-wrap: wrap; gap: var(--ms-space-2); }
+.copy-status { margin: 0; color: var(--ms-text-quiet); font-size: var(--ms-t-xs); line-height: var(--ms-lh-snug); }
+`]}#e;disconnectedCallback(){this.#e!==void 0&&clearTimeout(this.#e),this.#e=void 0,super.disconnectedCallback()}#t(t,e){return v(this.localize,t,e)}#s(){let t=this.state.resources.entry,e=this.#t("v4_yes","Yes"),i=this.#t("v4_no","No"),s=this.#t("v4_seen","Seen"),o=this.#t("v4_not_seen","Not seen"),r=this.#t("v4_unknown","Unknown");return[[this.#t("v4_connection","Connection"),this.state.host.connected?this.#t("v4_connected","Connected"):this.#t("v4_offline","Offline")],[this.#t("v4_map_state","Map state"),String(this.state.coherence)],[this.#t("v4_floor_verified","Floor verified"),this.state.map.floorCoherent?e:i],[this.#t("v4_session_verified","Session verified"),this.state.map.sessionVerified?e:i],[this.#t("v4_map_complete","Map complete"),this.state.map.complete?e:i],[this.#t("v4_map_health","Map health"),t?.health||r],[this.#t("v4_blocked_by","Blocked by"),t?.mapBlockReason?.replaceAll("_"," ")||this.#t("v4_nothing","Nothing")],[this.#t("v4_startup_map","Startup map check"),t?.bootstrapState?.replaceAll("_"," ")||r],[this.#t("v4_startup_photo","Startup photo layer"),t?.bootstrapPhotoSeen?s:o],[this.#t("v4_startup_structure","Startup structure layer"),t?.bootstrapStructureSeen?s:o],[this.#t("v4_startup_failures","Startup failures"),String(t?.bootstrapFailures||0)],[this.#t("v4_stream_failures","Stream failures"),String(t?.streamFailures||0)],[this.#t("v4_saved_floor_count","Saved floor count"),String(this.state.floor.classifiedCount)]]}#i(t){this.#e!==void 0&&clearTimeout(this.#e),this.#e=void 0,this._copyStatus=t,t==="copied"&&(this.#e=setTimeout(()=>{this.#e=void 0,this._copyStatus="idle"},2e3))}#o(t,e){if(typeof document>"u"||typeof document.execCommand!="function")return!1;let i=e??(document.activeElement instanceof HTMLElement?document.activeElement:null),s=document.createElement("textarea");s.value=t,s.readOnly=!0,s.setAttribute("aria-hidden","true"),s.style.cssText="position:fixed;inset-block-start:-1000px;inline-size:1px;block-size:1px;opacity:0",document.body.append(s),s.select(),s.setSelectionRange(0,t.length);try{return document.execCommand("copy")}catch{return!1}finally{s.remove(),i?.focus({preventScroll:!0})}}async#a(t){let e=this.#s().map(([s,o])=>`${s}: ${o}`).join(`
+`),i=typeof navigator>"u"?void 0:navigator.clipboard;if(i&&typeof i.writeText=="function")try{await i.writeText(e),this.#i("copied");return}catch{}this.#i(this.#o(e,t instanceof HTMLElement?t:null)?"copied":"failed")}render(){let t=this._copyStatus==="copied"?this.#t("v4_copied","Copied"):this._copyStatus==="failed"?this.#t("v4_copy_failed","The summary could not be copied. Select the text to copy it by hand."):"";return a`
+      <div class="stack">
+        <p class="subtle">${this.#t("v4_support_privacy","This summary contains no map, coordinates, room or floor names, device identifiers, addresses, or credentials.")}</p>
+        <dl class="diagnostics">
+          ${this.#s().map(([e,i])=>a`<dt>${e}</dt><dd>${i}</dd>`)}
+        </dl>
+        <div class="toolbar">
+          <button class="ms-btn ms-btn--secondary" type="button" ?disabled=${this.disabled} @click=${e=>{this.#a(e.currentTarget)}}>${f(h)}<span>${this.#t("v4_copy_summary","Copy summary")}</span></button>
+        </div>
+        <p class="copy-status" role="status" aria-live="polite">${t}</p>
+      </div>
+    `}};customElements.get(y)||customElements.define(y,n);export{y as DIAGNOSTICS_TAG,n as MaticMapDiagnosticsV4};

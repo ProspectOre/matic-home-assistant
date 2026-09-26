@@ -9,6 +9,7 @@ from types import SimpleNamespace
 import pytest
 from grpclib.const import Status
 from grpclib.exceptions import GRPCError
+from h2.exceptions import H2Error
 
 from custom_components.matic_robot.client.api import MaticHermesClient
 from custom_components.matic_robot.client.auth import HermesCredential
@@ -80,6 +81,28 @@ async def test_request_credential_uses_user_id_and_enables_metadata(
         timezone_identifier="UTC",
         seconds_from_gmt=0,
     )
+
+
+async def test_request_credential_maps_h2_transport_error() -> None:
+    class FailingAuthStub:
+        def __init__(self, channel) -> None:
+            pass
+
+        async def AuthToken(self, request):
+            raise H2Error("synthetic auth transport failure")
+
+    client = MaticHermesClient("192.0.2.1", 16320)
+    client._channel = object()
+
+    from unittest.mock import patch
+
+    with (
+        patch(
+            "custom_components.matic_robot.client.api.HermesAuthStub", FailingAuthStub
+        ),
+        pytest.raises(CannotConnectError, match="credential request connection failed"),
+    ):
+        await client.async_request_credential("synthetic-user")
 
 
 async def test_authenticated_connect_handshakes_on_the_created_channel(

@@ -10,13 +10,13 @@ from homeassistant.core import ServiceCall
 from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
     RoomTakenOverError,
     _async_execute_rooms,
     _async_wait_for_owned_resume,
 )
+from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
 ORIGINAL = b"synthetic-original-session"
@@ -26,7 +26,7 @@ REPLACEMENT = b"synthetic-oem-session"
 @pytest.fixture(autouse=True)
 def fast_identity_polls(monkeypatch):
     monkeypatch.setattr(
-        "custom_components.matic_robot.services.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
+        "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
         0.001,
     )
 
@@ -112,7 +112,6 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_identity=read_identity,
             active_session=presence,
             session_history=history,
@@ -244,7 +243,7 @@ async def test_resume_wait_propagates_robot_error_and_cleans_listener(hass):
 async def test_returning_session_checks_identity_before_accepting_cleaning(
     hass, identity, expected_result
 ):
-    from custom_components.matic_robot.services import (
+    from custom_components.matic_robot.managed_executor import (
         _async_wait_for_active_session_resolution,
     )
 
@@ -265,7 +264,7 @@ async def test_returning_session_checks_identity_before_accepting_cleaning(
 
 @pytest.mark.parametrize("identity", [REPLACEMENT, None])
 async def test_returning_session_replacement_or_unknown_cannot_resume(hass, identity):
-    from custom_components.matic_robot.services import (
+    from custom_components.matic_robot.managed_executor import (
         _async_wait_for_active_session_resolution,
     )
 
@@ -284,7 +283,7 @@ async def test_returning_session_replacement_or_unknown_cannot_resume(hass, iden
 async def test_started_task_with_unknown_identity_retires_without_stopping(
     hass, multi_room
 ):
-    from custom_components.matic_robot.services import _async_run_leg
+    from custom_components.matic_robot.managed_executor import _async_run_leg
 
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -383,7 +382,6 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_identity=reader,
             managed_user_command=sender,
         )
@@ -441,7 +439,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
 
     # Control expiry after the post-bind read instead of racing a 30 ms timer.
     monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_vacuum_state",
+        "custom_components.matic_robot.managed_executor._async_wait_for_vacuum_state",
         unconfirmed_start,
     )
 
@@ -490,7 +488,6 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_identity=read_identity,
             session_history=history,
             managed_user_command=sender,
@@ -573,7 +570,6 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_identity=AsyncMock(side_effect=lambda: identity),
             session_history=history,
             managed_user_command=sender,
@@ -620,7 +616,7 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
 async def test_unknown_pre_dispatch_identity_sends_no_cleaning_command(
     hass, multi_room
 ):
-    from custom_components.matic_robot.services import _async_run_leg
+    from custom_components.matic_robot.managed_executor import _async_run_leg
 
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -679,7 +675,8 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     hass.services.async_register("vacuum", "send_command", dispatch)
     for waiter in ("_async_wait_for_room_outcome", "_async_wait_for_leg_outcome"):
         monkeypatch.setattr(
-            "custom_components.matic_robot.services." + waiter, fail_after_replacement
+            "custom_components.matic_robot.managed_executor." + waiter,
+            fail_after_replacement,
         )
     rooms = [ROOM]
     if multi_room:
@@ -703,7 +700,6 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
             "vacuum.matic",
             "serial",
             rooms,
-            intelligent=False,
             session_identity=AsyncMock(side_effect=lambda: identity),
             managed_user_command=sender,
         )
@@ -722,8 +718,8 @@ async def test_final_dock_cannot_interrupt_an_independent_native_task(
     hass, identity, allowed
 ):
     from custom_components.matic_robot.client.commands import UserCommand
+    from custom_components.matic_robot.managed_executor import _guard_native_commands
     from custom_components.matic_robot.plans import ManagedMotionReplacedError
-    from custom_components.matic_robot.services import _guard_native_commands
 
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -751,7 +747,7 @@ async def test_final_dock_cannot_interrupt_an_independent_native_task(
 async def test_state_transition_requires_a_new_identity_read(
     hass, phase, after_transition
 ):
-    from custom_components.matic_robot.services import (
+    from custom_components.matic_robot.managed_executor import (
         _async_wait_for_active_session_resolution,
         _async_wait_for_owned_start,
         _async_wait_with_native_identity,
@@ -813,7 +809,7 @@ async def test_state_transition_requires_a_new_identity_read(
 
 
 async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(hass):
-    from custom_components.matic_robot.services import (
+    from custom_components.matic_robot.managed_executor import (
         _async_wait_for_active_session_resolution,
     )
 
@@ -850,7 +846,9 @@ async def test_return_does_not_accept_an_ended_read_from_before_new_cleaning(has
 @pytest.mark.parametrize("transient", [None, MaticError("temporary read failure")])
 @pytest.mark.parametrize("baseline", [b"", ORIGINAL])
 async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, baseline):
-    from custom_components.matic_robot.services import _async_dispatch_leg_command
+    from custom_components.matic_robot.managed_executor import (
+        _async_dispatch_leg_command,
+    )
 
     command = AsyncMock()
     hass.services.async_register("vacuum", "send_command", command)

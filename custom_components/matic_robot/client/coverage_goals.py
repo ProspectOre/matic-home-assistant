@@ -52,7 +52,10 @@ def coverage_command_goal_signatures(
     command = first_bytes(first_bytes(first_bytes(payload, 15), 1), 3)
     goal_containers = _bytes_fields(command, 5)
     goals = tuple(
-        goal for container in goal_containers for goal in _bytes_fields(container, 1)
+        goal
+        for container in goal_containers
+        for field_number in (1, 2)
+        for goal in _bytes_fields(container, field_number)
     )
     if not goals or len(goals) > _MAX_COVERAGE_GOALS:
         raise DecodeError("coverage command has an invalid goal count")

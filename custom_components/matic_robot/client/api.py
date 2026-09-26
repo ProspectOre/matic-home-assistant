@@ -135,6 +135,18 @@ _CLEANING_SESSION_MAX_FIELDS = 1024
 _CLEANING_SESSION_MAX_ROOMS = 256
 _MIXED_COVERAGE_READBACK_TIMEOUT = 8.0
 _MIXED_COVERAGE_READBACK_INTERVAL = 0.5
+_TRANSPORT_ERRORS = (OSError, StreamTerminatedError, ProtocolError, H2Error)
+
+
+def _floor_command_identity(floor: FloorPlan) -> tuple[object, ...]:
+    """Identify the native floor/partition/room set bound to one command."""
+    return (
+        floor.mission_id,
+        floor.partition_protocol_id,
+        floor.partition_id_wire,
+        frozenset((room.id, room.protocol_id, room.id_wire) for room in floor.rooms),
+    )
+
 
 _TELEMETRY_PROPERTIES = (
     "current_version",
@@ -179,7 +191,7 @@ async def _async_cancel_stream(stream: object) -> None:
     """
     try:
         await stream.cancel()  # type: ignore[attr-defined]
-    except OSError, StreamTerminatedError, ProtocolError, H2Error:
+    except _TRANSPORT_ERRORS:
         pass
 
 
@@ -390,17 +402,19 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             try:
                 async with asyncio.timeout(_RPC_TIMEOUT):
                     await channel.__connect__()
+                self._host = host
+                self._channel = channel
+                break
             except TimeoutError:
-                channel.close()
                 last_error = CannotConnectError("Hermes connection timed out")
                 continue
-            except (OSError, StreamTerminatedError, ProtocolError) as err:
-                channel.close()
+            except _TRANSPORT_ERRORS as err:
                 last_error = CannotConnectError(str(err) or "connection failed")
                 continue
-            self._host = host
-            self._channel = channel
-            break
+            finally:
+                # Ownership transfers only after a successful connect.
+                if self._channel is not channel:
+                    channel.close()
         else:
             raise last_error or CannotConnectError("No reachable robot address")
         try:
@@ -444,7 +458,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             yield
         except TimeoutError as err:
             raise CannotConnectError(f"Hermes {description} timed out") from err
-        except (OSError, StreamTerminatedError, ProtocolError, H2Error) as err:
+        except _TRANSPORT_ERRORS as err:
             raise CannotConnectError(f"Hermes {description} connection failed") from err
         except GRPCError as err:
             if err.status is Status.UNAUTHENTICATED:
@@ -496,7 +510,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             raise CannotConnectError("Robot returned an incomplete credential") from err
         except TimeoutError as err:
             raise CannotConnectError("Hermes credential request timed out") from err
-        except (OSError, StreamTerminatedError, ProtocolError) as err:
+        except _TRANSPORT_ERRORS as err:
             raise CannotConnectError(
                 "Hermes credential request connection failed"
             ) from err
@@ -1211,19 +1225,28 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         cleaning_mode: CleaningMode,
         coverage_setting: CoverageSetting,
         ordered: bool = False,
+        require_settings_readback: bool = False,
     ) -> None:
         """Start an exact normal-coverage command for local room IDs."""
-        await self._async_send_user_payload(
-            encode_coverage_command(
-                mission_id=floor_plan.mission_id,
-                partition_id=floor_plan.partition_protocol_id,
-                region_ids=region_ids,
-                cleaning_mode=cleaning_mode,
-                coverage_setting=coverage_setting,
-                ordered=ordered,
-            ),
-            command_name="START_COVERAGE",
+        payload = encode_coverage_command(
+            mission_id=floor_plan.mission_id,
+            partition_id=floor_plan.partition_protocol_id,
+            region_ids=region_ids,
+            cleaning_mode=cleaning_mode,
+            coverage_setting=coverage_setting,
+            ordered=ordered,
         )
+        if require_settings_readback:
+            identity = await self.async_get_cleaning_session_identity()
+            if identity is None:
+                raise MaticError("Native task identity is unavailable before coverage")
+            if identity:
+                raise MaticError("Normal coverage requires an idle native session")
+        await self._async_send_user_payload(payload, command_name="START_COVERAGE")
+        if require_settings_readback:
+            await self._async_wait_for_coverage_readback(
+                Counter(coverage_command_goal_signatures(payload)), floor_plan
+            )
 
     async def async_start_mixed_coverage(
         self,
@@ -1287,18 +1310,9 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     await asyncio.sleep(2)
                 latest = await self.async_get_floor_plan()
 
-                def floor_identity(floor: FloorPlan) -> tuple[object, ...]:
-                    return (
-                        floor.mission_id,
-                        floor.partition_protocol_id,
-                        floor.partition_id_wire,
-                        frozenset(
-                            (room.id, room.protocol_id, room.id_wire)
-                            for room in floor.rooms
-                        ),
-                    )
-
-                if floor_identity(latest) != floor_identity(floor_plan):
+                if _floor_command_identity(latest) != _floor_command_identity(
+                    floor_plan
+                ):
                     raise MaticError("Room map changed before coverage update")
                 if await self.async_get_cleaning_session_identity() != identity:
                     raise MaticError("Native mission changed before coverage update")
@@ -1405,6 +1419,51 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                     != expected_identity
                 ):
                     raise MaticError("Native mission changed during coverage readback")
+                await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
+
+    async def _async_wait_for_coverage_readback(
+        self,
+        expected_goals: Counter[tuple[str, int, int, int, int]],
+        floor_plan: FloorPlan,
+    ) -> None:
+        """Require the current native task and floor to retain requested goals."""
+        deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
+        observed_identity: bytes | None = None
+        async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
+            while True:
+                identity = await self.async_get_cleaning_session_identity()
+                if identity is None:
+                    raise MaticError("Native task identity became unavailable")
+                if identity:
+                    if observed_identity is None:
+                        observed_identity = identity
+                    elif identity != observed_identity:
+                        raise MaticError(
+                            "Native mission changed during coverage readback"
+                        )
+                    try:
+                        actual_goals = Counter(
+                            coverage_plan_goal_signatures(
+                                await self.async_get_property("coverage_plan")
+                            )
+                        )
+                    except DecodeError:
+                        actual_goals = Counter()
+                    if actual_goals == expected_goals:
+                        if await self.async_get_cleaning_session_identity() != identity:
+                            raise MaticError(
+                                "Native mission changed during coverage readback"
+                            )
+                        latest_floor = await self.async_get_floor_plan()
+                        if _floor_command_identity(
+                            latest_floor
+                        ) != _floor_command_identity(floor_plan):
+                            raise MaticError(
+                                "Room map changed during coverage readback"
+                            )
+                        return
+                if monotonic() >= deadline:
+                    raise MaticError("Robot did not retain requested coverage settings")
                 await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_start_custom_coverage(

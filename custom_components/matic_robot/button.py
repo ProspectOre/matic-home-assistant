@@ -12,6 +12,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 from . import MaticConfigEntry
 from .const import DOMAIN
 from .entity import MaticEntity
+from .plans import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
 
@@ -125,7 +126,15 @@ class MaticPlanButton(_MaticFloorBoundButton):
             return False
         room_map = {room.id: room.name for room in floor_plan.rooms}
         try:
-            self._plans.preview(self._serial_number, room_map)
+            self._plans.preview(
+                self._serial_number,
+                room_map,
+                floor_token=plan_floor_token(floor_plan),
+                room_identities={
+                    room.id: room_cadence_identity(floor_plan, room.id)
+                    for room in floor_plan.rooms
+                },
+            )
         except KeyError, ValueError:
             return False
         return True

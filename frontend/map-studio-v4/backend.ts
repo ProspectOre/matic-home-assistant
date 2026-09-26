@@ -8,6 +8,7 @@ import {
   parseAreasCatalog,
   parseCatalog,
   parseHistoryCatalog,
+  parseManualRoomSequencePreview,
   parsePlansCatalog,
   parsePose,
   type AreaCircle,
@@ -16,6 +17,7 @@ import {
   type CoverageSetting,
   type HistoryCatalog,
   type MapEntry,
+  type ManualRoomSequencePreview,
   type PlansCatalog,
   type PoseModel,
   type SceneModel,
@@ -30,6 +32,7 @@ const REQUEST_TIMEOUTS = {
   history: 15_000,
   workflow: 15_000,
   mutation: 20_000,
+  roomPreview: 15_000,
 } as const;
 
 export class BackendError extends Error {
@@ -79,6 +82,7 @@ const floorHeader = (response: Response, fallback: boolean): boolean => {
 export class MaticBackend {
   readonly #getHass: () => HassLike | undefined;
   readonly #parser = new SceneParser();
+  readonly #roomPreviewWireInFlight = new WeakMap<object, Promise<void>>();
 
   constructor(getHass: () => HassLike | undefined) {
     this.#getHass = getHass;
@@ -419,6 +423,89 @@ export class MaticBackend {
 
   async areas(path: string, signal?: AbortSignal): Promise<AreasCatalog> {
     return parseAreasCatalog(await this.#json(path, REQUEST_TIMEOUTS.workflow, signal));
+  }
+
+  async previewRoomSequence(
+    entityId: string,
+    rooms: readonly {
+      readonly room: string;
+      readonly cleaning_mode: CleaningMode;
+      readonly coverage_setting: CoverageSetting;
+    }[],
+    overrideRoomSchedule: boolean,
+    signal?: AbortSignal,
+  ): Promise<ManualRoomSequencePreview> {
+    if (!entityId || entityId.length > 255 || rooms.length < 1 || rooms.length > 256) {
+      throw new ContractError("invalid-room-sequence-preview-request");
+    }
+    if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+    const connection = this.#getHass()?.connection;
+    if (!connection?.sendMessagePromise) throw new BackendError("preview-unavailable");
+
+    let timeout: number | null = null;
+    let rejectAbort: (reason: DOMException) => void = () => {};
+    const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
+    const abort = (): void => rejectAbort(new DOMException("Aborted", "AbortError"));
+    signal?.addEventListener("abort", abort, { once: true });
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = window.setTimeout(() => reject(new BackendError("preview-timeout")), REQUEST_TIMEOUTS.roomPreview);
+    });
+    const previous = this.#roomPreviewWireInFlight.get(connection);
+    let releaseTurn!: () => void;
+    const turn = new Promise<void>((resolve) => { releaseTurn = resolve; });
+    this.#roomPreviewWireInFlight.set(connection, turn);
+    let turnReleased = false;
+    const release = (): void => {
+      if (turnReleased) return;
+      turnReleased = true;
+      releaseTurn();
+      if (this.#roomPreviewWireInFlight.get(connection) === turn) {
+        this.#roomPreviewWireInFlight.delete(connection);
+      }
+    };
+    let wireStarted = false;
+    try {
+      if (previous) {
+        await Promise.race([previous, interrupted, deadline]);
+        if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      }
+      const wire = connection.sendMessagePromise<unknown>({
+          type: "call_service",
+          domain: "matic_robot",
+          service: "preview_room_sequence",
+          target: { entity_id: entityId },
+          service_data: {
+            rooms: rooms.map((room) => ({
+              room: room.room,
+              cleaning_mode: room.cleaning_mode,
+              coverage_setting: room.coverage_setting,
+            })),
+            use_room_schedule: true,
+            override_room_schedule: overrideRoomSchedule,
+          },
+          return_response: true,
+        });
+      wireStarted = true;
+      void wire.then(release, release);
+      const response = await Promise.race([
+        wire,
+        interrupted,
+        deadline,
+      ]);
+      if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      if (!response || typeof response !== "object" || Array.isArray(response)
+        || !("response" in response)) {
+        throw new ContractError("invalid-room-sequence-preview-envelope");
+      }
+      return parseManualRoomSequencePreview((response as { response: unknown }).response);
+    } finally {
+      if (!wireStarted) {
+        if (previous) void previous.then(release, release);
+        else release();
+      }
+      if (timeout !== null) window.clearTimeout(timeout);
+      signal?.removeEventListener("abort", abort);
+    }
   }
 
   async saveArea(

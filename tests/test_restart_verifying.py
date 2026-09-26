@@ -125,7 +125,8 @@ async def test_verification_fails_closed(hass, recovery_state, case):
         )
         if case == "timeout"
         else patch(
-            "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+            "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+            0,
         )
     ):
         await async_recover_managed_run(hass, entry, "serial")
@@ -200,7 +201,8 @@ async def test_multiroom_verification_deduplicates_prior_credit(
         record,
     )
     with patch(
-        "custom_components.matic_robot.services.SESSION_HISTORY_RETRY_SECONDS", 0
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_RETRY_SECONDS",
+        0,
     ):
         await async_recover_managed_run(hass, entry, "serial")
     await hass.async_block_till_done()

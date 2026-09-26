@@ -313,6 +313,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         "Mixed coverage dispatch could not be verified"
                     ) from err
             else:
+                readback_options = (
+                    {"require_settings_readback": True}
+                    if motion_token is not None
+                    else {}
+                )
                 await self.coordinator.client.async_start_coverage(
                     floor_plan,
                     [room.protocol_id for room in rooms],
@@ -320,6 +325,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     coverage_setting=coverage_setting
                     or self.coordinator.coverage_setting,
                     ordered=ordered,
+                    **readback_options,
                 )
             await self.coordinator.async_request_refresh()
 

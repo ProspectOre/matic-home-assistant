@@ -36,6 +36,13 @@ from .client.floor_plan import resolve_robot_map_position, robot_location_source
 from .client.models import FloorPlan, HermesCollectionEntry, RobotPose
 from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
+from .plans import (
+    CleaningRoom,
+    leg_groups,
+    plan_floor_token,
+    room_cadence_identity,
+)
+from .room_sequence import saved_plan_preview_token
 from .slam_delta import encode_slam_scene_delta
 from .slam_map_store import SlamMapIdentity
 
@@ -119,6 +126,94 @@ def areas_api_url(entry_id: str) -> str:
 def plans_api_url(entry_id: str) -> str:
     """Return the authenticated cleaning-plan workspace URL for one entry."""
     return PLANS_API_URL.format(entry_id=entry_id)
+
+
+def catalog_entry_projection(
+    entry_id: str,
+    runtime: MaticRuntimeData,
+    scene_view: MaticSlamSceneView | None = None,
+) -> dict[str, object]:
+    """Project the bounded catalog row shared by REST and workspace snapshots."""
+    health = runtime.slam_map.health
+    floor_plan = runtime.coordinator.data.floor_plan
+    mapped_floors = floor_plan.mapped_floors if floor_plan is not None else ()
+    selected_floor_ordinal = next(
+        (
+            index
+            for index, floor in enumerate(mapped_floors, start=1)
+            if floor_plan is not None and floor.mission_id == floor_plan.mission_id
+        ),
+        None,
+    )
+    map_identity = runtime.slam_map.mission_identity
+    map_floor_ordinal = next(
+        (
+            index
+            for index, floor in enumerate(mapped_floors, start=1)
+            if map_identity is not None and floor.mission_id == map_identity.mission_id
+        ),
+        None,
+    )
+    floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
+    session_verified = getattr(
+        runtime.slam_map, "live_session_verified", floor_plan_coherent
+    )
+    if floor_plan_coherent and session_verified:
+        map_block_reason = None
+    elif floor_plan is None:
+        map_block_reason = "floor_plan_unavailable"
+    elif (
+        health.photo_tiles == 0
+        and health.structure_tiles == 0
+        and getattr(health, "bootstrap_state", "not_started")
+        in {"complete", "partial", "failed"}
+    ):
+        map_block_reason = "bootstrap_empty"
+    elif map_identity is None or not session_verified:
+        map_block_reason = "map_session_unverified"
+    else:
+        map_block_reason = "floor_plan_mismatch"
+    serial_number = runtime.coordinator.data.info.serial_number
+    plan_snapshot = runtime.cleaning_plans.snapshot(serial_number)
+    telemetry = getattr(runtime.coordinator.data, "telemetry", None)
+    return {
+        "entry_id": entry_id,
+        "scene_url": scene_api_url(entry_id),
+        "delta_url": delta_api_url(entry_id),
+        "pose_url": pose_api_url(entry_id),
+        "history_url": history_api_url(entry_id),
+        "areas_url": areas_api_url(entry_id),
+        "plans_url": plans_api_url(entry_id),
+        "history_count": len(_mission_history(runtime)),
+        "history_floor_count": len(runtime.slam_history.catalogs_by_mission()),
+        "map_revision": (
+            scene_view.available_revision(entry_id, runtime)
+            if scene_view is not None
+            else runtime.slam_map.revision
+        ),
+        "map_floor_coherent": floor_plan_coherent,
+        "selected_floor_ordinal": selected_floor_ordinal,
+        "map_floor_ordinal": map_floor_ordinal,
+        "map_session_verified": session_verified,
+        "map_session_key": _map_session_key(runtime) if session_verified else None,
+        "map_block_reason": map_block_reason,
+        "runner_locked": runtime.cleaning_plans.lock(serial_number).locked(),
+        "stop_settle_pending": runtime.cleaning_plans.stop_pending(serial_number),
+        "active_plan": plan_snapshot.get("active_plan") is not None,
+        "native_reconciliation_pending": (
+            runtime.cleaning_plans.pending_native_reconciliation(serial_number)
+            is not None
+        ),
+        "native_session_active": getattr(telemetry, "active_cleaning_session", None),
+        "map_health": health.state,
+        "map_complete": health.complete,
+        "map_truncated": health.truncated,
+        "stream_failures": health.stream_failures,
+        "bootstrap_state": getattr(health, "bootstrap_state", "not_started"),
+        "bootstrap_photo_seen": getattr(health, "bootstrap_photo_seen", False),
+        "bootstrap_structure_seen": getattr(health, "bootstrap_structure_seen", False),
+        "bootstrap_failures": getattr(health, "bootstrap_failures", 0),
+    }
 
 
 def _runtime_for_entry(hass: HomeAssistant, entry_id: str) -> MaticRuntimeData | None:
@@ -266,7 +361,7 @@ class MaticSlamSceneView(HomeAssistantView):
         allow_stale: bool = False,
     ) -> _CachedScene | None:
         """Encode or return the current coherent scene snapshot."""
-        if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+        if getattr(runtime.slam_map, "live_session_verified", False) is not True:
             self.clear_entry(entry_id)
             return None
         epoch = self._epochs.get(entry_id, 0)
@@ -329,7 +424,7 @@ class MaticSlamSceneView(HomeAssistantView):
             # A concurrent encoder can populate this cache while this request
             # waits for the lock. Check the live session before returning that
             # newly available payload, not only before entering the lock.
-            if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+            if getattr(runtime.slam_map, "live_session_verified", False) is not True:
                 self.clear_entry(entry_id)
                 return None
             cached = self._cache.get(entry_id)
@@ -341,7 +436,10 @@ class MaticSlamSceneView(HomeAssistantView):
                 identity = runtime.slam_map.mission_identity
                 floor_plan = data.floor_plan
                 key = (map_revision, identity, floor_plan)
-                if not bool(getattr(runtime.slam_map, "live_session_verified", True)):
+                if (
+                    getattr(runtime.slam_map, "live_session_verified", False)
+                    is not True
+                ):
                     self.clear_entry(entry_id)
                     return None
                 cached = self._cache.get(entry_id)
@@ -832,97 +930,13 @@ class MaticSlamCatalogView(HomeAssistantView):
             if runtime is None:
                 continue
             health = runtime.slam_map.health
-            floor_plan = runtime.coordinator.data.floor_plan
-            mapped_floors = floor_plan.mapped_floors if floor_plan is not None else ()
-            selected_floor_ordinal = next(
-                (
-                    index
-                    for index, floor in enumerate(mapped_floors, start=1)
-                    if floor_plan is not None
-                    and floor.mission_id == floor_plan.mission_id
-                ),
-                None,
+            projection = catalog_entry_projection(
+                entry.entry_id, runtime, self._scene_view
             )
-            map_identity = runtime.slam_map.mission_identity
-            map_floor_ordinal = next(
-                (
-                    index
-                    for index, floor in enumerate(mapped_floors, start=1)
-                    if map_identity is not None
-                    and floor.mission_id == map_identity.mission_id
-                ),
-                None,
-            )
-            floor_plan_coherent = runtime.slam_map.floor_plan_is_current(floor_plan)
-            session_verified = getattr(
-                runtime.slam_map,
-                "live_session_verified",
-                floor_plan_coherent,
-            )
-            if floor_plan_coherent and session_verified:
-                map_block_reason = None
-            elif floor_plan is None:
-                map_block_reason = "floor_plan_unavailable"
-            elif (
-                health.photo_tiles == 0
-                and health.structure_tiles == 0
-                and getattr(health, "bootstrap_state", "not_started")
-                in {"complete", "partial", "failed"}
-            ):
-                map_block_reason = "bootstrap_empty"
-            elif map_identity is None or not session_verified:
-                map_block_reason = "map_session_unverified"
-            else:
-                map_block_reason = "floor_plan_mismatch"
-            serial_number = runtime.coordinator.data.info.serial_number
-            plan_snapshot = runtime.cleaning_plans.snapshot(serial_number)
-            telemetry = getattr(runtime.coordinator.data, "telemetry", None)
             entries.append(
                 {
-                    "entry_id": entry.entry_id,
-                    "scene_url": scene_api_url(entry.entry_id),
-                    "delta_url": delta_api_url(entry.entry_id),
-                    "pose_url": pose_api_url(entry.entry_id),
-                    "history_url": history_api_url(entry.entry_id),
-                    "areas_url": areas_api_url(entry.entry_id),
-                    "plans_url": plans_api_url(entry.entry_id),
+                    **projection,
                     "area_editor_url": self._area_editor_url,
-                    "history_count": len(_mission_history(runtime)),
-                    "history_floor_count": len(
-                        runtime.slam_history.catalogs_by_mission()
-                    ),
-                    "map_revision": self._scene_view.available_revision(
-                        entry.entry_id, runtime
-                    )
-                    if self._scene_view is not None
-                    else runtime.slam_map.revision,
-                    "map_floor_coherent": floor_plan_coherent,
-                    "selected_floor_ordinal": selected_floor_ordinal,
-                    "map_floor_ordinal": map_floor_ordinal,
-                    "map_session_verified": session_verified,
-                    "map_session_key": (
-                        _map_session_key(runtime) if session_verified else None
-                    ),
-                    "map_block_reason": map_block_reason,
-                    "runner_locked": runtime.cleaning_plans.lock(
-                        serial_number
-                    ).locked(),
-                    "stop_settle_pending": runtime.cleaning_plans.stop_pending(
-                        serial_number
-                    ),
-                    "active_plan": plan_snapshot.get("active_plan") is not None,
-                    "native_reconciliation_pending": (
-                        runtime.cleaning_plans.pending_native_reconciliation(
-                            serial_number
-                        )
-                        is not None
-                    ),
-                    "native_session_active": getattr(
-                        telemetry, "active_cleaning_session", None
-                    ),
-                    "map_health": health.state,
-                    "map_complete": health.complete,
-                    "map_truncated": health.truncated,
                     "cached_tiles": health.photo_tiles,
                     "structural_tiles": health.structure_tiles,
                     "overlapping_tiles": health.overlapping_tiles,
@@ -954,8 +968,8 @@ class MaticAreasView(HomeAssistantView):
     name = "api:matic_robot:areas"
 
     @staticmethod
-    def _rooms(runtime: MaticRuntimeData) -> list[dict[str, object]]:
-        floor_plan = runtime.coordinator.data.floor_plan
+    def _rooms(floor_plan: FloorPlan | None) -> list[dict[str, object]]:
+        """Project rooms from one explicit floor-plan snapshot."""
         if floor_plan is None:
             return []
         return [
@@ -991,10 +1005,10 @@ class MaticAreasView(HomeAssistantView):
         for area_id, area in runtime.cleaning_plans.areas(serial_number).items():
             uses_indexed_binding = area_binding_needs_geometry_index(area)
             if uses_indexed_binding and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
             status = area_binding_status(area, floor_plan, room_geometry=room_geometry)
             if status is AreaBindingStatus.GEOMETRY_CHANGED and room_geometry is None:
-                room_geometry = _RoomGeometryIndex(self._rooms(runtime))
+                room_geometry = _RoomGeometryIndex(self._rooms(floor_plan))
             can_rebind = area_binding_allows_review(
                 area,
                 floor_plan,
@@ -1028,7 +1042,7 @@ class MaticAreasView(HomeAssistantView):
         return self.json(
             {
                 "scene_url": scene_api_url(entry_id),
-                "rooms": self._rooms(runtime),
+                "rooms": self._rooms(floor_plan),
                 "areas": areas,
             },
             headers=PRIVATE_NO_STORE_HEADERS,
@@ -1049,9 +1063,11 @@ class MaticAreasView(HomeAssistantView):
                 status=HTTPStatus.NOT_FOUND, headers=PRIVATE_NO_STORE_HEADERS
             )
         floor_plan = runtime.coordinator.data.floor_plan
+        map_identity = runtime.slam_map.mission_identity
         if (
             floor_plan is None
             or not floor_plan.rooms
+            or map_identity is None
             or not runtime.slam_map.floor_plan_is_current(floor_plan)
         ):
             return web.Response(
@@ -1059,12 +1075,21 @@ class MaticAreasView(HomeAssistantView):
             )
         try:
             body = await request.json(loads=json.loads)
+            if (
+                _runtime_for_entry(hass, entry_id) is not runtime
+                or runtime.coordinator.data.floor_plan != floor_plan
+                or runtime.slam_map.mission_identity != map_identity
+                or not runtime.slam_map.floor_plan_is_current(floor_plan)
+            ):
+                return web.Response(
+                    status=HTTPStatus.CONFLICT, headers=PRIVATE_NO_STORE_HEADERS
+                )
             if not isinstance(body, dict):
                 raise ValueError
             name = str(body["name"]).strip()
             if not 1 <= len(name) <= 128:
                 raise ValueError
-            rooms = self._rooms(runtime)
+            rooms = self._rooms(floor_plan)
             circles = MaticAreaSelector({"rooms": rooms})(body["circles"])
             outline = validate_outline(body.get("outline"), circles)
             cleaning_mode = CleaningMode(str(body["cleaning_mode"]))
@@ -1164,22 +1189,174 @@ class MaticPlansView(HomeAssistantView):
             }
             return web.Response(status=HTTPStatus.CONFLICT, headers=headers)
         serial_number = str(runtime.coordinator.data.info.serial_number)
+        floor_token = plan_floor_token(floor_plan)
+        current_rooms = {room.id: room for room in floor_plan.rooms}
+        room_map = {room.id: room.name for room in floor_plan.rooms}
+        room_identities: dict[str, str] = {}
+        identity_error = False
+        for room in floor_plan.rooms:
+            try:
+                room_identities[room.id] = room_cadence_identity(floor_plan, room.id)
+            except ValueError:
+                identity_error = True
+
+        def next_run_preview(plan_id: str) -> dict[str, object]:
+            """Project the authoritative next run without changing plan state."""
+            if identity_error:
+                return {
+                    "rooms": [],
+                    "mission_boundaries": [],
+                    "blocker": "cadence_identity_unavailable",
+                }
+            previewer = getattr(runtime.cleaning_plans, "preview", None)
+            if not callable(previewer):
+                return {
+                    "rooms": [],
+                    "mission_boundaries": [],
+                    "blocker": "preview_unavailable",
+                }
+            try:
+                preview = previewer(
+                    serial_number,
+                    room_map,
+                    plan_id,
+                    floor_token=floor_token,
+                    room_identities=room_identities,
+                )
+                preview_rooms = preview["rooms"]
+                if not isinstance(preview_rooms, list) or not preview_rooms:
+                    raise ValueError("plan has no rooms")
+                projected_rooms = [
+                    {
+                        "room_id": str(room["room_id"]),
+                        "name": str(room["name"]),
+                        "cleaning_mode": str(room["cleaning_mode"]),
+                        "coverage_setting": str(room["coverage_setting"]),
+                        "cadence_reasons": [
+                            reason
+                            for reason, due_key in (
+                                ("mop_due", "mop_due"),
+                                ("coverage_due", "coverage_due"),
+                            )
+                            if room.get("cadence", {}).get(due_key) is True
+                        ],
+                    }
+                    for room in preview_rooms
+                ]
+                mission_groups = leg_groups(
+                    [
+                        CleaningRoom(
+                            str(room["room_id"]),
+                            str(room["name"]),
+                            str(room["cleaning_mode"]),
+                            str(room["coverage_setting"]),
+                        )
+                        for room in projected_rooms
+                    ],
+                    # Managed runs with a verified floor/session use native
+                    # mixed-settings goals in one mission.
+                    mixed_settings=True,
+                )
+                boundaries: list[int] = []
+                offset = 0
+                for group in mission_groups[:-1]:
+                    offset += len(group)
+                    boundaries.append(offset)
+            except (KeyError, TypeError, ValueError) as err:
+                message = str(err).casefold()
+                blocker = (
+                    "plan_disabled"
+                    if "disabled" in message
+                    else "plan_has_no_rooms"
+                    if "no rooms" in message
+                    else "cadence_identity_changed"
+                    if "different map" in message or "identity" in message
+                    else "shared_schedule_unavailable"
+                    if "shared room cadence" in message and "unavailable" in message
+                    else "invalid_cadence_policy"
+                    if "cadence" in message
+                    else "invalid_plan"
+                )
+                return {
+                    "rooms": [],
+                    "mission_boundaries": [],
+                    "blocker": blocker,
+                }
+            return {
+                "rooms": projected_rooms,
+                "mission_boundaries": boundaries,
+                "preview_token": saved_plan_preview_token(
+                    preview,
+                    entry_id=entry_id,
+                    floor_token=floor_token,
+                    room_identities=room_identities,
+                ),
+                "blocker": None,
+            }
+
+        def cadence_state(
+            plan_id: str,
+            room_id: str,
+            name: str,
+            cleaning_mode: str,
+            coverage_setting: str,
+            *,
+            use_shared_schedule: bool = False,
+        ) -> dict[str, object]:
+            project = getattr(runtime.cleaning_plans, "cadence_editor_state", None)
+            if not callable(project):
+                return {"cadence": None}
+            try:
+                identity = room_cadence_identity(floor_plan, room_id)
+            except ValueError:
+                return {
+                    "cadence": None,
+                    "cadence_progress": None,
+                    "cadence_reasons": ["room_not_on_current_map"],
+                }
+            return cast(
+                dict[str, object],
+                project(
+                    serial_number,
+                    plan_id,
+                    CleaningRoom(room_id, name, cleaning_mode, coverage_setting),
+                    floor_token=floor_token,
+                    identity=identity,
+                    use_shared_schedule=use_shared_schedule,
+                ),
+            )
+
         plans = []
         for plan_id, plan in runtime.cleaning_plans.plans(serial_number).items():
             raw_rooms = plan.get("rooms", [])
-            rooms = [
-                {
+            rooms = []
+            for room in raw_rooms:
+                if not isinstance(room, dict) or not room.get("room_id"):
+                    continue
+                room_id = str(room["room_id"])
+                cleaning_mode = str(
+                    room.get("cleaning_mode", CleaningMode.VACUUM.value)
+                )
+                coverage_setting = str(
+                    room.get("coverage_setting", CoverageSetting.OPTIMAL.value)
+                )
+                plan_room_projection: dict[str, object] = {
                     "room_id": str(room.get("room_id", "")),
-                    "cleaning_mode": str(
-                        room.get("cleaning_mode", CleaningMode.VACUUM.value)
-                    ),
-                    "coverage_setting": str(
-                        room.get("coverage_setting", CoverageSetting.OPTIMAL.value)
-                    ),
+                    "cleaning_mode": cleaning_mode,
+                    "coverage_setting": coverage_setting,
                 }
-                for room in raw_rooms
-                if isinstance(room, dict) and room.get("room_id")
-            ]
+                current = current_rooms.get(room_id)
+                if current is not None:
+                    cadence = cadence_state(
+                        plan_id,
+                        room_id,
+                        current.name,
+                        cleaning_mode,
+                        coverage_setting,
+                    )
+                    if cadence["cadence"] is not None:
+                        plan_room_projection.update(cadence)
+                rooms.append(plan_room_projection)
             plans.append(
                 {
                     "id": plan_id,
@@ -1195,16 +1372,38 @@ class MaticPlansView(HomeAssistantView):
                     "finish_current_room_threshold": int(
                         plan.get("finish_current_room_threshold", 50)
                     ),
+                    "next_run_preview": next_run_preview(plan_id),
                 }
             )
         selected_plan = runtime.cleaning_plans.snapshot(serial_number).get(
             "selected_plan"
         )
+        room_projections: list[dict[str, object]] = []
+        for room in floor_plan.rooms:
+            workspace_room_projection: dict[str, object] = {
+                "room_id": room.id,
+                "name": room.name,
+            }
+            cadence = cadence_state(
+                "quick_clean",
+                room.id,
+                room.name,
+                CleaningMode.VACUUM.value,
+                CoverageSetting.OPTIMAL.value,
+                use_shared_schedule=True,
+            )
+            if cadence["cadence"] is not None:
+                workspace_room_projection.update(
+                    {
+                        "shared_cadence": cadence["cadence"],
+                        "shared_cadence_progress": cadence["cadence_progress"],
+                        "shared_cadence_reasons": cadence["cadence_reasons"],
+                    }
+                )
+            room_projections.append(workspace_room_projection)
         return self.json(
             {
-                "rooms": [
-                    {"room_id": room.id, "name": room.name} for room in floor_plan.rooms
-                ],
+                "rooms": room_projections,
                 "plans": plans[:256],
                 "selected_plan": selected_plan,
             },
@@ -1246,7 +1445,7 @@ def _scene_snapshot_is_publishable(
 ) -> bool:
     """Return whether a captured point-in-time scene remains safe to publish."""
     return (
-        bool(getattr(runtime.slam_map, "live_session_verified", True))
+        getattr(runtime.slam_map, "live_session_verified", False) is True
         and runtime.slam_map.mission_identity == identity
         and runtime.coordinator.data.floor_plan == floor_plan
         and runtime.slam_map.floor_plan_is_current(floor_plan) == floor_plan_coherent

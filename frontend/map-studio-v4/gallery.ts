@@ -9,6 +9,7 @@ import { SHELL_TAG } from "./element-tags";
 import {
   createGalleryState,
   GALLERY_SCENARIOS,
+  withGalleryRoomPreview,
   type GalleryScenario,
 } from "./gallery-state";
 import "./shell";
@@ -113,13 +114,16 @@ export class MaticMapStudioGalleryV4 extends LitElement {
   }
 
   replaceWorkspaceState(state: WorkspaceState): void {
-    this.#store.replace(structuredClone(state));
+    this.#store.replace(withGalleryRoomPreview(structuredClone(state)));
   }
 
   #intent(event: CustomEvent<unknown>): void {
     if (!isWorkspaceIntent(event.detail)) return;
     event.stopPropagation();
     this.#store.dispatch(event.detail);
+    if (this.#store.value.workflow === "rooms") {
+      this.#store.replace(withGalleryRoomPreview(this.#store.value));
+    }
   }
 
   protected override render() {

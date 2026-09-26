@@ -1106,6 +1106,11 @@ def _room_rows(
     ]
 
 
+def _cadence_rows(*rows: dict[str, object]) -> list[dict[str, object]]:
+    """Build the options-flow cadence object-selector value."""
+    return [dict(row) for row in rows]
+
+
 async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -> None:
     entry, manager = await _options_entry(hass)
 
@@ -1115,10 +1120,21 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
         "name",
         "run_behavior",
         "room_editor",
+        "cadence_editor",
         "finish_current_room",
         "finish_current_room_threshold",
         "return_to_base",
     ]
+    cadence_marker = list(result["data_schema"].schema)[3]
+    cadence_selector = result["data_schema"].schema[cadence_marker]
+    assert cadence_selector.config["fields"]["scope"]["label"] == "Schedule scope"
+    assert (
+        cadence_selector.config["fields"]["scope"]["selector"].config["translation_key"]
+        == "cadence_scope"
+    )
+    assert cadence_selector.config["fields"]["mop_every_n"]["label"] == (
+        "Mop every N verified cleans"
+    )
     room_marker = list(result["data_schema"].schema)[2]
     assert room_marker.default() == [
         {
@@ -1173,6 +1189,7 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
         "name",
         "run_behavior",
         "room_editor",
+        "cadence_editor",
         "enabled",
         "finish_current_room",
         "finish_current_room_threshold",
@@ -1233,6 +1250,222 @@ async def test_options_flow_manages_mapped_rooms_and_individual_settings(hass) -
 
     result = await _select_menu_step(hass, result, "finish")
     assert result["type"] is FlowResultType.CREATE_ENTRY
+
+
+async def test_options_flow_persists_normalized_room_cadence(hass) -> None:
+    entry, manager = await _options_entry(hass)
+
+    result = await _start_options_step(hass, entry, "add_plan")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Cadence plan",
+            "run_behavior": "ordered",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "shared",
+                    "mop_every_n": 3,
+                    "coverage_every_n": 4,
+                    "periodic_coverage_setting": "heavy_duty",
+                    "do_mop_next": True,
+                    "do_coverage_next": False,
+                }
+            ),
+            "return_to_base": True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.MENU
+    room = manager.plan("synthetic-serial", "cadence_plan")["rooms"][0]
+    assert room["cadence"] == {
+        "scope": "shared",
+        "mop_every_n": 3,
+        "coverage_every_n": 4,
+        "periodic_coverage_setting": "heavy_duty",
+        "do_mop_next": True,
+        "do_coverage_next": False,
+    }
+    assert manager._robot("synthetic-serial")["shared_room_cadence"]["room-1"][
+        "policy"
+    ] == {
+        "mop_every_n": 3,
+        "coverage_every_n": 4,
+        "periodic_coverage_setting": "heavy_duty",
+        "do_mop_next": True,
+        "do_coverage_next": False,
+    }
+
+    result = await _select_menu_step(hass, result, "edit_plan")
+    defaults = _form_defaults(result)
+    assert defaults["cadence_editor"] == [
+        {
+            "room_id": "room-1",
+            "enabled": True,
+            "scope": "shared",
+            "mop_every_n": 3,
+            "coverage_every_n": 4,
+            "periodic_coverage_setting": "heavy_duty",
+            "do_mop_next": True,
+            "do_coverage_next": False,
+        }
+    ]
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **defaults,
+            "name": "Cadence plan",
+            "run_behavior": "ordered",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": False,
+                    "scope": "shared",
+                }
+            ),
+            "enabled": True,
+            "return_to_base": True,
+        },
+    )
+    assert result["type"] is FlowResultType.MENU
+    assert manager.plan("synthetic-serial", "cadence_plan")["rooms"][0]["cadence"] == {
+        "scope": "shared",
+        "mop_every_n": None,
+        "coverage_every_n": None,
+        "periodic_coverage_setting": None,
+        "do_mop_next": False,
+        "do_coverage_next": False,
+    }
+
+
+async def test_options_flow_omits_malformed_legacy_cadence_from_defaults(hass) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    assert (
+        flow._cadence_editor_value(
+            {
+                "rooms": [
+                    {
+                        "room_id": "room-1",
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                        "cadence": {"mop_every_n": 3, "do_mop_next": "true"},
+                    }
+                ]
+            }
+        )
+        == []
+    )
+
+
+@pytest.mark.parametrize("enabled", [True, False])
+async def test_options_flow_rejects_malformed_one_shot_cadence_flag(
+    hass, enabled: bool
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    with pytest.raises(ValueError, match="do_mop_next must be a boolean"):
+        flow._rooms_from_editor(
+            {
+                "room_editor": _room_rows(
+                    ("room-1", True, "vacuum", "standard"),
+                    ("room-2", False, "vacuum", "standard"),
+                ),
+                "cadence_editor": _cadence_rows(
+                    {
+                        "room_id": "room-1",
+                        "enabled": enabled,
+                        "scope": "plan",
+                        "mop_every_n": 3,
+                        "do_mop_next": "true",
+                    }
+                ),
+            }
+        )
+
+
+async def test_options_flow_rejects_duplicate_cadence_rows_and_coerces_numbers(
+    hass,
+) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    room_editor = _room_rows(
+        ("room-1", True, "vacuum", "standard"),
+        ("room-2", False, "vacuum", "standard"),
+    )
+    duplicate = _cadence_rows(
+        {"room_id": "room-1", "enabled": True, "scope": "plan"},
+        {"room_id": "room-1", "enabled": True, "scope": "plan"},
+    )
+    with pytest.raises(ValueError, match="each room once"):
+        flow._rooms_from_editor(
+            {"room_editor": room_editor, "cadence_editor": duplicate}
+        )
+
+    rooms = flow._rooms_from_editor(
+        {
+            "room_editor": room_editor,
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "plan",
+                    "mop_every_n": 3.0,
+                    "coverage_every_n": 4.0,
+                    "periodic_coverage_setting": "standard",
+                }
+            ),
+        }
+    )
+    assert rooms[0]["cadence"]["mop_every_n"] == 3
+    assert rooms[0]["cadence"]["coverage_every_n"] == 4
+
+    with pytest.raises(ValueError, match="must be an object"):
+        flow._rooms_from_editor(
+            {"room_editor": room_editor, "cadence_editor": ["invalid"]}
+        )
+
+
+async def test_options_flow_recovers_from_invalid_cadence_rows(hass) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    common = {
+        "name": "Invalid cadence",
+        "run_behavior": "intelligent",
+        "room_editor": _room_rows(
+            ("room-1", True, "vacuum", "standard"),
+            ("room-2", False, "vacuum", "standard"),
+        ),
+        "cadence_editor": ["invalid"],
+        "return_to_base": True,
+    }
+
+    result = await flow.async_step_add_plan(common)
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_plan"}
+
+    flow._plan_id = "whole_home"
+    result = await flow.async_step_edit_plan(
+        {
+            **common,
+            "name": "Whole home",
+            "enabled": True,
+        }
+    )
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "invalid_plan"}
 
 
 async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None:
@@ -1779,6 +2012,187 @@ async def test_options_flow_handles_missing_live_floor_plan(hass) -> None:
     entry.runtime_data.coordinator.data.floor_plan = None
     result = await hass.config_entries.options.async_init(entry.entry_id)
     assert result["description_placeholders"]["room_count"] == "0"
+
+
+async def test_options_flow_cadence_bindings_require_a_verified_floor(hass) -> None:
+    entry, _manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+
+    entry.runtime_data.coordinator.data.floor_plan = None
+    assert flow._room_cadence_bindings() == (None, {})
+
+    entry.runtime_data.coordinator.data.floor_plan = FloorPlan(
+        mission_id=1,
+        partition_protocol_id="partition",
+        partition_id_wire=b"partition",
+        rooms=(Room("room-1", "Kitchen", "one", b"one", ((0, 0), (1, 1))),),
+    )
+    entry.runtime_data.slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False)
+    )
+    assert flow._room_cadence_bindings() == (None, {})
+
+    entry.runtime_data.slam_map.floor_plan_is_current.return_value = True
+    floor_token, room_identities = flow._room_cadence_bindings()
+    assert floor_token
+    assert set(room_identities) == {"room-1"}
+
+
+async def test_options_flow_keeps_add_draft_when_shared_cadence_floor_is_stale(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    entry.runtime_data.slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False)
+    )
+    before = manager.plans("synthetic-serial")
+
+    result = await _start_options_step(hass, entry, "add_plan")
+    submitted = {
+        "name": "Shared plan",
+        "run_behavior": "ordered",
+        "room_editor": _room_rows(
+            ("room-1", True, "vacuum", "standard"),
+            ("room-2", False, "vacuum", "standard"),
+        ),
+        "cadence_editor": _cadence_rows(
+            {
+                "room_id": "room-1",
+                "enabled": True,
+                "scope": "shared",
+                "mop_every_n": 3,
+            }
+        ),
+        "return_to_base": True,
+    }
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"], submitted
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "add_plan"
+    assert result["errors"] == {"base": "cadence_requires_verified_floor"}
+    assert manager.plans("synthetic-serial") == before
+
+
+async def test_options_flow_keeps_edit_draft_when_shared_cadence_floor_is_stale(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "add_plan")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Shared plan",
+            "run_behavior": "ordered",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "shared",
+                    "mop_every_n": 3,
+                }
+            ),
+            "return_to_base": True,
+        },
+    )
+    result = await _select_menu_step(hass, result, "edit_plan")
+    defaults = _form_defaults(result)
+    entry.runtime_data.slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False)
+    )
+    before = manager.plan("synthetic-serial", "shared_plan")
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **defaults,
+            "name": "Shared plan renamed",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "shared",
+                    "mop_every_n": 4,
+                }
+            ),
+            "enabled": True,
+            "return_to_base": True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["step_id"] == "edit_plan"
+    assert result["errors"] == {"base": "cadence_requires_verified_floor"}
+    assert manager.plan("synthetic-serial", "shared_plan") == before
+
+
+async def test_options_flow_allows_unchanged_bound_edit_when_floor_is_stale(
+    hass,
+) -> None:
+    entry, manager = await _options_entry(hass)
+    result = await _start_options_step(hass, entry, "add_plan")
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            "name": "Shared plan",
+            "run_behavior": "ordered",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "shared",
+                    "mop_every_n": 3,
+                }
+            ),
+            "return_to_base": True,
+        },
+    )
+    result = await _select_menu_step(hass, result, "edit_plan")
+    defaults = _form_defaults(result)
+    entry.runtime_data.slam_map = SimpleNamespace(
+        floor_plan_is_current=MagicMock(return_value=False)
+    )
+
+    result = await hass.config_entries.options.async_configure(
+        result["flow_id"],
+        {
+            **defaults,
+            "name": "Shared plan renamed",
+            "room_editor": _room_rows(
+                ("room-1", True, "vacuum", "standard"),
+                ("room-2", False, "vacuum", "standard"),
+            ),
+            "cadence_editor": _cadence_rows(
+                {
+                    "room_id": "room-1",
+                    "enabled": True,
+                    "scope": "shared",
+                    "mop_every_n": 3,
+                }
+            ),
+            "enabled": True,
+            "return_to_base": True,
+        },
+    )
+
+    assert result["type"] is FlowResultType.MENU
+    assert manager.plan("synthetic-serial", "shared_plan")["name"] == (
+        "Shared plan renamed"
+    )
 
 
 async def test_options_flow_disambiguates_duplicate_room_names(hass) -> None:

@@ -23,6 +23,9 @@ The robot handles battery and water servicing as needed.
 A plan defines what to clean. Home Assistant automations decide when it runs.
 The integration's **Configure** flow also supports plan editing.
 
+The 0.5 development branch adds optional [room schedules](room-schedules.md)
+for periodic mopping and coverage, with private or shared progress.
+
 ### Intelligent rotation
 
 Rotation starts with the room that has waited longest for a cleaning opportunity;
