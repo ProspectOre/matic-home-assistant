@@ -1,3 +1,4 @@
+# Generated adapter; edit scripts/review-gate/adapters in ProspectOre/dev-workspace.
 name: Disarm Existing Automatic Merge Requests
 
 on:
@@ -12,6 +13,7 @@ on:
       - .github/workflows/review-base-advance.yml
       - .github/workflows/review-gate-audit.yml
       - .github/workflows/review-gate-rollout.yml
+      - .github/review-gate/**
   workflow_dispatch:
 
 permissions:
@@ -82,24 +84,26 @@ jobs:
 
   disarm-open-prs:
     name: disarm-open-prs (${{ matrix.pr_number }})
-    needs: discover
-    if: needs.discover.outputs.count != '0'
+    needs: [discover, cancel-legacy-auto-merge-runs]
+    if: ${{ always() && needs.discover.outputs.count != '0' }}
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.discover.outputs.matrix) }}
-    # This preempts a previous-policy evaluator for this PR. A new evaluator
-    # queues behind the sweep and observes its final pending status.
+    # Isolate rollout cleanup from review delivery and audit cancellation.
+    # The step persists invalidation before explicitly cancelling old evaluators.
     concurrency:
-      group: review-gate-${{ matrix.pr_number }}
-      cancel-in-progress: true
+      group: review-gate-rollout-${{ matrix.pr_number }}
+      cancel-in-progress: false
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
     steps:
       - name: Revoke the gate and disable automatic merge
         env:
           GH_TOKEN: ${{ github.token }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           PR_NUMBER: ${{ matrix.pr_number }}
           REPO: ${{ github.repository }}
           REVIEW_GATE_CONTEXT: review-gate
+          REVIEW_ROLLOUT_CONTEXT: review-gate-rollout
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
@@ -127,6 +131,10 @@ jobs:
               -f state=pending \
               -f context="$REVIEW_GATE_CONTEXT" \
               -f description="Disarming automatic merge; waiting for the regular review" \
+              -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
+            gh api "repos/$REPO/statuses/$head_sha" --silent \
+              -f state=pending -f context="$REVIEW_ROLLOUT_CONTEXT" \
+              -f description="Canonical review-gate rollout is reconciling this PR" \
               -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
           }
           # Revoke the gate before waiting for an evaluator to stop. A prior
@@ -176,9 +184,11 @@ jobs:
               -F pullRequestId="$pr_node_id" >/dev/null
             echo "Disabled automatic merge for PR #$PR_NUMBER."
           fi
-          # This is the final write under the per-PR lock. It cannot be
-          # resurrected by a queued evaluator before that evaluator rechecks.
+          # Reevaluate existing evidence with the new pinned policy. Installing
+          # policy does not alter candidate code or require a new model review.
           stamp_pending
+          gh workflow run review-gate.yml --repo "$REPO" --ref "$DEFAULT_BRANCH" \
+            -f pull_request="$PR_NUMBER"
 
   verify-repository-policy:
     name: verify-repository-auto-merge-disabled
