@@ -87,6 +87,16 @@ def test_normalize_cadence_policy_defaults_absent_one_shot_flags() -> None:
     assert policy["do_coverage_next"] is False
 
 
+def test_disabled_coverage_discards_the_editor_previous_setting() -> None:
+    policy = normalize_cadence_policy(
+        {"coverage_every_n": None, "periodic_coverage_setting": "standard"},
+        cleaning_mode="vacuum",
+        coverage_setting="standard",
+    )
+    assert policy["coverage_every_n"] is None
+    assert policy["periodic_coverage_setting"] is None
+
+
 def test_interval_one_is_due_on_first_clean_and_empty_policy_is_inactive() -> None:
     assert (
         normalize_cadence_policy(
@@ -126,27 +136,32 @@ def test_interval_one_is_due_on_first_clean_and_empty_policy_is_inactive() -> No
     assert snapshot["next_coverage_in"] is None
 
 
-def test_nth_verified_clean_is_due_and_both_rules_combine() -> None:
+@pytest.mark.parametrize("normal", ["quick", "standard", "heavy_duty"])
+@pytest.mark.parametrize("periodic", ["quick", "standard", "heavy_duty"])
+def test_nth_verified_clean_is_due_and_both_rules_combine(
+    normal: str, periodic: str
+) -> None:
     policy = normalize_cadence_policy(
         {
             "mop_every_n": 3,
             "coverage_every_n": 3,
-            "periodic_coverage_setting": "heavy_duty",
+            "periodic_coverage_setting": periodic,
         },
         cleaning_mode="vacuum",
-        coverage_setting="standard",
+        coverage_setting=normal,
     )
     first = cadence_snapshot(
-        policy, None, cleaning_mode="vacuum", coverage_setting="standard"
+        policy, None, cleaning_mode="vacuum", coverage_setting=normal
     )
+    assert first["effective_coverage_setting"] == normal
     assert advance_cadence(
-        first, None, verified_mode="vacuum", verified_coverage="standard"
+        first, None, verified_mode="vacuum", verified_coverage=normal
     ) == {"mop": 1, "coverage": 1}
     second = cadence_snapshot(
         policy,
         {"mop": 1, "coverage": 1},
         cleaning_mode="vacuum",
-        coverage_setting="standard",
+        coverage_setting=normal,
     )
     assert second["mop_due"] is False
     assert second["next_mop_in"] == 2
@@ -154,23 +169,23 @@ def test_nth_verified_clean_is_due_and_both_rules_combine() -> None:
         second,
         {"mop": 1, "coverage": 1},
         verified_mode="vacuum",
-        verified_coverage="standard",
+        verified_coverage=normal,
     ) == {"mop": 2, "coverage": 2}
     third = cadence_snapshot(
         policy,
         {"mop": 2, "coverage": 2},
         cleaning_mode="vacuum",
-        coverage_setting="standard",
+        coverage_setting=normal,
     )
     assert third["mop_due"] is True
     assert third["coverage_due"] is True
     assert third["effective_cleaning_mode"] == "vacuum_and_mop"
-    assert third["effective_coverage_setting"] == "heavy_duty"
+    assert third["effective_coverage_setting"] == periodic
     assert advance_cadence(
         third,
         {"mop": 2, "coverage": 2},
         verified_mode="vacuum_and_mop",
-        verified_coverage="heavy_duty",
+        verified_coverage=periodic,
     ) == {"mop": 0, "coverage": 0}
 
 

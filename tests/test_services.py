@@ -449,6 +449,114 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
     coordinator.async_request_refresh.assert_awaited_once()
 
 
+async def test_custom_area_native_completion_does_not_advance_shared_cadence(
+    hass,
+) -> None:
+    """A room-like native record cannot credit cadence for an area command."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            client=client,
+            coordinator=coordinator,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    _, identities = _plan_cadence_bindings(entry)
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 2,
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "quick",
+                    },
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities=identities,
+    )
+    shared_progress = manager._robot("serial")["shared_room_cadence"][room.id][
+        "progress"
+    ]
+    shared_progress.update(mop=1, coverage=1)
+    progress_before = deepcopy(shared_progress)
+
+    await manager.async_save_area(
+        "serial",
+        "office-area",
+        {
+            "schema_version": AREA_SCHEMA_VERSION,
+            "name": "Office area",
+            "circles": [{"x": 1.0, "y": 2.0, "radius": 0.35}],
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+            "map_binding": binding_for_floor_plan(floor_plan),
+        },
+    )
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "clean_area",
+        CLEAN_AREA_SERVICE_SCHEMA(
+            {"entity_id": ["vacuum.test"], "area": "Office area"}
+        ),
+    )
+    context = ("vacuum.test", entry, "serial", {room.id: room.name})
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=context,
+    ):
+        await _registered_handler(services, "clean_area")(call)
+
+    client.async_start_custom_coverage.assert_awaited_once()
+    assert manager.snapshot("serial")["native_reconciliation_pending"] is False
+
+    # A synthetic native session can report the mapped room as completed. The
+    # importer records the opportunity, but without a managed dispatch marker
+    # it must not treat that evidence as shared-schedule completion.
+    ended_at = dt_util.utcnow().isoformat()
+    native_record = CleaningSessionRecord(
+        b"synthetic-area-completion",
+        CleaningSession(
+            (dt_util.utcnow() - timedelta(seconds=30)).isoformat(),
+            ended_at,
+            30,
+            (room.name,),
+            ((room.name, 30),),
+            True,
+            completed_rooms=(room.name,),
+        ),
+    )
+    assert await manager.async_import_native_history(
+        "serial", floor_plan, (native_record,)
+    )
+    assert manager._robot("serial")["rooms"][room.id]["last_opportunity"] == ended_at
+    assert (
+        manager._robot("serial")["shared_room_cadence"][room.id]["progress"]
+        == progress_before
+    )
+
+
 async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
