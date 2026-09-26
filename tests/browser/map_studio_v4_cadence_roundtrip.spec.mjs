@@ -26,15 +26,14 @@ const planCatalog = ({ enabled = true, policy }) => ({
   }],
 });
 
-test("plan editor roundtrips private/shared cadence and disabled/enabled schedules", async ({ page }) => {
+test("plan editor submits cadence edits and renders scripted saved-plan catalogs", async ({ page }) => {
   const privateInitial = cadence("plan", 2, 3, "quick");
   const sharedEdited = cadence("shared", 7, 5, "heavy_duty");
   const privateEdited = cadence("plan", 4, 2, "standard");
   const cadenceDisabled = cadence("plan", null, null, null);
   const cadenceReenabled = cadence("plan", 4, 2, "standard");
-  // The UI retains its last coverage choice in the save request; the backend
-  // canonicalizes it to null while coverage cadence is disabled, as verified
-  // by the saved-catalog readback above.
+  // The fixture models a canonicalized server readback. Python policy tests
+  // verify that the backend clears this setting when cadence is disabled.
   const cadenceDisabledWrite = cadence("plan", null, null, "standard");
   const fixture = await installPanelFixture(page, {
     planResponses: [
