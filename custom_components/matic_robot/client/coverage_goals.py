@@ -20,11 +20,11 @@ def mixed_coverage_readback_matches(
     expected: Counter[CoverageGoalSignature],
     actual: Counter[CoverageGoalSignature],
 ) -> bool:
-    """Allow only the observed omission of a mop behavior-three goal.
+    """Allow the observed mop behavior-three omission independently per room.
 
-    The robot has retained the other three mop behaviors while omitting the
-    fourth in live mixed-mode readback. All room, setting, floor, mode, and
-    other behavior signatures must still match the transmitted command.
+    Each affected room must retain exactly its other three mop behaviors at
+    the requested setting. All vacuum goals and every other signature remain
+    exact; an omission in one room cannot compensate for another room's goals.
     """
     if not expected:
         return False
@@ -33,14 +33,19 @@ def mixed_coverage_readback_matches(
     if actual - expected:
         return False
     missing = expected - actual
-    return missing.total() == 1 and all(
-        floor == 0
-        and mode == 1
-        and behavior == 3
-        and count == 1
-        and expected[(region, setting, floor, mode, behavior)] == 1
-        for (region, setting, floor, mode, behavior), count in missing.items()
-    )
+    normalized_rooms: set[str] = set()
+    for goal, count in missing.items():
+        region, setting, floor, mode, behavior = goal
+        if (floor, mode, behavior, count, expected[goal]) != (0, 1, 3, 1, 1):
+            return False
+        if region in normalized_rooms:
+            return False
+        normalized_rooms.add(region)
+        for sibling_behavior in range(3):
+            sibling = (region, setting, 0, 1, sibling_behavior)
+            if expected[sibling] != 1 or actual[sibling] != 1:
+                return False
+    return True
 
 
 def coverage_command_goal_signatures(

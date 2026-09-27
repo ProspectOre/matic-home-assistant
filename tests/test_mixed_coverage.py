@@ -248,7 +248,7 @@ def test_mixed_readback_normalization_rejects_unupdated_initial_plan():
     assert not mixed_coverage_readback_matches(expected, initial)
 
 
-def test_mixed_readback_rejects_multiple_mop_behavior_three_omissions():
+def test_mixed_readback_normalizes_each_mop_room_independently():
     commands = encode_mixed_coverage_commands(
         mission_id=42,
         partition_id=PARTITION,
@@ -259,7 +259,7 @@ def test_mixed_readback_rejects_multiple_mop_behavior_three_omissions():
     expected = Counter(coverage_command_goal_signatures(commands.update))
     optional = Counter({goal: 1 for goal in expected if goal[3:] == (1, 3)})
     assert optional.total() == 2
-    assert not mixed_coverage_readback_matches(expected, expected - optional)
+    assert mixed_coverage_readback_matches(expected, expected - optional)
 
 
 def test_coverage_plan_readback_ignores_unknown_spec_extensions():
@@ -1063,7 +1063,12 @@ async def test_entity_rejects_unowned_or_invalid_mixed_parameters(hass, extra):
         )
 
 
-async def test_runner_passes_each_rooms_mode_and_setting(hass):
+@pytest.mark.parametrize(
+    "mode1,mode2,setting1,setting2", list(product(Mode, Mode, Setting, Setting))
+)
+async def test_runner_passes_each_rooms_mode_and_setting(
+    hass, mode1, mode2, setting1, setting2
+):
     from homeassistant.core import ServiceCall
 
     from custom_components.matic_robot.services import _async_dispatch_leg_command
@@ -1075,14 +1080,23 @@ async def test_runner_passes_each_rooms_mode_and_setting(hass):
 
     hass.services.async_register("vacuum", "send_command", send)
     rooms = [
-        CleaningRoom("one", "One", "vacuum", "quick"),
-        CleaningRoom("two", "Two", "mop", "standard"),
+        CleaningRoom("one", "One", mode1.value, setting1.value),
+        CleaningRoom("two", "Two", mode2.value, setting2.value),
     ]
     await _async_dispatch_leg_command(
         hass, ServiceCall(hass, "matic_robot", "run", {}), "vacuum.test", rooms, 1, None
     )
-    assert captured[0]["params"]["room_modes"] == ["vacuum", "mop"]
-    assert captured[0]["params"]["room_coverage"] == ["quick", "standard"]
+    params = captured[0]["params"]
+    assert params["rooms"] == ["one", "two"]
+    assert params["ordered"] is True
+    assert params["cleaning_mode"] == mode1.value
+    assert params["coverage"] == setting1.value
+    if (mode1, setting1) == (mode2, setting2):
+        assert "room_modes" not in params
+        assert "room_coverage" not in params
+    else:
+        assert params["room_modes"] == [mode1.value, mode2.value]
+        assert params["room_coverage"] == [setting1.value, setting2.value]
 
 
 @pytest.mark.parametrize(
