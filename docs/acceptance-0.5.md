@@ -9,18 +9,14 @@ verified” means v0.4.5 regressions remain covered, not every 0.5 scenario. “
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
 - Source `170e804c5b467533f27142e0b49ae4b44c1cee6d` incorporates `main` at
-  `52166df` and closes reviewed map-signature, malformed-cadence, legacy-plan,
-  orphaned one-shot, malformed-inheritance, and failed-save race findings. Python
-  passed 3,507 tests at 100% (15,754 statements); Ruff lint/format, strict mypy
-  (61 files), and privacy pass. The coordinator rejects stale annotated map
-  signatures while retaining unannotated single-plan responses. Real-manager
-  endpoint tests preserve healthy plans when private or shared cadence data is
-  malformed. A malformed inherited rule can be cleared or replaced without
-  losing valid progress; per-robot plan writes remain serialized through rollback
-  and durable save. The updated room-recovery browser journey passes Chromium and
-  WebKit: it reduces 102 legacy rooms to 100, submits the exact room list, reads
-  back the saved catalog, and reopens the saved plan. Independent code review
-  found no residual issue in these fixes.
+  `52166df` and closes map-signature, malformed-cadence, legacy-plan, orphaned
+  one-shot, inheritance, and save-race findings. Python passed 3,507 tests at 100%
+  (15,754 statements); Ruff, format, strict mypy (61 files), and privacy pass. The
+  coordinator rejects stale annotated signatures while accepting single-plan
+  payloads; real-manager endpoints safely project malformed private/shared rules.
+  Clearing or replacing malformed inherited cadence preserves valid progress;
+  plan writes serialize through rollback and save. Packaged-panel recovery saves,
+  reads back, and reopens the 100-room repair in Chromium/WebKit; review found no residual issue.
 - Frontend typecheck/build and paired bundle size/input targets pass; see
   [performance-0.5.md](performance-0.5.md). The focused cadence browser journey
   passes five configured projects. Previous head `8bfc5740100e72f65ae1ae128abd4b79eaa0c946`
