@@ -14,17 +14,17 @@ owner, and runtime result remains unverified until its evidence is recorded.
 Local source evidence and exact-head CI are distinct from an RC, owner acceptance,
 or release proof. Evidence refreshed on 2026-09-27:
 
-- Source head `8046e1d` incorporates current `main` at `52166df` plus the
-  invalidated-read map-continuity fix. On 2026-09-27, its E2E test refinement passed
-  the full Python suite: 3,488 tests at 100% (15,724 statements). Ruff lint/format,
-  strict mypy (61 source files), and privacy also pass. Focused executor cases,
-  registered service routing, native mixed-readback coverage, and managed STOP
-  ownership all pass; coordinator regressions prove map continuity only for the
-  same verified mission and floor signature.
-- The production frontend is unchanged since bundle source `acbdbc0`. Its exact
-  browser CI run passed 771 cases. The current candidate changes only backend,
-  test, metadata, and evidence files; final-head browser, Hassfest, HACS, and Python
-  CI are still required after push. The prior capped-retry, cadence round-trip,
+- Source commit `f8cad9467ed41acf932d88e25bf5ae0bf776c089` incorporates current
+  `main` at `52166df` plus the invalidated-read map-continuity fix. Its full Python
+  suite passed 3,488 tests at 100% (15,724 statements). Ruff lint/format, strict
+  mypy (61 source files), and privacy also pass. Focused executor cases, registered
+  service routing, native mixed-readback coverage, and managed STOP ownership all
+  pass; coordinator regressions prove map continuity only for the same verified
+  mission and floor signature.
+- The production frontend is unchanged since bundle source `acbdbc0`; exact-head
+  browser CI passed 771 cases on `8046e1d`. The current candidate changes only
+  backend, test, metadata, and evidence files; browser, Hassfest, HACS, and Python CI
+  are still required for `f8cad94`. The prior capped-retry, cadence round-trip,
   connected-lifecycle, and packaged-panel checks remain separate synthetic
   contract evidence, not live HA acceptance.
 - The prior Python CI collection failure came from an inherited test importing
