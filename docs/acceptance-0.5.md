@@ -1,35 +1,27 @@
 # Matic 0.5 evidence matrix
 
-Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25. This matrix is the
-release ledger for `architecture-0.5.md`. No 0.5 RC runtime evidence is recorded.
-Disposition and evidence are separate. “Preserved and verified” means the accepted
-v0.4.5 contract remains covered by local source/regression checks; it does not
-claim that each named 0.5 scenario passed. “Implementation required” means
-acceptance remains open even where partial worktree implementation and local tests
-exist. “Deferred” names the boundary and rationale. Every 0.5 candidate, device,
-owner, and runtime result remains unverified until its evidence is recorded.
+Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25. This ledger belongs to
+`architecture-0.5.md`; no 0.5 RC runtime evidence is recorded. “Preserved and
+verified” means v0.4.5 regressions remain covered, not every 0.5 scenario. “Implementation required” means acceptance is open despite partial code/tests; “Deferred” names the boundary and reason. Candidate, device, owner, and runtime results remain unverified.
 
 ## Current implementation-worktree evidence
 
-Local source evidence and exact-head CI are distinct from an RC, owner acceptance,
-or release proof. Evidence refreshed on 2026-09-27:
+Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
-- Source commit `3d8c165c313de86ed8772f27db361953c586e6c0` incorporates current
-  `main` at `52166df` and closes the reviewed map-signature, malformed-cadence,
-  and legacy-plan recovery defects. Its full Python suite passed 3,500 tests at
-  100% (15,744 statements). Ruff lint/format, strict mypy (61 source files), and
-  privacy pass. The coordinator now rejects stale annotated map signatures while
-  retaining the protocol's unannotated single-plan response; a real manager and
-  plans endpoint test covers malformed private/shared cadence without dropping
-  healthy plans or rooms. Independent GPT-6 Luna review found no residual issues.
-- The packaged frontend changed for bounded legacy-plan recovery. The full browser
-  suite passed 771 tests on that bundle across Chromium, WebKit, Firefox safety
-  workflows, and mobile Chrome; the added 102/256/257 parser-boundary regression
-  also passes separately. Frontend typecheck/build and the current paired bundle
-  measurement pass their size/input targets; see
-  [performance-0.5.md](performance-0.5.md). Exact-head GitHub CI, Hassfest/HACS,
-  and regular PR review remain pending for the final PR head; `3d8c165` is the
-  implementation source used for these local results.
+- Source `9e935fb05e38cad2d48e7e921bc45f83b3b49e46` incorporates `main` at
+  `52166df` and closes reviewed map-signature, malformed-cadence, legacy-plan, and
+  orphaned one-shot defects. Python passed 3,504 tests at 100% (15,748 statements);
+  Ruff lint/format, strict mypy (61 files), and privacy pass. The coordinator
+  rejects stale annotated map signatures while retaining unannotated single-plan
+  responses; real-manager endpoint tests preserve healthy plans when cadence data
+  is malformed. Service/options/manager/browser regressions reject or clear
+  interval-less one-shot flags. Independent GPT-6 Luna review found no residual
+  issue in this change.
+- Frontend typecheck/build and paired bundle size/input targets pass; see
+  [performance-0.5.md](performance-0.5.md). The focused cadence browser journey
+  passes five configured projects. Previous head `64c171bf60` passed full browser
+  CI (772 tests), Hassfest/HACS/Python; regular review then found the P2 now fixed
+  in `9e935fb`. Final-head CI and clean regular review remain required before merge.
 - The prior Python CI collection failure came from an inherited test importing
   `RoomRunOutcome` through `services` after its canonical ownership moved to
   `managed_executor`. The matrix now imports the owner and injects a typed waiter
@@ -137,13 +129,12 @@ The roadmap gates are independent and ordered; test counts, screenshots, a merge
 | E6 — Owner interaction/language acceptance | Separate owner walkthrough and acceptance of setup, common cleaning, recovery, accessibility, and user-facing language; record remaining limitations. |
 | F — Exact candidate/runtime | HACS beta pre-release loaded version and reviewed SHA, rollback copy, installed-tree fingerprint, restart/readback, reconnect/map coherence, exact changed-flow proof, and current → second classified map → current with correct labels/pose/history/actions, no wrong-floor fallback, and no repeated Repair. These runtime and physical gates remain open until evidence is recorded. |
 
-For any physical run, record explicit owner authorization, preflight/post-run
-administrator MCP/native plan/operations/history evidence, no running automations
-or scripts, bounded scope, run identity, STOP settlement and correlated DOCK,
-guarded failure outcome, and before/after cleanup receipts. Merge manually after
-exact-head regular `@codex review` and required CI. Publish stable from that same
-accepted commit only after candidate/runtime and physical gates pass. Security
-review is separate from regular review.
+For physical runs, record explicit owner authorization, pre/post administrator
+MCP/native plan, operations and history evidence, no active automations/scripts,
+bounded scope and run identity, STOP settlement/correlated DOCK, guarded failure,
+and cleanup receipts. Merge manually after exact-head regular review and green CI;
+publish stable from that accepted commit only after runtime and physical gates pass.
+Security review is separate from regular review.
 
 Binding sources: Matic Map Studio Roadmap, Matic Map Studio Independent Review, the full 2026-08-29 review, and [managed-run contract](e2e-contract.md).
 
