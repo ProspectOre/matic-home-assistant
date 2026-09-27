@@ -17,6 +17,7 @@ const MAX_SNAPSHOT_RETRIES = 4;
 const MAX_SNAPSHOT_PROJECTION_BYTES = 16 * 1024;
 const SNAPSHOT_RETRY_BASE_MS = 250;
 const SNAPSHOT_RETRY_MAX_MS = 4_000;
+const SNAPSHOT_RETRY_STEADY_INTERVAL_MS = 30_000;
 
 export interface WorkspaceConnection {
   sendMessagePromise<T>(message: Record<string, unknown>): Promise<T>;
@@ -253,7 +254,11 @@ export class WorkspaceTransport {
   }
 
   notifyReconnect(): void {
+    this.#retryAttempt = 0;
+    if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
     this.requestResync("reconnect");
+    this.#scheduleRecovery(0);
   }
 
   /** Tell the owner to obtain a fresh snapshot through its effect lifecycle. */
@@ -407,11 +412,15 @@ export class WorkspaceTransport {
     this.#resyncing = true;
     this.#options.onEvent({ type: "resync", reason });
     queueMicrotask(() => { this.#resyncing = false; });
-    if (reason !== "authorization" && reason !== "entry_removed") this.#scheduleRecovery(0);
+    if (reason !== "authorization" && reason !== "entry_removed") {
+      const delay = this.#retryAttempt >= MAX_SNAPSHOT_RETRIES ? SNAPSHOT_RETRY_STEADY_INTERVAL_MS : 0;
+      this.#scheduleRecovery(delay);
+    }
   }
 
   #scheduleRecovery(delay: number): void {
-    if (this.#disposed || this.#retryTimer !== null) return;
+    if (this.#disposed) return;
+    if (this.#retryTimer !== null) return;
     if (this.#recovering) {
       this.#recoveryAfterRead = delay;
       return;
@@ -439,9 +448,8 @@ export class WorkspaceTransport {
       const snapshot = parseSnapshot(value, this.#options.entryId);
       if (!snapshot) throw new Error("invalid-workspace-snapshot");
       if (snapshot.status.reason === "authorization") {
+        this.#stopRecoveryForAuthorization();
         this.#options.onEvent({ type: "snapshot", snapshot });
-        this.#retryAttempt = 0;
-        this.#buffer = [];
         return;
       }
       if (snapshot.status.state !== "ready" && snapshot.status.retryable) {
@@ -462,13 +470,14 @@ export class WorkspaceTransport {
       if (this.#disposed) return;
       this.#report(error);
       if (this.#isAuthorizationError(error)) {
+        this.#stopRecoveryForAuthorization();
         this.#options.onEvent({ type: "resync", reason: "authorization" });
-        this.#buffer = [];
-        this.#retryAttempt = 0;
       } else if (this.#retryAttempt < MAX_SNAPSHOT_RETRIES) {
         const delay = Math.min(SNAPSHOT_RETRY_BASE_MS * 2 ** this.#retryAttempt, SNAPSHOT_RETRY_MAX_MS);
         this.#retryAttempt += 1;
         this.#scheduleRecovery(delay);
+      } else {
+        this.#scheduleRecovery(SNAPSHOT_RETRY_STEADY_INTERVAL_MS);
       }
     } finally {
       this.#recovering = false;
@@ -528,6 +537,13 @@ export class WorkspaceTransport {
     const status = candidate?.status ?? candidate?.statusCode;
     return code === "unauthorized" || code === "not_authorized" || code === "auth_invalid"
       || status === 401 || status === 403;
+  }
+
+  #stopRecoveryForAuthorization(): void {
+    this.#buffer = [];
+    this.#bufferOverflowed = false;
+    this.#recoveryAfterRead = null;
+    this.#retryAttempt = 0;
   }
 
   #report(error: unknown): void {
