@@ -1045,7 +1045,9 @@ async def _async_run_leg(
                 while True:
                     outcome, changed_room = await _async_wait_with_native_identity(
                         partial(
-                            wait_for_leg_outcome or _async_wait_for_leg_outcome,
+                            wait_for_leg_outcome
+                            if wait_for_leg_outcome is not None
+                            else _async_wait_for_leg_outcome,
                             hass,
                             entity_id,
                             leg,

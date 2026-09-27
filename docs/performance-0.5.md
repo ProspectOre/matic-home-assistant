@@ -17,10 +17,11 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The September 26 Pacific measurement used headless Chromium 151.0.7922.34,
-macOS arm64, Apple M4, 1280×900, DPR 1, no CPU/network throttling, and no-store
-assets. It ran at 6:53 p.m. PDT. Other task-owned Python and browser checks
-were paused for this run. The script records conditions and fingerprints.
+The exact-source comparison began at `2026-09-27T05:05:00.208Z` (September 26,
+10:05:00 p.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+1280×900, DPR 1, no CPU/network throttling, and no-store assets. Other
+task-owned Python and browser checks were paused for the run. The script records
+conditions and fingerprints.
 The candidate uses one multi-entry compilation: review-only assets are excluded
 from shipped bytes, while the harness imports the exact production chunks.
 
@@ -32,29 +33,34 @@ estimates are a lab proxy, not field INP. See the official
 Gzip sizes use level 9 offline estimates; the local server sends uncompressed
 JavaScript. Heap is one post-journey observation, not a retention bound.
 
-## Results
+## Latest paired result
 
-Measured September 26 at 6:53 p.m. Pacific (`2026-09-27T01:53:34.852Z`):
+Measured against the compiled assets for source head
+`acbdbc051fd4ac9575d3ee84ca9c123504ac61e2`:
+The later 0.5 integration commits change backend/tests/metadata only; they do not
+alter these compiled frontend assets.
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 79,468 |
+| Initial production JS, estimated gzip bytes | 79,821 | 79,833 |
 | Initial distinct production JS resources | 1 | 4 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,378 |
-| Review-only initial JS, estimated gzip bytes | Included above | 4,519 (not shipped) |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,520 |
+| Review-only initial JS, estimated gzip bytes | Included above | 4,545 (not shipped) |
 | Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
 | Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 32 / 32 / 32 | 72 / 40 / 32 |
-| Tasks over 50 ms, three runs | 0 / 0 / 0 | 1 / 0 / 0 |
-| Longest task over 50 ms | None observed | 58 ms |
-| Post-journey JS heap range, bytes | 5,231,564–5,553,256 | 3,897,640–7,315,672 |
+| Maximum observed input estimates, ms | 40 / 40 / 40 | 32 / 40 / 40 |
+| Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
+| Longest task at or above threshold | None observed | None observed |
+| Post-journey JS heap range, bytes | 5,019,288–6,770,748 | 7,428,944–7,521,468 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
-are below 100 ms. One 58 ms candidate task keeps the 50 ms task-duration gate
-open. This comparison establishes no source speedup. A separate Chrome 151
-synthetic navigation trace recorded LCP 338 ms, CLS 0, TTFB 2 ms, and 337 ms
-render delay; CrUX was unavailable, so that single-page result is not a release
-or field claim. The diagnostics chunk is 1,894 gzip bytes.
+are below 100 ms. Candidate and baseline p95 are equal in this lab journey; this
+does not establish a speedup. No task at the Long Tasks API's 50 ms threshold
+was recorded in these three runs. Keep the routine-task gate open until
+representative runtime evidence establishes whether any such task is routine.
+Heap is one post-journey observation per run and does not establish a retention
+bound. These results do not qualify field INP, mobile, sustained runtime, or
+release acceptance.
 
 Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 
@@ -62,9 +68,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `9646df0c8b845d431f6596a39efc0afc0fca3631` |
-| Candidate production bundle | `b02f662303f9bec55bcda6aa49ee7f3279e414caecbfac725c14381d7f017ef5` |
-| Candidate review-only bundle | `518dd182259bf85e52bd00c6cea074d3e09bf843da78cbba06dc4fda4c0c20e4` |
+| Candidate source commit | `acbdbc051fd4ac9575d3ee84ca9c123504ac61e2` |
+| Candidate production bundle | `ddcb4fc4883f66c20553afe58522065913105c27f4f6804be08215309e7ab1a7` |
+| Candidate review-only bundle | `8346b5b539d58c0ead31b9488e7348717bea0f40d5665a2439a017f577da2ddc` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up
@@ -73,7 +79,8 @@ This is historical evidence for the prior candidate bundle
 `7186581d0ed2bc31247a038a8def77d35380389880b7fcf288d57c40fb623e00`, before
 the latest contrast-token rebuild. At 10:23–10:25 p.m. Pacific on September 25,
 a trace-enabled probe repeated
-AB/BA/AB in both headless and headed Chromium, using the same hashes above.
+AB/BA/AB in both headless and headed Chromium, using the same synthetic scene
+hash as the paired result above.
 Before the common 100-input journey, each sample performed three browser-input
 Paint drags and three Erase drags interrupted with an injected pointer-cancel.
 Each Paint changed the draft. All nine candidate cancellations per mode preserved
