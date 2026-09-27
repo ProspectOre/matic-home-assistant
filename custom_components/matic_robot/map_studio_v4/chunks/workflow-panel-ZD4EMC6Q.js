@@ -168,7 +168,7 @@ line-height: var(--ms-lh-snug);
           <label class="plan-option"><input type="checkbox" aria-label=${this.#e("v4_cadence_do_mop_next_named","Do vacuum and mop on the next clean for {room}",{room:t})} .checked=${o.doMopNext} ?disabled=${!o.mopEveryN} @change=${b=>this.#a(s,{doMopNext:x(b)})}><span class="plan-option-copy"><strong>${this.#e("v4_cadence_do_mop_next","Do vacuum and mop on the next clean")}</strong></span></label>
           <label class="plan-option"><input type="checkbox" aria-label=${this.#e("v4_cadence_do_coverage_next_named","Use periodic coverage on the next clean for {room}",{room:t})} .checked=${o.doCoverageNext} ?disabled=${!o.coverageEveryN} @change=${b=>this.#a(s,{doCoverageNext:x(b)})}><span class="plan-option-copy"><strong>${this.#e("v4_cadence_do_coverage_next","Use periodic coverage on the next clean")}</strong></span></label>
         </div>
-        ${o.coverageEveryN?i`<p class="subtle">${this.#e("v4_cadence_coverage_proof_pending","Coverage stays due until the robot confirms which setting it applied, so it may be requested again on later cleans.")}</p>`:d}
+        ${o.coverageEveryN?i`<p class="subtle">${this.#e("v4_cadence_coverage_proof_pending","When periodic coverage is due, it remains due until Matic confirms this clean used the selected setting. It may be requested again on later cleans.")}</p>`:d}
         <p class="subtle" aria-live="polite">${this.#m(o,l,e.cadenceReasons)}</p>
         ${a.id&&(o.mopEveryN||o.coverageEveryN||c||v)?i`
           <div class="toolbar">

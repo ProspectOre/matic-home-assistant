@@ -62,7 +62,9 @@ aliases are rejected because completion and recovery are recorded per room.
 
 Only verified completed room work advances progress. Partial, failed, stopped,
 skipped, and unverified work does not. A due rule stays due until the requested
-mode and coverage are confirmed. Delayed results and restart recovery cannot
+mode and coverage are confirmed. When periodic coverage is due, it remains due
+until Matic can verify that a clean used the selected setting; it can therefore
+be requested again on later cleans. Delayed results and restart recovery cannot
 count the same clean twice.
 
 Changing an interval preserves progress. Disabling a rule pauses it. Use the

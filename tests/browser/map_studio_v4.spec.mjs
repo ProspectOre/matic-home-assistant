@@ -2801,7 +2801,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
       const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
       await cadence.locator("summary").click();
-      await expect(cadence.getByText("Coverage stays due until the robot confirms which setting it applied, so it may be requested again on later cleans.")).toBeVisible();
+      await expect(cadence.getByText("When periodic coverage is due, it remains due until Matic confirms this clean used the selected setting. It may be requested again on later cleans.")).toBeVisible();
       const scope = cadence.getByLabel("Schedule scope for Kitchen");
       const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
       const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
@@ -2844,8 +2844,8 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }, GALLERY_TAG);
     await expect(gallery.getByRole("status")).toContainText("Loading rooms and plans…");
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const current = element.getWorkspaceSnapshot();
       const ready = module.createGalleryState("ready");
@@ -3334,8 +3334,8 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps the plan action honest while saved routines are loading", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const state = module.createGalleryState("ready");
       element.replaceWorkspaceState({
