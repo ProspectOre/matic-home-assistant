@@ -168,7 +168,8 @@ export const initialWorkspaceState = (): WorkspaceState => ({
 export const manualRoomPreviewKey = (state: WorkspaceState): string | null => {
   const entry = state.resources.entry;
   const entryId = state.selection.entryId;
-  if (!entry || !entryId || entry.entryId !== entryId || state.selection.roomIds.length === 0) return null;
+  if (!entry || !entryId || entry.entryId !== entryId || state.selection.roomIds.length === 0
+    || state.selection.roomIds.length > MAX_ROOM_SEQUENCE_SIZE) return null;
   const rooms = state.selection.roomIds.map((roomId) => {
     const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
     if (!settings) return null;
@@ -211,6 +212,24 @@ const updateDraw = (
   ...state,
   draw: { ...state.draw, ...draw },
 });
+
+const isLegacyPlanReduction = (
+  state: WorkspaceState,
+  rooms: WorkspaceState["planDraft"]["rooms"],
+): boolean => {
+  const savedPlan = state.resources.plans.value?.plans.find(
+    (candidate) => candidate.id === state.planDraft.id,
+  );
+  if (!savedPlan
+    || savedPlan.rooms.length <= MAX_ROOM_SEQUENCE_SIZE
+    || savedPlan.rooms.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
+    || rooms.length <= MAX_ROOM_SEQUENCE_SIZE
+    || rooms.length >= savedPlan.rooms.length) return false;
+  const savedRoomIds = new Set(savedPlan.rooms.map((room) => room.roomId));
+  const draftRoomIds = new Set(rooms.map((room) => room.roomId));
+  return draftRoomIds.size === rooms.length
+    && [...draftRoomIds].every((roomId) => savedRoomIds.has(roomId));
+};
 
 export const draftForPlan = (plan: SavedPlan): WorkspaceState["planDraft"] => {
   return {
@@ -493,7 +512,8 @@ export const reduceWorkspace = (
         workflow: intent.workflow === "areaReview" ? "areaReview" : state.workflow,
       };
     case "patch-plan-draft":
-      if (intent.patch.rooms && intent.patch.rooms.length > MAX_ROOM_SEQUENCE_SIZE) return state;
+      if (intent.patch.rooms && intent.patch.rooms.length > MAX_ROOM_SEQUENCE_SIZE
+        && !isLegacyPlanReduction(state, intent.patch.rooms)) return state;
       return {
         ...state,
         planDraft: {
@@ -915,20 +935,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.workflow === "plan") {
     if (state.planDraft.dirty || !state.planDraft.id) {
-      const savedPlan = state.resources.plans.value?.plans.find(
-        (candidate) => candidate.id === state.planDraft.id,
-      );
-      const savedRoomIds = new Set(savedPlan?.rooms.map((room) => room.roomId) ?? []);
-      const draftRoomIds = new Set(state.planDraft.rooms.map((room) => room.roomId));
-      const legacyReduction = Boolean(
-        savedPlan
-        && savedPlan.rooms.length > MAX_ROOM_SEQUENCE_SIZE
-        && savedPlan.rooms.length <= MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
-        && state.planDraft.rooms.length > MAX_ROOM_SEQUENCE_SIZE
-        && state.planDraft.rooms.length < savedPlan.rooms.length
-        && draftRoomIds.size === state.planDraft.rooms.length
-        && [...draftRoomIds].every((roomId) => savedRoomIds.has(roomId)),
-      );
+      const legacyReduction = isLegacyPlanReduction(state, state.planDraft.rooms);
       const withinRoomLimit = state.planDraft.rooms.length <= MAX_ROOM_SEQUENCE_SIZE || legacyReduction;
       const valid = canEditCoordinates(state)
         && state.planDraft.name.trim().length > 0

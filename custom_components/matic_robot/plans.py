@@ -1980,6 +1980,8 @@ class CleaningPlanManager:
                 raise ValueError("room cadence belongs to a different map")
             policy: dict[str, Any] | None = None
             progress: Mapping[str, Any] | None = None
+            if policy_value is not None and not isinstance(policy_value, Mapping):
+                raise ValueError("room cadence must be an object")
             if (
                 isinstance(policy_value, Mapping)
                 and policy_value.get("scope") == "shared"
@@ -2200,7 +2202,7 @@ class CleaningPlanManager:
                         else room.coverage_setting
                     ),
                 )
-                if isinstance(stored_policy, Mapping)
+                if stored_policy is not None
                 else None
             )
             _effective, snapshots = self.resolve_cadence(

@@ -263,6 +263,9 @@ export class EffectController {
 
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
+    const workspaceTransportBeforeSync = this.#workspaceTransport;
+    const robotReconnected = this.#projection !== null
+      && !this.#projection.host.robotConnected && projection.host.robotConnected;
     const owner = this.#store.value.owner;
     if (owner && (owner.entryKey !== projection.entryKey
       || owner.userKey !== projection.userKey)) {
@@ -277,6 +280,13 @@ export class EffectController {
     this.#projection = projection;
     this.#panel = panel;
     this.#syncWorkspaceTransport(projection);
+    // Robot credentials can be renewed while HA and the workspace stream stay
+    // connected. An authorization-blocked transport would otherwise wait for
+    // its slow safety probe even though the owning coordinator has recovered.
+    if (robotReconnected && workspaceTransportBeforeSync
+      && workspaceTransportBeforeSync === this.#workspaceTransport) {
+      workspaceTransportBeforeSync.notifyReconnect();
+    }
     this.#store.patch({
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
@@ -400,7 +410,7 @@ export class EffectController {
               !== (entry.mapFloorCoherent && entry.mapSessionVerified);
           if (snapshot.status.reason === "authorization") {
             this.#workspaceFence = null;
-            if (floorVerificationLost) this.#refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
+            this.#refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
             return;
           }
           const previous = this.#workspaceFence;

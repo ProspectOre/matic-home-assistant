@@ -914,7 +914,7 @@ def mixed_client(monkeypatch):
     async def current_identity():
         nonlocal identity_reads
         identity_reads += 1
-        return b"" if identity_reads == 1 else identity
+        return b"" if identity_reads <= 2 else identity
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
@@ -922,6 +922,7 @@ def mixed_client(monkeypatch):
             activity=SimpleNamespace(value="cleaning"), current_area="the First"
         )
     )
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=False)
     client.async_get_floor_plan = AsyncMock(return_value=floor)
     client.async_send_user_command = AsyncMock()
     return (
@@ -968,6 +969,74 @@ async def test_owned_update_sent_once(mixed_client):
     client.async_send_user_command.assert_not_awaited()
 
 
+async def test_mixed_dispatch_accepts_retained_identity_when_native_task_is_idle(
+    mixed_client,
+):
+    client, identity, args = mixed_client
+    baseline = b"completed-session"
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[baseline, baseline, identity, identity, identity, identity]
+    )
+    client._async_wait_for_mixed_coverage_readback = AsyncMock()
+
+    await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE", "UPDATE_COVERAGE"]
+    assert client.async_get_active_cleaning_session_state.await_count == 1
+    client._async_wait_for_mixed_coverage_readback.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "failure", ["unknown_identity", "unknown_activity", "changed_identity"]
+)
+async def test_mixed_dispatch_rejects_unverified_preflight(mixed_client, failure):
+    client, _, args = mixed_client
+    if failure == "unknown_identity":
+        client.async_get_cleaning_session_identity = AsyncMock(return_value=None)
+        error = "identity is unavailable"
+    elif failure == "unknown_activity":
+        client.async_get_active_cleaning_session_state = AsyncMock(return_value=None)
+        error = "activity is unavailable"
+    else:
+        client.async_get_cleaning_session_identity = AsyncMock(
+            side_effect=[b"", b"replacement-session"]
+        )
+        error = "mission changed"
+
+    with pytest.raises(MaticError, match=error):
+        await client.async_start_mixed_coverage(**args)
+
+    client._async_send_user_payload.assert_not_awaited()
+
+
+async def test_mixed_dispatch_rejects_cleaning_under_retained_completed_identity(
+    mixed_client,
+):
+    client, _, args = mixed_client
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"completed-session"
+    )
+    client.async_get_state = AsyncMock(
+        return_value=SimpleNamespace(
+            activity=SimpleNamespace(value="cleaning"),
+            cleaning=True,
+            current_area="the First",
+        )
+    )
+
+    with pytest.raises(MaticError, match="mission changed before coverage update"):
+        await client.async_start_mixed_coverage(**args)
+
+    assert [
+        call.kwargs["command_name"]
+        for call in client._async_send_user_payload.await_args_list
+    ] == ["START_COVERAGE"]
+    client.async_send_user_command.assert_not_awaited()
+
+
 async def test_explicit_session_id_reaches_both_mixed_writes(mixed_client):
     client, _, args = mixed_client
     # Keep this distinct from _deterministic_mixed_commands' fallback UUID so
@@ -979,7 +1048,7 @@ async def test_explicit_session_id_reaches_both_mixed_writes(mixed_client):
     async def read_explicit_session_identity():
         nonlocal identity_reads
         identity_reads += 1
-        return b"" if identity_reads == 1 else identity
+        return b"" if identity_reads <= 2 else identity
 
     client.async_get_cleaning_session_identity = AsyncMock(
         side_effect=read_explicit_session_identity
@@ -1027,7 +1096,7 @@ async def test_mixed_update_readback_mismatch_stops_only_owned_session(
     async def current_identity():
         nonlocal reads
         reads += 1
-        return b"" if reads == 1 else identity
+        return b"" if reads <= 2 else identity
 
     async def incomplete_readback(_name):
         update = next(
@@ -1061,7 +1130,7 @@ async def test_mixed_update_waits_for_matching_readback(mixed_client, monkeypatc
     async def current_identity():
         nonlocal reads
         reads += 1
-        return b"" if reads == 1 else identity
+        return b"" if reads <= 2 else identity
 
     async def changing_readback(_name):
         nonlocal readback_count
@@ -1096,7 +1165,7 @@ async def test_mixed_update_malformed_readback_fails_closed(mixed_client, monkey
     async def current_identity():
         nonlocal reads
         reads += 1
-        return b"" if reads == 1 else identity
+        return b"" if reads <= 2 else identity
 
     clock = iter((0.0, 9.0))
     monkeypatch.setattr(
@@ -1125,7 +1194,7 @@ async def test_mixed_update_readback_request_is_bounded(mixed_client, monkeypatc
     async def current_identity():
         nonlocal reads
         reads += 1
-        return b"" if reads == 1 else identity
+        return b"" if reads <= 2 else identity
 
     async def stalled_readback(_name):
         await asyncio.Event().wait()
@@ -1145,7 +1214,7 @@ async def test_mixed_update_does_not_stop_replacement_after_stale_readback(
     client, identity, args = mixed_client
     replacement = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
     identities = iter(
-        [b"", identity, identity, identity, identity, replacement, replacement]
+        [b"", b"", identity, identity, identity, identity, replacement, replacement]
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=identities)
     client.async_get_property.side_effect = lambda _name: coverage_plan_from_command(
@@ -1173,7 +1242,7 @@ async def test_mixed_update_does_not_stop_replacement_during_readback(
     client, identity, args = mixed_client
     replacement = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
     reads = iter(
-        [b"", identity, identity, identity, identity, replacement, replacement]
+        [b"", b"", identity, identity, identity, identity, replacement, replacement]
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=reads)
 
@@ -1214,7 +1283,7 @@ async def test_room_transition_before_update_stops_without_updating(mixed_client
     async def current_identity():
         nonlocal reads
         reads += 1
-        return b"" if reads == 1 else identity
+        return b"" if reads <= 2 else identity
 
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=current_identity)
     client.async_get_state = AsyncMock(
@@ -1255,7 +1324,7 @@ async def test_replaced_mission_during_state_read_is_not_updated_or_stopped(
     async def read_state():
         # The first read is the wait for the generated mission. Replace it on
         # the later pre-update read, after the preceding identity check passed.
-        if identity_reads >= 3:
+        if identity_reads >= 4:
             current["identity"] = replacement
         return SimpleNamespace(
             activity=SimpleNamespace(value="cleaning"), current_area="First"
@@ -1289,7 +1358,7 @@ async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_cl
         return_value=FloorPlan(99, PARTITION, b"changed", ())
     )
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, other]
+        side_effect=[b"", b"", identity, identity, other]
     )
     with pytest.raises(MaticError, match="Room map changed"):
         await client.async_start_mixed_coverage(**args)
@@ -1301,6 +1370,7 @@ async def test_replacement_during_stop_fence_persistence_is_not_stopped(mixed_cl
 async def test_active_native_mission_rejects_initial_write(mixed_client):
     client, identity, args = mixed_client
     client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client.async_get_active_cleaning_session_state = AsyncMock(return_value=True)
     with pytest.raises(MaticError):
         await client.async_start_mixed_coverage(**args)
     client._async_send_user_payload.assert_not_awaited()
@@ -1311,9 +1381,9 @@ async def test_identity_rechecked_around_update(mixed_client, after_write):
     client, identity, args = mixed_client
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
     reads = (
-        [b"", identity, identity, identity, other, other]
+        [b"", b"", identity, identity, identity, other, other]
         if after_write
-        else [b"", identity, other, other]
+        else [b"", b"", identity, other, other]
     )
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=reads)
     with pytest.raises(MaticError, match="Native mission changed"):
@@ -1327,7 +1397,7 @@ async def test_start_timeout_and_failed_recovery_never_update(
 ):
     client, _, args = mixed_client
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", b"", MaticError("offline")]
+        side_effect=[b"", b"", b"", MaticError("offline")]
     )
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.asyncio.sleep",
@@ -1346,7 +1416,7 @@ async def test_pre_send_recovery_stop_failure_rolls_back_its_fence(
     client, identity, args = mixed_client
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity, identity]
+        side_effect=[b"", b"", identity, identity, identity, identity, identity]
     )
     client.async_send_user_command.side_effect = MaticError("STOP rejected")
     if rollback_fails:
@@ -1374,7 +1444,7 @@ async def test_ambiguous_recovery_stop_keeps_its_fence(
     args["on_recovery_stop_transmitted"] = Mock()
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity, identity]
+        side_effect=[b"", b"", identity, identity, identity, identity, identity]
     )
 
     async def fail_after_transmission_starts(command, *, on_transmitted=None):
@@ -1400,7 +1470,7 @@ async def test_recovery_stop_ack_schedules_settlement_before_dispatch_error(
     args["on_recovery_stop_transmitted"] = Mock()
     client._async_send_user_payload.side_effect = [None, MaticError("update failed")]
     client.async_get_cleaning_session_identity = AsyncMock(
-        side_effect=[b"", identity, identity, identity, identity, identity]
+        side_effect=[b"", b"", identity, identity, identity, identity, identity]
     )
 
     async def stop_acknowledged(command, *, on_transmitted=None):
@@ -1670,14 +1740,14 @@ async def test_failed_update_cannot_replay_or_stop_replacement(mixed_client, fai
     other = _wrapped_uuid("44444444-4444-4444-8444-444444444444")
     if failure == "replacement":
         client.async_get_cleaning_session_identity = AsyncMock(
-            side_effect=[b"", other, other]
+            side_effect=[b"", b"", other, other]
         )
     elif failure == "map":
         client.async_get_floor_plan = AsyncMock(
             return_value=FloorPlan(99, PARTITION, b"partition", ())
         )
         client.async_get_cleaning_session_identity = AsyncMock(
-            side_effect=[b"", identity, identity, identity]
+            side_effect=[b"", b"", identity, identity, identity]
         )
     elif failure in ("update", "recovery_unknown"):
         client._async_send_user_payload.side_effect = [
@@ -1686,6 +1756,7 @@ async def test_failed_update_cannot_replay_or_stop_replacement(mixed_client, fai
         ]
         client.async_get_cleaning_session_identity = AsyncMock(
             side_effect=[
+                b"",
                 b"",
                 identity,
                 identity,
@@ -1702,7 +1773,7 @@ async def test_failed_update_cannot_replay_or_stop_replacement(mixed_client, fai
             MaticError("stop"),
         ]
         client.async_get_cleaning_session_identity = AsyncMock(
-            side_effect=[b"", identity, identity]
+            side_effect=[b"", b"", identity, identity]
         )
     with pytest.raises(MaticError):
         await client.async_start_mixed_coverage(**args)

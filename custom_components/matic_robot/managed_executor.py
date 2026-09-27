@@ -336,6 +336,14 @@ async def _async_dispatch_leg_command(
     observed = await _async_read_session_identity(session_identity)
     identity = observed if observed and observed != identity_baseline else None
     if managed_session_id is not None and session_identity is not None:
+        if identity is not None and not _identity_matches_session(
+            identity, managed_session_id
+        ):
+            # A newly observed foreign identity is explicit takeover evidence.
+            # Do not keep polling until a later value happens to match ours.
+            raise RoomTakenOverError(
+                "The dispatched native task was replaced before readback"
+            )
         if identity is None or not _identity_matches_session(
             identity, managed_session_id
         ):

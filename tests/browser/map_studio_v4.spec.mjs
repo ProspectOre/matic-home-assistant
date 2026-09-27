@@ -361,9 +361,6 @@ test.describe("Map Studio v0.4 foundation", () => {
     await rooms.locator(".plan-room-label input[type=checkbox]").first().uncheck();
     expect(await draftRoomCount()).toBe(101);
     await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
-    await rooms.getByRole("checkbox", { name: /Legacy room 2$/ }).uncheck();
-    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
-    expect(await draftRoomCount()).toBe(100);
 
     const initialPlanReads = await page.evaluate(() => window.__panelFixture.planReads);
     await gallery.getByRole("button", { name: "Save plan", exact: true }).click();
@@ -375,10 +372,29 @@ test.describe("Map Studio v0.4 foundation", () => {
         draftCount: state.planDraft.rooms.length,
         savedCount: state.resources.plans.value?.plans[0]?.rooms.length,
       };
-    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 100, savedCount: 100 });
+    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 101, savedCount: 101 });
     await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(initialPlanReads);
 
-    const savedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[0]);
+    const firstSavedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[0]);
+    expect(firstSavedCall.data.rooms.map((room) => room.room)).toEqual(
+      Array.from({ length: 101 }, (_, index) => `legacy-room-${index + 2}`),
+    );
+
+    await gallery.getByRole("checkbox", { name: /Legacy room 2$/ }).uncheck();
+    expect(await draftRoomCount()).toBe(100);
+    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+    await gallery.getByRole("button", { name: "Save plan", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls.length)).toBe(2);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return {
+        draftDirty: state.planDraft.dirty,
+        draftCount: state.planDraft.rooms.length,
+        savedCount: state.resources.plans.value?.plans[0]?.rooms.length,
+      };
+    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 100, savedCount: 100 });
+
+    const savedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[1]);
     expect(savedCall).toMatchObject({ domain: "matic_robot", service: "save_plan", target: { entity_id: "vacuum.synthetic" } });
     expect(savedCall.data.rooms.map((room) => room.room)).toEqual(
       Array.from({ length: 100 }, (_, index) => `legacy-room-${index + 3}`),

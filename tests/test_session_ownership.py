@@ -1386,7 +1386,10 @@ async def test_successful_managed_dispatch_rejects_a_replaced_or_missing_session
     reader = AsyncMock(side_effect=lambda: current_identity)
     bound = []
 
-    with pytest.raises(RoomTakenOverError, match="could not be verified"):
+    expected_reason = (
+        "replaced" if replacement == "different" else "could not be verified"
+    )
+    with pytest.raises(RoomTakenOverError, match=expected_reason):
         await _async_dispatch_leg_command(
             hass,
             ServiceCall(hass, "matic_robot", "intelligent_clean", {}),

@@ -46,10 +46,14 @@ const setup = async (page, deferInitialSnapshot = false) => {
       revisions: { ...revisionState }, resources };
     };
     let initialSnapshotResolve = null;
+    let snapshotCalls = 0;
     const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; },
-      sendMessagePromise: async message => deferInitialSnapshot
-        ? await new Promise(resolve => { initialSnapshotResolve = resolve; })
-        : snapshotFor(message.entry_id) };
+      sendMessagePromise: async message => {
+        snapshotCalls += 1;
+        return deferInitialSnapshot
+          ? await new Promise(resolve => { initialSnapshotResolve = resolve; })
+          : snapshotFor(message.entry_id);
+      } };
     const counts = { catalog: 0, plans: 0, areas: 0, history: 0, scene: 0 };
     // This adapter contract test exercises invalidation routing, not the
     // independent long-poll delta loop. Keep that loop out of the fixture so
@@ -70,6 +74,7 @@ const setup = async (page, deferInitialSnapshot = false) => {
     const controller = new EffectController(store, backend, connection, true);
     controller.sync(projection("synthetic-entry"), undefined);
     window.adapterHarness = { callbacks, counts, store, controller, projection, snapshotFor, backend, invalidation,
+      get snapshotCalls() { return snapshotCalls; },
       initialSnapshotPending: () => initialSnapshotResolve !== null,
       resolveInitialSnapshot: value => { if (!initialSnapshotResolve) return false; initialSnapshotResolve(value); return true; },
       canEditCoordinates, canStartMotion,
@@ -314,6 +319,61 @@ test("authorization loss revokes retained floor proof before returning", async (
     return h.counts.plans > counts.plans && h.counts.areas > counts.areas
       && h.counts.scene > counts.scene;
   }, before.counts)).toBe(true);
+  await page.evaluate(() => window.adapterHarness.controller.dispose());
+});
+
+test("an authorization snapshot invalidates spatial caches even when its floor identity is unchanged", async ({ page }) => {
+  await setup(page);
+  const before = await page.evaluate(() => ({ generation: window.adapterHarness.store.value.generation,
+    counts: { ...window.adapterHarness.counts }, edit: window.adapterHarness.canEditCoordinates(window.adapterHarness.store.value) }));
+  expect(before.edit).toBe(true);
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.catalogResolve = null;
+    h.backend.catalog = async () => {
+      h.counts.catalog += 1;
+      return await new Promise(resolve => { h.catalogResolve = resolve; });
+    };
+    const failedSnapshot = h.snapshotFor("synthetic-entry");
+    failedSnapshot.status = { state: "unavailable", reason: "authorization", retryable: false };
+    failedSnapshot.payload.available = false;
+    failedSnapshot.payload.entry = null;
+    // Keep the last floor identity intact. Authorization itself must revoke
+    // cached spatial projections even when the identity comparison is stable.
+    h.callbacks[0]({ type: "snapshot", snapshot: failedSnapshot });
+  });
+  await expect.poll(() => page.evaluate(() => ({ coherence: window.adapterHarness.store.value.coherence,
+    generation: window.adapterHarness.store.value.generation }))).toMatchObject({ coherence: "verifying",
+    generation: before.generation + 1 });
+  await expect.poll(() => page.evaluate(() => Boolean(window.adapterHarness.catalogResolve))).toBe(true);
+  const fenced = await page.evaluate(() => ({ edit: window.adapterHarness.canEditCoordinates(window.adapterHarness.store.value),
+    motion: window.adapterHarness.canStartMotion(window.adapterHarness.store.value) }));
+  expect(fenced).toMatchObject({ edit: false, motion: false });
+  await page.evaluate(() => window.adapterHarness.catalogResolve([window.adapterHarness.store.value.resources.entry]));
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.scene)).toBe(before.counts.scene + 1);
+  const after = await page.evaluate(() => ({ ...window.adapterHarness.counts }));
+  expect(after.plans).toBeGreaterThan(before.counts.plans);
+  expect(after.areas).toBeGreaterThan(before.counts.areas);
+  expect(after.history).toBeGreaterThan(before.counts.history);
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.coherence)).toBe("current");
+  await page.evaluate(() => window.adapterHarness.controller.dispose());
+});
+
+test("robot reauthentication immediately resumes an authorization-blocked workspace snapshot stream", async ({ page }) => {
+  await setup(page);
+  const initialSnapshots = await page.evaluate(() => window.adapterHarness.snapshotCalls);
+  await page.evaluate(() => window.adapterHarness.callbacks[0]({ type: "resync", reason: "authorization" }));
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.controller.sync({ ...h.projection("synthetic-entry"), host: { ...h.projection("synthetic-entry").host,
+      robotConnected: false } }, undefined);
+    h.controller.sync(h.projection("synthetic-entry"), undefined);
+  });
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.snapshotCalls)).toBe(initialSnapshots + 1);
+
+  const catalogBefore = await page.evaluate(() => window.adapterHarness.counts.catalog);
+  await page.evaluate(() => window.adapterHarness.callbacks[0](window.adapterHarness.invalidation(1, ["status"], { status: 1 })));
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.catalog)).toBe(catalogBefore + 1);
   await page.evaluate(() => window.adapterHarness.controller.dispose());
 });
 

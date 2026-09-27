@@ -904,6 +904,25 @@ async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) ->
     }
 
 
+async def test_cadence_editor_contains_non_object_persisted_policy(hass) -> None:
+    manager = _manager(hass)
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    manager._robot("serial")["plans"]["home"] = {
+        "name": "Home",
+        "rooms": [{"room_id": room.room_id, "cadence": "corrupt"}],
+    }
+
+    state = manager.cadence_editor_state("serial", "home", room)
+
+    assert state == {
+        "cadence": None,
+        "cadence_progress": None,
+        "cadence_reasons": ["invalid_cadence_policy"],
+    }
+    with pytest.raises(ValueError, match="room cadence must be an object"):
+        manager.resolve_cadence("serial", "home", [room])
+
+
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_late_native_completion_advances_shared_schedule_exactly_once(
     hass,

@@ -25,7 +25,7 @@ from custom_components.matic_robot.client.coverage_goals import (
     coverage_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
-from custom_components.matic_robot.client.models import FloorPlan
+from custom_components.matic_robot.client.models import FloorPlan, RobotActivity
 from custom_components.matic_robot.client.wire import bytes_fields, first_bytes
 from tests.wire_builders import _field
 
@@ -187,8 +187,12 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     client._async_send_user_payload = AsyncMock(side_effect=send)
     client.async_get_cleaning_session_identity = AsyncMock(side_effect=lambda: identity)
     client.async_get_state = AsyncMock(
-        return_value=SimpleNamespace(
-            activity=SimpleNamespace(value="cleaning"), current_area="First"
+        side_effect=lambda: SimpleNamespace(
+            activity=RobotActivity.CLEANING if identity else RobotActivity.READY,
+            cleaning=bool(identity),
+            error_codes=(),
+            state_codes=(),
+            current_area="First" if identity else None,
         )
     )
     client.async_get_floor_plan = AsyncMock(return_value=floor)

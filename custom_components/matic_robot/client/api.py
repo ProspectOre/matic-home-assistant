@@ -1327,8 +1327,16 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         expected_goals = Counter(coverage_command_goal_signatures(commands.update))
         require_current()
-        if await self.async_get_cleaning_session_identity() != b"":
+        baseline_identity = await self.async_get_cleaning_session_identity()
+        if baseline_identity is None:
+            raise MaticError("Native task identity is unavailable before coverage")
+        active = await self.async_get_active_cleaning_session_state()
+        if active is None:
+            raise MaticError("Native task activity is unavailable before coverage")
+        if active:
             raise MaticError("Mixed coverage requires an idle native session")
+        if await self.async_get_cleaning_session_identity() != baseline_identity:
+            raise MaticError("Native mission changed before coverage")
         require_current()
         if checkpoint_initial_session is not None:
             await checkpoint_initial_session(
@@ -1343,13 +1351,22 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 while True:
                     require_current()
                     identity = await self.async_get_cleaning_session_identity()
-                    if identity and uuid_string(identity) != commands.session_id:
+                    state = await self.async_get_state()
+                    if identity and identity != baseline_identity:
+                        if uuid_string(identity) != commands.session_id:
+                            raise MaticError(
+                                "Native mission changed before coverage update"
+                            )
+                    elif identity and identity == baseline_identity and state.cleaning:
+                        # A retained completed identity is allowed at dispatch,
+                        # but it cannot establish ownership of a newly active
+                        # task. Fail closed if cleaning resumes under that key.
                         raise MaticError(
                             "Native mission changed before coverage update"
                         )
-                    state = await self.async_get_state()
                     if (
                         identity
+                        and identity != baseline_identity
                         and state.activity.value == "cleaning"
                         and room_name_key(state.current_area)
                         == room_name_key(first_room_name)

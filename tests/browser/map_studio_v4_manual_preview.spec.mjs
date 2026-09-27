@@ -195,7 +195,7 @@ test("@safety keeps manual selection and plan drafts within the service room lim
   }));
   await page.goto("/");
   const result = await page.evaluate(async () => {
-    const { MAX_ROOM_SEQUENCE_SIZE, WorkspaceStore, createGalleryState } = await import("/room-state-limit-test.js");
+    const { MAX_ROOM_SEQUENCE_SIZE, WorkspaceStore, createGalleryState, manualRoomPreviewKey } = await import("/room-state-limit-test.js");
     const room = (roomId) => ({ roomId, cleaningMode: "vacuum", coverageSetting: "standard" });
     const selected = Array.from({ length: MAX_ROOM_SEQUENCE_SIZE - 1 }, (_, index) => room(`room-${index + 1}`));
     const base = createGalleryState("ready");
@@ -206,6 +206,14 @@ test("@safety keeps manual selection and plan drafts within the service room lim
     });
     manual.dispatch({ type: "toggle-room", roomId: "room-100" });
     manual.dispatch({ type: "toggle-room", roomId: "room-101" });
+    const invalidManual = new WorkspaceStore({
+      ...manual.value,
+      selection: {
+        ...manual.value.selection,
+        roomIds: [...manual.value.selection.roomIds, "room-101"],
+        roomSettings: [...manual.value.selection.roomSettings, room("room-101")],
+      },
+    });
 
     const plan = new WorkspaceStore({
       ...base,
@@ -219,11 +227,49 @@ test("@safety keeps manual selection and plan drafts within the service room lim
     } });
     return {
       manualCount: manual.value.selection.roomIds.length,
+      oversizedPreviewKey: manualRoomPreviewKey(invalidManual.value),
       planCount: plan.value.planDraft.rooms.length,
       limit: MAX_ROOM_SEQUENCE_SIZE,
     };
   });
-  expect(result).toEqual({ manualCount: 100, planCount: 100, limit: 100 });
+  expect(result).toEqual({ manualCount: 100, oversizedPreviewKey: null, planCount: 100, limit: 100 });
+});
+
+test("@safety allows only a strict subset reduction when patching an oversized saved plan", async ({ page }) => {
+  await page.route("**/legacy-draft-limit-test.js", (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { WorkspaceStore, createGalleryState } = await import("/legacy-draft-limit-test.js");
+    const rooms = Array.from({ length: 102 }, (_, index) => ({
+      roomId: `legacy-room-${index + 1}`, cleaningMode: "vacuum", coverageSetting: "standard",
+    }));
+    const savedPlan = {
+      id: "legacy-plan", name: "Legacy", enabled: true, runBehavior: "ordered", rooms,
+      roomOrder: rooms.map(room => room.roomId), returnToBase: true, finishCurrentRoom: false,
+      finishCurrentRoomThreshold: 50,
+    };
+    const base = createGalleryState("ready");
+    const initial = {
+      ...base, workflow: "plan",
+      resources: { ...base.resources, plans: { status: "ready", value: { ...base.resources.plans.value, plans: [savedPlan] }, problem: null } },
+      planDraft: { ...base.planDraft, id: savedPlan.id, name: savedPlan.name, rooms, dirty: false },
+    };
+    const legacy = new WorkspaceStore(initial);
+    legacy.dispatch({ type: "patch-plan-draft", patch: { rooms: rooms.slice(1) } });
+    const afterReduction = legacy.value.planDraft.rooms.length;
+    legacy.dispatch({ type: "patch-plan-draft", patch: { rooms } });
+
+    const fresh = new WorkspaceStore({ ...initial, planDraft: { ...initial.planDraft, id: null, name: "New plan" } });
+    fresh.dispatch({ type: "patch-plan-draft", patch: { rooms: rooms.slice(0, 101) } });
+    return {
+      reducedCount: afterReduction,
+      rejectedReadditionCount: legacy.value.planDraft.rooms.length,
+      oversizedNewPlanCount: fresh.value.planDraft.rooms.length,
+    };
+  });
+  expect(result).toEqual({ reducedCount: 101, rejectedReadditionCount: 101, oversizedNewPlanCount: 102 });
 });
 
 test("@safety serializes concurrent requests and skips an aborted queued waiter", async ({ page }) => {
