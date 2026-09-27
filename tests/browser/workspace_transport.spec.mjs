@@ -219,8 +219,35 @@ test("recovers a sequence gap from a fresh snapshot and replays racing updates",
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
 });
 
-test("authorization failure stops snapshot retries", async ({ page }) => {
+test("initial authorization retries once at the steady interval and restores the stream", async ({ page }) => {
   await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([value, recoveryValue]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(recoveryValue);
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+
+  expect(await page.evaluate(() => ({ snapshotCalls: window.workspaceHarness.snapshotCalls,
+    subscribeCalls: window.workspaceHarness.subscribeCalls }))).toEqual({ snapshotCalls: 1, subscribeCalls: 0 });
+  await page.clock.fastForward(29_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(1);
+  expect(await page.evaluate(() => window.workspaceHarness.subscribeCalls)).toBe(0);
+
+  await page.clock.fastForward(1_000);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.status.reason))).toEqual(["authorization", null]);
+  expect(await page.evaluate(() => ({ snapshotCalls: window.workspaceHarness.snapshotCalls,
+    subscribeCalls: window.workspaceHarness.subscribeCalls }))).toEqual({ snapshotCalls: 2, subscribeCalls: 1 });
+  await page.evaluate(value => window.workspaceHarness.callback(value), invalidate(1));
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").length)).toBe(1);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("authorization failure retries only at the steady interval", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
   await page.evaluate(async value => { const p = window.workspaceHarness.transport.start(); window.workspaceHarness.snapshotResolve(value); await p; }, snapshot(0));
   await page.evaluate(() => {
     const h = window.workspaceHarness;
@@ -229,8 +256,126 @@ test("authorization failure stops snapshot retries", async ({ page }) => {
       coherence_generation: 1, revisions: { workspace: 2 }, resources: ["state"] });
   });
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("authorization");
-  await page.waitForTimeout(700);
+  await page.clock.fastForward(29_000);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.clock.fastForward(1_000);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCallTimes[2] - window.workspaceHarness.snapshotCallTimes[1])).toBeGreaterThanOrEqual(30_000);
+  await page.clock.fastForward(29_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("authorization clears a queued invalidation before its flush microtask", async ({ page }) => {
+  await load(page);
+  await page.evaluate(async ([value, invalidation]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+    h.callback(invalidation);
+    h.callback({ type: "resync", reason: "authorization" });
+    await new Promise(resolve => queueMicrotask(resolve));
+    await new Promise(resolve => queueMicrotask(resolve));
+  }, [snapshot(0), invalidate(1)]);
+
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("authorization");
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").length)).toBe(0);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("an authorization probe waits for an obsolete read, then recovers from a fresh snapshot", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([initialSnapshot, gap]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(initialSnapshot);
+    await start;
+    h.deferRecoverySnapshot();
+    h.callback(gap);
+  }, [snapshot(0), invalidate(2)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+
+  await page.evaluate(() => window.workspaceHarness.callback({ type: "resync", reason: "authorization" }));
+  await page.clock.fastForward(30_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(value => window.workspaceHarness.callback(value), invalidate(3));
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").length)).toBe(0);
+
+  await page.evaluate(([freshSnapshot, obsoleteSnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(freshSnapshot);
+    h.resolveRecoverySnapshot(obsoleteSnapshot);
+  }, [snapshot(2), snapshot(1)]);
+  await page.clock.fastForward(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").map(event => event.invalidation.sequence))).toEqual([3]);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("authorization during an auth probe invalidates its ready response and keeps one steady probe", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([authorizationSnapshot, recoverySnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(recoverySnapshot);
+    const start = h.transport.start();
+    h.snapshotResolve(authorizationSnapshot);
+    await start;
+  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+
+  await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
+  await page.clock.fastForward(30_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(() => window.workspaceHarness.callback({ type: "resync", reason: "authorization" }));
+  await page.evaluate(([freshSnapshot, obsoleteSnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(freshSnapshot);
+    h.resolveRecoverySnapshot(obsoleteSnapshot);
+  }, [snapshot(2), snapshot(1)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.status.reason))).toEqual(["authorization"]);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+
+  await page.clock.fastForward(29_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.clock.fastForward(1_000);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.status.reason))).toEqual(["authorization", null]);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("reconnect supersedes a deferred auth probe with one immediate fresh snapshot", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([authorizationSnapshot, recoverySnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(recoverySnapshot);
+    const start = h.transport.start();
+    h.snapshotResolve(authorizationSnapshot);
+    await start;
+  }, [{ ...snapshot(0), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }, snapshot(0)]);
+
+  await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
+  await page.clock.fastForward(30_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(([freshSnapshot, obsoleteSnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(freshSnapshot);
+    h.transport.notifyReconnect();
+    h.resolveRecoverySnapshot(obsoleteSnapshot);
+  }, [snapshot(2), { ...snapshot(1), status: { state: "unavailable", reason: "authorization", retryable: false }, payload: { available: false } }]);
+
+  await page.clock.fastForward(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.status.reason))).toEqual(["authorization", null]);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.clock.fastForward(100);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
 });
 
 test("explicit resync gets one immediate attempt without bypassing steady backoff", async ({ page }) => {
@@ -248,8 +393,9 @@ test("explicit resync gets one immediate attempt without bypassing steady backof
   await page.evaluate(() => window.workspaceHarness.transport.dispose());
 });
 
-test("subscription authorization cancels delayed recovery until reconnect", async ({ page }) => {
+test("reconnect cancels the delayed authorization probe and recovers immediately", async ({ page }) => {
   await load(page);
+  await page.clock.install();
   await exhaustSnapshotRetries(page);
   await page.evaluate(() => {
     const h = window.workspaceHarness;
@@ -257,7 +403,9 @@ test("subscription authorization cancels delayed recovery until reconnect", asyn
     h.callback({ type: "resync", reason: "authorization" });
   });
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("authorization");
-  await page.clock.fastForward(30_000);
+  await page.evaluate(value => window.workspaceHarness.callback(value), invalidate(1));
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "invalidation").length)).toBe(0);
+  await page.clock.fastForward(100);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(5);
 
   await page.evaluate(value => {
@@ -268,6 +416,8 @@ test("subscription authorization cancels delayed recovery until reconnect", asyn
   await page.clock.fastForward(0);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
   expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([6]);
+  await page.clock.fastForward(100);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
   await page.evaluate(() => window.workspaceHarness.transport.dispose());
 });
 
@@ -444,7 +594,7 @@ test("authorization cancels capped overflow recovery and clears its marker", asy
   await page.evaluate(() => window.workspaceHarness.rejectRecoverySnapshot(Object.assign(new Error("denied"), { code: "unauthorized" })));
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("authorization");
 
-  await page.clock.fastForward(30_000);
+  await page.clock.fastForward(29_000);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
   await page.evaluate(value => {
     const h = window.workspaceHarness;

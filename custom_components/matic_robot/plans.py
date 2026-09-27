@@ -1226,6 +1226,20 @@ class CleaningPlanManager:
         generation: int | None = None,
     ) -> bool:
         """Import native activity and reconcile only the matching pending room."""
+        async with self.plan_write_lock(serial_number):
+            return await self._async_import_native_history(
+                serial_number, floor_plan, records, generation=generation
+            )
+
+    async def _async_import_native_history(
+        self,
+        serial_number: str,
+        floor_plan: FloorPlan | None,
+        records: Iterable[CleaningSessionRecord],
+        *,
+        generation: int | None,
+    ) -> bool:
+        """Import and reconcile native history under the plan-write lock."""
         if floor_plan is None:
             return False
         # Serialize removal with history persistence without making the
@@ -3007,6 +3021,25 @@ class CleaningPlanManager:
         precedence over wall-clock tracking so one multi-room leg mission can
         credit each verified room with the robot's own per-room timing.
         """
+        async with self.plan_write_lock(serial_number):
+            await self._async_mark_completed(
+                serial_number,
+                plan_id,
+                room,
+                completed_at=completed_at,
+                duration_seconds=duration_seconds,
+            )
+
+    async def _async_mark_completed(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        completed_at: str | None = None,
+        duration_seconds: int | None = None,
+    ) -> None:
+        """Credit verified completion while owning the plan-write transaction."""
         now_value = dt_util.utcnow()
         robot = self._robot(serial_number)
         before = deepcopy(robot)
@@ -3150,6 +3183,29 @@ class CleaningPlanManager:
         only to the exact pending dispatch captured by that runner and is
         therefore safe against later or superseding native sessions.
         """
+        async with self.plan_write_lock(serial_number):
+            return await self._async_mark_native_completed(
+                serial_number,
+                plan_id,
+                room,
+                dispatched_at=dispatched_at,
+                completed_at=completed_at,
+                duration_seconds=duration_seconds,
+                room_identity=room_identity,
+            )
+
+    async def _async_mark_native_completed(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room: CleaningRoom,
+        *,
+        dispatched_at: datetime,
+        completed_at: str | None = None,
+        duration_seconds: int | None = None,
+        room_identity: str | None = None,
+    ) -> bool:
+        """Reconcile late completion while owning the plan-write transaction."""
         robot = self._robot(serial_number)
         before = deepcopy(robot)
         pending = _validated_native_reconciliation(

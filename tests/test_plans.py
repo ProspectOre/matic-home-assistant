@@ -4076,6 +4076,135 @@ async def test_failed_plan_save_preserves_overlapping_mutation(hass) -> None:
     assert persisted[-1]["selected_plan"] == "home"
 
 
+async def test_failed_reordered_plan_save_serializes_completion_cadence_credit(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    original_plan = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "name": room.name,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": room.coverage_setting,
+                "cadence": {
+                    "scope": "plan",
+                    "mop_every_n": 2,
+                    "do_mop_next": True,
+                },
+            },
+            {
+                "room_id": "room-b",
+                "name": "Office",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            },
+        ],
+    }
+    await manager.async_save_plan("serial", "home", original_plan)
+    effective_rooms, snapshots = manager.resolve_cadence("serial", "home", [room])
+    cadence = snapshots[room.room_id]
+    assert cadence["mop_due"] is True
+    room = effective_rooms[0]
+    assert room.cleaning_mode == "vacuum_and_mop"
+    await manager.async_begin_run(
+        "serial", "home", "run-one-shot", 2, trigger="user", service="test"
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        "run-one-shot",
+        {
+            "cadence_by_room": {room.room_id: cadence},
+            "completed_room_ids": [],
+        },
+    )
+
+    save_started = asyncio.Event()
+    release_save = asyncio.Event()
+    persisted: list[dict] = []
+
+    async def fail_reordered_save(data) -> None:
+        persisted.append(deepcopy(data["robots"]["serial"]))
+        if len(persisted) == 1:
+            save_started.set()
+            await release_save.wait()
+            raise OSError("synthetic reordered plan save failure")
+
+    manager._store.async_save = AsyncMock(side_effect=fail_reordered_save)
+    edited_plan = {
+        **original_plan,
+        "name": "Failed rename",
+        "rooms": list(reversed(original_plan["rooms"])),
+    }
+    plan_save = asyncio.create_task(
+        manager.async_save_plan("serial", "home", edited_plan)
+    )
+    await asyncio.wait_for(save_started.wait(), timeout=1)
+
+    completion_started = asyncio.Event()
+
+    async def complete_room() -> None:
+        completion_started.set()
+        await manager.async_mark_completed("serial", "home", room)
+
+    completion = asyncio.create_task(complete_room())
+    await asyncio.wait_for(completion_started.wait(), timeout=1)
+    await asyncio.sleep(0)
+    try:
+        assert not completion.done()
+        in_flight_robot = manager._robot("serial")
+        in_flight_room = next(
+            item
+            for item in in_flight_robot["plans"]["home"]["rooms"]
+            if item["room_id"] == room.room_id
+        )
+        assert in_flight_room["cadence"]["do_mop_next"] is True
+        assert (
+            in_flight_robot["rooms"].get(room.room_id, {}).get("completed_runs", 0) == 0
+        )
+        assert (
+            in_flight_robot["last_run"]["recovery_checkpoint"]["completed_room_ids"]
+            == []
+        )
+        assert persisted[0]["plans"]["home"]["name"] == "Failed rename"
+        assert [item["room_id"] for item in persisted[0]["plans"]["home"]["rooms"]] == [
+            "room-b",
+            "room-a",
+        ]
+    finally:
+        release_save.set()
+
+    save_result, completion_result = await asyncio.gather(
+        plan_save, completion, return_exceptions=True
+    )
+
+    assert isinstance(save_result, OSError)
+    assert completion_result is None
+    robot = manager._robot("serial")
+    assert robot["plans"]["home"]["name"] == "Home"
+    assert [item["room_id"] for item in robot["plans"]["home"]["rooms"]] == [
+        "room-a",
+        "room-b",
+    ]
+    room_policy = robot["plans"]["home"]["rooms"][0]["cadence"]
+    assert room_policy["do_mop_next"] is False
+    assert robot["last_run"]["recovery_checkpoint"]["completed_room_ids"] == [
+        room.room_id
+    ]
+    assert robot["rooms"][room.room_id]["completed_runs"] == 1
+    assert len(persisted) == 2
+    assert persisted[-1]["plans"]["home"]["name"] == "Home"
+    assert [item["room_id"] for item in persisted[-1]["plans"]["home"]["rooms"]] == [
+        "room-a",
+        "room-b",
+    ]
+    assert persisted[-1]["plans"]["home"]["rooms"][0]["cadence"]["do_mop_next"] is False
+    assert persisted[-1]["rooms"][room.room_id]["completed_runs"] == 1
+
+
 async def test_active_plan_only_locks_cadence_for_its_current_room(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

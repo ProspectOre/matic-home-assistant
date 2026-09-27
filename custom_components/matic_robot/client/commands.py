@@ -101,13 +101,16 @@ def encode_coverage_command(
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
     ordered: bool = False,
     command_id_factory: Callable[[], UUID] = uuid4,
+    session_id: UUID | None = None,
     _region_settings: Sequence[CoverageSetting] | None = None,
     _region_modes: Sequence[CleaningMode] | None = None,
 ) -> bytes:
     """Encode a verified normal coverage command.
 
-    UUIDs are used for command bookkeeping only. The active mission, partition,
-    and region identifiers come from the robot.
+    UUIDs are used for command bookkeeping only. ``session_id`` pins the
+    verified field-6 session identity when a tracked caller must prove which
+    new native task accepted this command. The active mission, partition, and
+    region identifiers come from the robot.
     """
     if not 0 <= mission_id <= 0xFFFFFFFF:
         raise ValueError("mission_id must fit in an unsigned 32-bit integer")
@@ -150,7 +153,15 @@ def encode_coverage_command(
         _field(2, _field(2, _field(1, b"")))
         + _field(3, _fixed32(2, mission_id))
         + _field(5, goals)
-        + _field(6, _field(2, _wrapped_uuid(str(command_id_factory()))))
+        + _field(
+            6,
+            _field(
+                2,
+                _wrapped_uuid(
+                    str(session_id if session_id is not None else command_id_factory())
+                ),
+            ),
+        )
         + _field(7, _field(1, _wrapped_uuid(str(command_id_factory()))))
     )
     return _field(15, _field(1, _field(3, coverage)))

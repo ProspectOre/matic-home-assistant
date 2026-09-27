@@ -132,15 +132,16 @@ class _PreparedRoomDispatch:
 def _mark_dispatch_coverage_verified(
     checkpoint: dict[str, Any], dispatch: _PreparedRoomDispatch
 ) -> None:
-    """Bind native setting-readback evidence to the dispatched room snapshots."""
+    """Record matching current-goal readback for this attributed dispatch."""
     cadence_checkpoint = checkpoint.get("cadence_by_room")
     if not isinstance(cadence_checkpoint, dict):
         return
     for room in dispatch.rooms:
         cadence_state = cadence_checkpoint.get(room.room_id)
         if isinstance(cadence_state, dict):
-            # The vacuum command returns only after native settings readback
-            # matches, so this is evidence that periodic coverage was retained.
+            # The command returns only after the exact active-session identity
+            # and current goal values match. Hermes exposes no plan generation,
+            # so this is value consistency, not an atomic plan-version proof.
             cadence_state["coverage_setting_verified"] = True
 
 

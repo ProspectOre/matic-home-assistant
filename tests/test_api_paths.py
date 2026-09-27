@@ -46,6 +46,7 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     MappedFloor,
     RobotActivity,
+    RobotOperationalState,
     RobotTrajectory,
 )
 from custom_components.matic_robot.client.proto.hermes_auth_pb2 import TokenRequest
@@ -1730,6 +1731,7 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     client = MaticHermesClient("robot.invalid", 16320)
     client._async_send_channel_payload = AsyncMock()
     client.async_get_cleaning_session_identity = AsyncMock(return_value=b"")
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(107))
     client._async_wait_for_coverage_readback = AsyncMock()
     with caplog.at_level("DEBUG"):
         await client.async_send_user_command(UserCommand.STOP)
@@ -1765,16 +1767,74 @@ async def test_command_wrappers_encode_and_route(monkeypatch, caplog) -> None:
     )
 
 
+def _operational_state_for_codes(*codes, error_codes=()):
+    return RobotOperationalState(
+        battery_percentage=None,
+        state_codes=tuple(codes),
+        error_codes=tuple(error_codes),
+        charging_idle=106 in codes,
+        charging=107 in codes,
+        low_charge=False,
+        paused=any(code in codes for code in (120, 200, 302)),
+        cleaning=119 in codes,
+        returning=104 in codes,
+    )
+
+
+async def test_tracked_coverage_allows_retained_identity_when_charging():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"retained-native-session"
+    )
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(107))
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    await client.async_start_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        require_settings_readback=True,
+    )
+
+    client._async_send_user_payload.assert_awaited_once()
+    client._async_wait_for_coverage_readback.assert_awaited_once()
+    assert (
+        client._async_wait_for_coverage_readback.await_args.kwargs[
+            "pre_dispatch_identity"
+        ]
+        == b"retained-native-session"
+    )
+
+
 @pytest.mark.parametrize(
-    ("identity", "message"),
+    ("state", "message"),
     [
-        (None, "identity is unavailable"),
-        (b"existing-session", "requires an idle native session"),
+        (_operational_state_for_codes(119), "requires an idle native session"),
+        (_operational_state_for_codes(120), "requires an idle native session"),
+        (_operational_state_for_codes(104), "activity is unavailable"),
+        (_operational_state_for_codes(999), "activity is unavailable"),
+        (_operational_state_for_codes(104, 119), "activity is unavailable"),
+        (_operational_state_for_codes(106, 119), "activity is unavailable"),
+        (_operational_state_for_codes(106, 999), "activity is unavailable"),
+        (
+            _operational_state_for_codes(104, error_codes=("synthetic-error",)),
+            "activity is unavailable",
+        ),
     ],
 )
-async def test_tracked_coverage_requires_verified_idle_session(identity, message):
+async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, message):
     client = MaticHermesClient("robot.invalid", 16320)
-    client.async_get_cleaning_session_identity = AsyncMock(return_value=identity)
+    client.async_get_cleaning_session_identity = AsyncMock(
+        return_value=b"retained-native-session"
+    )
+    client.async_get_state = AsyncMock(return_value=state)
     client._async_send_user_payload = AsyncMock()
     client._async_wait_for_coverage_readback = AsyncMock()
 
@@ -1794,6 +1854,78 @@ async def test_tracked_coverage_requires_verified_idle_session(identity, message
 
     client._async_send_user_payload.assert_not_awaited()
     client._async_wait_for_coverage_readback.assert_not_awaited()
+
+
+async def test_tracked_coverage_rejects_unavailable_identity_before_state_read():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(return_value=None)
+    client.async_get_state = AsyncMock()
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    with pytest.raises(MaticError, match="identity is unavailable"):
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.QUICK,
+            require_settings_readback=True,
+        )
+
+    client.async_get_state.assert_not_awaited()
+    client._async_send_user_payload.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
+
+
+async def test_tracked_coverage_rejects_identity_change_before_dispatch():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"prior-session", b"external-session"]
+    )
+    client.async_get_state = AsyncMock(return_value=_operational_state_for_codes(107))
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    with pytest.raises(MaticError, match="mission changed before coverage"):
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.QUICK,
+            require_settings_readback=True,
+        )
+
+    client._async_send_user_payload.assert_not_awaited()
+    client._async_wait_for_coverage_readback.assert_not_awaited()
+
+
+async def test_untracked_coverage_skips_managed_identity_and_readback_guards():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+
+    await client.async_start_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+    )
+
+    client._async_send_user_payload.assert_awaited_once()
 
 
 async def test_get_slam_tile_entry_reads_one_rgb_map_entry() -> None:

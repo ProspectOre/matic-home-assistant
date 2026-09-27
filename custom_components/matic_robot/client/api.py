@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from time import monotonic
 from types import TracebackType
 from typing import Any, cast
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from google.protobuf.message import DecodeError
 from grpclib.client import Channel, Stream
@@ -71,6 +71,7 @@ from .models import (
     CuesVoiceStatus,
     FloorPlan,
     HermesCollectionEntry,
+    RobotActivity,
     RobotInfo,
     RobotOperationalState,
     RobotPose,
@@ -725,6 +726,33 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             return None
         return payload if present else b""
 
+    async def async_get_active_cleaning_session_state(self) -> bool | None:
+        """Derive task activity from the vetted robot operational snapshot.
+
+        The opaque active-session key can remain visible after its native task
+        has ended. Keep that identity for ownership checks, and use the
+        independently decoded ``kabuki_state`` snapshot to decide whether a
+        task is still active. Unknown state codes and reported errors fail
+        closed.
+        """
+        state = await self.async_get_state()
+        if state.error_codes:
+            return None
+        # The high-level activity model can give a settled flag precedence
+        # over dormant task or unknown status codes. Treat compound snapshots
+        # as ambiguous instead of maintaining a second state-code registry.
+        if len(state.state_codes) > 1:
+            return None
+        activity = state.activity
+        if activity in (RobotActivity.CLEANING, RobotActivity.PAUSED):
+            return True
+        if activity in (
+            RobotActivity.DOCKED,
+            RobotActivity.CHARGING,
+        ) or (activity is RobotActivity.READY and not state.state_codes):
+            return False
+        return None
+
     async def async_get_cleaning_session_records(
         self,
         *,
@@ -1228,6 +1256,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         require_settings_readback: bool = False,
     ) -> None:
         """Start an exact normal-coverage command for local room IDs."""
+        session_id = uuid4() if require_settings_readback else None
         payload = encode_coverage_command(
             mission_id=floor_plan.mission_id,
             partition_id=floor_plan.partition_protocol_id,
@@ -1235,17 +1264,30 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             cleaning_mode=cleaning_mode,
             coverage_setting=coverage_setting,
             ordered=ordered,
+            session_id=session_id,
         )
         if require_settings_readback:
-            identity = await self.async_get_cleaning_session_identity()
-            if identity is None:
+            baseline_identity = await self.async_get_cleaning_session_identity()
+            if baseline_identity is None:
                 raise MaticError("Native task identity is unavailable before coverage")
-            if identity:
+            active = await self.async_get_active_cleaning_session_state()
+            if active is None:
+                raise MaticError("Native task activity is unavailable before coverage")
+            if active:
                 raise MaticError("Normal coverage requires an idle native session")
+            if await self.async_get_cleaning_session_identity() != baseline_identity:
+                raise MaticError("Native mission changed before coverage")
+        else:
+            baseline_identity = None
         await self._async_send_user_payload(payload, command_name="START_COVERAGE")
         if require_settings_readback:
+            assert baseline_identity is not None
+            assert session_id is not None
             await self._async_wait_for_coverage_readback(
-                Counter(coverage_command_goal_signatures(payload)), floor_plan
+                Counter(coverage_command_goal_signatures(payload)),
+                floor_plan,
+                pre_dispatch_identity=baseline_identity,
+                expected_session_id=str(session_id),
             )
 
     async def async_start_mixed_coverage(
@@ -1425,8 +1467,18 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         self,
         expected_goals: Counter[tuple[str, int, int, int, int]],
         floor_plan: FloorPlan,
+        *,
+        pre_dispatch_identity: bytes,
+        expected_session_id: str,
     ) -> None:
-        """Require the current native task and floor to retain requested goals."""
+        """Require the generated session and observe matching active-goal values.
+
+        The coverage plan has no verified generation marker. Correlate it only
+        after the active-session key matches the UUID encoded in field 6 of the
+        dispatched command, then verify that identity remains stable around
+        the goal and floor reads. This proves dispatch attribution and observed
+        value consistency, not an atomic plan-generation snapshot.
+        """
         deadline = monotonic() + _MIXED_COVERAGE_READBACK_TIMEOUT
         observed_identity: bytes | None = None
         async with asyncio.timeout(_MIXED_COVERAGE_READBACK_TIMEOUT):
@@ -1434,36 +1486,80 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
                 identity = await self.async_get_cleaning_session_identity()
                 if identity is None:
                     raise MaticError("Native task identity became unavailable")
-                if identity:
+                if identity and identity != pre_dispatch_identity:
+                    try:
+                        observed_session_id = uuid_string(identity)
+                    except DecodeError as err:
+                        raise MaticError(
+                            "Native task identity cannot be correlated to coverage"
+                        ) from err
+                    if observed_session_id != expected_session_id:
+                        raise MaticError(
+                            "Native mission does not match dispatched coverage"
+                        )
                     if observed_identity is None:
                         observed_identity = identity
                     elif identity != observed_identity:
                         raise MaticError(
                             "Native mission changed during coverage readback"
                         )
-                    try:
-                        actual_goals = Counter(
-                            coverage_plan_goal_signatures(
-                                await self.async_get_property("coverage_plan")
+                    active = await self.async_get_active_cleaning_session_state()
+                    if active is True:
+                        try:
+                            actual_goals = Counter(
+                                coverage_plan_goal_signatures(
+                                    await self.async_get_property("coverage_plan")
+                                )
                             )
-                        )
-                    except DecodeError:
-                        actual_goals = Counter()
-                    if coverage_readback_matches(expected_goals, actual_goals):
-                        if await self.async_get_cleaning_session_identity() != identity:
-                            raise MaticError(
-                                "Native mission changed during coverage readback"
-                            )
-                        latest_floor = await self.async_get_floor_plan()
-                        if _floor_command_identity(
-                            latest_floor
-                        ) != _floor_command_identity(floor_plan):
-                            raise MaticError(
-                                "Room map changed during coverage readback"
-                            )
-                        return
+                        except DecodeError:
+                            actual_goals = Counter()
+                        if coverage_readback_matches(expected_goals, actual_goals):
+                            if (
+                                await self.async_get_cleaning_session_identity()
+                                != identity
+                            ):
+                                raise MaticError(
+                                    "Native mission changed during coverage readback"
+                                )
+                            if (
+                                await self.async_get_active_cleaning_session_state()
+                                is not True
+                            ):
+                                raise MaticError(
+                                    "Native mission became inactive during "
+                                    "coverage readback"
+                                )
+                            latest_floor = await self.async_get_floor_plan()
+                            if _floor_command_identity(
+                                latest_floor
+                            ) != _floor_command_identity(floor_plan):
+                                raise MaticError(
+                                    "Room map changed during coverage readback"
+                                )
+                            # Recheck both live guards after the floor await;
+                            # leave identity last so ownership is freshest at
+                            # the point we accept readback.
+                            if (
+                                await self.async_get_active_cleaning_session_state()
+                                is not True
+                            ):
+                                raise MaticError(
+                                    "Native mission became inactive during "
+                                    "coverage readback"
+                                )
+                            if (
+                                await self.async_get_cleaning_session_identity()
+                                != identity
+                            ):
+                                raise MaticError(
+                                    "Native mission changed during coverage readback"
+                                )
+                            return
                 if monotonic() >= deadline:
-                    raise MaticError("Robot did not retain requested coverage settings")
+                    raise MaticError(
+                        "Robot did not report requested settings with the "
+                        "dispatched active session"
+                    )
                 await asyncio.sleep(_MIXED_COVERAGE_READBACK_INTERVAL)
 
     async def async_start_custom_coverage(
