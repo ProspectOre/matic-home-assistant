@@ -322,6 +322,49 @@ test("explicit resync requests coalesce with the snapshot already in flight", as
   await page.evaluate(() => window.workspaceHarness.transport.dispose());
 });
 
+test("explicit resync keeps its immediate retry when the in-flight read fails", async ({ page }) => {
+  await load(page);
+  await exhaustSnapshotRetries(page);
+  await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
+  await page.clock.fastForward(30_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
+
+  await page.evaluate(() => {
+    const h = window.workspaceHarness;
+    h.transport.requestResync("restart");
+    h.rejectRecoverySnapshot(new Error("coordinator unavailable"));
+  });
+  await page.clock.fastForward(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("explicit resync stays immediate when its in-flight snapshot is stale", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([initialSnapshot, firstInvalidation, gap]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(initialSnapshot);
+    await start;
+    h.callback(firstInvalidation);
+    h.deferRecoverySnapshot();
+    h.callback(gap);
+  }, [snapshot(0), invalidate(1), invalidate(3)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.transport.requestResync("restart");
+    h.resolveRecoverySnapshot(value);
+  }, snapshot(0));
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("snapshot_required");
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
 test("semantic snapshot rejection uses bounded retry instead of an immediate loop", async ({ page }) => {
   await load(page);
   await page.clock.install();

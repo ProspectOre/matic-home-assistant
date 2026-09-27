@@ -224,6 +224,7 @@ export class WorkspaceTransport {
   #recoveryGeneration = 0;
   // One explicit immediate attempt per retry episode; bursts cannot bypass steady backoff.
   #forcedRecoveryUsed = false;
+  #immediateRetryAfterRead = false;
   #acceptingSnapshot = false;
   #resyncDuringSnapshot = false;
   #retryTimer: number | null = null;
@@ -446,7 +447,10 @@ export class WorkspaceTransport {
         this.#scheduleFailedRecovery(forceImmediate);
         return;
       }
-      if (immediate && this.#recovering) return;
+      if (immediate && this.#recovering) {
+        if (forceImmediate) this.#immediateRetryAfterRead = true;
+        return;
+      }
       const delay = this.#retryAttempt >= MAX_SNAPSHOT_RETRIES ? SNAPSHOT_RETRY_STEADY_INTERVAL_MS : 0;
       this.#scheduleRecovery(forceImmediate ? 0 : delay, forceImmediate);
     }
@@ -518,6 +522,10 @@ export class WorkspaceTransport {
       if (!this.#resyncDuringSnapshot) {
         this.#retryAttempt = 0;
         this.#forcedRecoveryUsed = false;
+        this.#immediateRetryAfterRead = false;
+      } else if (this.#immediateRetryAfterRead) {
+        this.#immediateRetryAfterRead = false;
+        this.#scheduleRecovery(0, true);
       }
       if (!recovering && !this.#disposed) await this.#ensureSubscription();
       if (this.#bufferOverflowed) {
@@ -531,7 +539,9 @@ export class WorkspaceTransport {
         this.#stopRecoveryForAuthorization();
         this.#options.onEvent({ type: "resync", reason: "authorization" });
       } else {
-        this.#scheduleFailedRecovery();
+        const retryImmediately = this.#immediateRetryAfterRead;
+        this.#immediateRetryAfterRead = false;
+        this.#scheduleFailedRecovery(retryImmediately);
       }
     } finally {
       this.#recovering = false;
@@ -603,6 +613,7 @@ export class WorkspaceTransport {
     this.#recoveryAfterRead = null;
     this.#retryAttempt = 0;
     this.#forcedRecoveryUsed = false;
+    this.#immediateRetryAfterRead = false;
   }
 
   #report(error: unknown): void {
