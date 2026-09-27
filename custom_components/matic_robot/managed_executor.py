@@ -111,6 +111,11 @@ class RoomRunOutcome(StrEnum):
     ROOM_CHANGED = "room_changed"
 
 
+type LegOutcomeWaiter = Callable[
+    ..., Awaitable[tuple[RoomRunOutcome, CleaningRoom | None]]
+]
+
+
 @dataclass(frozen=True, slots=True)
 class _PreparedRoomDispatch:
     """Describe a next-leg command issued during the prior leg's return."""
@@ -864,6 +869,7 @@ async def _async_run_leg(
     recovered_suspend_reason: str | None = None,
     expected_dispatch_identity: bytes | None = None,
     expected_dispatch_history: frozenset[str] | None = None,
+    wait_for_leg_outcome: LegOutcomeWaiter | None = None,
 ) -> bool:
     """Run one mission leg and credit only natively verified rooms.
 
@@ -1039,7 +1045,7 @@ async def _async_run_leg(
                 while True:
                     outcome, changed_room = await _async_wait_with_native_identity(
                         partial(
-                            _async_wait_for_leg_outcome,
+                            wait_for_leg_outcome or _async_wait_for_leg_outcome,
                             hass,
                             entity_id,
                             leg,
@@ -2730,6 +2736,7 @@ async def _async_execute_rooms_reserved(
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
+    wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     _prepared_run_id: str,
     validate_prepared_run: Callable[[], None] | None = None,
 ) -> None:
@@ -3048,6 +3055,7 @@ async def _async_execute_rooms_reserved(
                         if recovery is not None and index == checkpoint["leg_index"]
                         else None
                     ),
+                    wait_for_leg_outcome=wait_for_leg_outcome,
                 )
                 expected_dispatch_identity = None
                 if not completion_verified:
@@ -3463,6 +3471,7 @@ async def _async_execute_rooms(
     recovery: dict[str, Any] | None = None,
     recovered_dispatch: _PreparedRoomDispatch | None = None,
     handoff_expected_identity: bytes | None = None,
+    wait_for_leg_outcome: LegOutcomeWaiter | None = None,
     validate_prepared_run: Callable[[], None] | None = None,
 ) -> None:
     """Reserve queued cadence synchronously, then execute the prepared run."""
@@ -3529,6 +3538,7 @@ async def _async_execute_rooms(
             recovery=recovery,
             recovered_dispatch=recovered_dispatch,
             handoff_expected_identity=handoff_expected_identity,
+            wait_for_leg_outcome=wait_for_leg_outcome,
             _prepared_run_id=run_id,
             validate_prepared_run=validate_prepared_run,
         )

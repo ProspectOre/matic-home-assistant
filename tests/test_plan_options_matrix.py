@@ -15,8 +15,11 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.managed_executor import (
+    RoomRunOutcome,
+    _async_execute_rooms,
+)
 from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
-from custom_components.matic_robot.services import RoomRunOutcome, _async_execute_rooms
 
 LAYOUTS = (
     (("mop", "quick"), ("mop", "standard"), ("mop", "heavy_duty")),
@@ -36,7 +39,7 @@ LAYOUTS = (
 @pytest.mark.parametrize("finish_current_room", (False, True))
 @pytest.mark.parametrize("threshold", (0, 50, 100))
 async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
-    hass, monkeypatch, layout, selection, return_to_base, finish_current_room, threshold
+    hass, layout, selection, return_to_base, finish_current_room, threshold
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -151,10 +154,6 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
             hass.states.async_set("vacuum.matic", "idle")
 
     hass.services.async_register("vacuum", "send_command", send)
-    monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_leg_outcome",
-        observe_terminal,
-    )
     dock = AsyncMock()
     await _async_execute_rooms(
         hass,
@@ -162,8 +161,7 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         manager,
         "vacuum.matic",
         "serial",
-        rooms,
-        intelligent=selection == "intelligent",
+        expected,
         active_session=AsyncMock(return_value=False),
         session_history=history,
         confirm_room_completed=confirm,
@@ -172,6 +170,7 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         floor_is_current=lambda: True,
         floor_token="a" * 64,
         session_identity=AsyncMock(side_effect=lambda: identity),
+        wait_for_leg_outcome=observe_terminal,
     )
     assert len(commands) == 1
     assert confirmed == [r.name for r in expected]
