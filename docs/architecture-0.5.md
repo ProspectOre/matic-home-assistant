@@ -116,7 +116,10 @@ across an ambiguous identity change.
 
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy
 identity and cadence snapshot, before dispatch. Manual and saved-plan starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the frozen run. Only a unique, verified managed room completion advances
-progress. Partial, interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate,
+progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to match
+before comparing goals. Hermes exposes no verified `coverage_plan` generation, so this is value consistency,
+not an atomic plan-version proof; keep it explicit until protocol/runtime evidence establishes freshness.
+Partial, interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate,
 or ambiguous floor/name evidence does not. Keep the bounded 64-key completion receipt dedupe independent of the Activity journal.
 Delayed native reconciliation uses the original run identity and
 exact requested mode/coverage. A due rule stays due until its own evidence passes. A Map Studio one-off room
