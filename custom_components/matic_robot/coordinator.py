@@ -611,9 +611,9 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             floor_plan = self._cached_floor_plan
             refresh_due = now + UPDATE_INTERVAL_SECONDS
 
-        # Apply the same post-await admission to successful reads and cached
-        # fallbacks. A newer mission must reject both an old response and an
-        # old cached plan that became unavailable while the read was pending.
+        # Apply post-await identity admission to successful reads and cached
+        # fallbacks. A stale read can retain a published map only when its
+        # mission and mapped-floor signature still match the current display.
         current_expected_mission_id = self.expected_floor_mission_id
         if (
             self._floor_read_generation != read_generation
@@ -627,6 +627,25 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             )
         ):
             self._map_refresh_due = 0.0
+            published_floor_plan = (
+                self.data.floor_plan if self.data is not None else None
+            )
+            if (
+                published_floor_plan is not None
+                and published_floor_plan.mission_id == self._displayed_floor_mission_id
+                and published_floor_plan.mapped_floors
+                == self._displayed_floor_signature
+                and (
+                    current_expected_mission_id is None
+                    or published_floor_plan.mission_id == current_expected_mission_id
+                )
+            ):
+                # A concurrent identity event can revoke this read while
+                # confirming that the already-published map is still exact.
+                # Keep that verified map visible while the replacement read
+                # is queued; a changed floor signature still fails closed.
+                self._cached_floor_plan = published_floor_plan
+                return published_floor_plan
             return None
         self._map_refresh_due = refresh_due
         self._cached_floor_plan = floor_plan
