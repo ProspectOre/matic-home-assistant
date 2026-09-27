@@ -23,11 +23,13 @@ async function load(page) {
     let recoverySnapshotResolve;
     let recoverySnapshotReject;
     let snapshotCalls = 0;
+    const snapshotCallTimes = [];
     let recoverySnapshot;
     let subscribeCalls = 0;
     let subscribeFailures = 0;
     const replayOnSubscribe = [];
     let snapshotReject;
+    let onEventHook = () => {};
     const snapshot = new Promise((resolve, reject) => { snapshotResolve = resolve; snapshotReject = reject; });
     const connection = {
       subscribeMessage: async (cb) => {
@@ -37,18 +39,19 @@ async function load(page) {
         for (const event of replayOnSubscribe.splice(0)) callback(event);
         return () => { unsubscribed += 1; };
       },
-      sendMessagePromise: async () => { snapshotCalls += 1; return snapshotCalls === 1 ? snapshot : recoverySnapshot; },
+      sendMessagePromise: async () => { snapshotCalls += 1; snapshotCallTimes.push(performance.now()); return snapshotCalls === 1 ? snapshot : recoverySnapshot; },
     };
-    const transport = new WorkspaceTransport(connection, { entryId: "synthetic", onEvent: event => events.push(event), onError: error => errors.push(error.message), maxPendingInvalidations: 3 });
+    const transport = new WorkspaceTransport(connection, { entryId: "synthetic", onEvent: event => { events.push(event); onEventHook(event); }, onError: error => errors.push(error.message), maxPendingInvalidations: 3 });
     window.workspaceHarness = { callback: value => callback(value), events, errors, snapshotResolve,
       rejectInitialSnapshot: error => snapshotReject(error),
+      setOnEventHook: hook => { onEventHook = hook; },
       setRecoverySnapshot: value => { recoverySnapshot = value; },
       queueBeforeSubscribe: value => replayOnSubscribe.push(value),
       failNextSubscriptions: count => { subscribeFailures = count; },
       deferRecoverySnapshot: () => { recoverySnapshot = new Promise((resolve, reject) => { recoverySnapshotResolve = resolve; recoverySnapshotReject = reject; }); },
       resolveRecoverySnapshot: value => recoverySnapshotResolve?.(value), transport,
       rejectRecoverySnapshot: error => recoverySnapshotReject?.(error),
-      get snapshotCalls() { return snapshotCalls; }, get subscribeCalls() { return subscribeCalls; }, get unsubscribed() { return unsubscribed; } };
+      get snapshotCalls() { return snapshotCalls; }, get snapshotCallTimes() { return snapshotCallTimes; }, get subscribeCalls() { return subscribeCalls; }, get unsubscribed() { return unsubscribed; } };
     return true;
   });
 }
@@ -73,6 +76,8 @@ async function exhaustSnapshotRetries(page) {
     h.rejectInitialSnapshot(new Error("coordinator unavailable"));
   });
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(1);
+  // Let the rejected read finish its catch/finally path before advancing fake time.
+  await page.evaluate(() => new Promise(resolve => queueMicrotask(resolve)));
   for (const [delay, expectedCalls] of [[0, 1], [250, 2], [500, 3], [1000, 4], [2000, 5]]) {
     if (delay) await page.clock.fastForward(delay);
     await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(expectedCalls);
@@ -228,6 +233,115 @@ test("authorization failure stops snapshot retries", async ({ page }) => {
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
 });
 
+test("explicit resync gets one immediate attempt without bypassing steady backoff", async ({ page }) => {
+  await load(page);
+  await exhaustSnapshotRetries(page);
+  await page.evaluate(() => window.workspaceHarness.transport.requestResync("restart"));
+  await page.clock.fastForward(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(6);
+  await page.evaluate(() => window.workspaceHarness.transport.requestResync("server_request"));
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
+  await page.clock.fastForward(30_000);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("subscription authorization cancels delayed recovery until reconnect", async ({ page }) => {
+  await load(page);
+  await exhaustSnapshotRetries(page);
+  await page.evaluate(() => {
+    const h = window.workspaceHarness;
+    h.transport.requestResync("server_request");
+    h.callback({ type: "resync", reason: "authorization" });
+  });
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("authorization");
+  await page.clock.fastForward(30_000);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(5);
+
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(value);
+    h.transport.notifyReconnect();
+  }, snapshot(6));
+  await page.clock.fastForward(0);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([6]);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("authorization invalidates an in-flight snapshot across reconnect", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([value, gap]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(value);
+    await start;
+    h.deferRecoverySnapshot();
+    h.callback(gap);
+  }, [snapshot(0), invalidate(2)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(() => window.workspaceHarness.callback({ type: "resync", reason: "authorization" }));
+  await page.evaluate(value => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(value);
+    h.transport.notifyReconnect();
+  }, snapshot(2));
+  await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), snapshot(1));
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(3);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("explicit resync requests coalesce with the snapshot already in flight", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([initialSnapshot, gap]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(initialSnapshot);
+    await start;
+    h.deferRecoverySnapshot();
+    h.callback(gap);
+  }, [snapshot(0), invalidate(2)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(() => {
+    const h = window.workspaceHarness;
+    h.transport.requestResync("restart");
+    h.transport.requestResync("server_request");
+  });
+  await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), snapshot(2));
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([0, 2]);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("semantic snapshot rejection uses bounded retry instead of an immediate loop", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([value, initialSnapshot]) => {
+    const h = window.workspaceHarness;
+    h.setRecoverySnapshot(value);
+    h.setOnEventHook(event => {
+      if (event.type === "snapshot") h.transport.requestResync("restart");
+    });
+    const start = h.transport.start();
+    h.snapshotResolve(initialSnapshot);
+    await start;
+  }, [snapshot(1), snapshot(0)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.clock.fastForward(30);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
 for (const authorizationSource of ["snapshot", "transport error"]) {
   test(`authorization after overflow clears deferred recovery from a ${authorizationSource}`, async ({ page }) => {
     await load(page);
@@ -245,6 +359,7 @@ for (const authorizationSource of ["snapshot", "transport error"]) {
     await page.evaluate(values => {
       for (const value of values) window.workspaceHarness.callback(value);
     }, [3, 4, 5, 6].map(sequence => invalidate(sequence)));
+    await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("overflow");
 
     if (authorizationSource === "snapshot") {
       await page.evaluate(value => window.workspaceHarness.resolveRecoverySnapshot(value), {
@@ -317,6 +432,47 @@ test("snapshot recovery continues at a bounded interval after its retry budget",
   await page.clock.fastForward(2_000);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);
   expect(await page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toEqual([1]);
+  await page.evaluate(() => window.workspaceHarness.transport.dispose());
+});
+
+test("overflow during every failed snapshot cannot bypass retry backoff", async ({ page }) => {
+  await load(page);
+  await page.clock.install();
+  await page.evaluate(async ([initialSnapshot, gap]) => {
+    const h = window.workspaceHarness;
+    const start = h.transport.start();
+    h.snapshotResolve(initialSnapshot);
+    await start;
+    h.deferRecoverySnapshot();
+    h.callback(gap);
+  }, [snapshot(0), invalidate(2)]);
+  await page.clock.fastForward(0);
+  expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
+
+  const failWithOverflow = async (call, firstSequence) => {
+    await page.evaluate(values => values.forEach(value => window.workspaceHarness.callback(value)),
+      Array.from({ length: 4 }, (_, index) => invalidate(firstSequence + index)));
+    await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "resync").map(event => event.reason))).toContain("overflow");
+    await page.evaluate(() => window.workspaceHarness.rejectRecoverySnapshot(new Error("temporary snapshot failure")));
+    await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(call - 1);
+    await page.clock.fastForward(0);
+    expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(call);
+  };
+  await failWithOverflow(2, 3);
+
+  for (const [delay, call, firstSequence] of [[250, 3, 7], [500, 4, 11], [1000, 5, 15], [2000, 6, 19]]) {
+    await page.evaluate(() => window.workspaceHarness.deferRecoverySnapshot());
+    await page.clock.fastForward(delay);
+    expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(call);
+    await failWithOverflow(call, firstSequence);
+  }
+
+  const lastFailureTime = await page.evaluate(() => window.workspaceHarness.snapshotCallTimes[5]);
+  await page.clock.fastForward(29_999);
+  const callTimes = await page.evaluate(() => window.workspaceHarness.snapshotCallTimes);
+  expect(callTimes[6] - lastFailureTime).toBeGreaterThanOrEqual(30_000);
+  await page.clock.fastForward(1);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);
   await page.evaluate(() => window.workspaceHarness.transport.dispose());
 });
 

@@ -220,6 +220,12 @@ export class WorkspaceTransport {
   #disposed = false;
   #resyncing = false;
   #recovering = false;
+  #authorizationBlocked = false;
+  #recoveryGeneration = 0;
+  // One explicit immediate attempt per retry episode; bursts cannot bypass steady backoff.
+  #forcedRecoveryUsed = false;
+  #acceptingSnapshot = false;
+  #resyncDuringSnapshot = false;
   #retryTimer: number | null = null;
   #recoveryAfterRead: number | null = null;
   #retryAttempt = 0;
@@ -255,15 +261,17 @@ export class WorkspaceTransport {
 
   notifyReconnect(): void {
     this.#retryAttempt = 0;
+    this.#forcedRecoveryUsed = false;
+    this.#authorizationBlocked = false;
     if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
     this.#retryTimer = null;
     this.requestResync("reconnect");
-    this.#scheduleRecovery(0);
+    if (this.#recovering) this.#scheduleRecovery(0, true);
   }
 
   /** Tell the owner to obtain a fresh snapshot through its effect lifecycle. */
   requestResync(reason: WorkspaceResyncReason = "server_request"): void {
-    this.#requestResync(reason);
+    this.#requestResync(reason, true);
   }
 
   dispose(): void {
@@ -407,22 +415,54 @@ export class WorkspaceTransport {
     this.#options.onEvent({ type: "invalidation", invalidation: { ...latest, resources } });
   }
 
-  #requestResync(reason: WorkspaceResyncReason): void {
-    if (this.#disposed || this.#resyncing) return;
-    this.#resyncing = true;
-    this.#options.onEvent({ type: "resync", reason });
-    queueMicrotask(() => { this.#resyncing = false; });
-    if (reason !== "authorization" && reason !== "entry_removed") {
+  #requestResync(reason: WorkspaceResyncReason, immediate = false): void {
+    if (this.#disposed) return;
+    if (reason === "authorization") {
+      this.#stopRecoveryForAuthorization();
+      this.#options.onEvent({ type: "resync", reason });
+      return;
+    }
+    if (this.#authorizationBlocked) return;
+    if (!this.#resyncing) {
+      this.#resyncing = true;
+      this.#options.onEvent({ type: "resync", reason });
+      queueMicrotask(() => { this.#resyncing = false; });
+    }
+    if (reason !== "entry_removed") {
+      const forceImmediate = immediate && !this.#forcedRecoveryUsed;
+      if (forceImmediate) {
+        this.#forcedRecoveryUsed = true;
+      }
+      if (forceImmediate && this.#retryTimer !== null) {
+        window.clearTimeout(this.#retryTimer);
+        this.#retryTimer = null;
+      }
+      if (this.#acceptingSnapshot) {
+        if (this.#resyncDuringSnapshot) {
+          if (forceImmediate) this.#scheduleRecovery(0, true);
+          return;
+        }
+        this.#resyncDuringSnapshot = true;
+        this.#scheduleFailedRecovery(forceImmediate);
+        return;
+      }
+      if (immediate && this.#recovering) return;
       const delay = this.#retryAttempt >= MAX_SNAPSHOT_RETRIES ? SNAPSHOT_RETRY_STEADY_INTERVAL_MS : 0;
-      this.#scheduleRecovery(delay);
+      this.#scheduleRecovery(forceImmediate ? 0 : delay, forceImmediate);
     }
   }
 
-  #scheduleRecovery(delay: number): void {
+  #scheduleRecovery(delay: number, immediate = false): void {
     if (this.#disposed) return;
-    if (this.#retryTimer !== null) return;
+    if (this.#retryTimer !== null) {
+      if (!immediate) return;
+      window.clearTimeout(this.#retryTimer);
+      this.#retryTimer = null;
+    }
     if (this.#recovering) {
-      this.#recoveryAfterRead = delay;
+      this.#recoveryAfterRead = immediate
+        ? delay
+        : Math.max(this.#recoveryAfterRead ?? 0, delay);
       return;
     }
     this.#retryTimer = window.setTimeout(() => {
@@ -431,20 +471,29 @@ export class WorkspaceTransport {
     }, delay);
   }
 
+  #scheduleFailedRecovery(immediate = false): void {
+    const delay = this.#retryAttempt >= MAX_SNAPSHOT_RETRIES
+      ? SNAPSHOT_RETRY_STEADY_INTERVAL_MS
+      : Math.min(SNAPSHOT_RETRY_BASE_MS * 2 ** this.#retryAttempt, SNAPSHOT_RETRY_MAX_MS);
+    if (this.#retryAttempt < MAX_SNAPSHOT_RETRIES) this.#retryAttempt += 1;
+    this.#scheduleRecovery(immediate ? 0 : delay, immediate);
+  }
+
   async #readSnapshot(recovering: boolean): Promise<void> {
     if (this.#disposed || this.#recovering) return;
+    const generation = this.#recoveryGeneration;
     this.#recovering = true;
     try {
       // Recovery snapshots are taken under the existing live subscription;
       // initial startup deliberately snapshots first and then replays.
       if (recovering) await this.#ensureSubscription();
-      if (this.#disposed) return;
+      if (this.#disposed || this.#authorizationBlocked || generation !== this.#recoveryGeneration) return;
       const value = await this.#connection.sendMessagePromise<unknown>({
         type: "matic_robot/workspace_snapshot",
         version: WORKSPACE_PROTOCOL_VERSION,
         entry_id: this.#options.entryId,
       });
-      if (this.#disposed) return;
+      if (this.#disposed || this.#authorizationBlocked || generation !== this.#recoveryGeneration) return;
       const snapshot = parseSnapshot(value, this.#options.entryId);
       if (!snapshot) throw new Error("invalid-workspace-snapshot");
       if (snapshot.status.reason === "authorization") {
@@ -458,26 +507,31 @@ export class WorkspaceTransport {
       // The read has established a sequence point. Replay the bounded event
       // buffer through the normal sequence validator, not back into itself.
       this.#recovering = false;
-      if (recovering) this.#acceptRecoveredSnapshot(snapshot);
-      else this.#acceptInitialSnapshot(snapshot);
+      this.#acceptingSnapshot = true;
+      this.#resyncDuringSnapshot = false;
+      try {
+        if (recovering) this.#acceptRecoveredSnapshot(snapshot);
+        else this.#acceptInitialSnapshot(snapshot);
+      } finally {
+        this.#acceptingSnapshot = false;
+      }
+      if (!this.#resyncDuringSnapshot) {
+        this.#retryAttempt = 0;
+        this.#forcedRecoveryUsed = false;
+      }
       if (!recovering && !this.#disposed) await this.#ensureSubscription();
-      this.#retryAttempt = 0;
       if (this.#bufferOverflowed) {
         this.#bufferOverflowed = false;
         this.#requestResync("overflow");
       }
     } catch (error) {
-      if (this.#disposed) return;
+      if (this.#disposed || this.#authorizationBlocked || generation !== this.#recoveryGeneration) return;
       this.#report(error);
       if (this.#isAuthorizationError(error)) {
         this.#stopRecoveryForAuthorization();
         this.#options.onEvent({ type: "resync", reason: "authorization" });
-      } else if (this.#retryAttempt < MAX_SNAPSHOT_RETRIES) {
-        const delay = Math.min(SNAPSHOT_RETRY_BASE_MS * 2 ** this.#retryAttempt, SNAPSHOT_RETRY_MAX_MS);
-        this.#retryAttempt += 1;
-        this.#scheduleRecovery(delay);
       } else {
-        this.#scheduleRecovery(SNAPSHOT_RETRY_STEADY_INTERVAL_MS);
+        this.#scheduleFailedRecovery();
       }
     } finally {
       this.#recovering = false;
@@ -540,10 +594,15 @@ export class WorkspaceTransport {
   }
 
   #stopRecoveryForAuthorization(): void {
+    this.#recoveryGeneration += 1;
+    this.#authorizationBlocked = true;
+    if (this.#retryTimer !== null) window.clearTimeout(this.#retryTimer);
+    this.#retryTimer = null;
     this.#buffer = [];
     this.#bufferOverflowed = false;
     this.#recoveryAfterRead = null;
     this.#retryAttempt = 0;
+    this.#forcedRecoveryUsed = false;
   }
 
   #report(error: unknown): void {
