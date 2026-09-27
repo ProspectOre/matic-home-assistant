@@ -970,7 +970,20 @@ async def test_owned_update_sent_once(mixed_client):
 
 async def test_explicit_session_id_reaches_both_mixed_writes(mixed_client):
     client, _, args = mixed_client
-    session_id = UUID("33333333-3333-4333-8333-333333333333")
+    # Keep this distinct from _deterministic_mixed_commands' fallback UUID so
+    # the test fails if async_start_mixed_coverage drops the explicit value.
+    session_id = UUID("77777777-7777-4777-8777-777777777777")
+    identity = _wrapped_uuid(str(session_id))
+    identity_reads = 0
+
+    async def read_explicit_session_identity():
+        nonlocal identity_reads
+        identity_reads += 1
+        return b"" if identity_reads == 1 else identity
+
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=read_explicit_session_identity
+    )
     args["session_id"] = session_id
 
     await client.async_start_mixed_coverage(**args)
