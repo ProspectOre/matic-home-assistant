@@ -447,8 +447,6 @@ export class MaticBackend {
     let timeout: number | null = null;
     let rejectAbort: (reason: DOMException) => void = () => {};
     const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
-    const abort = (): void => rejectAbort(new DOMException("Aborted", "AbortError"));
-    signal?.addEventListener("abort", abort, { once: true });
     const previous = this.#roomPreviewWireInFlight.get(connection);
     let releaseTurn!: () => void;
     const turn = new Promise<void>((resolve) => { releaseTurn = resolve; });
@@ -463,6 +461,15 @@ export class MaticBackend {
       }
     };
     let wireStarted = false;
+    const abort = (): void => {
+      rejectAbort(new DOMException("Aborted", "AbortError"));
+      if (wireStarted) {
+        release();
+        if (timeout !== null) window.clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    signal?.addEventListener("abort", abort, { once: true });
     // The deadline includes time spent in the FIFO queue. A queued timeout
     // rejects that caller immediately, but only an active wire turn can release
     // itself here; queued turns release after their predecessor in finally.

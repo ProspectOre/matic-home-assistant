@@ -331,6 +331,98 @@ test("@safety a timed-out preview releases its turn without letting its late res
     callsAfterAbortedDeadline: 5, callsAfterLateAbortedFirst: 5, fifthToken: "e".repeat(64), totalCalls: 5 });
 });
 
+test("@safety aborting an active preview releases its FIFO turn before its wire settles", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-preview-abort-turn-test.js", [1_000]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const backend = h.createBackend();
+    const { args, calls, pending, response, waitForCalls } = h;
+    try {
+      const canceled = new AbortController();
+      const first = backend.previewRoomSequence(...args, canceled.signal)
+        .then(() => "resolved", error => error.name);
+      await waitForCalls(1);
+      const second = backend.previewRoomSequence(...args).then(value => value.previewToken);
+      const third = backend.previewRoomSequence(...args).then(value => value.previewToken);
+
+      canceled.abort();
+      const firstError = await first;
+      await waitForCalls(2);
+      const callsBeforeLateFirst = calls.length;
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const callsAfterLateFirst = calls.length;
+      pending[1](response("b"));
+      const secondToken = await second;
+      await waitForCalls(3);
+      pending[2](response("c"));
+      const thirdToken = await third;
+      return { firstError, callsBeforeLateFirst, callsAfterLateFirst, secondToken, thirdToken, totalCalls: calls.length };
+    } finally {
+      backend.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "AbortError", callsBeforeLateFirst: 2, callsAfterLateFirst: 2,
+    secondToken: "b".repeat(64), thirdToken: "c".repeat(64), totalCalls: 3 });
+});
+
+test("@safety aborted unresolved previews stay charged against the wire cap until each settles", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-preview-abort-wire-cap-test.js", [1_000]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const backend = h.createBackend();
+    const { args, calls, pending, response, waitForCalls } = h;
+    try {
+      const firstAbort = new AbortController();
+      const first = backend.previewRoomSequence(...args, firstAbort.signal)
+        .then(() => "resolved", error => error.name === "AbortError" ? error.name : error.code ?? error.name);
+      await waitForCalls(1);
+      const secondAbort = new AbortController();
+      const second = backend.previewRoomSequence(...args, secondAbort.signal)
+        .then(() => "resolved", error => error.name === "AbortError" ? error.name : error.code ?? error.name);
+
+      firstAbort.abort();
+      const firstError = await first;
+      await waitForCalls(2);
+      secondAbort.abort();
+      const secondError = await second;
+      const blockedBeforeSettle = await backend.previewRoomSequence(...args)
+        .then(() => "resolved", error => error.code ?? error.name);
+      const callsAtCap = calls.length;
+
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const retryAbort = new AbortController();
+      const retry = backend.previewRoomSequence(...args, retryAbort.signal)
+        .then(() => "resolved", error => error.name === "AbortError" ? error.name : error.code ?? error.name);
+      await waitForCalls(3);
+      retryAbort.abort();
+      const retryError = await retry;
+      const blockedWithOneSlotUsed = await backend.previewRoomSequence(...args)
+        .then(() => "resolved", error => error.code ?? error.name);
+      const callsAfterRetry = calls.length;
+
+      pending[1](response("b"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const retryAfterSecondSettle = backend.previewRoomSequence(...args).then(value => value.previewToken);
+      await waitForCalls(4);
+      pending[2](response("c"));
+      pending[3](response("d"));
+      const retryAfterSecondSettleToken = await retryAfterSecondSettle;
+      return { firstError, secondError, blockedBeforeSettle, callsAtCap, blockedWithOneSlotUsed,
+        callsAfterRetry, retryError, retryAfterSecondSettleToken, totalCalls: calls.length };
+    } finally {
+      pending.forEach((resolve, index) => resolve(response(String.fromCharCode(97 + index))));
+      backend.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "AbortError", secondError: "AbortError", blockedBeforeSettle: "preview-unavailable",
+    callsAtCap: 2, blockedWithOneSlotUsed: "preview-unavailable", callsAfterRetry: 3,
+    retryError: "AbortError", retryAfterSecondSettleToken: "d".repeat(64), totalCalls: 4 });
+});
+
 test("@safety a queued preview deadline expires without breaking the FIFO reservation", async ({ page }) => {
   await setupPreviewWireHarness(page, "backend-queued-preview-timeout-test.js", [90, 25, 500, 500]);
   const result = await page.evaluate(async () => {
