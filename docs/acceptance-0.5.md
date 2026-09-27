@@ -8,7 +8,7 @@ verified” means v0.4.5 regressions remain covered, not every 0.5 scenario. “
 
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
-- Candidate source `e4fa147` builds on `8b96419`, `170e804`, and `main` at
+- Candidate source `9c03bfe` builds on `8b96419`, `170e804`, and `main` at
   `52166df`; HACS and Python package metadata both say `0.5.0`. The `8b96419`
   baseline passed 3,513 Python tests at 100% (15,754 statements), Ruff, format,
   strict mypy (61 files), privacy, frontend typecheck/build, and diff checks.
@@ -18,11 +18,12 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   actual settlement. Malformed cadence, legacy repair, save serialization, and
   coherence/cancellation regressions remain covered.
 - Packaged-panel recovery saves/reads/reopens the 100-room repair in
-  Chromium/WebKit. The prior full local browser matrix passed 782/784; both
-  WebKit page-load timeouts passed isolated. Six focused preview
-  timeout/abort/cap cases pass in Chromium, WebKit, and Firefox safety (18
-  project cases). Paired size/input/heap evidence is in [performance-0.5.md](performance-0.5.md).
-  Final-head CI and clean regular review remain required before merge.
+  Chromium/WebKit. Six focused preview timeout/abort/cap cases pass in
+  Chromium, WebKit, and Firefox safety (18 project cases); the snapshot adapter
+  suite passes all eight Chromium cases, including first-snapshot loss, fencing,
+  catalog recovery, and later invalidation. Paired size/input/heap evidence is
+  in [performance-0.5.md](performance-0.5.md). Final-head CI and clean regular
+  review remain required before merge.
 - The prior Python CI collection failure came from an inherited test importing
   `RoomRunOutcome` through `services` after its canonical ownership moved to
   `managed_executor`. The matrix now imports the owner and injects a typed waiter
@@ -36,15 +37,6 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   change the immutable draft. Generation, tool, permission, and baseline changes
   reject obsolete edits. Independent local review identified the preview/store
   ownership defect; cancellation and retained-draft regressions cover its repair.
-- Historical head `fd4796c` passed required checks, 740 browser cases, Hassfest/HACS,
-  and clean regular review after two repaired finding rounds. Wheel/sdist/fresh-install
-  checks matched its 91 integration files. Later changes require refreshed review;
-  RC runtime and physical acceptance remain separate.
-- At prior source head `acbdbc0`, Hassfest and HACS passed; its Python check failed
-  at collection and browser passed. The canonical review coordinator requires
-  diagnosis of prior findings before requesting a fresh exact-head regular review.
-  Final CI and regular review must qualify the current evidence head; merge gates
-  remain open.
 - The [paired performance comparison](performance-0.5.md) records the current
   compiled asset fingerprints, identical synthetic scenes, size/input
   measurements, and unresolved task-duration gate. Desktop lab measurements do
@@ -55,9 +47,11 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 - One policy path supplies preview and dispatch. Queued-room reservations,
   frozen Stop policy, retry, and stale-response rejection have regressions.
   The snapshot projects the bounded selected-entry REST catalog; degraded health
-  closes edits/motion without a generation change or spatial reload. Status
-  invalidations refresh only the catalog. Transport stays off until live parity,
-  resource budgets, and switchover evidence pass.
+  closes edits/motion without a generation change or spatial reload. An empty,
+  unverified initial snapshot now advances the fence, closes pose/edit/motion,
+  and revalidates the catalog before controls recover. Status invalidations
+  refresh only the catalog. Transport stays off until live parity, resource
+  budgets, and switchover evidence pass.
 - Exact-candidate install, owner walkthrough, assistive technology, physical
   Android/iOS, live transport baseline, and robot acceptance remain open.
   Review-infrastructure #138 remains blocked on the shared policy in dev-workspace
@@ -76,7 +70,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 | Room/list parity, accessible forms for every new behavior, map-space drawing, geometry invariance, and precision envelope | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Every cadence/setup/recovery/history action works without map input; numeric zoom, explicit Pan, focal zoom, scale bar, brush cursor, pointer cancellation, 100/400/1000% zoom, 0.20–2.50 m brush, undo, and no accidental paint. |
 | Explicit room-sequence bound | Implementation required | New plans, cleaning, command options, and previews enforce 100 rooms; legacy plans up to the parser bound can only be saved through strict monotonic reduction with unique existing room IDs | Python service coverage proves equal-size replacement and duplicate IDs fail, 102→101→100 succeeds, new 101-room plans fail, and malformed persisted room containers can be replaced safely. Packaged-panel browser coverage now reduces 102 rooms to 100, submits and reads back the 100-room plan, and reopens it. Exact-candidate compatibility and owner recovery walkthrough remain open. Whole-floor commands preserve their existing behavior. |
 | HA semantics, safe areas, RTL, localization, zoom/reflow, reduced motion, forced colors, and screen readers | Preserved and verified (baseline) | Settled light/dark Axe scans report zero serious/critical findings in Ready and cadence-edit states across Chromium, WebKit, Firefox safety, and mobile emulation; manual acceptance remains open | The scan uses reduced-motion emulation to make theme auditing deterministic and drove selected-control and secondary-text contrast fixes. Custom HA theme combinations, RTL, localization with 2.5× text expansion, safe areas, 200/400% zoom, VoiceOver/NVDA, and broader assistive-technology coverage remain open. Confirm HA-native tokens and supported panel interfaces, local dependency bundling, and capability-tested internal HA component fallbacks. |
-| Shell, lazy workflows/diagnostics, input, main-thread, frame, memory, and GPU budgets | Preserved and verified (baseline) | Bundle/input budgets pass; task-duration and runtime acceptance open | Same-condition paired desktop journeys and split-chunk measurements are in performance-0.5.md. Current headless candidate input p95 is 32 ms in all three runs with no ≥50 ms task; prior 58/59 ms single-run outliers did not recur. Keep the task-duration gate open because three clean lab samples do not establish routine behavior. A separate trusted-pointer follow-up verifies canceled-draft preservation but records a 147 ms compositor wait; headed samples have no routine task above 50 ms. These lab samples do not establish mobile or sustained runtime acceptance. The synthetic gallery is excluded from production; harness and panel share compiled modules. Tablet/live baseline, ≥55/≥30 fps, and heap/GPU stability remain unmeasured. |
+| Shell, lazy workflows/diagnostics, input, main-thread, frame, memory, and GPU budgets | Preserved and verified (baseline) | Bundle/input budgets pass; task-duration and runtime acceptance open | Same-condition paired desktop journeys and split-chunk measurements are in performance-0.5.md. Across six candidate runs, input p95 is 32 ms and no task reached 50 ms; one of six baseline runs recorded a 50 ms task. Keep the task-duration gate open because these lab samples do not establish routine behavior. A separate trusted-pointer follow-up verifies canceled-draft preservation but records a 147 ms compositor wait; headed samples have no routine task above 50 ms. These results do not establish mobile or sustained runtime acceptance. The synthetic gallery is excluded from production; harness and panel share compiled modules. Tablet/live baseline, ≥55/≥30 fps, and heap/GPU stability remain unmeasured. |
 | Worker fallback, bounded parsing, transferable buffers, incremental uploads, WebGL loss, and cleanup | Preserved and verified (baseline) | Parser boundaries and fallback/disposal regressions pass; runtime acceptance open | Five local tests cover no-worker fallback, worker error recovery, transfer ownership, six idempotent dispose cycles, and real-worker 1.5M accept/1.500001M reject. A connected-admin lifecycle regression adds 20 real plan/draw/history/floor transitions and unmounts: workers and object URLs balance, popstate listeners return to zero, and late floor results cannot revive disposed state. Decompression/WebGL runtime failures and bounded heap/GPU remain unverified. |
 | HA adapter avoids unrelated fetch/store/render churn | Preserved and verified (baseline) | Local 100-update regression passes; sustained runtime acceptance open | 100 sequential unrelated HA state replacements produce zero workspace commits, panel updates/renders, or service calls. Sustained 100 updates/s and live HA instrumentation remain unmeasured. |
 | Local-only privacy, admin access, pinned identity, bounded data, and redaction | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Auth loss, hostile payload/geometry, multi-entry isolation, diagnostics allowlist, privacy scan, and no private identifiers/maps in evidence; candidate unknown. |
@@ -91,7 +85,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 | Tracked Map Studio room run uses managed safety/accounting | Implementation required | Local policy/accounting regressions pass; runtime acceptance open | Ephemeral room run is an explicit opt-in that keeps existing service behavior compatible; shared schedule, override, identity, and readback have tests. A service-to-history regression proves custom-area completion can update room opportunity without advancing shared cadence. OEM and physical starts receive no cadence credit. Stop/dock, restart, native proof, and exact HACS candidate remain open. |
 | Setup, onboarding, first-clean guidance, robot/entry selection, activity, firmware, offline, support, and recovery journeys | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Exercise zero/one/multiple robots, isolated multi-robot selection, pairing and reauthentication, first successful clean guidance, firmware drift, HA/robot offline, permissions, entry removal, and actionable support/recovery; candidate unknown. |
 | Security/resource backlog and review-gate prerequisite | Implementation required | Partial local worktree evidence; parity and release acceptance open | Before opening the 0.5 implementation PR, the open inventory contained only #138, the external review-gate prerequisite. The source roadmap’s former 22-open-security-PR count and PR list are historical and must not be treated as current open work. The #138 source prerequisite is dev-workspace #48; its shared fix is now on head `83deb0d`, with Canonical policy tests pending. #138 remains at `1064d58` and is held because regular-review quota is exhausted. New review/inline capture still needs the existing signed relay/support #326 path and live provenance proof; default-branch issue-comment events have a trusted native path. The #48 batch distinguishes authorized human review requests from connector runs, including foreign jobless failures. A generic `CHANGES_REQUESTED` parent with only a visible Security-marked child remains adverse because current signed receipts do not prove the complete child set or gap-free history. Keep that path fail-closed until an authenticated exact-head child manifest and delivery-completeness proof exist. Preserve unresolved finding history; do not qualify unsigned workflow logs or routing tests as capture evidence. Exact-head review/CI, privacy/packaging/Hassfest/HACS and resource checks remain separate. |
-| Required repository and frontend checks | Implementation required | Baseline Python/static/privacy gates pass on `8b96419`; 38 release tests and focused browser regressions pass on `e4fa147`; final-head CI and regular review pending; release acceptance open | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy check; packaging parity; Hassfest; HACS validation. Record exact candidate, command/CI run, result, and any waiver; none is established by test counts alone. |
+| Required repository and frontend checks | Implementation required | Baseline Python/static/privacy gates pass on `8b96419`; 38 release tests and focused browser regressions pass on `9c03bfe`; exact-head CI and regular review pending; release acceptance open | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy check; packaging parity; Hassfest; HACS validation. Record exact candidate, command/CI run, result, and any waiver; none is established by test counts alone. |
 | Bluetooth proxy pairing | Deferred with rationale | Outside 0.5 scope | Proxy bonding is unsupported; direct host adapter remains the supported pairing boundary. |
 | New guessed robot commands, cloud services, wholesale redesign, and mutation API replacement | Deferred with rationale | Outside 0.5 scope | No demonstrated 0.5 need; retain vetted commands and HA service boundary. Reconsider mutation only after evidence of an unsolved stale-write/workflow limitation. |
 
@@ -103,7 +97,7 @@ refer to the full independent review’s edge-case matrix and quality plan.
 
 | Scenario family | Contract disposition | 0.5 evidence status | Required evidence and source rows |
 |---|---|---|
-| Resource/map failures | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Stale catalog/scene/delta/pose/history, delta-base expiry, incomplete/truncated/limited maps, degraded stream, new mission on the same floor, absent pose, and older-generation pose; ordered fault injection and browser/property tests. Review rows 163–173. |
+| Resource/map failures | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Stale catalog/scene/delta/pose/history, delta-base expiry, incomplete/truncated/limited maps, degraded stream, new mission on the same floor, absent pose, older-generation pose, and an empty unverified initial snapshot racing a retained coherent REST map; ordered fault injection verifies fencing, disabled controls, catalog recovery, and later invalidation. Review rows 163–173. |
 | Setup, entry/floor catalog, labels, state families, and initial map selection | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Zero/one/multiple robots and entries, isolated switching, zero/one/multiple classified floors, duplicate/long/unicode/RTL/unavailable customer labels, and disambiguation; component and browser evidence. Review rows 153–162. |
 | Auth, offline, unload, restart, BFCache, visibility, tabs, and entry removal | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | HA disconnect, robot unreachable, authentication/administrator loss, reload/unload, HA restart, Browser Back, pagehide/BFCache, hidden tab, multiple tabs, and removed entry; runtime/browser lifecycle evidence with all protected actions off. Review rows 174–184 and 193. |
 | Vendor, managed command, and activity states | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Vendor-app start, managed-plan lock, service rejection, missing command confirmation, pause/return/stop/settlement, and unknown external cause; command journal plus native/MCP evidence. Review rows 206–209 and `docs/e2e-contract.md`. |
