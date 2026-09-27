@@ -129,22 +129,6 @@ class _PreparedRoomDispatch:
     completion_deadline: datetime | None = None
 
 
-def _mark_dispatch_coverage_verified(
-    checkpoint: dict[str, Any], dispatch: _PreparedRoomDispatch
-) -> None:
-    """Record matching current-goal readback for this attributed dispatch."""
-    cadence_checkpoint = checkpoint.get("cadence_by_room")
-    if not isinstance(cadence_checkpoint, dict):
-        return
-    for room in dispatch.rooms:
-        cadence_state = cadence_checkpoint.get(room.room_id)
-        if isinstance(cadence_state, dict):
-            # The command returns only after the exact active-session identity
-            # and current goal values match. Hermes exposes no plan generation,
-            # so this is value consistency, not an atomic plan-version proof.
-            cadence_state["coverage_setting_verified"] = True
-
-
 def _remaining_completion_time(dispatch: _PreparedRoomDispatch, timeout: int) -> float:
     """Keep a recovered mission inside its original wall-clock budget."""
     if dispatch.completion_deadline is None:
@@ -2776,7 +2760,6 @@ async def _async_execute_rooms_reserved(
         durable = floor_token is not None and session_identity is not None
 
         async def save_dispatch(dispatch: _PreparedRoomDispatch) -> None:
-            _mark_dispatch_coverage_verified(checkpoint, dispatch)
             checkpoint.update(
                 {
                     "phase": "accepted"

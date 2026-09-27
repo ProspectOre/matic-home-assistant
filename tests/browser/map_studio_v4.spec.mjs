@@ -55,7 +55,9 @@ function syntheticDelta(base, scene, baseRevision, revision) {
 
 async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
   await page.goto("/");
-  await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
+  await page.evaluate(async () => {
+    window.__galleryModule = await import("/map_studio_v4-review/review.js");
+  });
   await page.evaluate(async ({ tag, selectedScenario, selectedNarrow }) => {
     await customElements.whenDefined(tag);
     const gallery = document.createElement(tag);
@@ -2774,8 +2776,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     ]) {
       await page.setViewportSize({ width: viewport.width, height: viewport.height });
       const gallery = await loadGallery(page, { scenario: "ready", narrow: viewport.narrow });
-      await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4-review/review.js");
+      await page.evaluate((tag) => {
+        const module = window.__galleryModule;
         const state = module.createGalleryState("ready");
         const catalog = state.resources.plans.value;
         const plan = catalog.plans[0];
@@ -2790,11 +2792,11 @@ test.describe("Map Studio v0.4 foundation", () => {
             doCoverageNext: false,
           },
         } : room);
-        element.replaceWorkspaceState({ ...state, resources: {
+        document.querySelector(tag).replaceWorkspaceState({ ...state, resources: {
           ...state.resources,
           plans: { ...state.resources.plans, value: { ...catalog, plans: [{ ...plan, rooms }] } },
         } });
-      });
+      }, GALLERY_TAG);
       await gallery.getByRole("button", { name: /^Run a plan/ }).click();
       await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
       const cadence = gallery.getByLabel("Plan rooms").locator("details").first();

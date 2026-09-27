@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
@@ -9,6 +10,9 @@ from unittest.mock import AsyncMock
 import pytest
 from homeassistant.util import dt as dt_util
 
+from custom_components.matic_robot.cadence_accounting import (
+    validated_cadence_snapshots,
+)
 from custom_components.matic_robot.client.models import (
     CleaningModeResult,
     CleaningSession,
@@ -49,7 +53,6 @@ _CADENCE_COMPLETION_CASES = [
         (
             {"mop_every_n": 2},
             {"mop": 1, "coverage": 0},
-            False,
             {"mop": 0, "coverage": 0},
         ),
         id="mop-only",
@@ -58,8 +61,7 @@ _CADENCE_COMPLETION_CASES = [
         (
             {"coverage_every_n": 2, "periodic_coverage_setting": "quick"},
             {"mop": 0, "coverage": 1},
-            True,
-            {"mop": 0, "coverage": 0},
+            {"mop": 0, "coverage": 1},
         ),
         id="coverage-only",
     ),
@@ -71,23 +73,9 @@ _CADENCE_COMPLETION_CASES = [
                 "periodic_coverage_setting": "quick",
             },
             {"mop": 1, "coverage": 1},
-            False,
             {"mop": 0, "coverage": 1},
         ),
-        id="combined-partial-coverage",
-    ),
-    pytest.param(
-        (
-            {
-                "mop_every_n": 2,
-                "coverage_every_n": 2,
-                "periodic_coverage_setting": "quick",
-            },
-            {"mop": 1, "coverage": 1},
-            True,
-            {"mop": 0, "coverage": 0},
-        ),
-        id="combined-complete",
+        id="combined-due-coverage-stays-due",
     ),
 ]
 
@@ -391,6 +379,21 @@ async def test_verified_managed_completion_advances_private_cadence_once(hass) -
 
 async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
     manager = _manager(hass)
+    checkpoint = {
+        "cadence_by_room": {
+            "room-a": {
+                "scope": "shared",
+                "schedule_active": True,
+                "mop_every_n": None,
+                "coverage_every_n": None,
+                "periodic_coverage_setting": None,
+                "effective_cleaning_mode": "vacuum",
+                "effective_coverage_setting": "standard",
+                "mop_due": False,
+                "coverage_due": False,
+            }
+        }
+    }
     await manager.async_begin_run(
         "serial", "home", "run-checkpoint", 1, trigger="user", service="test"
     )
@@ -400,7 +403,7 @@ async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
         await manager.async_set_recovery_checkpoint(
             "serial",
             "run-checkpoint",
-            {"cadence_by_room": {"room-a": {"scope": "shared"}}},
+            checkpoint,
         )
 
     assert "recovery_checkpoint" not in manager._robot("serial")["last_run"]
@@ -408,7 +411,7 @@ async def test_checkpoint_save_failure_does_not_leak_frozen_policy(hass):
     await manager.async_set_recovery_checkpoint(
         "serial",
         "run-checkpoint",
-        {"cadence_by_room": {"room-a": {"scope": "shared"}}},
+        checkpoint,
     )
     assert (
         "room-a"
@@ -904,9 +907,9 @@ async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) ->
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_late_native_completion_advances_shared_schedule_exactly_once(
     hass,
-    case: tuple[dict, dict[str, int], bool, dict[str, int]],
+    case: tuple[dict, dict[str, int], dict[str, int]],
 ) -> None:
-    cadence_policy, initial_progress, coverage_verified, expected_progress = case
+    cadence_policy, initial_progress, expected_progress = case
     policy = {"scope": "shared", **cadence_policy}
     manager = _manager(hass)
     identity = room_cadence_identity(_floor(), "room-a")
@@ -940,7 +943,6 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
     snapshot = {
         **snapshots[normal.room_id],
         "identity": identity,
-        "coverage_setting_verified": coverage_verified,
     }
     due_room = CleaningRoom(
         normal.room_id,
@@ -993,9 +995,9 @@ async def test_late_native_completion_advances_shared_schedule_exactly_once(
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
     hass,
-    case: tuple[dict, dict[str, int], bool, dict[str, int]],
+    case: tuple[dict, dict[str, int], dict[str, int]],
 ):
-    cadence_policy, initial_progress, coverage_verified, expected_progress = case
+    cadence_policy, initial_progress, expected_progress = case
     policy = {"scope": "shared", **cadence_policy}
     manager = _manager(hass)
     floor = _floor()
@@ -1030,7 +1032,6 @@ async def test_startup_reconciliation_does_not_duplicate_committed_cadence(
     snapshot = {
         **snapshots["room-a"],
         "identity": identity,
-        "coverage_setting_verified": coverage_verified,
     }
     completed_room = CleaningRoom(
         "room-a",
@@ -1914,7 +1915,7 @@ def test_verified_cadence_credit_rejects_stale_and_missing_owners(hass) -> None:
     assert robot["shared_room_cadence"][room.room_id]["progress"]["mop"] == 2
 
 
-def test_private_cadence_credit_requires_matching_record_and_clears_due_flag(hass):
+def test_cadence_credit_keeps_unproven_coverage_due(hass):
     manager = _manager(hass)
     robot = manager._robot("serial")
     room = CleaningRoom("room-a", "Kitchen", "vacuum_and_mop", "quick")
@@ -1961,13 +1962,62 @@ def test_private_cadence_credit_requires_matching_record_and_clears_due_flag(has
     }
     assert _apply_verified_cadence(robot, "home", room, snapshot)
     record = robot["plan_room_cadence"]["home"][room.room_id]
-    assert record["progress"] == {"mop": 0, "coverage": 0}
+    assert record["progress"] == {"mop": 0, "coverage": 3}
     policy = robot["plans"]["home"]["rooms"][0]["cadence"]
     assert policy["do_mop_next"] is False
-    assert policy["do_coverage_next"] is False
+    assert policy["do_coverage_next"] is True
 
 
-def test_coverage_cadence_stays_due_without_native_setting_readback(hass):
+def test_reservation_only_checkpoint_cannot_credit_cadence(hass):
+    manager = _manager(hass)
+    robot = manager._robot("serial")
+    identity = "a" * 64
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
+    normalized = validated_cadence_snapshots(
+        {
+            room.room_id: {
+                "scope": "plan",
+                "identity": identity,
+                "shared_schedule_participating": True,
+                "coverage_setting_verified": True,
+            }
+        }
+    )
+    assert normalized is not None
+    assert normalized == {
+        room.room_id: {
+            "scope": "plan",
+            "identity": identity,
+            "shared_schedule_participating": True,
+        }
+    }
+    robot["plans"]["home"] = {
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "cadence": {
+                    "scope": "plan",
+                    "coverage_every_n": 4,
+                    "do_coverage_next": True,
+                },
+            }
+        ]
+    }
+    robot["plan_room_cadence"]["home"] = {
+        room.room_id: {"identity": identity, "progress": {"coverage": 3}}
+    }
+    before = deepcopy(robot["plan_room_cadence"]["home"][room.room_id])
+
+    assert not _apply_verified_cadence(robot, "home", room, normalized[room.room_id])
+    assert robot["plan_room_cadence"]["home"][room.room_id] == before
+    assert robot["plans"]["home"]["rooms"][0]["cadence"]["do_coverage_next"]
+
+
+def test_cadence_checkpoint_map_discards_unaddressable_values():
+    assert validated_cadence_snapshots({1: {}, "room-a": None}) == {}
+
+
+def test_unversioned_native_readback_does_not_credit_due_coverage(hass):
     manager = _manager(hass)
     robot = manager._robot("serial")
     room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
@@ -1983,6 +2033,8 @@ def test_coverage_cadence_stays_due_without_native_setting_readback(hass):
         "periodic_coverage_setting": "quick",
         "effective_cleaning_mode": "vacuum",
         "effective_coverage_setting": "quick",
+        # Legacy checkpoints cannot turn value consistency into causal proof.
+        "coverage_setting_verified": True,
     }
     robot["plans"]["home"] = {
         "rooms": [
@@ -2178,9 +2230,9 @@ async def test_shared_schedule_floor_token_is_checked_even_when_room_matches(
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_late_native_reconciliation_credits_frozen_cadence_once(
     hass,
-    case: tuple[dict, dict[str, int], bool, dict[str, int]],
+    case: tuple[dict, dict[str, int], dict[str, int]],
 ) -> None:
-    cadence_policy, initial_progress, coverage_verified, expected_progress = case
+    cadence_policy, initial_progress, expected_progress = case
     policy = {"scope": "plan", **cadence_policy}
     manager = _manager(hass)
     floor = _floor()
@@ -2212,7 +2264,6 @@ async def test_late_native_reconciliation_credits_frozen_cadence_once(
     snapshot = {
         **snapshots["room-a"],
         "identity": identity,
-        "coverage_setting_verified": coverage_verified,
     }
     now = dt_util.utcnow()
     dispatched_at = now - timedelta(seconds=30)

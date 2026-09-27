@@ -45,6 +45,24 @@ def _plan(*room_ids: str, scope: str = "plan") -> dict[str, object]:
     }
 
 
+def _cadence_snapshot(
+    identity: str, *, shared_participating: bool
+) -> dict[str, object]:
+    return {
+        "scope": "plan",
+        "schedule_active": True,
+        "mop_every_n": 3,
+        "coverage_every_n": None,
+        "periodic_coverage_setting": None,
+        "effective_cleaning_mode": "vacuum",
+        "effective_coverage_setting": "standard",
+        "mop_due": False,
+        "coverage_due": False,
+        "identity": identity,
+        "shared_schedule_participating": shared_participating,
+    }
+
+
 async def test_queued_room_cadence_is_reserved_before_stop_settlement_await(
     hass,
 ) -> None:
@@ -578,6 +596,32 @@ async def test_recovery_restores_reservation_from_durable_checkpoint(hass) -> No
     with pytest.raises(ValueError, match="reserved"):
         await manager.async_reset_cadence("serial", "home", ["room-b"])
     manager.release_prepared_run("serial", "recovered-run")
+
+
+async def test_checkpoint_roundtrip_preserves_shared_schedule_reservation(hass) -> None:
+    manager = _manager(hass)
+    manager._robot("serial")["plans"]["home"] = _plan("room-b")
+    await manager.async_begin_run(
+        "serial", "home", "roundtrip-run", 1, trigger="user", service="test"
+    )
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        "roundtrip-run",
+        {
+            "rooms": [{"room_id": "room-b"}],
+            "cadence_by_room": {
+                "room-b": _cadence_snapshot("a" * 64, shared_participating=True)
+            },
+        },
+    )
+    stored = deepcopy(manager._data)
+
+    restored = _manager(hass)
+    restored._store.async_load = AsyncMock(return_value=stored)
+    await restored.async_load()
+
+    assert restored._prepared_runs["serial"].run_id == "roundtrip-run"
+    assert restored._prepared_runs["serial"].shared_schedule_rooms == {"room-b"}
 
 
 async def test_rejected_restart_recovery_releases_restored_reservation(hass) -> None:

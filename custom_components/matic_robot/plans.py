@@ -45,6 +45,9 @@ from .cadence_accounting import (
 from .cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
 )
+from .cadence_accounting import (
+    validated_cadence_snapshots as _validated_cadence_snapshots,
+)
 from .client.models import CleaningSessionRecord, FloorPlan, Room
 from .const import (
     DATA_PLAN_MANAGER,
@@ -2639,8 +2642,16 @@ class CleaningPlanManager:
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
             return
         existing = last_run.get("recovery_checkpoint", {})
+        normalized_checkpoint = deepcopy(checkpoint)
+        cadence_by_room = _validated_cadence_snapshots(
+            normalized_checkpoint.get("cadence_by_room")
+        )
+        if cadence_by_room is None:
+            normalized_checkpoint.pop("cadence_by_room", None)
+        else:
+            normalized_checkpoint["cadence_by_room"] = cadence_by_room
         last_run["recovery_checkpoint"] = {
-            **deepcopy(checkpoint),
+            **normalized_checkpoint,
             **(
                 {"started_room_ids": existing["started_room_ids"]}
                 if "started_room_ids" in existing
@@ -3641,6 +3652,18 @@ class CleaningPlanManager:
             changed = True
         elif isinstance(last_run, dict):
             last_run_value = cast(dict[str, Any], last_run)
+            checkpoint = last_run_value.get("recovery_checkpoint")
+            if isinstance(checkpoint, dict):
+                if "cadence_by_room" in checkpoint:
+                    normalized_cadence = _validated_cadence_snapshots(
+                        checkpoint["cadence_by_room"]
+                    )
+                    if normalized_cadence is None:
+                        checkpoint.pop("cadence_by_room", None)
+                        changed = True
+                    elif checkpoint["cadence_by_room"] != normalized_cadence:
+                        checkpoint["cadence_by_room"] = normalized_cadence
+                        changed = True
             outcome = last_run_value.get("outcome")
             if isinstance(outcome, str) and outcome != "running":
                 normalized_outcome = normalize_run_outcome(outcome)

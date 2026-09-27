@@ -51,10 +51,8 @@ from custom_components.matic_robot.managed_executor import (
     _async_run_room,
     _async_wait_for_vacuum_state,
     _clear_stop_pending_if_stable,
-    _mark_dispatch_coverage_verified,
     _native_completion_match,
     _NativeReconciliation,
-    _PreparedRoomDispatch,
     _run_provenance,
     _schedule_native_reconciliation,
 )
@@ -169,38 +167,6 @@ def test_room_sequence_resolver_rejects_oversized_internal_requests() -> None:
             use_room_schedule=False,
             override_room_schedule=False,
         )
-
-
-@pytest.mark.parametrize(
-    "cadence_by_room",
-    [None, {"room-a": "invalid"}],
-)
-def test_dispatch_readback_marker_ignores_missing_or_invalid_cadence(
-    cadence_by_room,
-):
-    room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
-    dispatch = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
-    checkpoint = {"cadence_by_room": cadence_by_room}
-
-    _mark_dispatch_coverage_verified(checkpoint, dispatch)
-
-    assert checkpoint["cadence_by_room"] == cadence_by_room
-
-
-def test_dispatch_readback_marker_records_room_setting_evidence():
-    room = CleaningRoom("room-a", "Kitchen", "vacuum", "quick")
-    dispatch = _PreparedRoomDispatch((room,), None, dt_util.utcnow())
-    checkpoint = {
-        "cadence_by_room": {
-            "room-a": {"effective_coverage_setting": "quick"},
-            "room-b": {"effective_coverage_setting": "heavy_duty"},
-        }
-    }
-
-    _mark_dispatch_coverage_verified(checkpoint, dispatch)
-
-    assert checkpoint["cadence_by_room"]["room-a"]["coverage_setting_verified"]
-    assert "coverage_setting_verified" not in checkpoint["cadence_by_room"]["room-b"]
 
 
 async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
@@ -1567,7 +1533,6 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             "serial", "quick_clean", run_rooms[0], run_id=run_id
         )
         cadence_by_room = kwargs["cadence_by_room"]
-        cadence_by_room[run_rooms[0].room_id]["coverage_setting_verified"] = True
         await run_manager.async_set_recovery_checkpoint(
             "serial",
             run_id,
@@ -1602,7 +1567,7 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     assert snapshot["mop_due"] is use_room_schedule
     assert snapshot["coverage_due"] is use_room_schedule
     expected_progress = (
-        {"mop": 0, "coverage": 0}
+        {"mop": 0, "coverage": 1}
         if use_room_schedule and not override_room_schedule
         else {"mop": 1, "coverage": 1}
     )

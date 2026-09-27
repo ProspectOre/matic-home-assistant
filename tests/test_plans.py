@@ -4465,6 +4465,19 @@ def test_robot_normalization_repairs_cadence_records_without_inventing_progress(
                 "progress": {"mop": 2, "coverage": -1},
             },
         },
+        "last_run": {
+            "run_id": "run-one",
+            "plan_id": "legacy",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "cadence_by_room": {
+                    "room-a": {
+                        **_valid_cadence_snapshot(),
+                        "coverage_setting_verified": True,
+                    }
+                }
+            },
+        },
     }
 
     changed = CleaningPlanManager._normalize_robot(robot)
@@ -4482,6 +4495,10 @@ def test_robot_normalization_repairs_cadence_records_without_inventing_progress(
     assert robot["plans"]["legacy"] == legacy_plan
     assert "cadence" not in robot["plans"]["legacy"]["rooms"][0]
     assert robot["native_completion_dedup"] == ["b" * 64]
+    stored_snapshot = robot["last_run"]["recovery_checkpoint"]["cadence_by_room"][
+        "room-a"
+    ]
+    assert "coverage_setting_verified" not in stored_snapshot
 
 
 def _valid_cadence_snapshot() -> dict[str, object]:
@@ -4503,11 +4520,15 @@ def _valid_cadence_snapshot() -> dict[str, object]:
     ("key", "value"),
     [
         ("scope", "other"),
+        ("scope", []),
         ("mop_every_n", True),
         ("mop_every_n", 101),
         ("periodic_coverage_setting", "invalid"),
+        ("periodic_coverage_setting", {}),
         ("effective_cleaning_mode", "partial"),
+        ("effective_cleaning_mode", []),
         ("effective_coverage_setting", "invalid"),
+        ("effective_coverage_setting", []),
         ("identity", "not-a-hash"),
         ("identity", "G" * 64),
     ],
@@ -4528,11 +4549,50 @@ def test_cadence_checkpoint_validation_keeps_only_typed_evidence() -> None:
 
     assert validated is not None
     assert validated["mop_due"] is False
-    assert validated["coverage_setting_verified"] is False
+    assert "coverage_setting_verified" not in validated
     assert "unrecognized" not in validated
 
     snapshot["coverage_setting_verified"] = True
-    assert _validated_cadence_snapshot(snapshot)["coverage_setting_verified"] is True
+    assert "coverage_setting_verified" not in _validated_cadence_snapshot(snapshot)
+
+
+def test_robot_normalization_drops_nonmapping_cadence_checkpoint() -> None:
+    robot = {
+        "last_run": {
+            "run_id": "run-one",
+            "plan_id": "home",
+            "recovery_checkpoint": {"cadence_by_room": []},
+        }
+    }
+
+    assert CleaningPlanManager._normalize_robot(robot)
+    assert "cadence_by_room" not in robot["last_run"]["recovery_checkpoint"]
+
+
+async def test_recovery_checkpoint_write_discards_unsupported_coverage_proof(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial", "home", "run-one", 1, trigger="user", service="test"
+    )
+
+    snapshot = {
+        **_valid_cadence_snapshot(),
+        "coverage_setting_verified": True,
+        "unrecognized": "discard this",
+    }
+    await manager.async_set_recovery_checkpoint(
+        "serial",
+        "run-one",
+        {"cadence_by_room": {"room-a": snapshot, "room-b": {"scope": "invalid"}}},
+    )
+
+    cadence_by_room = manager._robot("serial")["last_run"]["recovery_checkpoint"][
+        "cadence_by_room"
+    ]
+    assert cadence_by_room == {"room-a": _valid_cadence_snapshot()}
 
 
 async def test_saved_plan_limit_rejects_creation_but_allows_replacement(hass) -> None:

@@ -20,16 +20,21 @@ class CadenceCompletion(Protocol):
     @property
     def cleaning_mode(self) -> str: ...
 
-    @property
-    def coverage_setting(self) -> str: ...
+
+def _valid_room_identity(value: object) -> bool:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(char in "0123456789abcdef" for char in value)
+    )
 
 
 def validated_cadence_snapshot(value: object) -> dict[str, Any] | None:
-    """Keep only bounded, typed cadence evidence in recovery markers."""
+    """Keep bounded policy evidence and discard unsupported setting proofs."""
     if not isinstance(value, Mapping):
         return None
     scope = value.get("scope")
-    if scope not in {"plan", "shared"}:
+    if not isinstance(scope, str) or scope not in {"plan", "shared"}:
         return None
     result: dict[str, Any] = {
         "scope": scope,
@@ -48,29 +53,68 @@ def validated_cadence_snapshot(value: object) -> dict[str, Any] | None:
         else:
             return None
     coverage = value.get("periodic_coverage_setting")
-    if coverage not in {None, "quick", "standard", "heavy_duty"}:
+    if coverage is not None and (
+        not isinstance(coverage, str)
+        or coverage not in {"quick", "standard", "heavy_duty"}
+    ):
         return None
     result["periodic_coverage_setting"] = coverage
     mode = value.get("effective_cleaning_mode")
     coverage_setting = value.get("effective_coverage_setting")
-    if mode not in {"vacuum", "mop", "vacuum_and_mop"}:
+    if not isinstance(mode, str) or mode not in {
+        "vacuum",
+        "mop",
+        "vacuum_and_mop",
+    }:
         return None
-    if coverage_setting not in {"quick", "standard", "heavy_duty"}:
+    if not isinstance(coverage_setting, str) or coverage_setting not in {
+        "quick",
+        "standard",
+        "heavy_duty",
+    }:
         return None
     result["effective_cleaning_mode"] = mode
     result["effective_coverage_setting"] = coverage_setting
-    result["coverage_setting_verified"] = value.get("coverage_setting_verified") is True
+    shared_participating = value.get("shared_schedule_participating")
+    if isinstance(shared_participating, bool):
+        result["shared_schedule_participating"] = shared_participating
     for key in ("mop_due", "coverage_due"):
         result[key] = value.get(key) is True
     if "identity" in value:
         identity = value.get("identity")
-        if (
-            not isinstance(identity, str)
-            or len(identity) != 64
-            or any(char not in "0123456789abcdef" for char in identity)
-        ):
+        if not _valid_room_identity(identity):
             return None
         result["identity"] = identity
+    return result
+
+
+def validated_cadence_snapshots(value: object) -> dict[str, dict[str, Any]] | None:
+    """Normalize evidence while retaining minimal ownership from malformed rooms."""
+    if not isinstance(value, Mapping):
+        return None
+    result: dict[str, dict[str, Any]] = {}
+    for room_id, raw_snapshot in value.items():
+        if not isinstance(room_id, str):
+            continue
+        snapshot = validated_cadence_snapshot(raw_snapshot)
+        if snapshot is not None:
+            result[room_id] = snapshot
+            continue
+        # Preserve only reservation ownership when an older or malformed
+        # checkpoint lacks the evidence needed for cadence accounting.
+        if not isinstance(raw_snapshot, Mapping):
+            continue
+        reservation: dict[str, Any] = {}
+        scope = raw_snapshot.get("scope")
+        if isinstance(scope, str) and scope in {"plan", "shared"}:
+            reservation["scope"] = scope
+        if raw_snapshot.get("shared_schedule_participating") is True:
+            reservation["shared_schedule_participating"] = True
+        identity = raw_snapshot.get("identity")
+        if _valid_room_identity(identity):
+            reservation["identity"] = identity
+        if reservation:
+            result[room_id] = reservation
     return result
 
 
@@ -83,7 +127,7 @@ def apply_verified_cadence(
     current_identity: str | None = None,
     validate_current_identity: bool = False,
 ) -> bool:
-    """Credit one exact managed completion against its frozen cadence policy."""
+    """Credit a managed completion; coverage stays due without causal proof."""
     if (
         not isinstance(cadence_state, Mapping)
         or cadence_state.get("schedule_active") is not True
@@ -131,11 +175,8 @@ def apply_verified_cadence(
         cadence_state,
         progress if isinstance(progress, Mapping) else None,
         verified_mode=room.cleaning_mode,
-        verified_coverage=(
-            room.coverage_setting
-            if cadence_state.get("coverage_setting_verified") is True
-            else None
-        ),
+        # The current protocol cannot causally bind coverage_plan to this run.
+        verified_coverage=None,
     )
     if scope == "shared":
         schedule["progress"] = next_progress
@@ -147,10 +188,4 @@ def apply_verified_cadence(
             and room.cleaning_mode == "vacuum_and_mop"
         ):
             policy["do_mop_next"] = False
-        if (
-            cadence_state.get("coverage_setting_verified") is True
-            and cadence_state.get("coverage_due") is True
-            and room.coverage_setting == cadence_state.get("periodic_coverage_setting")
-        ):
-            policy["do_coverage_next"] = False
     return True
