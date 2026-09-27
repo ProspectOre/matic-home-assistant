@@ -8,21 +8,20 @@ verified” means v0.4.5 regressions remain covered, not every 0.5 scenario. “
 
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
-- Source `170e804c5b467533f27142e0b49ae4b44c1cee6d` incorporates `main` at
-  `52166df` and closes map-signature, malformed-cadence, legacy-plan, orphaned
-  one-shot, inheritance, and save-race findings. Python passed 3,507 tests at 100%
-  (15,754 statements); Ruff, format, strict mypy (61 files), and privacy pass. The
-  coordinator rejects stale annotated signatures while accepting single-plan
-  payloads; real-manager endpoints safely project malformed private/shared rules.
-  Clearing or replacing malformed inherited cadence preserves valid progress;
-  plan writes serialize through rollback and save. Packaged-panel recovery saves,
-  reads back, and reopens the 100-room repair in Chromium/WebKit; review found no residual issue.
-- Frontend typecheck/build and paired bundle size/input targets pass; see
-  [performance-0.5.md](performance-0.5.md). The focused cadence browser journey
-  passes five configured projects. Previous head `8bfc5740100e72f65ae1ae128abd4b79eaa0c946`
-  passed full browser CI (772 tests), Hassfest/HACS/Python; exact-head regular
-  review then found two P2 issues, now fixed in `170e804`. Final-head CI and clean
-  regular review remain required before merge.
+- Source `8b96419ec9c70f1841cf3ac8f0f9142f95141127` builds on `170e804` and
+  `main` at `52166df`. Python passed 3,513 tests at 100% (15,754 statements);
+  Ruff, format, strict mypy (61 files), privacy, frontend typecheck/build, and
+  diff checks pass. Normal starts accept only the documented mop behavior-3
+  readback omission; all other goals, identity, and floor remain guarded. Preview
+  FIFO deadlines, a two-wire per-connection cap, late settlement, and remount
+  recovery are covered. Malformed cadence, legacy repair, save serialization,
+  and coherence/cancellation regressions remain covered.
+- Packaged-panel recovery saves, reads back, and reopens the 100-room repair in
+  Chromium/WebKit. The full local browser matrix passed 782/784; both failures
+  were WebKit page-load timeouts, and both passed isolated. All four preview
+  timeout/cap cases pass across Chromium, WebKit, and Firefox safety. Paired
+  size/input results are in [performance-0.5.md](performance-0.5.md). Final-head
+  CI and clean regular review remain required before merge.
 - The prior Python CI collection failure came from an inherited test importing
   `RoomRunOutcome` through `services` after its canonical ownership moved to
   `managed_executor`. The matrix now imports the owner and injects a typed waiter
@@ -91,7 +90,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 | Tracked Map Studio room run uses managed safety/accounting | Implementation required | Local policy/accounting regressions pass; runtime acceptance open | Ephemeral room run is an explicit opt-in that keeps existing service behavior compatible; shared schedule, override, identity, and readback have tests. A service-to-history regression proves custom-area completion can update room opportunity without advancing shared cadence. OEM and physical starts receive no cadence credit. Stop/dock, restart, native proof, and exact HACS candidate remain open. |
 | Setup, onboarding, first-clean guidance, robot/entry selection, activity, firmware, offline, support, and recovery journeys | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Exercise zero/one/multiple robots, isolated multi-robot selection, pairing and reauthentication, first successful clean guidance, firmware drift, HA/robot offline, permissions, entry removal, and actionable support/recovery; candidate unknown. |
 | Security/resource backlog and review-gate prerequisite | Implementation required | Partial local worktree evidence; parity and release acceptance open | Before opening the 0.5 implementation PR, the open inventory contained only #138, the external review-gate prerequisite. The source roadmap’s former 22-open-security-PR count and PR list are historical and must not be treated as current open work. The #138 source prerequisite is dev-workspace #48; its shared fix is now on head `83deb0d`, with Canonical policy tests pending. #138 remains at `1064d58` and is held because regular-review quota is exhausted. New review/inline capture still needs the existing signed relay/support #326 path and live provenance proof; default-branch issue-comment events have a trusted native path. The #48 batch distinguishes authorized human review requests from connector runs, including foreign jobless failures. A generic `CHANGES_REQUESTED` parent with only a visible Security-marked child remains adverse because current signed receipts do not prove the complete child set or gap-free history. Keep that path fail-closed until an authenticated exact-head child manifest and delivery-completeness proof exist. Preserve unresolved finding history; do not qualify unsigned workflow logs or routing tests as capture evidence. Exact-head review/CI, privacy/packaging/Hassfest/HACS and resource checks remain separate. |
-| Required repository and frontend checks | Implementation required | Local Python/static/privacy gates pass on `170e804`; final-head CI and regular review pending; release acceptance open | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy check; packaging parity; Hassfest; HACS validation. Record exact candidate, command/CI run, result, and any waiver; none is established by test counts alone. |
+| Required repository and frontend checks | Implementation required | Local Python/static/privacy gates pass on `8b96419`; final-head CI and regular review pending; release acceptance open | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy check; packaging parity; Hassfest; HACS validation. Record exact candidate, command/CI run, result, and any waiver; none is established by test counts alone. |
 | Bluetooth proxy pairing | Deferred with rationale | Outside 0.5 scope | Proxy bonding is unsupported; direct host adapter remains the supported pairing boundary. |
 | New guessed robot commands, cloud services, wholesale redesign, and mutation API replacement | Deferred with rationale | Outside 0.5 scope | No demonstrated 0.5 need; retain vetted commands and HA service boundary. Reconsider mutation only after evidence of an unsolved stale-write/workflow limitation. |
 

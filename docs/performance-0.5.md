@@ -5,10 +5,10 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
-The browser assets measured below were built from `9e935fb`; commit `170e804`
-changes backend plan persistence and tests only, leaving the measured frontend
-source and packaged assets unchanged. The paired measurements therefore describe
-the current compiled panel, not backend storage timing.
+The browser assets measured below were built from source commit
+`8b96419ec9c70f1841cf3ac8f0f9142f95141127`. They include the bounded preview
+RPC deadline, retry, and per-connection backpressure path. The Python
+coverage-readback change does not affect these browser measurements.
 
 ## Method
 
@@ -22,8 +22,8 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The exact-source comparison was recorded at `2026-09-27T07:40:28.799Z` (September 27,
-12:40:28 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+The exact-source comparison was recorded at `2026-09-27T09:26:02.264Z` (September 27,
+2:26:02 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no CPU/network throttling, and no-store assets. Other
 task-owned Python and browser checks were paused for the run. The script records
 conditions and fingerprints.
@@ -41,22 +41,21 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`9e935fb05e38cad2d48e7e921bc45f83b3b49e46`. This run includes the bounded
-legacy-plan repair controls, cadence interval/one-shot consistency fix, and
-packaged bundle shipped by that candidate.
+`8b96419ec9c70f1841cf3ac8f0f9142f95141127`. This build includes the preview
+timeout and bounded in-flight RPC changes.
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 80,013 |
+| Initial production JS, estimated gzip bytes | 79,821 | 80,120 |
 | Initial distinct production JS resources | 1 | 4 |
 | Added workflow JS, estimated gzip bytes | 0 (eager) | 11,510 |
-| Review-only initial JS, estimated gzip bytes | Included above | 4,568 (not shipped) |
+| Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
 | Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
 | Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 32 / 32 / 32 | 32 / 40 / 32 |
+| Maximum observed input estimates, ms | 32 / 40 / 40 | 40 / 32 / 32 |
 | Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
 | Longest task at or above threshold | None observed | None observed |
-| Post-journey JS heap range, bytes | 5,203,980–5,732,956 | 5,943,764–7,469,140 |
+| Post-journey JS heap range, bytes | 5,090,112–6,818,160 | 5,881,052–6,159,752 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
 are below 100 ms. Candidate and baseline p95 are equal in this lab journey; this
@@ -73,9 +72,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `9e935fb05e38cad2d48e7e921bc45f83b3b49e46` |
-| Candidate production bundle | `6dffaf2801fa118fb8a0e66f89bd7806839b56013ee77de556dbe561fd4c92b3` |
-| Candidate review-only bundle | `67adb7d6c20dd1631d6193aed538c733550453d78e577c4887de903d103e5192` |
+| Candidate source commit | `8b96419ec9c70f1841cf3ac8f0f9142f95141127` |
+| Candidate production bundle | `e46120c79d77d6798a94d653e8157e8cf0f33726368e83850cfb655e4f631311` |
+| Candidate review-only bundle | `4dc01d9a1adef9d6e06690255d03883c387bcdf2811e46ced92d394661a1d6a1` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up
