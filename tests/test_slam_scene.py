@@ -1567,7 +1567,7 @@ async def test_plan_workspace_projects_malformed_persisted_cadence_safely(hass) 
                     "room_id": "room-1",
                     "cleaning_mode": "vacuum",
                     "coverage_setting": "standard",
-                    "cadence": {"mop_every_n": 0},
+                    "cadence": {"do_mop_next": True},
                 }
             ],
         },

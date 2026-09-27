@@ -2,6 +2,7 @@ import { expect, test } from "@playwright/test";
 import { deflateSync } from "node:zlib";
 import { build } from "esbuild";
 
+import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 import { pointer, touchDrag, twoFingerPinch } from "./touch.mjs";
 
 const GALLERY_TAG = "matic-map-studio-gallery-v0-4-0";
@@ -309,71 +310,86 @@ test.describe("Map Studio v0.4 foundation", () => {
   });
 
   test("blocks an oversized legacy plan with a clear recovery action", async ({ page }) => {
-    const gallery = await loadGallery(page, { scenario: "ready" });
-    await page.evaluate((tag) => {
-      const element = document.querySelector(tag);
-      const state = element.getWorkspaceSnapshot();
-      const catalog = state.resources.plans.value;
-      const template = catalog.rooms[0];
-      const rooms = Array.from({ length: 102 }, (_, index) => ({
-        ...template,
-        roomId: `legacy-room-${index + 1}`,
-        name: `Legacy room ${index + 1}`,
-      }));
-      const planRooms = rooms.map((room) => ({
-        roomId: room.roomId,
-        cleaningMode: "vacuum",
-        coverageSetting: "standard",
-      }));
-      const legacy = {
-        id: "legacy-plan",
-        name: "Legacy plan",
-        enabled: true,
-        runBehavior: "ordered",
-        rooms: planRooms,
-        roomOrder: planRooms.map((room) => room.roomId),
-        returnToBase: true,
-        finishCurrentRoom: false,
-        finishCurrentRoomThreshold: 50,
-        nextRunPreview: { rooms: [], missionBoundaries: [], blocker: "plan_room_limit" },
-      };
-      element.replaceWorkspaceState({
-        ...state,
-        workflow: "plan",
-        resources: {
-          ...state.resources,
-          plans: {
-            ...state.resources.plans,
-            value: { ...catalog, rooms, plans: [legacy], selectedPlan: legacy.id },
-          },
-        },
-        planDraft: {
-          id: legacy.id,
-          name: legacy.name,
-          enabled: legacy.enabled,
-          runBehavior: legacy.runBehavior,
+    const roomCatalog = Array.from({ length: 102 }, (_, index) => ({
+      room_id: `legacy-room-${index + 1}`,
+      name: `Legacy room ${index + 1}`,
+      boundary: [[0, 0], [6, 0], [6, 5], [0, 5]],
+    }));
+    const planRooms = roomCatalog.map((room) => ({
+      room_id: room.room_id,
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+    }));
+    const fixture = await installPanelFixture(page, {
+      moduleSource: "packaged",
+      initialPlanCatalog: {
+        rooms: roomCatalog,
+        selected_plan: "legacy-plan",
+        plans: [{
+          id: "legacy-plan",
+          name: "Legacy plan",
+          enabled: true,
+          run_behavior: "ordered",
           rooms: planRooms,
-          returnToBase: legacy.returnToBase,
-          finishCurrentRoom: legacy.finishCurrentRoom,
-          finishCurrentRoomThreshold: legacy.finishCurrentRoomThreshold,
-          dirty: false,
-        },
-      });
-    }, GALLERY_TAG);
+          room_order: planRooms.map((room) => room.room_id),
+          return_to_base: true,
+          finish_current_room: false,
+          finish_current_room_threshold: 50,
+        }],
+      },
+    });
+    await page.evaluate(() => {
+      document.body.append(window.__panelFixture.createPanel());
+    });
+    const gallery = page.locator(fixture.panelTag);
+    await expect.poll(() => page.evaluate(() => {
+      const panel = document.querySelector(window.__panelFixture.panelTag);
+      const plans = panel?.getWorkspaceSnapshot().resources.plans;
+      return { status: plans?.status, count: plans?.value?.plans[0]?.rooms.length };
+    })).toEqual({ status: "ready", count: 102 });
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
 
-    await expect(gallery.getByRole("alert").filter({ hasText: "exceeds the 100-room limit" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
     const rooms = gallery.getByRole("group", { name: "Plan rooms" });
     const draftRoomCount = () => page.evaluate(
       (tag) => document.querySelector(tag).getWorkspaceSnapshot().planDraft.rooms.length,
-      GALLERY_TAG,
+      fixture.panelTag,
     );
     await rooms.locator(".plan-room-label input[type=checkbox]").first().uncheck();
     expect(await draftRoomCount()).toBe(101);
     await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
-    await rooms.locator(".plan-room-label input[type=checkbox]").nth(1).uncheck();
+    await rooms.getByRole("checkbox", { name: /Legacy room 2$/ }).uncheck();
     await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
     expect(await draftRoomCount()).toBe(100);
+
+    const initialPlanReads = await page.evaluate(() => window.__panelFixture.planReads);
+    await gallery.getByRole("button", { name: "Save plan", exact: true }).click();
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.serviceCalls.length)).toBe(1);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return {
+        draftDirty: state.planDraft.dirty,
+        draftCount: state.planDraft.rooms.length,
+        savedCount: state.resources.plans.value?.plans[0]?.rooms.length,
+      };
+    }, fixture.panelTag)).toEqual({ draftDirty: false, draftCount: 100, savedCount: 100 });
+    await expect.poll(() => page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThan(initialPlanReads);
+
+    const savedCall = await page.evaluate(() => window.__panelFixture.serviceCalls[0]);
+    expect(savedCall).toMatchObject({ domain: "matic_robot", service: "save_plan", target: { entity_id: "vacuum.synthetic" } });
+    expect(savedCall.data.rooms.map((room) => room.room)).toEqual(
+      Array.from({ length: 100 }, (_, index) => `legacy-room-${index + 3}`),
+    );
+
+    await gallery.getByRole("button", { name: "Back to plans", exact: true }).click();
+    await gallery.getByRole("button", { name: /Legacy plan.*Edit plan/ }).click();
+    await expect(gallery.getByRole("group", { name: "Plan rooms" })
+      .locator(".plan-room-label input[type=checkbox]:checked")).toHaveCount(100);
+    await expect.poll(() => page.evaluate((tag) => {
+      const state = document.querySelector(tag).getWorkspaceSnapshot();
+      return state.planDraft.rooms.length;
+    }, fixture.panelTag)).toBe(100);
   });
 
   test("requires review when a saved-plan preview changes before dispatch", async ({ page }) => {

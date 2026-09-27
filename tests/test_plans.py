@@ -3943,6 +3943,139 @@ async def test_invalid_cadence_flag_cannot_mutate_an_existing_saved_plan(hass) -
     assert manager._store.async_save.await_count == save_count
 
 
+@pytest.mark.parametrize(
+    "replacement",
+    [
+        None,
+        {
+            "scope": "plan",
+            "coverage_every_n": 2,
+            "periodic_coverage_setting": "heavy_duty",
+        },
+    ],
+)
+async def test_save_plan_can_clear_or_replace_invalid_inherited_cadence(
+    hass, replacement
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    original = {
+        "name": "Cadence plan",
+        "rooms": [
+            {
+                "room_id": "room-hall",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": {
+                    "scope": "plan",
+                    "coverage_every_n": 2,
+                    "periodic_coverage_setting": "heavy_duty",
+                },
+            }
+        ],
+    }
+    await manager.async_save_plan(
+        "serial",
+        "cadence",
+        original,
+        floor_token="f" * 64,
+        room_identities={"room-hall": "a" * 64},
+    )
+    robot = manager._robot("serial")
+    room = robot["plans"]["cadence"]["rooms"][0]
+    room["cadence"] = {
+        "scope": "plan",
+        "coverage_every_n": 2,
+        "periodic_coverage_setting": "heavy_duty",
+        "do_mop_next": True,
+    }
+    robot["plan_room_cadence"]["cadence"]["room-hall"] = {
+        "identity": "a" * 64,
+        "progress": {"mop": 0, "coverage": 1},
+    }
+    submitted = deepcopy(robot["plans"]["cadence"])
+    submitted["name"] = "Repaired plan"
+    if replacement is None:
+        submitted["rooms"][0].pop("cadence")
+    else:
+        submitted["rooms"][0]["cadence"] = replacement
+
+    await manager.async_save_plan(
+        "serial",
+        "cadence",
+        submitted,
+        floor_token="f" * 64,
+        room_identities={"room-hall": "a" * 64},
+    )
+
+    saved_room = manager.plan("serial", "cadence")["rooms"][0]
+    if replacement is None:
+        assert "cadence" not in saved_room
+    else:
+        assert saved_room["cadence"] == {
+            "scope": "plan",
+            "mop_every_n": None,
+            "coverage_every_n": 2,
+            "periodic_coverage_setting": "heavy_duty",
+            "do_mop_next": False,
+            "do_coverage_next": False,
+        }
+    assert robot["plan_room_cadence"]["cadence"]["room-hall"]["progress"] == {
+        "mop": 0,
+        "coverage": 1,
+    }
+
+
+async def test_failed_plan_save_preserves_overlapping_mutation(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_save_plan("serial", "home", {"name": "Home", "rooms": []})
+    await manager.async_save_plan(
+        "serial", "away", {"name": "Away", "rooms": []}, select=False
+    )
+    await manager.async_select_plan("serial", "away")
+
+    first_write_started = asyncio.Event()
+    release_first_write = asyncio.Event()
+    persisted: list[dict] = []
+
+    async def save(data):
+        persisted.append(deepcopy(data["robots"]["serial"]))
+        if len(persisted) == 1:
+            first_write_started.set()
+            await release_first_write.wait()
+            raise OSError("synthetic first save failure")
+
+    manager._store.async_save = AsyncMock(side_effect=save)
+    first = asyncio.create_task(
+        manager.async_save_plan("serial", "home", {"name": "Changed Home", "rooms": []})
+    )
+    await asyncio.wait_for(first_write_started.wait(), timeout=1)
+
+    second_started = asyncio.Event()
+
+    async def select_home():
+        second_started.set()
+        await manager.async_select_plan("serial", "home")
+
+    second = asyncio.create_task(select_home())
+    await asyncio.wait_for(second_started.wait(), timeout=1)
+    assert manager._robot("serial")["selected_plan"] == "home"
+    assert not second.done()
+
+    release_first_write.set()
+    first_result, second_result = await asyncio.gather(
+        first, second, return_exceptions=True
+    )
+
+    assert isinstance(first_result, OSError)
+    assert second_result is None
+    assert manager.plan("serial", "home")["name"] == "Home"
+    assert manager._robot("serial")["selected_plan"] == "home"
+    assert persisted[-1]["plans"]["home"]["name"] == "Home"
+    assert persisted[-1]["selected_plan"] == "home"
+
+
 async def test_active_plan_only_locks_cadence_for_its_current_room(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

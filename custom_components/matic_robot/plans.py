@@ -350,6 +350,7 @@ class CleaningPlanManager:
         self._locks: dict[str, asyncio.Lock] = {}
         self._native_history_locks: dict[str, asyncio.Lock] = {}
         self._state_locks: dict[str, asyncio.Lock] = {}
+        self._plan_write_locks: dict[str, asyncio.Lock] = {}
         self._store_lock = asyncio.Lock()
         self._cancel_events: dict[str, asyncio.Event] = {}
         self._finish_room_events: dict[str, asyncio.Event] = {}
@@ -699,6 +700,10 @@ class CleaningPlanManager:
     def state_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize persisted state changes with robot removal."""
         return self._state_locks.setdefault(serial_number, asyncio.Lock())
+
+    def plan_write_lock(self, serial_number: str) -> asyncio.Lock:
+        """Serialize saved-plan and cadence edits through their storage commit."""
+        return self._plan_write_locks.setdefault(serial_number, asyncio.Lock())
 
     def command_lock(self, serial_number: str) -> asyncio.Lock:
         """Serialize commands that can change one robot's active task."""
@@ -1401,6 +1406,27 @@ class CleaningPlanManager:
         room_identities: Mapping[str, str] | None = None,
     ) -> None:
         """Create or replace a validated room-native plan definition."""
+        async with self.plan_write_lock(serial_number):
+            await self._async_save_plan(
+                serial_number,
+                plan_id,
+                plan,
+                select=select,
+                floor_token=floor_token,
+                room_identities=room_identities,
+            )
+
+    async def _async_save_plan(
+        self,
+        serial_number: str,
+        plan_id: str,
+        plan: Mapping[str, Any],
+        *,
+        select: bool,
+        floor_token: str | None,
+        room_identities: Mapping[str, str] | None,
+    ) -> None:
+        """Create or replace a validated room-native plan definition."""
         robot = self._robot(serial_number)
         before = deepcopy(robot)
         plans = robot["plans"]
@@ -1496,7 +1522,22 @@ class CleaningPlanManager:
                 # Legacy progress without a map binding cannot be adopted by
                 # the first verified floor identity during an edit.
                 reset_private_progress.add(room_id)
-            cadence_value = room.get("cadence", inherited.get("cadence"))
+            old_policy = inherited.get("cadence")
+            try:
+                normalized_old_policy = (
+                    normalize_cadence_policy(
+                        old_policy,
+                        cleaning_mode=str(inherited.get("cleaning_mode", "vacuum")),
+                        coverage_setting=str(
+                            inherited.get("coverage_setting", "standard")
+                        ),
+                    )
+                    if old_policy is not None
+                    else None
+                )
+            except ValueError:
+                normalized_old_policy = None
+            cadence_value = room.get("cadence", normalized_old_policy)
             if cadence_value is not None:
                 policy = normalize_cadence_policy(
                     cadence_value,
@@ -1504,23 +1545,16 @@ class CleaningPlanManager:
                     coverage_setting=str(room.get("coverage_setting", "standard")),
                 )
                 schedule = shared_cadence.get(room_id)
-                old_policy = inherited.get("cadence")
                 policy_marker = {
                     key: value for key, value in policy.items() if key != "scope"
                 }
                 old_marker = (
                     {
                         key: value
-                        for key, value in normalize_cadence_policy(
-                            old_policy,
-                            cleaning_mode=str(inherited.get("cleaning_mode", "vacuum")),
-                            coverage_setting=str(
-                                inherited.get("coverage_setting", "standard")
-                            ),
-                        ).items()
+                        for key, value in normalized_old_policy.items()
                         if key != "scope"
                     }
-                    if isinstance(old_policy, Mapping)
+                    if normalized_old_policy is not None
                     else None
                 )
                 if (
@@ -1722,14 +1756,16 @@ class CleaningPlanManager:
             ),
         )
         try:
-            await self._async_save_and_notify(serial_number)
-        except Exception, asyncio.CancelledError:
-            _restore_unsaved_changes(robot, before, deepcopy(robot))
-            raise
+            await self._async_save_with_rollback(serial_number, before)
         finally:
             self._end_cadence_mutation(serial_number, mutation_token)
 
     async def async_delete_plan(self, serial_number: str, plan_id: str) -> None:
+        """Delete one saved plan without deleting unrelated history."""
+        async with self.plan_write_lock(serial_number):
+            await self._async_delete_plan(serial_number, plan_id)
+
+    async def _async_delete_plan(self, serial_number: str, plan_id: str) -> None:
         """Delete one saved plan without deleting unrelated history."""
         robot = self._robot(serial_number)
         active = robot.get("active_plan")
@@ -1769,14 +1805,16 @@ class CleaningPlanManager:
             _CadenceMutation(plan_id, plan_room_ids, frozenset(), deletes_plan=True),
         )
         try:
-            await self._async_save_and_notify(serial_number)
-        except Exception, asyncio.CancelledError:
-            _restore_unsaved_changes(robot, before, deepcopy(robot))
-            raise
+            await self._async_save_with_rollback(serial_number, before)
         finally:
             self._end_cadence_mutation(serial_number, mutation_token)
 
     async def async_select_plan(self, serial_number: str, plan_id: str) -> None:
+        """Persist the selected plan used by native entities."""
+        async with self.plan_write_lock(serial_number):
+            await self._async_select_plan(serial_number, plan_id)
+
+    async def _async_select_plan(self, serial_number: str, plan_id: str) -> None:
         """Persist the selected plan used by native entities."""
         if plan_id not in self._robot(serial_number)["plans"]:
             raise KeyError(plan_id)
@@ -2197,6 +2235,20 @@ class CleaningPlanManager:
         can reset only mop or coverage cadence while retaining the other
         counter and its one-time due request.
         """
+        async with self.plan_write_lock(serial_number):
+            return await self._async_reset_cadence(
+                serial_number, plan_id, room_ids, modes=modes
+            )
+
+    async def _async_reset_cadence(
+        self,
+        serial_number: str,
+        plan_id: str,
+        room_ids: Sequence[str] | None = None,
+        *,
+        modes: Sequence[str] | None = None,
+    ) -> dict[str, list[str]]:
+        """Apply a cadence reset while holding the per-robot plan-write lock."""
         requested_modes = set(("mop", "coverage") if modes is None else modes)
         if not requested_modes or requested_modes - {"mop", "coverage"}:
             raise ValueError("cadence reset modes must be mop and/or coverage")
@@ -2283,10 +2335,7 @@ class CleaningPlanManager:
             ),
         )
         try:
-            await self._async_save_and_notify(serial_number)
-        except Exception, asyncio.CancelledError:
-            _restore_unsaved_changes(robot, before, deepcopy(robot))
-            raise
+            await self._async_save_with_rollback(serial_number, before)
         finally:
             self._end_cadence_mutation(serial_number, mutation_token)
         return {"reset_room_ids": target_ids, "reset_modes": reset_modes}
@@ -2589,11 +2638,7 @@ class CleaningPlanManager:
                 else {}
             ),
         }
-        try:
-            await self._async_save_and_notify(serial_number)
-        except Exception, asyncio.CancelledError:
-            _restore_unsaved_changes(robot, before, deepcopy(robot))
-            raise
+        await self._async_save_with_rollback(serial_number, before)
 
     async def async_checkpoint_mixed_session(
         self, serial_number: str, run_id: str, session_identity_hash: str
@@ -3042,11 +3087,7 @@ class CleaningPlanManager:
                 _stored_count(last_run, "room_count"),
             )
         robot["active_plan"] = None
-        try:
-            await self._async_save_and_notify(serial_number)
-        except Exception, asyncio.CancelledError:
-            _restore_unsaved_changes(robot, before, deepcopy(robot))
-            raise
+        await self._async_save_with_rollback(serial_number, before)
 
     async def async_mark_ended_unverified(
         self, serial_number: str, plan_id: str, room: CleaningRoom
@@ -3201,11 +3242,7 @@ class CleaningPlanManager:
                 return False
             before = deepcopy(robot)
             robot.pop("pending_native_reconciliation", None)
-            try:
-                await self._async_save_and_notify(serial_number)
-            except Exception, asyncio.CancelledError:
-                _restore_unsaved_changes(robot, before, deepcopy(robot))
-                raise
+            await self._async_save_with_rollback(serial_number, before)
             return True
 
     async def async_mark_suspended(
@@ -3638,6 +3675,18 @@ class CleaningPlanManager:
                 await self._store.async_save(self._data)
         self._notify_listeners(serial_number)
 
+    async def _async_save_with_rollback(
+        self, serial_number: str, before: dict[str, Any]
+    ) -> None:
+        """Restore this failed mutation without reverting later writers."""
+        robot = self._robot(serial_number)
+        applied = deepcopy(robot)
+        try:
+            await self._async_save_and_notify(serial_number)
+        except Exception, asyncio.CancelledError:
+            _restore_unsaved_changes(robot, before, applied)
+            raise
+
     def _notify_listeners(self, serial_number: str) -> None:
         for listener in tuple(self._listeners.get(serial_number, ())):
             listener()
@@ -3733,7 +3782,7 @@ def _close_unfinished_room_records(
 def _restore_unsaved_changes(
     current: dict[str, Any], before: dict[str, Any], applied: dict[str, Any]
 ) -> None:
-    """Undo a failed import without overwriting changes made during its save."""
+    """Undo failed changes while preserving mutations after the snapshot."""
     missing = object()
     for key, value in applied.items():
         previous = before.get(key, missing)
