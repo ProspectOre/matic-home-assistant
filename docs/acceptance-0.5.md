@@ -10,28 +10,31 @@ verified” means v0.4.6 regressions remain covered, not every 0.5 scenario. “
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
 - The 0.5 implementation branch follows the stable v0.4.6 baseline (`52166df`);
-  HACS and Python package metadata say `0.5.0`. The full suite passes 3,591 tests at
-  100% (15,909 statements), plus Ruff, format, strict mypy (61 files), privacy,
-  and clean-staging build/archive/fresh-import checks. Managed mixed legs carry
-  one preallocated UUID through the vacuum service and both existing field-6
-  payloads; a replacement during post-command refresh is rejected without
-  binding or stopping it. The browser flake fix now
-  passes 10 Chromium, 3 WebKit, and 3 Firefox-safety repeats. A previous hosted
-  candidate passed all 796 browser cases; a later run exposed a garbage-collected
-  test import, now corrected to use the module retained by `loadGallery`. The
-  current exact-head CI and regular review remain required before merge. Tracked
-  starts bind a generated UUID to command and active-session identity,
-  including heterogeneous mixed legs, then compare goal values. Hermes has no verified
-  plan-generation marker, so matching is consistency-only: it never credits
-  periodic coverage, due coverage stays due, and legacy proof flags are discarded.
-  Preview aborts release logical FIFO turns while a two-wire cap remains until
-  actual settlement. Malformed cadence, legacy repair, save serialization, and
-  coherence/cancellation regressions remain covered.
+  HACS and Python package metadata say `0.5.0`. The current local suite passes
+  3,597 tests at 100% (15,924 statements), plus Ruff, format, strict mypy
+  (61 files), privacy, clean-staging build/archive/fresh-import checks, and the
+  full 802-case browser suite. The final generated bundle also passes packaged
+  100-room recovery checks in Chromium and WebKit. Exact-head hosted checks and
+  regular review for the current branch head remain required before merge.
+  Mixed coverage now requires a stable, inactive native identity before its
+  first write; retained completed IDs cannot claim a new active run, and a
+  replacement during post-command refresh is rejected without binding or
+  stopping it. Managed starts bind a generated UUID to command and active-session
+  identity, including heterogeneous legs, then compare goal values. Hermes has
+  no verified plan-generation marker, so matching remains consistency-only: it
+  never credits periodic coverage, due coverage stays due, and legacy proof flags
+  are discarded. Preview aborts release logical FIFO turns while a two-wire cap
+  remains until actual settlement. Malformed cadence records fail closed;
+  oversized legacy plans can be reduced through unique strict-subset edits; auth
+  recovery resumes the existing workspace stream, while authorization loss
+  revokes spatial caches even when floor identity is unchanged. Save
+  serialization, coherence, and cancellation regressions remain covered.
 - Packaged-panel recovery saves/reads/reopens the 100-room repair in
   Chromium/WebKit. Six focused preview timeout/abort/cap cases pass in
   Chromium, WebKit, and Firefox safety (18 project cases); the snapshot adapter
-  suite passes all eight Chromium cases, including first-snapshot loss, fencing,
-  catalog recovery, and later invalidation. Paired size/input/heap evidence is
+  suite includes auth-loss fencing and immediate reauthentication recovery, in
+  addition to first-snapshot loss, catalog recovery, and later invalidation.
+  Paired size/input/heap evidence is
   in [performance-0.5.md](performance-0.5.md). Final-head CI and clean regular
   review remain required before merge.
 - The prior Python CI collection failure came from an inherited test importing

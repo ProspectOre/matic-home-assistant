@@ -6,14 +6,13 @@ The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired performance control remains
-the measured v0.4.5 build. The measured browser assets were built from source
-commit `3c60c22afd1d8043c0ef2c1d666fb145ed55a276`. The later backend-only
-fail-closed cadence correction does not change these compiled browser assets.
-They include abort-safe preview
-turn release while retaining the per-connection wire cap until actual RPC
-settlement, plus fail-closed fencing and catalog recovery for an unavailable
-initial workspace snapshot. Managed normal starts also bind to their generated
-native session UUID before accepting current-goal readback.
+the measured v0.4.5 build. The latest browser assets were built from source
+commit `c028ffeab677d26d630023bd38cd8642bafca921`. They include abort-safe
+preview turn release while retaining the per-connection wire cap until actual
+RPC settlement, fail-closed workspace fencing and catalog recovery, immediate
+snapshot retry after robot reauthentication, and oversized legacy-plan repair.
+Managed starts bind to their generated native session UUID before accepting
+current-goal readback.
 
 ## Method
 
@@ -27,11 +26,11 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-Two exact-source comparisons ran at `2026-09-27T11:29:09.433Z` and
-`2026-09-27T11:30:04.237Z` (4:29 and 4:30 a.m. PDT) on headless Chromium
-151.0.7922.34, macOS arm64, Apple M4, 1280×900, DPR 1, no throttling, and
-no-store assets. Other task-owned checks were paused during each run. Across
-both AB/BA/AB samples, scene and bundle fingerprints matched. The script records
+The latest exact-source comparison ran at `2026-09-27T16:13:36.883Z`
+(9:13 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+1280×900, DPR 1, no throttling, and no-store assets. Other task-owned checks
+were paused. Three fresh contexts per build ran in AB/BA/AB order; scene and
+bundle fingerprints matched across all six samples. The script records
 conditions and fingerprints.
 The candidate uses one multi-entry compilation: review-only assets are excluded
 from shipped bytes, while the harness imports the exact production chunks.
@@ -47,30 +46,28 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`3c60c22afd1d8043c0ef2c1d666fb145ed55a276`, including preview abort recovery,
-the bounded in-flight RPC cap, initial-snapshot fencing, and tracked-session
-attribution.
+`c028ffeab677d26d630023bd38cd8642bafca921`.
 
-| Measure | Stable v0.4.5 | 0.5 worktree |
+| Measure | Stable v0.4.5 | 0.5 candidate |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 80,274 |
+| Initial production JS, estimated gzip bytes | 79,821 | 80,322 |
 | Initial distinct production JS resources | 1 | 4 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,510 |
-| Review-only initial JS, estimated gzip bytes | Included above | 4,566 (not shipped) |
-| Input p95 estimates, six runs, ms | 32 / 32 / 32 / 32 / 40 / 32 | 32 / 32 / 32 / 32 / 32 / 32 |
-| Median / range of p95 estimates, ms | 32 / 32–40 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 40 / 32 / 40 / 32 / 88 / 40 | 32 / 40 / 32 / 40 / 32 / 40 |
-| Tasks at the 50 ms Long Tasks API threshold, six runs | 0 / 0 / 0 / 0 / 1 / 0 | 0 / 0 / 0 / 0 / 0 / 0 |
-| Longest task at or above threshold | 69 ms once | None observed |
-| Post-journey JS heap range, six observations, bytes | 5,207,288–7,507,920 | 5,897,392–7,533,296 |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,580 |
+| Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
+| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
+| Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
+| Maximum observed input estimates, ms | 48 / 32 / 40 | 32 / 32 / 40 |
+| Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
+| Longest task at or above threshold | None observed | None observed |
+| Post-journey JS heap range, three observations, bytes | 5,395,584–5,706,144 | 5,888,636–7,419,304 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
 are below 100 ms. Candidate and baseline median p95 are equal in this lab
-journey; this does not establish a speedup. One baseline run reached the Long
-Tasks API's 50 ms threshold; none of the six candidate runs did. Keep the
+journey; this does not establish a speedup. Neither build produced a task at
+the Long Tasks API's 50 ms threshold in these three samples. Keep the
 routine-task gate open until representative runtime evidence establishes
-whether any such task is routine. Candidate heap readings were 5.9–7.5 MB
-versus 5.2–7.5 MB at baseline.
+whether any such task is routine. Candidate heap readings were 5.9–7.4 MB
+versus 5.4–5.7 MB at baseline.
 Heap is one post-journey observation per run and does not establish a retention
 bound. These results do not qualify field INP, mobile, sustained runtime, or
 release acceptance.
@@ -81,9 +78,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `3c60c22afd1d8043c0ef2c1d666fb145ed55a276` |
-| Candidate production bundle | `ec74800c3006c067e396d8f9635bd02fcf5d5570038fa2e68b0281674472c05c` |
-| Candidate review-only bundle | `7f907c1a8f83cba6636655cc11c8c6935add196a3ea523af7148bb93a170d792` |
+| Candidate source commit | `c028ffeab677d26d630023bd38cd8642bafca921` |
+| Candidate production bundle | `23b96e354f65ac6017776c91f7bbf7aad5037d24437c12f7c127697300397f6f` |
+| Candidate review-only bundle | `ce58f0338240612bee555af0af6b9df45f23f614302d4973ab3aa9b526ddd209` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up
