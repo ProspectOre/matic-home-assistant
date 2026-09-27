@@ -175,12 +175,12 @@ const exerciseCadenceRoundtrip = async ({ page }) => {
   if (!(await schedule.evaluate((details) => details.open))) {
     await schedule.locator("summary").click();
   }
-  await mopNext.uncheck();
-  await coverageNext.uncheck();
   await mopInterval.fill("");
   await coverageInterval.fill("");
   await save.click();
   await waitForReadback(3, true, cadenceDisabled);
+  await expect(mopNext).not.toBeChecked();
+  await expect(coverageNext).not.toBeChecked();
 
   if (!(await schedule.evaluate((details) => details.open))) {
     await schedule.locator("summary").click();

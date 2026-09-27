@@ -1448,6 +1448,8 @@ async def test_disable_and_reenable_cadence_pauses_and_resumes_progress(
                     "mop_every_n": None,
                     "coverage_every_n": None,
                     "periodic_coverage_setting": None,
+                    "do_mop_next": False,
+                    "do_coverage_next": False,
                 },
             }
         ],

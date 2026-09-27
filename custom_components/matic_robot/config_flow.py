@@ -1519,10 +1519,8 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     },
                     cleaning_mode=room["cleaning_mode"],
                     coverage_setting=room["coverage_setting"],
+                    cadence_enabled=enabled,
                 )
-                if not enabled:
-                    policy["do_mop_next"] = False
-                    policy["do_coverage_next"] = False
                 room["cadence"] = policy
             result.append(room)
         return result

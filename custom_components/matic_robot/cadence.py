@@ -14,8 +14,9 @@ def normalize_cadence_policy(
     *,
     cleaning_mode: str,
     coverage_setting: str,
+    cadence_enabled: bool = True,
 ) -> dict[str, Any]:
-    """Validate the optional cadence contract without importing HA objects."""
+    """Validate cadence policy and discard one-shot flags when disabled."""
     if value is None:
         value = {}
     if not isinstance(value, Mapping):
@@ -50,6 +51,14 @@ def normalize_cadence_policy(
     do_coverage_next = value.get("do_coverage_next", False)
     if not isinstance(do_coverage_next, bool):
         raise ValueError("do_coverage_next must be a boolean")
+    if not cadence_enabled:
+        do_mop_next = False
+        do_coverage_next = False
+    else:
+        if do_mop_next and mop_interval is None:
+            raise ValueError("do_mop_next requires mop_every_n")
+        if do_coverage_next and coverage_interval is None:
+            raise ValueError("do_coverage_next requires coverage_every_n")
     return {
         "scope": scope,
         "mop_every_n": mop_interval,

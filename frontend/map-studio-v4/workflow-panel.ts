@@ -385,7 +385,11 @@ line-height: var(--ms-lh-snug);
     const input = event.currentTarget as HTMLInputElement;
     const raw = input.value;
     if (raw === "") {
-      this.#patchPlanCadence(index, { [field]: null });
+      if (field === "mopEveryN") {
+        this.#patchPlanCadence(index, { mopEveryN: null, doMopNext: false });
+      } else {
+        this.#patchPlanCadence(index, { coverageEveryN: null, doCoverageNext: false });
+      }
       return;
     }
     const value = Number(raw);

@@ -2675,6 +2675,54 @@ def test_service_cadence_schema_preserves_valid_integer_intervals(
     assert normalized[field] == value
 
 
+@pytest.mark.parametrize("flag", ["do_mop_next", "do_coverage_next"])
+async def test_save_plan_service_rejects_one_shot_without_interval(
+    hass, flag: str
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    room = floor_plan.rooms[0]
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "name": "Broken one-shot",
+                "rooms": [
+                    {
+                        "room": room.id,
+                        "cleaning_mode": "vacuum",
+                        "coverage_setting": "standard",
+                        "cadence": {flag: True},
+                    }
+                ],
+            }
+        ),
+    )
+    context = ("vacuum.test", SimpleNamespace(), "serial", {room.id: room.name})
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._plan_cadence_bindings",
+            return_value=(None, {}),
+        ),
+        pytest.raises(ServiceValidationError) as raised,
+    ):
+        await _registered_handler(services, "save_plan")(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    assert manager.plans("serial") == {}
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_save_services_return_manager_normalized_shared_cadence(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

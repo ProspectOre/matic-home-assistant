@@ -1331,6 +1331,8 @@ async def test_options_flow_persists_normalized_room_cadence(hass) -> None:
                     "room_id": "room-1",
                     "enabled": False,
                     "scope": "shared",
+                    "do_mop_next": True,
+                    "do_coverage_next": True,
                 }
             ),
             "enabled": True,

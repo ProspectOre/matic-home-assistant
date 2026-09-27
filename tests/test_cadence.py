@@ -94,6 +94,21 @@ def test_normalize_cadence_policy_defaults_absent_one_shot_flags() -> None:
     assert policy["do_coverage_next"] is False
 
 
+@pytest.mark.parametrize(
+    ("field", "interval"),
+    (("do_mop_next", "mop_every_n"), ("do_coverage_next", "coverage_every_n")),
+)
+def test_normalize_cadence_policy_rejects_one_shot_without_interval(
+    field: str, interval: str
+) -> None:
+    with pytest.raises(ValueError, match=f"{field} requires {interval}"):
+        normalize_cadence_policy(
+            {field: True},
+            cleaning_mode="vacuum",
+            coverage_setting="standard",
+        )
+
+
 def test_disabled_coverage_discards_the_editor_previous_setting() -> None:
     policy = normalize_cadence_policy(
         {"coverage_every_n": None, "periodic_coverage_setting": "standard"},
