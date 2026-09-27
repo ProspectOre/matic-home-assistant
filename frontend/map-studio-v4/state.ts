@@ -5,6 +5,7 @@ import {
   MAP_PIXELS_PER_METER_AT_100,
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
+  MAX_ROOM_SEQUENCE_SIZE,
   type CoordinateEditCapture,
   type CoordinateEditTool,
   type CommandState,
@@ -392,18 +393,21 @@ export const reduceWorkspace = (
     case "toggle-room": {
       if (state.workflow === "plan") {
         const rooms = state.planDraft.rooms;
+        const selected = rooms.some((room) => room.roomId === intent.roomId);
+        if (!selected && rooms.length >= MAX_ROOM_SEQUENCE_SIZE) return state;
         return {
           ...state,
           planDraft: {
             ...state.planDraft,
             dirty: true,
-            rooms: rooms.some((room) => room.roomId === intent.roomId)
+            rooms: selected
               ? rooms.filter((room) => room.roomId !== intent.roomId)
               : [...rooms, { roomId: intent.roomId, cleaningMode: "vacuum", coverageSetting: "standard" }],
           },
         };
       }
       const selected = state.selection.roomIds.includes(intent.roomId);
+      if (!selected && state.selection.roomIds.length >= MAX_ROOM_SEQUENCE_SIZE) return state;
       return {
         ...state,
         selection: {
@@ -488,6 +492,7 @@ export const reduceWorkspace = (
         workflow: intent.workflow === "areaReview" ? "areaReview" : state.workflow,
       };
     case "patch-plan-draft":
+      if (intent.patch.rooms && intent.patch.rooms.length > MAX_ROOM_SEQUENCE_SIZE) return state;
       return {
         ...state,
         planDraft: {

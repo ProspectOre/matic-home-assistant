@@ -28,6 +28,7 @@ SERVICE_TYPE: Final = "_matic_hermes._tcp.local."
 UPDATE_INTERVAL_SECONDS: Final = 30
 SLOW_UPDATE_INTERVAL_SECONDS: Final = 300
 MAP_UPDATE_INTERVAL_SECONDS: Final = 900
+MAX_ROOM_SEQUENCE_SIZE: Final = 100
 
 DATA_PLAN_MANAGER: Final = "cleaning_plan_manager"
 DATA_FIRMWARE_TRACKER: Final = "firmware_tracker"

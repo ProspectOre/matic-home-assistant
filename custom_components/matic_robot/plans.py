@@ -45,7 +45,12 @@ from .cadence_accounting import (
     validated_cadence_snapshot as _validated_cadence_snapshot,
 )
 from .client.models import CleaningSessionRecord, FloorPlan, Room
-from .const import DATA_PLAN_MANAGER, DOMAIN, EVENT_PLAN_DOCKED
+from .const import (
+    DATA_PLAN_MANAGER,
+    DOMAIN,
+    EVENT_PLAN_DOCKED,
+    MAX_ROOM_SEQUENCE_SIZE,
+)
 from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
 
@@ -113,6 +118,10 @@ def normalize_run_provenance(value: str | None) -> RunProvenance:
 
 class SavedPlanLimitError(HomeAssistantError):
     """Raised when a robot already has the maximum saved plans."""
+
+
+class RoomSequenceLimitError(ValueError):
+    """Raised when a cleaning definition exceeds the supported room count."""
 
 
 class CadenceBindingError(ValueError):
@@ -1399,6 +1408,22 @@ class CleaningPlanManager:
                 f"{MAX_SAVED_PLANS_PER_ROBOT} saved plans"
             )
         saved_plan = deepcopy(dict(plan))
+        raw_rooms = saved_plan.get("rooms", [])
+        if isinstance(raw_rooms, Sequence) and not isinstance(raw_rooms, str):
+            previous_rooms = plans.get(plan_id, {}).get("rooms", [])
+            previous_count = (
+                len(previous_rooms)
+                if isinstance(previous_rooms, Sequence)
+                and not isinstance(previous_rooms, str)
+                else 0
+            )
+            if len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE and (
+                previous_count <= MAX_ROOM_SEQUENCE_SIZE
+                or len(raw_rooms) > previous_count
+            ):
+                raise RoomSequenceLimitError(
+                    f"A plan can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
+                )
         prior_rooms = {
             str(room.get("room_id")): room
             for room in plans.get(plan_id, {}).get("rooms", [])
@@ -4357,6 +4382,10 @@ def resolve_rooms(
     rooms: list[CleaningRoom] = []
     seen: set[str] = set()
     for raw in raw_rooms:
+        if len(rooms) >= MAX_ROOM_SEQUENCE_SIZE:
+            raise RoomSequenceLimitError(
+                f"A plan can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
+            )
         stable_id = str(raw.get("room_id") or "")
         identifier = stable_id or str(raw.get("room") or "")
         candidates = (

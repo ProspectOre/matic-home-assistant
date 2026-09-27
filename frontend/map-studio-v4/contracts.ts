@@ -2,6 +2,7 @@ import type { AreaOutline } from "./area-outline";
 import type { ManualRoomSequencePreview } from "./backend-contracts";
 export const MAP_ZOOM_MIN = 100;
 export const MAP_ZOOM_MAX = 1000;
+export const MAX_ROOM_SEQUENCE_SIZE = 100;
 export const DRAW_BRUSH_MIN_METERS = 0.2;
 export const DRAW_BRUSH_MAX_METERS = 2.5;
 export const MAP_PIXELS_PER_METER_AT_100 = 64;

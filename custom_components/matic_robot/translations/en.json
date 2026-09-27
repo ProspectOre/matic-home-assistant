@@ -279,6 +279,7 @@
     "v4_plan_group_settings": "Placing rooms with matching settings together can reduce transitions.",
     "v4_plan_rotation_settings": "Intelligent rotation determines the room order.",
     "v4_plan_detail": "Review rooms and cleaning settings.",
+    "v4_preview_room_limit": "This saved plan exceeds the 100-room limit. Remove rooms and save it before running.",
     "v4_plans_quick_detail": "Run or edit a saved routine.",
     "v4_precision_hint": "Strokes follow the verified map resolution. Zoom changes the view, not the saved outline.",
     "v4_private_map_hidden": "Private map data is hidden.",
@@ -325,6 +326,7 @@
     "v4_room_names": "Room names",
     "v4_room_order_settings": "Room order and settings",
     "v4_room_ready": "Ready",
+    "v4_room_limit_reached": "Up to {limit} rooms can be included. Remove one before adding another.",
     "v4_room_selection_hint": "Select rooms here or directly on the map. The map and list stay in sync.",
     "v4_rooms_quick_detail": "Pick rooms and clean them now.",
     "v4_rooms_selected": "Rooms selected: {count}",
@@ -618,6 +620,7 @@
       "invalid_area": "Draw at least one mark on the map before saving.",
       "invalid_plan": "This plan cannot run with its current settings or room map.",
       "cadence_requires_verified_floor": "Shared room schedules require the verified live floor. Recheck the map, then save again.",
+      "room_sequence_limit": "Keep the plan at or below 100 rooms. Remove rooms, then save again.",
       "plan_limit_reached": "Delete an existing plan before creating another one.",
       "no_rooms": "Turn on at least one room.",
       "room_plan_unavailable": "The live room map must be available before you can draw or save an area.",
@@ -1221,6 +1224,9 @@
     "unknown_rooms": {
       "message": "Unknown Matic rooms: {rooms}"
     },
+    "room_sequence_limit": {
+      "message": "Room sequences are limited to {limit} rooms."
+    },
     "unknown_plan": {
       "message": "Unknown Matic cleaning plan: {plan}"
     },
@@ -1252,7 +1258,7 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Ordered room objects containing room, cleaning_mode, and coverage_setting."
+          "description": "Up to 100 ordered room objects containing room, cleaning_mode, and coverage_setting."
         },
         "return_to_base": {
           "name": "Return to dock",
@@ -1274,7 +1280,7 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Ordered room objects containing room, cleaning_mode, and coverage_setting."
+          "description": "Up to 100 ordered room objects containing room, cleaning_mode, and coverage_setting."
         },
         "return_to_base": {
           "name": "Return to dock",
@@ -1314,7 +1320,7 @@
       "fields": {
         "rooms": {
           "name": "Rooms",
-          "description": "Room names or stable room IDs in the desired order. Omit this field to clean every mapped room."
+          "description": "At most 100 room names or stable room IDs in the desired order. Omit this field to use the robot's clean-all command."
         },
         "cleaning_mode": {
           "name": "Cleaning mode",

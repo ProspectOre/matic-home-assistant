@@ -107,3 +107,51 @@ test("provided cadence flags reject malformed values instead of becoming false",
   expect(result).toHaveLength(16);
   expect(result.every(({ code, expectedCode }) => code === expectedCode)).toBe(true);
 });
+
+test("saved-plan parsing preserves a room-limit blocker without inventing a preview token", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    payload.plans[0].next_run_preview = {
+      rooms: [],
+      mission_boundaries: [],
+      blocker: "plan_room_limit",
+    };
+    const parsed = parsePlansCatalog(payload).plans[0].nextRunPreview;
+    return { blocker: parsed.blocker, previewToken: parsed.previewToken ?? null };
+  }, plansPayload());
+
+  expect(result).toEqual({ blocker: "plan_room_limit", previewToken: null });
+});
+
+test("saved-plan preview parsing enforces the shared room-sequence limit", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    const room = index => ({
+      room_id: `room-${index}`,
+      name: `Room ${index}`,
+      cleaning_mode: "vacuum",
+      coverage_setting: "standard",
+      cadence_reasons: [],
+    });
+    const parse = count => {
+      const candidate = structuredClone(payload);
+      candidate.plans[0].next_run_preview = {
+        rooms: Array.from({ length: count }, (_, index) => room(index)),
+        mission_boundaries: [],
+        blocker: null,
+        preview_token: "a".repeat(64),
+      };
+      try {
+        parsePlansCatalog(candidate);
+        return null;
+      } catch (error) {
+        return error.code ?? "unknown";
+      }
+    };
+    return { atLimit: parse(100), overLimit: parse(101) };
+  }, plansPayload());
+
+  expect(result).toEqual({ atLimit: null, overLimit: "invalid-plan-preview" });
+});

@@ -38,6 +38,7 @@ from .client.slam_map import decode_slam_tile, encode_slam_scene
 from .const import DOMAIN
 from .plans import (
     CleaningRoom,
+    RoomSequenceLimitError,
     leg_groups,
     plan_floor_token,
     room_cadence_identity,
@@ -1262,6 +1263,12 @@ class MaticPlansView(HomeAssistantView):
                 for group in mission_groups[:-1]:
                     offset += len(group)
                     boundaries.append(offset)
+            except RoomSequenceLimitError:
+                return {
+                    "rooms": [],
+                    "mission_boundaries": [],
+                    "blocker": "plan_room_limit",
+                }
             except (KeyError, TypeError, ValueError) as err:
                 message = str(err).casefold()
                 blocker = (

@@ -5,6 +5,7 @@ const bundle = await build({
   stdin: {
     contents: `export { MaticBackend } from "./frontend/map-studio-v4/backend";
       export { EffectController } from "./frontend/map-studio-v4/effects";
+      export { MAX_ROOM_SEQUENCE_SIZE } from "./frontend/map-studio-v4/contracts";
       export { WorkspaceStore, manualRoomPreviewKey } from "./frontend/map-studio-v4/state";
       export { createGalleryState } from "./frontend/map-studio-v4/gallery-state";
       export { syntheticEntry } from "./frontend/map-studio-v4/synthetic-fixtures";`,
@@ -107,6 +108,84 @@ test("@safety uses the HA websocket response envelope and sends a read-only sche
   });
   expect(result.parsed.floorToken).toBe("f".repeat(64));
   expect(result.parsed.rooms[0]).toMatchObject({ roomId: "room-a", cleaningMode: "mop", coverageSetting: "heavy_duty", cadenceReasons: ["mop_due"] });
+});
+
+test("@safety accepts 100 rooms and rejects larger preview requests before calling Home Assistant", async ({ page }) => {
+  await page.route("**/room-limit-test.js", (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { MAX_ROOM_SEQUENCE_SIZE, MaticBackend } = await import("/room-limit-test.js");
+    const calls = [];
+    const rooms = Array.from({ length: MAX_ROOM_SEQUENCE_SIZE }, (_, index) => ({
+      room: `room-${index + 1}`, cleaning_mode: "vacuum", coverage_setting: "standard",
+    }));
+    const response = {
+      context: {},
+      response: {
+        entry_id: "synthetic-entry", floor_token: "f".repeat(64), preview_token: "a".repeat(64),
+        rooms: rooms.map((room, index) => ({
+          room_id: room.room, name: `Room ${index + 1}`, cleaning_mode: room.cleaning_mode,
+          coverage_setting: room.coverage_setting, cadence_reasons: [],
+        })),
+        mission_boundaries: [], blocker: null,
+      },
+    };
+    const backend = new MaticBackend(() => ({ connection: { sendMessagePromise: async (message) => {
+      calls.push(message);
+      return response;
+    } } }));
+    await backend.previewRoomSequence("vacuum.synthetic", rooms, true);
+    let errorCode = null;
+    try {
+      await backend.previewRoomSequence("vacuum.synthetic", [...rooms, {
+        room: "room-over-limit", cleaning_mode: "vacuum", coverage_setting: "standard",
+      }], true);
+    } catch (error) {
+      errorCode = error.code;
+    }
+    backend.dispose();
+    return { limit: MAX_ROOM_SEQUENCE_SIZE, validCalls: calls.length, errorCode };
+  });
+  expect(result).toEqual({ limit: 100, validCalls: 1, errorCode: "invalid-room-sequence-preview-request" });
+});
+
+test("@safety keeps manual selection and plan drafts within the service room limit", async ({ page }) => {
+  await page.route("**/room-state-limit-test.js", (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/");
+  const result = await page.evaluate(async () => {
+    const { MAX_ROOM_SEQUENCE_SIZE, WorkspaceStore, createGalleryState } = await import("/room-state-limit-test.js");
+    const room = (roomId) => ({ roomId, cleaningMode: "vacuum", coverageSetting: "standard" });
+    const selected = Array.from({ length: MAX_ROOM_SEQUENCE_SIZE - 1 }, (_, index) => room(`room-${index + 1}`));
+    const base = createGalleryState("ready");
+    const manual = new WorkspaceStore({
+      ...base,
+      workflow: "rooms",
+      selection: { ...base.selection, roomIds: selected.map((candidate) => candidate.roomId), roomSettings: selected },
+    });
+    manual.dispatch({ type: "toggle-room", roomId: "room-100" });
+    manual.dispatch({ type: "toggle-room", roomId: "room-101" });
+
+    const plan = new WorkspaceStore({
+      ...base,
+      workflow: "plan",
+      planDraft: { ...base.planDraft, rooms: selected },
+    });
+    plan.dispatch({ type: "toggle-room", roomId: "room-100" });
+    plan.dispatch({ type: "toggle-room", roomId: "room-101" });
+    plan.dispatch({ type: "patch-plan-draft", patch: {
+      rooms: [...plan.value.planDraft.rooms, room("room-101")],
+    } });
+    return {
+      manualCount: manual.value.selection.roomIds.length,
+      planCount: plan.value.planDraft.rooms.length,
+      limit: MAX_ROOM_SEQUENCE_SIZE,
+    };
+  });
+  expect(result).toEqual({ manualCount: 100, planCount: 100, limit: 100 });
 });
 
 test("@safety serializes concurrent requests and skips an aborted queued waiter", async ({ page }) => {

@@ -14,9 +14,9 @@ owner, and runtime result remains unverified until its evidence is recorded.
 Local source evidence and exact-head CI are distinct from an RC, owner acceptance,
 or release proof. Evidence recorded on 2026-09-25 was refreshed on 2026-09-26:
 
-- `.venv/bin/pytest --cov=custom_components/matic_robot --cov-report=term-missing`:
-  2,479 passed; 15,674 statements at 100.00% coverage, no warnings. Ruff
-  check/format, strict mypy, privacy/translation parity, and diff checks pass.
+- Current worktree based on `79e8350`: full Python coverage passed 2,488 tests
+  at 100.00% across 15,698 statements. Ruff, format, strict mypy, translation
+  parity, and the refreshed privacy check pass.
 - TypeScript/build pass; 740 browser cases pass across Chromium, WebKit, Firefox
   safety, and mobile emulation at `fd4796c`; its rebuilt gesture subset passes 14/14.
   On 2026-09-26, the cadence round-trip passes 5/5 across Chromium, WebKit, Firefox
@@ -25,9 +25,10 @@ or release proof. Evidence recorded on 2026-09-25 was refreshed on 2026-09-26:
   synthetic catalog readback from the submitted service payload, including
   disabled-coverage normalization separately covered by Python backend tests.
   This verifies the panel and backend contract separately, not live Home Assistant.
-  The current worktree passes all 745
-  browser cases with `CI=1 npm run test:browser`; physical-device acceptance
-  remains separate.
+  The updated worktree passes all 757 browser cases with `CI=1 npm run
+  test:browser`. New regressions cover the shared 100-room boundary across UI,
+  preview admission, backend schemas, vacuum room selection, and legacy-plan repair;
+  physical-device acceptance remains separate.
 - Whole-integration ownership checks cover canceled connection candidates, shared
   transport-error classification, firmware persistence failure/cancellation,
   overlapping writers, floor revocation and A→B→A read generations, delayed Area
@@ -71,6 +72,7 @@ or release proof. Evidence recorded on 2026-09-25 was refreshed on 2026-09-26:
 | Central fail-closed live-map, pose, edit, and motion selectors | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Auth/admin loss, stale identity, wrong floor, renderer/transport failure, no robot, and unsupported rendering; no command guard may relax. |
 | History is dated, floor-scoped, read-only, pose-free, and bounded | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | `slam_history.py` bounds of 12 items and 48 MiB compressed, eviction, live/history races, explicit Return to Live, and oversized-scene rejection; candidate unknown. |
 | Room/list parity, accessible forms for every new behavior, map-space drawing, geometry invariance, and precision envelope | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Every cadence/setup/recovery/history action works without map input; numeric zoom, explicit Pan, focal zoom, scale bar, brush cursor, pointer cancellation, 100/400/1000% zoom, 0.20–2.50 m brush, undo, and no accidental paint. |
+| Explicit room-sequence bound | Implementation required | Backend, options flow, vacuum commands, and preview admission share the 100-room limit; 100/101 boundary and reduce-only legacy repair regressions pass | Exact-candidate compatibility and recovery walkthrough remain open; whole-floor commands preserve their existing behavior. |
 | HA semantics, safe areas, RTL, localization, zoom/reflow, reduced motion, forced colors, and screen readers | Preserved and verified (baseline) | Settled light/dark Axe scans report zero serious/critical findings in Ready and cadence-edit states across Chromium, WebKit, Firefox safety, and mobile emulation; manual acceptance remains open | The scan uses reduced-motion emulation to make theme auditing deterministic and drove selected-control and secondary-text contrast fixes. Custom HA theme combinations, RTL, localization expansion, safe areas, 200/400% zoom, VoiceOver/NVDA, and broader assistive-technology coverage remain open. Confirm HA-native tokens and supported panel interfaces, local dependency bundling, and capability-tested internal HA component fallbacks. |
 | Shell, lazy workflows/diagnostics, input, main-thread, frame, memory, and GPU budgets | Preserved and verified (baseline) | Bundle/input budgets pass; task-duration and runtime acceptance open | Same-condition paired desktop journeys and split-chunk measurements are in performance-0.5.md. Latest headless candidate input p95 is 32 ms and one task measured 58 ms, so the task-duration gate stays open. A separate trusted-pointer follow-up verifies canceled-draft preservation but records a 147 ms compositor wait; headed samples have no routine task above 50 ms. These lab samples do not establish mobile or sustained runtime acceptance. The synthetic gallery is excluded from production; harness and panel share compiled modules. Tablet/live baseline, ≥55/≥30 fps, and heap/GPU stability remain unmeasured. |
 | Worker fallback, bounded parsing, transferable buffers, incremental uploads, WebGL loss, and cleanup | Preserved and verified (baseline) | Parser boundaries and fallback/disposal regressions pass; runtime acceptance open | Five local tests cover no-worker fallback, worker error recovery, transfer ownership, six idempotent dispose cycles, and real-worker 1.5M accept/1.500001M reject. A connected-admin lifecycle regression adds 20 real plan/draw/history/floor transitions and unmounts: workers and object URLs balance, popstate listeners return to zero, and late floor results cannot revive disposed state. Decompression/WebGL runtime failures and bounded heap/GPU remain unverified. |

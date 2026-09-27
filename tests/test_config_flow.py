@@ -1468,6 +1468,39 @@ async def test_options_flow_recovers_from_invalid_cadence_rows(hass) -> None:
     assert result["errors"] == {"base": "invalid_plan"}
 
 
+@pytest.mark.parametrize("step", ["add_plan", "edit_plan"])
+async def test_options_flow_reports_room_limit_and_preserves_plan(
+    hass, step: str
+) -> None:
+    entry, manager = await _options_entry(hass)
+    flow = _direct_options_flow(hass, entry)
+    if step == "edit_plan":
+        flow._plan_id = "whole_home"
+    room_editor = [
+        {
+            "room_id": f"room-{index}",
+            "included": True,
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+        for index in range(1, 102)
+    ]
+    user_input = {
+        "name": "Too many rooms",
+        "run_behavior": "intelligent",
+        "room_editor": room_editor,
+        "return_to_base": True,
+        "enabled": True,
+    }
+
+    result = await getattr(flow, f"async_step_{step}")(user_input)
+
+    assert result["type"] is FlowResultType.FORM
+    assert result["errors"] == {"base": "room_sequence_limit"}
+    assert len(manager.plan("synthetic-serial", "whole_home")["rooms"]) == 2
+    assert "too_many_rooms" not in manager.plans("synthetic-serial")
+
+
 async def test_options_flow_rejects_empty_rooms_and_duplicate_plan(hass) -> None:
     entry, _manager = await _options_entry(hass)
     result = await _start_options_step(hass, entry, "add_plan")

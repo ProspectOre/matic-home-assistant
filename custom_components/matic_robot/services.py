@@ -47,6 +47,7 @@ from .client.models import FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DOMAIN,
+    MAX_ROOM_SEQUENCE_SIZE,
 )
 from .firmware import (
     FirmwareTracker,
@@ -102,7 +103,9 @@ TARGET_KEYS = (
 
 CLEAN_SERVICE_SCHEMA = cv.make_entity_service_schema(
     {
-        vol.Optional("rooms"): vol.All(cv.ensure_list, [cv.string]),
+        vol.Optional("rooms"): vol.All(
+            cv.ensure_list, [cv.string], vol.Length(max=MAX_ROOM_SEQUENCE_SIZE)
+        ),
         vol.Optional("cleaning_mode"): vol.In([value.value for value in CleaningMode]),
         vol.Optional("coverage_setting"): vol.In(
             [value.value for value in CoverageSetting]
@@ -183,7 +186,9 @@ RUN_SELECTED_PLAN_SCHEMA = cv.make_entity_service_schema(
 
 _ROOM_SEQUENCE_FIELDS = {
     vol.Required("rooms"): vol.All(
-        cv.ensure_list, [SAVED_ROOM_SCHEMA], vol.Length(min=1, max=100)
+        cv.ensure_list,
+        [SAVED_ROOM_SCHEMA],
+        vol.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
     ),
     vol.Optional("return_to_base", default=True): cv.boolean,
     vol.Optional("use_room_schedule", default=False): cv.boolean,
@@ -234,7 +239,9 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
             ("intelligent", "ordered")
         ),
         vol.Required("rooms"): vol.All(
-            cv.ensure_list, [SAVED_PLAN_ROOM_SCHEMA], vol.Length(min=1, max=100)
+            cv.ensure_list,
+            [SAVED_PLAN_ROOM_SCHEMA],
+            vol.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
         ),
         vol.Optional("return_to_base", default=True): cv.boolean,
         vol.Optional("finish_current_room", default=False): cv.boolean,
@@ -1079,14 +1086,17 @@ async def async_register_services(hass: HomeAssistant) -> None:
             plan["rooms"][position] = room
         plan_id = plan.pop("id")
         cadence_floor_token, room_identities = _plan_cadence_bindings(entry)
-        await manager.async_save_plan(
-            serial_number,
-            plan_id,
-            plan,
-            select=False,
-            floor_token=cadence_floor_token,
-            room_identities=room_identities,
-        )
+        try:
+            await manager.async_save_plan(
+                serial_number,
+                plan_id,
+                plan,
+                select=False,
+                floor_token=cadence_floor_token,
+                room_identities=room_identities,
+            )
+        except ValueError as err:
+            raise _validation_error(str(err), "invalid_plan") from err
         persisted = manager.plan(serial_number, plan_id)
         persisted_room = next(
             saved for saved in persisted["rooms"] if saved["room_id"] == room["room_id"]

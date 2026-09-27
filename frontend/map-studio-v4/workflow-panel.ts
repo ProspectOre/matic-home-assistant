@@ -11,7 +11,7 @@ import type {
   PlanRoom,
   RoomCadencePolicy,
 } from "./backend-contracts";
-import type { Localize, WorkspaceIntent, WorkspaceState } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type Localize, type WorkspaceIntent, type WorkspaceState } from "./contracts";
 import { WORKFLOW_TAG } from "./element-tags";
 import { WORKSPACE_INTENT_EVENT } from "./map-canvas";
 import { admittedManualRoomPreview, initialWorkspaceState } from "./state";
@@ -125,6 +125,7 @@ line-height: var(--ms-lh-snug);
     if (blocker === "shared_schedule_unavailable") return this.#t("v4_preview_shared_unavailable", "The shared room schedule cannot be verified on this map.");
     if (blocker === "cadence_identity_changed" || blocker === "cadence_identity_unavailable") return this.#t("v4_preview_identity_unavailable", "Room identity could not be verified. Check the current map before running.");
     if (blocker === "plan_has_no_rooms") return this.#t("v4_preview_no_rooms", "Add at least one room to this plan.");
+    if (blocker === "plan_room_limit") return this.#t("v4_preview_room_limit", "This saved plan exceeds the 100-room limit. Remove rooms and save it before running.");
     return this.#t("v4_preview_invalid", "The saved plan preview is invalid. Review the plan and try again.");
   }
 
@@ -198,6 +199,7 @@ line-height: var(--ms-lh-snug);
     const plans = this.state.resources.plans;
     const admitted = admittedManualRoomPreview(this.state);
     const previewCurrent = admitted !== null;
+    const atRoomLimit = this.state.selection.roomIds.length >= MAX_ROOM_SEQUENCE_SIZE;
     return this.#resource(plans.status, plans.problem, html`
       <div class="stack">
         <h3 class="group-heading" id="rooms-heading">${this.#t("v4_rooms_to_clean", "Rooms to clean")}</h3>
@@ -210,6 +212,7 @@ line-height: var(--ms-lh-snug);
                   <input
                     type="checkbox"
                     .checked=${checked}
+                    ?disabled=${!checked && atRoomLimit}
                     @change=${() => this.#intent({ type: "toggle-room", roomId: room.roomId })}
                   >
                   <strong>${room.name}</strong>
@@ -224,6 +227,7 @@ line-height: var(--ms-lh-snug);
             `;
           })}
         </div>
+        ${atRoomLimit ? html`<p class="subtle" role="status">${this.#t("v4_room_limit_reached", "Up to {limit} rooms can be included. Remove one before adding another.", { limit: MAX_ROOM_SEQUENCE_SIZE })}</p>` : nothing}
         <p class="subtle">${this.#t("v4_room_selection_hint", "Select rooms here or directly on the map. The map and list stay in sync.")}</p>
         <label class="plan-option">
           <input type="checkbox" .checked=${!this.state.selection.useRoomSchedule} @change=${(event: Event) => this.#intent({ type: "set-use-room-schedule", value: !eventChecked(event) })}>
@@ -559,6 +563,7 @@ line-height: var(--ms-lh-snug);
         selected: false,
       }));
     const roomRows = [...selectedRows, ...availableRows];
+    const atRoomLimit = draft.rooms.length >= MAX_ROOM_SEQUENCE_SIZE;
     const mixedSettings = new Set(draft.rooms.map((room) => `${room.cleaningMode}:${room.coverageSetting}`)).size > 1;
     const savedPlan = draft.id ? catalog?.plans.find((plan) => plan.id === draft.id) : undefined;
     const nextRunPreview = savedPlan?.nextRunPreview;
@@ -620,7 +625,7 @@ line-height: var(--ms-lh-snug);
               <div class="room plan-room ms-row ms-row--stack" data-selected=${String(selected)}>
                 <div class="room-choice">
                   <label class="plan-room-label">
-                  <input type="checkbox" .checked=${selected} @change=${() => this.#togglePlanRoom(room.roomId)}>
+                  <input type="checkbox" .checked=${selected} ?disabled=${!selected && atRoomLimit} @change=${() => this.#togglePlanRoom(room.roomId)}>
                   <strong>${selected ? `${index + 1}. ` : ""}${label}</strong>
                   </label>
                   ${selected ? html`
@@ -645,13 +650,15 @@ line-height: var(--ms-lh-snug);
             `;
           })}
         </div>
+        ${atRoomLimit ? html`<p class="subtle" role="status">${this.#t("v4_room_limit_reached", "Up to {limit} rooms can be included. Remove one before adding another.", { limit: MAX_ROOM_SEQUENCE_SIZE })}</p>` : nothing}
         <section class="stack" aria-labelledby="next-run-preview-heading">
           <h3 class="group-heading" id="next-run-preview-heading">${this.#t("v4_next_run_preview", "Next-run preview")}</h3>
           <p class="subtle">${this.#t("v4_next_run_preview_hint", "This is the next saved-plan run, separate from any current run. The backend refreshes it before dispatch.")}</p>
           ${!draft.id ? html`<p class="subtle">${this.#t("v4_next_run_preview_save_first", "Save this plan to calculate its exact room order and effective settings.")}</p>`
-            : !nextRunPreview || !/^[0-9a-f]{64}$/u.test(nextRunPreview.previewToken ?? "") ? html`<p class="problem" role="status">${this.#t("v4_next_run_preview_unavailable", "A verified next-run preview is unavailable. Refresh the saved plan before starting it.")}</p>`
+            : !nextRunPreview ? html`<p class="problem" role="status">${this.#t("v4_next_run_preview_unavailable", "A verified next-run preview is unavailable. Refresh the saved plan before starting it.")}</p>`
               : nextRunPreview.blocker ? html`<p class="problem" role="alert">${this.#previewBlocker(nextRunPreview.blocker)}</p>`
-                : html`
+                : !/^[0-9a-f]{64}$/u.test(nextRunPreview.previewToken ?? "") ? html`<p class="problem" role="status">${this.#t("v4_next_run_preview_unavailable", "A verified next-run preview is unavailable. Refresh the saved plan before starting it.")}</p>`
+              : html`
                   ${draft.dirty ? html`<p class="notice" role="status">${this.#t("v4_next_run_preview_stale", "This preview shows the saved plan. Save your edits to calculate the updated order and settings before starting.")}</p>` : nothing}
                   <ol class="list" aria-label=${this.#t("v4_next_run_preview_order", "Next-run room order and effective settings")}>
                     ${nextRunPreview.rooms.map((previewRoom, roomIndex) => {

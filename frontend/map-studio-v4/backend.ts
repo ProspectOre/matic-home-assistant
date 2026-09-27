@@ -1,5 +1,5 @@
 import type { AreaOutline } from "./area-outline";
-import type { HassLike } from "./contracts";
+import { MAX_ROOM_SEQUENCE_SIZE, type HassLike } from "./contracts";
 import {
   CATALOG_URL,
   ContractError,
@@ -435,7 +435,7 @@ export class MaticBackend {
     overrideRoomSchedule: boolean,
     signal?: AbortSignal,
   ): Promise<ManualRoomSequencePreview> {
-    if (!entityId || entityId.length > 255 || rooms.length < 1 || rooms.length > 256) {
+    if (!entityId || entityId.length > 255 || rooms.length < 1 || rooms.length > MAX_ROOM_SEQUENCE_SIZE) {
       throw new ContractError("invalid-room-sequence-preview-request");
     }
     if (signal?.aborted) throw new DOMException("Aborted", "AbortError");

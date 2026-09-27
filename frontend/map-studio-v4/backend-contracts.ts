@@ -1,5 +1,6 @@
 import type { AreaOutline } from "./area-outline";
 import { validOutline } from "./area-outline";
+import { MAX_ROOM_SEQUENCE_SIZE } from "./contracts";
 export const CATALOG_URL = "/api/matic_robot/slam_entries";
 export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
@@ -167,6 +168,7 @@ export type NextRunPreviewBlocker =
   | "preview_unavailable"
   | "plan_disabled"
   | "plan_has_no_rooms"
+  | "plan_room_limit"
   | "cadence_identity_changed"
   | "shared_schedule_unavailable"
   | "invalid_cadence_policy"
@@ -576,8 +578,9 @@ const parsePlanRoom = (value: unknown): PlanRoom => {
 const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
   if (value === undefined || value === null) return undefined;
   const preview = objectValue(value, "invalid-plan-preview");
-  if (!Array.isArray(preview.rooms) || preview.rooms.length > 256
-    || !Array.isArray(preview.mission_boundaries) || preview.mission_boundaries.length > 255) {
+  if (!Array.isArray(preview.rooms) || preview.rooms.length > MAX_ROOM_SEQUENCE_SIZE
+    || !Array.isArray(preview.mission_boundaries)
+    || preview.mission_boundaries.length > MAX_ROOM_SEQUENCE_SIZE - 1) {
     throw new ContractError("invalid-plan-preview");
   }
   const rooms: NextRunPreviewRoom[] = preview.rooms.map((candidate) => {
@@ -601,6 +604,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     "preview_unavailable",
     "plan_disabled",
     "plan_has_no_rooms",
+    "plan_room_limit",
     "cadence_identity_changed",
     "shared_schedule_unavailable",
     "invalid_cadence_policy",

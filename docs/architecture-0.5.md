@@ -120,7 +120,7 @@ progress. Partial, interrupted, skipped, unverified, UI, Activity, OEM, physical
 or ambiguous floor/name evidence does not. Keep the bounded 64-key completion receipt dedupe independent of the Activity journal.
 Delayed native reconciliation uses the original run identity and
 exact requested mode/coverage. A due rule stays due until its own evidence passes. A Map Studio one-off room
-run is ephemeral and never creates a saved plan. It applies existing shared schedules by default; an explicit settings override still counts compatible verified work. Existing service behavior remains compatible, with tracked schedule use explicit at that boundary.
+run is ephemeral and never creates a saved plan. It applies existing shared schedules by default; an explicit settings override still counts compatible verified work. Existing service behavior remains compatible, with tracked schedule use explicit at that boundary. Explicit room lists and saved plans share a 100-room bound; an oversized legacy plan remains readable but blocked, and can be reduced one room at a time. Existing all-floor cleaning actions retain their semantics.
 
 ## Experience and safety authority
 

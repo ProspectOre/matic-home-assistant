@@ -40,7 +40,7 @@ from custom_components.matic_robot.client.models import (
     HermesCollectionEntry,
     Room,
 )
-from custom_components.matic_robot.const import DOMAIN
+from custom_components.matic_robot.const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.firmware import ANALYSIS_VERSION
 from custom_components.matic_robot.managed_executor import (
     PlanCancelledError,
@@ -62,15 +62,20 @@ from custom_components.matic_robot.plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     CleaningPlanManager,
     CleaningRoom,
+    RoomSequenceLimitError,
     SavedPlanLimitError,
     plan_floor_token,
 )
 from custom_components.matic_robot.room_sequence import (
     _resolve_room_id as _resolve_sequence_room_id,
 )
+from custom_components.matic_robot.room_sequence import (
+    resolve_room_sequence,
+)
 from custom_components.matic_robot.services import (
     CLEAN_AREA_SERVICE_SCHEMA,
     CLEAN_ROOM_SEQUENCE_SCHEMA,
+    CLEAN_SERVICE_SCHEMA,
     DELETE_PLAN_ROOM_SCHEMA,
     MOVE_PLAN_ROOM_SCHEMA,
     PLAN_REFERENCE_SCHEMA,
@@ -98,6 +103,65 @@ def test_room_sequence_default_resolver_uses_canonical_reference_rules() -> None
     assert _resolve_sequence_room_id(" ROOM-OFFICE ", room_map) == "room-office"
     with pytest.raises(ValueError, match="missing"):
         _resolve_sequence_room_id("missing", room_map)
+
+
+def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
+    rooms = [
+        {
+            "room": f"Room {index}",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+        for index in range(MAX_ROOM_SEQUENCE_SIZE + 1)
+    ]
+    entity = {"entity_id": ["vacuum.test"]}
+    for schema, payload in (
+        (
+            CLEAN_ROOM_SEQUENCE_SCHEMA,
+            {**entity, "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE]},
+        ),
+        (
+            PREVIEW_ROOM_SEQUENCE_SCHEMA,
+            {**entity, "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE]},
+        ),
+        (
+            SAVE_PLAN_SCHEMA,
+            {**entity, "name": "Bounded", "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE]},
+        ),
+    ):
+        assert len(schema(payload)["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
+        with pytest.raises(vol.Invalid):
+            schema({**payload, "rooms": rooms})
+
+    clean_payload = {**entity, "rooms": [room["room"] for room in rooms]}
+    assert (
+        len(
+            CLEAN_SERVICE_SCHEMA(
+                {
+                    **clean_payload,
+                    "rooms": clean_payload["rooms"][:MAX_ROOM_SEQUENCE_SIZE],
+                }
+            )["rooms"]
+        )
+        == MAX_ROOM_SEQUENCE_SIZE
+    )
+    with pytest.raises(vol.Invalid):
+        CLEAN_SERVICE_SCHEMA(clean_payload)
+
+
+def test_room_sequence_resolver_rejects_oversized_internal_requests() -> None:
+    with pytest.raises(RoomSequenceLimitError, match="at most 100 rooms"):
+        resolve_room_sequence(
+            None,
+            "serial",
+            None,
+            {},
+            [{"room": str(index)} for index in range(MAX_ROOM_SEQUENCE_SIZE + 1)],
+            entry_id="entry",
+            return_to_base=True,
+            use_room_schedule=False,
+            override_room_schedule=False,
+        )
 
 
 @pytest.mark.parametrize(
@@ -2018,6 +2082,72 @@ async def test_run_selected_plan_rejects_malformed_authoritative_preview(
     execute.assert_not_awaited()
 
 
+async def test_legacy_oversized_plan_cannot_be_previewed_or_dispatched(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_rooms = tuple(
+        Room(
+            f"room-{index}",
+            f"Room {index}",
+            f"protocol-{index}",
+            f"wire-{index}".encode(),
+            (),
+        )
+        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 2)
+    )
+    floor_plan = FloorPlan(
+        42, "synthetic-partition", b"synthetic-partition", floor_rooms
+    )
+    room_map = {room.id: room.name for room in floor_rooms}
+    manager._robot("serial")["plans"]["legacy"] = {
+        "name": "Legacy",
+        "enabled": True,
+        "run_behavior": "ordered",
+        "rooms": [
+            {
+                "room_id": room.id,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            }
+            for room in floor_rooms
+        ],
+        "room_order": [room.id for room in floor_rooms],
+    }
+    with pytest.raises(RoomSequenceLimitError, match="at most 100 rooms"):
+        manager.preview("serial", room_map, "legacy")
+
+    entry = SimpleNamespace(
+        runtime_data=SimpleNamespace(
+            coordinator=SimpleNamespace(data=SimpleNamespace(floor_plan=floor_plan)),
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        )
+    )
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {"entity_id": ["vacuum.test"], "plan": "Legacy"},
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", entry, "serial", room_map),
+        ),
+        patch(
+            "custom_components.matic_robot.services._async_execute_rooms",
+            AsyncMock(),
+        ) as execute,
+        pytest.raises(ServiceValidationError) as raised,
+    ):
+        await _registered_handler(services, "run_selected_plan")(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    execute.assert_not_awaited()
+
+
 async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     hass,
 ) -> None:
@@ -2686,6 +2816,104 @@ async def test_room_native_plan_crud_is_complete(hass) -> None:
     assert selected["selected_plan_id"] == "away_cleaning"
     assert deleted["deleted_plan_id"] == "away_cleaning"
     assert manager.plans("serial") == {}
+
+
+async def test_incremental_plan_save_rejects_the_101st_room_atomically(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        {
+            "room_id": f"room-{index}",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 1)
+    ]
+    await manager.async_save_plan("serial", "home", {"name": "Home", "rooms": rooms})
+    manager._store.async_save.reset_mock()
+    room_map = {
+        f"room-{index}": f"Room {index}"
+        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 2)
+    }
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan_room",
+        SAVE_PLAN_ROOM_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan": "Home",
+                "room": {
+                    "room": f"Room {MAX_ROOM_SEQUENCE_SIZE + 1}",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                },
+            }
+        ),
+    )
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
+        ),
+        pytest.raises(ServiceValidationError) as raised,
+    ):
+        await _registered_handler(services, "save_plan_room")(call)
+
+    assert raised.value.translation_key == "invalid_plan"
+    assert len(manager.plan("serial", "home")["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
+    manager._store.async_save.assert_not_awaited()
+
+
+async def test_legacy_plan_can_be_pruned_one_room_at_a_time(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        {
+            "room_id": f"room-{index}",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 3)
+    ]
+    manager._robot("serial")["plans"]["legacy"] = {
+        "name": "Legacy",
+        "enabled": True,
+        "run_behavior": "ordered",
+        "rooms": rooms,
+        "room_order": [room["room_id"] for room in rooms],
+    }
+    room_map = {f"room-{index}": f"Room {index}" for index in range(1, len(rooms) + 1)}
+    services = await _registered_services(hass, manager)
+
+    with patch(
+        "custom_components.matic_robot.services._saved_plan_context",
+        return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
+    ):
+        for index in (1, 2):
+            call = ServiceCall(
+                hass,
+                DOMAIN,
+                "delete_plan_room",
+                DELETE_PLAN_ROOM_SCHEMA(
+                    {
+                        "entity_id": ["vacuum.test"],
+                        "plan": "Legacy",
+                        "room": f"Room {index}",
+                    }
+                ),
+            )
+            await _registered_handler(services, "delete_plan_room")(call)
+
+    reduced = manager.plan("serial", "legacy")
+    assert len(reduced["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
+    assert (
+        len(manager.preview("serial", room_map, "legacy")["rooms"])
+        == MAX_ROOM_SEQUENCE_SIZE
+    )
+    assert manager._store.async_save.await_count == 2
 
 
 async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:

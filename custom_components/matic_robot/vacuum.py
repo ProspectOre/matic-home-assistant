@@ -19,7 +19,7 @@ from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.exceptions import MaticError
 from .client.models import FloorPlan, RobotActivity, Room
-from .const import DOMAIN
+from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
 from .plans import (
     PLAN_FLOOR_TOKEN,
@@ -658,6 +658,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     def _resolve_rooms(self, identifiers: list[str]) -> list[Room]:
         if not identifiers:
             raise _validation_error("Select at least one Matic room", "no_rooms")
+        if len(identifiers) > MAX_ROOM_SEQUENCE_SIZE:
+            raise _validation_error(
+                f"Select at most {MAX_ROOM_SEQUENCE_SIZE} rooms at a time",
+                "room_sequence_limit",
+                {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
+            )
         rooms = self._floor_plan().rooms
         room_map = {room.id: room.name for room in rooms}
         rooms_by_id = {room.id: room for room in rooms}

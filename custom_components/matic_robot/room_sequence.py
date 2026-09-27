@@ -8,9 +8,11 @@ from collections.abc import Callable, Mapping, Sequence
 from typing import Any
 
 from .client.models import FloorPlan
+from .const import MAX_ROOM_SEQUENCE_SIZE
 from .plans import (
     CleaningPlanManager,
     CleaningRoom,
+    RoomSequenceLimitError,
     plan_floor_token,
     resolve_room_reference,
     room_cadence_identity,
@@ -31,6 +33,10 @@ def resolve_room_sequence(
     room_resolver: Callable[[str, Mapping[str, str]], str] | None = None,
 ) -> dict[str, Any]:
     """Resolve one ordered sequence and return its stable preview contract."""
+    if len(requested_rooms) > MAX_ROOM_SEQUENCE_SIZE:
+        raise RoomSequenceLimitError(
+            f"A room sequence can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
+        )
     resolve_room = room_resolver or _resolve_room_id
     rooms = []
     requested: list[dict[str, Any]] = []

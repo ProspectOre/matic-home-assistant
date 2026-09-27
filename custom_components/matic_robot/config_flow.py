@@ -69,6 +69,7 @@ from .const import (
 from .plans import (
     MAX_SAVED_PLANS_PER_ROBOT,
     CadenceBindingError,
+    RoomSequenceLimitError,
     plan_floor_token,
     room_cadence_identity,
 )
@@ -1949,6 +1950,8 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                         )
                     except CadenceBindingError:
                         errors["base"] = "cadence_requires_verified_floor"
+                    except RoomSequenceLimitError:
+                        errors["base"] = "room_sequence_limit"
                     else:
                         self._plan_id = plan_id
                         return await self.async_step_plan_menu()
@@ -2012,6 +2015,8 @@ class MaticRobotOptionsFlow(config_entries.OptionsFlow):
                     )
                 except CadenceBindingError:
                     errors["base"] = "cadence_requires_verified_floor"
+                except RoomSequenceLimitError:
+                    errors["base"] = "room_sequence_limit"
                 else:
                     return await self.async_step_plan_menu()
         return self.async_show_form(

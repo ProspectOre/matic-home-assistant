@@ -250,6 +250,124 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeEnabled();
   });
 
+  test("keeps manual room choice within the service limit and explains the disabled choices", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      const template = catalog.rooms[0];
+      const rooms = Array.from({ length: 101 }, (_, index) => ({
+        ...template,
+        roomId: `room-limit-${index + 1}`,
+        name: `Room ${index + 1}`,
+      }));
+      const selected = rooms.slice(0, 99);
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "rooms",
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...catalog, rooms } },
+        },
+        selection: {
+          ...state.selection,
+          roomIds: selected.map((room) => room.roomId),
+          roomSettings: selected.map((room) => ({ roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard" })),
+        },
+      });
+    }, GALLERY_TAG);
+    const rooms = gallery.getByRole("group", { name: "Rooms to clean" });
+    const choices = rooms.locator('input[type="checkbox"]');
+    await expect(choices).toHaveCount(101);
+    await choices.nth(99).check();
+    await expect(choices.nth(99)).toBeChecked();
+    await expect(choices.nth(100)).toBeDisabled();
+    await expect(gallery.getByRole("status").filter({ hasText: "Up to 100 rooms can be included" })).toBeVisible();
+    await expect(rooms.locator('input[type="checkbox"]:checked')).toHaveCount(100);
+
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const catalogRooms = state.resources.plans.value.rooms;
+      const selected = catalogRooms.slice(0, 99).map((room) => ({
+        roomId: room.roomId, cleaningMode: "vacuum", coverageSetting: "standard",
+      }));
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "plan",
+        planDraft: { ...state.planDraft, id: null, name: "Capacity check", rooms: selected, dirty: false },
+      });
+    }, GALLERY_TAG);
+    const planRooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const planChoices = planRooms.locator(".plan-room-label input[type=checkbox]");
+    await expect(planChoices).toHaveCount(101);
+    await planChoices.nth(99).check();
+    await expect(planChoices.nth(99)).toBeChecked();
+    await expect(planChoices.nth(100)).toBeDisabled();
+    await expect(gallery.getByRole("status").filter({ hasText: "Up to 100 rooms can be included" })).toBeVisible();
+  });
+
+  test("blocks an oversized legacy plan with a clear recovery action", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const catalog = state.resources.plans.value;
+      const template = catalog.rooms[0];
+      const rooms = Array.from({ length: 101 }, (_, index) => ({
+        ...template,
+        roomId: `legacy-room-${index + 1}`,
+        name: `Legacy room ${index + 1}`,
+      }));
+      const planRooms = rooms.map((room) => ({
+        roomId: room.roomId,
+        cleaningMode: "vacuum",
+        coverageSetting: "standard",
+      }));
+      const legacy = {
+        id: "legacy-plan",
+        name: "Legacy plan",
+        enabled: true,
+        runBehavior: "ordered",
+        rooms: planRooms,
+        roomOrder: planRooms.map((room) => room.roomId),
+        returnToBase: true,
+        finishCurrentRoom: false,
+        finishCurrentRoomThreshold: 50,
+        nextRunPreview: { rooms: [], missionBoundaries: [], blocker: "plan_room_limit" },
+      };
+      element.replaceWorkspaceState({
+        ...state,
+        workflow: "plan",
+        resources: {
+          ...state.resources,
+          plans: {
+            ...state.resources.plans,
+            value: { ...catalog, rooms, plans: [legacy], selectedPlan: legacy.id },
+          },
+        },
+        planDraft: {
+          id: legacy.id,
+          name: legacy.name,
+          enabled: legacy.enabled,
+          runBehavior: legacy.runBehavior,
+          rooms: planRooms,
+          returnToBase: legacy.returnToBase,
+          finishCurrentRoom: legacy.finishCurrentRoom,
+          finishCurrentRoomThreshold: legacy.finishCurrentRoomThreshold,
+          dirty: false,
+        },
+      });
+    }, GALLERY_TAG);
+
+    await expect(gallery.getByRole("alert").filter({ hasText: "exceeds the 100-room limit" })).toBeVisible();
+    await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
+    const rooms = gallery.getByRole("group", { name: "Plan rooms" });
+    await rooms.locator(".plan-room-label input[type=checkbox]").first().uncheck();
+    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+  });
+
   test("requires review when a saved-plan preview changes before dispatch", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {

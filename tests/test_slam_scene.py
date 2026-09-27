@@ -35,7 +35,11 @@ from custom_components.matic_robot.client.models import (
 from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
-from custom_components.matic_robot.plans import plan_floor_token, room_cadence_identity
+from custom_components.matic_robot.plans import (
+    RoomSequenceLimitError,
+    plan_floor_token,
+    room_cadence_identity,
+)
 from custom_components.matic_robot.room_sequence import saved_plan_preview_token
 from custom_components.matic_robot.slam_delta import encode_slam_scene_delta
 from custom_components.matic_robot.slam_map_store import SlamMapIdentity
@@ -1416,6 +1420,38 @@ async def test_plan_workspace_lists_saved_plans_and_current_rooms() -> None:
     assert plans_api_url("entry") == PLANS_API_URL.format(entry_id="entry")
     with pytest.raises(Unauthorized):
         await view.get(_request(hass, admin=False), "entry")
+
+
+async def test_plan_workspace_explains_legacy_room_limit() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "legacy": {
+            "name": "Legacy",
+            "enabled": True,
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+            "room_order": ["room-1"],
+        }
+    }
+    runtime.cleaning_plans.preview.side_effect = RoomSequenceLimitError(
+        "A plan can include at most 100 rooms"
+    )
+    hass = _hass(_entry(runtime))
+
+    response = await MaticPlansView().get(_request(hass), "entry")
+
+    plan = json.loads(response.body)["plans"][0]
+    assert plan["next_run_preview"] == {
+        "rooms": [],
+        "mission_boundaries": [],
+        "blocker": "plan_room_limit",
+    }
 
 
 async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
