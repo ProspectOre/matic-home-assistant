@@ -31,6 +31,17 @@ _STUDIO_PATH = Path(frontend.__file__).with_name("matic_map_studio.js")
 _STUDIO_JS = _STUDIO_PATH.read_text(encoding="utf-8")
 _STUDIO_V4_DIRECTORY = Path(frontend.__file__).with_name("map_studio_v4")
 _STUDIO_V4_PATH = _STUDIO_V4_DIRECTORY / "index.js"
+_STUDIO_V4_CHUNK_DIRECTORY = _STUDIO_V4_DIRECTORY / "chunks"
+_STUDIO_V4_SHARED_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("chunk-*.js"))
+)
+_STUDIO_V4_WORKFLOW_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("workflow-panel-*.js"))
+)
+_STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS = tuple(
+    sorted(_STUDIO_V4_CHUNK_DIRECTORY.glob("diagnostics-panel-*.js"))
+)
+_STUDIO_V4_EAGER_PATHS = (_STUDIO_V4_PATH, *_STUDIO_V4_SHARED_CHUNK_PATHS)
 _STUDIO_V4_JS = "\n".join(
     path.read_text(encoding="utf-8")
     for path in sorted(_STUDIO_V4_DIRECTORY.rglob("*.js"))
@@ -448,17 +459,42 @@ def test_editor_cache_buster_tracks_javascript_content() -> None:
     assert studio_v4_expected in frontend.MATIC_MAP_STUDIO_V4_PATH
     assert "import.meta.url.match" in _STUDIO_V4_JS
     assert "matic-map-panel-v0-4-0" in _STUDIO_V4_JS
-    assert 'customElements.get("matic-map-studio-gallery-v0-4-0")' in _STUDIO_V4_JS
+    assert "matic-map-studio-gallery-v0-4-0" not in _STUDIO_V4_JS
 
 
 def test_v4_foundation_is_local_licensed_and_within_initial_budget() -> None:
-    """Keep the v0.4 initial route safe and within its private bundle budget."""
-    initial_bytes = _STUDIO_V4_PATH.read_bytes()
-    assert len(gzip.compress(initial_bytes, mtime=0)) <= 90 * 1024
+    """Keep eager assets and lazy workflow code within their private budgets."""
+    assert all(path.is_file() for path in _STUDIO_V4_EAGER_PATHS)
+    assert _STUDIO_V4_SHARED_CHUNK_PATHS
+    assert len(_STUDIO_V4_WORKFLOW_CHUNK_PATHS) == 1
+    assert len(_STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS) == 1
+    eager_bytes = [path.read_bytes() for path in _STUDIO_V4_EAGER_PATHS]
+    workflow_bytes = _STUDIO_V4_WORKFLOW_CHUNK_PATHS[0].read_bytes()
+    diagnostics_bytes = _STUDIO_V4_DIAGNOSTICS_CHUNK_PATHS[0].read_bytes()
+    eager_gzip_bytes = sum(
+        len(gzip.compress(contents, mtime=0)) for contents in eager_bytes
+    )
+    assert eager_gzip_bytes <= 90 * 1024
+    assert len(gzip.compress(workflow_bytes, mtime=0)) <= 30 * 1024
+    assert len(gzip.compress(diagnostics_bytes, mtime=0)) <= 30 * 1024
+
+    # The custom element implementation and registration stay in the lazy
+    # workflow module. The shared tag constant may be needed by shell selectors,
+    # but the workflow class itself must not leak into eagerly loaded assets.
+    assert b"MaticMapWorkflowV4" in workflow_bytes
+    assert b"MaticMapDiagnosticsV4" in diagnostics_bytes
+    assert all(
+        b"MaticMapDiagnosticsV4" not in contents
+        for contents in [*eager_bytes, workflow_bytes]
+    )
+    assert all(b"MaticMapWorkflowV4" not in contents for contents in eager_bytes)
+    assert re.search(
+        rb"customElements\.get\((\w+)\)\|\|customElements\.define\(\1,",
+        workflow_bytes,
+    )
     assert "SPDX-License-Identifier: BSD-3-Clause" in _STUDIO_V4_JS
     assert 'from"lit"' not in _STUDIO_V4_JS
     assert "https://" not in _STUDIO_V4_JS
-    assert b"matic-map-workflow-v4" in initial_bytes
     assert frontend.MATIC_MAP_PANEL_ELEMENT == (
         f"matic-map-panel-v0-4-0-{frontend.MATIC_MAP_STUDIO_V4_VERSION}"
     )

@@ -559,7 +559,229 @@ async def test_floor_watcher_refreshes_changed_mission_and_labels(
 
     coordinator.async_request_refresh.assert_awaited_once_with()
     assert coordinator._verified_floor_mission_id is None
+    assert coordinator.displayed_floor_mission_id == 84
+    assert coordinator.data.floor_plan is None
     assert coordinator._map_refresh_due == 0.0
+
+
+async def test_floor_watcher_revokes_verified_map_after_same_mission_signature_change(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    old_floor = MappedFloor(42, "Main", "1" * 64)
+    new_floor = MappedFloor(42, "Main", "2" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (old_floor,)
+    coordinator._verified_floor_mission_id = 42
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"changed")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(new_floor, (new_floor,)),
+    )
+    generation = coordinator._floor_read_generation
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator._displayed_floor_mission_id == 42
+    assert coordinator._displayed_floor_signature == (new_floor,)
+    assert coordinator._verified_floor_mission_id is None
+    assert coordinator._floor_read_generation == generation + 1
+    assert coordinator.data.floor_plan is None
+    coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_floor_read_rejects_old_signature_and_accepts_single_plan_payload(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    old_floor = MappedFloor(42, "Main", "1" * 64)
+    new_floor = MappedFloor(42, "Main", "2" * 64)
+    old_map = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
+    new_map = replace(old_map, mapped_floors=(new_floor,))
+    client.async_get_floor_plan.return_value = old_map
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (old_floor,)
+    coordinator._verified_floor_mission_id = 42
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"changed")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(new_floor, (new_floor,)),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator.data.floor_plan is None
+    assert await coordinator._async_optional_floor_plan() is None
+    assert coordinator.data.floor_plan is None
+
+    unannotated_single_plan = replace(new_map, mapped_floors=())
+    client.async_get_floor_plan.return_value = unannotated_single_plan
+    assert await coordinator._async_optional_floor_plan() is unannotated_single_plan
+    assert coordinator._cached_floor_plan is unannotated_single_plan
+
+
+async def test_floor_watcher_preserves_published_map_when_invalidated_read_matches(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    mapped_floor = MappedFloor(42, "Main", "1" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def slow_floor_read(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id is None
+        read_started.set()
+        await release_read.wait()
+        return floor_plan
+
+    client.async_get_floor_plan.side_effect = slow_floor_read
+    coordinator._map_refresh_due = 0.0
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await read_started.wait()
+
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"matching")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(mapped_floor, (mapped_floor,)),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    assert coordinator._map_refresh_due == 0.0
+    release_read.set()
+    stale_state = await poll
+    assert stale_state.floor_plan is floor_plan
+    assert coordinator._floor_reads_in_flight == 0
+
+    coordinator.async_set_updated_data(stale_state)
+    assert coordinator.data.floor_plan is floor_plan
+    client.async_get_floor_plan.side_effect = None
+    replacement_state = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(replacement_state)
+
+    assert replacement_state.floor_plan is floor_plan
+    assert coordinator.data.floor_plan is floor_plan
+    client.async_get_floor_plan.assert_awaited_with(expected_mission_id=42)
+
+
+async def test_repeated_displayed_mission_revokes_conflicting_verified_read(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    mapped_floor = MappedFloor(42, "Main", "1" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (mapped_floor,)
+    coordinator._verified_floor_mission_id = 84
+    coordinator._map_refresh_due = 0.0
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def stale_floor_read(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 84
+        read_started.set()
+        await release_read.wait()
+        return floor_plan
+
+    client.async_get_floor_plan.side_effect = stale_floor_read
+    floor_read = asyncio.create_task(coordinator._async_optional_floor_plan())
+    await read_started.wait()
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"same")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(mapped_floor, (mapped_floor,)),
+    )
+    generation = coordinator._floor_read_generation
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator._verified_floor_mission_id is None
+    assert coordinator.expected_floor_mission_id == 42
+    assert coordinator._floor_read_generation == generation + 1
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    release_read.set()
+
+    assert await floor_read is floor_plan
+    assert coordinator.data.floor_plan is floor_plan
+    assert coordinator._cached_floor_plan is floor_plan
+    assert coordinator._floor_reads_in_flight == 0
+
+
+async def test_floor_read_does_not_preserve_map_after_same_mission_signature_change(
+    hass,
+) -> None:
+    client = _client()
+    old_floor = MappedFloor(42, "Main", "1" * 64)
+    new_floor = MappedFloor(42, "Main", "2" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (old_floor,)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def slow_floor_read(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 42
+        read_started.set()
+        await release_read.wait()
+        return floor_plan
+
+    client.async_get_floor_plan.side_effect = slow_floor_read
+    coordinator._map_refresh_due = 0.0
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await read_started.wait()
+    coordinator._displayed_floor_signature = (new_floor,)
+    coordinator._floor_read_generation += 1
+    assert coordinator.displayed_floor_mission_id == 42
+    release_read.set()
+    stale_state = await poll
+
+    assert stale_state.floor_plan is None
+    assert coordinator._floor_reads_in_flight == 0
+    assert coordinator._cached_floor_plan is floor_plan
 
 
 async def test_floor_watcher_ignores_unknown_state_and_retries_failures(
@@ -649,6 +871,165 @@ async def test_optional_map_failures_do_not_hide_core_state(hass) -> None:
 
     assert state.floor_plan is None
     assert state.pose is None
+
+
+async def test_floor_fetch_failure_does_not_reuse_old_mission_plan(hass) -> None:
+    client = _client()
+    old_floor = FloorPlan(42, "partition", b"", ())
+    client.async_get_floor_plan.return_value = old_floor
+    coordinator = _coordinator(hass, client)
+
+    first = await coordinator._async_update_data()
+    assert first.floor_plan is old_floor
+
+    coordinator._displayed_floor_mission_id = 84
+    coordinator._map_refresh_due = 0.0
+    client.async_get_floor_plan.side_effect = MaticError("floor transition")
+
+    state = await coordinator._async_update_data()
+
+    assert state.floor_plan is None
+    client.async_get_floor_plan.assert_awaited_with(expected_mission_id=84)
+
+
+async def test_floor_fetch_started_before_mission_change_cannot_publish_old_plan(
+    hass,
+) -> None:
+    client = _client()
+    old_floor = FloorPlan(42, "partition", b"", ())
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch_floor_plan(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 42
+        started.set()
+        await release.wait()
+        return old_floor
+
+    client.async_get_floor_plan.side_effect = fetch_floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator._displayed_floor_mission_id = 42
+
+    read = asyncio.create_task(coordinator._async_optional_floor_plan())
+    await started.wait()
+    coordinator._displayed_floor_mission_id = 84
+    release.set()
+
+    assert await read is None
+    assert coordinator._cached_floor_plan is None
+
+
+async def test_failed_floor_fetch_started_before_mission_change_cannot_reuse_old_plan(
+    hass,
+) -> None:
+    client = _client()
+    old_floor = FloorPlan(42, "partition", b"", ())
+    client.async_get_floor_plan.return_value = old_floor
+    coordinator = _coordinator(hass, client)
+    coordinator._displayed_floor_mission_id = 42
+    await coordinator._async_update_data()
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch_floor_plan(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 42
+        started.set()
+        await release.wait()
+        raise MaticError("floor transition")
+
+    client.async_get_floor_plan.side_effect = fetch_floor_plan
+    coordinator._map_refresh_due = 0.0
+    read = asyncio.create_task(coordinator._async_optional_floor_plan())
+    await started.wait()
+    coordinator._displayed_floor_mission_id = 84
+    release.set()
+
+    assert await read is None
+    assert coordinator._cached_floor_plan is old_floor
+
+
+async def test_floor_read_rejects_displayed_mission_aba_result(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    floor = FloorPlan(42, "partition", b"", ())
+    coordinator = _coordinator(hass, client)
+    coordinator._cached_floor_plan = floor
+
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def fetch_floor_plan(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 42
+        started.set()
+        await release.wait()
+        return floor
+
+    client.async_get_floor_plan.side_effect = fetch_floor_plan
+    states = {
+        b"a": MissionClientState(
+            MappedFloor(42, "Main", "a"),
+            (MappedFloor(42, "Main", "a"),),
+        ),
+        b"b": MissionClientState(
+            MappedFloor(84, "Workshop", "b"),
+            (MappedFloor(84, "Workshop", "b"),),
+        ),
+        b"a-again": MissionClientState(
+            MappedFloor(42, "Main", "a"),
+            (MappedFloor(42, "Main", "a"),),
+        ),
+    }
+
+    async def entries(_name):
+        for payload in (b"a", b"b", b"a-again"):
+            yield HermesCollectionEntry(b"", payload)
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        states.__getitem__,
+    )
+    refreshes = 0
+    read: asyncio.Task[FloorPlan | None] | None = None
+
+    async def request_refresh() -> None:
+        nonlocal refreshes, read
+        refreshes += 1
+        if refreshes == 1:
+            read = asyncio.create_task(coordinator._async_optional_floor_plan())
+            await started.wait()
+
+    coordinator.async_request_refresh = request_refresh
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+    assert read is not None
+    release.set()
+
+    assert await read is None
+    assert coordinator.displayed_floor_mission_id == 42
+    assert coordinator._cached_floor_plan is floor
+
+
+async def test_same_floor_fetch_failure_reuses_verified_cached_plan(hass) -> None:
+    client = _client()
+    floor = FloorPlan(42, "partition", b"", ())
+    client.async_get_floor_plan.return_value = floor
+    coordinator = _coordinator(hass, client)
+
+    first = await coordinator._async_update_data()
+    assert first.floor_plan is floor
+
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._map_refresh_due = 0.0
+    client.async_get_floor_plan.side_effect = MaticError("temporary read failure")
+
+    state = await coordinator._async_update_data()
+
+    assert state.floor_plan is floor
+    client.async_get_floor_plan.assert_awaited_with(expected_mission_id=42)
 
 
 async def test_required_state_failure_becomes_update_failed(hass) -> None:

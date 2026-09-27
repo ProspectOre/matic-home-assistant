@@ -34,5 +34,5 @@ jobs:
             echo "::error::The committed Map Studio bundle is stale. Run 'npm run build:map-studio-v4' and commit the result." >&2
             exit 1
           fi
-      - run: npx playwright install --with-deps chromium webkit
+      - run: npx playwright install --with-deps chromium webkit firefox
       - run: npm run test:browser

@@ -28,6 +28,7 @@ from homeassistant.util import slugify
 from . import MaticConfigEntry
 from .client.models import RobotState, Room
 from .entity import MaticEntity
+from .plans import plan_floor_token, room_cadence_identity
 
 PARALLEL_UPDATES = 0
 
@@ -685,10 +686,19 @@ class MaticNextCleaningRoomSensor(_MaticPlanSensor):
         floor_plan = self.coordinator.data.floor_plan
         if floor_plan is None:
             return None
+        if not self._config_entry.runtime_data.slam_map.floor_plan_is_current(
+            floor_plan
+        ):
+            return None
         try:
             return self._history.preview(
                 self._serial_number,
                 {room.id: room.name for room in floor_plan.rooms},
+                floor_token=plan_floor_token(floor_plan),
+                room_identities={
+                    room.id: room_cadence_identity(floor_plan, room.id)
+                    for room in floor_plan.rooms
+                },
             )
         except KeyError, ValueError:
             return None

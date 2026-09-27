@@ -1,7 +1,6 @@
-import type { AreaOutline } from "./area-outline";
 import type { AreaCircle } from "./backend-contracts";
-import type { WorkspaceIntent, WorkspaceState } from "./contracts";
-import { canEditCoordinates } from "./state";
+import type { CoordinateEditCapture, WorkspaceIntent, WorkspaceState } from "./contracts";
+import { canEditCoordinates, captureCoordinateEdit, hasCoordinateEditAdmission } from "./state";
 import {
   RendererController,
   type CameraState,
@@ -12,12 +11,11 @@ interface GestureCallbacks {
   readonly state: () => WorkspaceState;
   readonly onCircles: (
     circles: readonly AreaCircle[],
-    record: boolean,
-    previous?: readonly AreaCircle[],
-    previousOutline?: AreaOutline | null,
+    coordinateEdit: CoordinateEditCapture,
   ) => void;
+  readonly onCirclePreview: (circles: readonly AreaCircle[] | null, coordinateEdit?: CoordinateEditCapture) => void;
   readonly onRoom: (roomId: string) => void;
-  readonly onOutlinePoint?: (point: MapPoint) => void;
+  readonly onOutlinePoint?: (point: MapPoint, coordinateEdit: CoordinateEditCapture) => void;
 }
 
 interface PointerRecord {
@@ -86,8 +84,6 @@ export class GestureController {
   readonly #pointers = new Map<number, PointerRecord>();
   #spacePressed = false;
   #mode: "idle" | "paint" | "erase" | "pan" | "orbit" | "pinch" | "outline" = "idle";
-  #baseline: AreaCircle[] = [];
-  #baselineOutline: AreaOutline | null = null;
   #draft: AreaCircle[] = [];
   #lastMapPoint: MapPoint | null = null;
   #pinchDistance = 0;
@@ -100,6 +96,7 @@ export class GestureController {
   #motionFrame: number | null = null;
   #navigationUntilRelease = false;
   #touchArmTimer: number | null = null;
+  #coordinateCapture: CoordinateEditCapture | null = null;
   #disposed = false;
 
   constructor(host: HTMLElement, renderer: RendererController, callbacks: GestureCallbacks) {
@@ -124,6 +121,7 @@ export class GestureController {
   readonly #pointerDown = (event: PointerEvent): void => {
     if (this.#disposed || !event.isPrimary && event.pointerType === "mouse") return;
     if (isInteractiveControl(event)) return;
+    this.observeState(this.#callbacks.state());
     this.#host.focus({ preventScroll: true });
     this.#cancelMotion();
     if (event.pointerType === "touch" && !event.isPrimary && this.#pointers.size === 0
@@ -146,10 +144,8 @@ export class GestureController {
     this.#host.setPointerCapture?.(event.pointerId);
     if (this.#pointers.size >= 2) {
       this.#cancelTouchArm();
-      if (this.#mode === "paint" || this.#mode === "erase") {
-        this.#draft = cloneCircles(this.#baseline);
-        this.#callbacks.onCircles(this.#draft, false, this.#baseline, this.#baselineOutline);
-      }
+      this.#callbacks.onCirclePreview(null);
+      this.#coordinateCapture = null;
       this.#mode = "pinch";
       this.#host.classList.add("navigating");
       this.#navigationUntilRelease = true;
@@ -173,17 +169,21 @@ export class GestureController {
     if (navigation) {
       this.#mode = "pan";
       this.#dragCamera = this.#renderer.camera;
-    } else if (drawing && state.draw.tool === "outline" && canEditCoordinates(state)) {
+    } else if (drawing && state.draw.tool === "outline"
+      && (this.#coordinateCapture = captureCoordinateEdit(state, "outline"))) {
       this.#mode = "outline";
-    } else if (drawing && (state.draw.tool === "paint" || state.draw.tool === "erase")) {
-      this.#baseline = cloneCircles(state.draw.circles);
-      this.#baselineOutline = state.draw.outline ?? null;
-      this.#draft = cloneCircles(state.draw.circles);
+    } else if (drawing && (state.draw.tool === "paint" || state.draw.tool === "erase")
+      && (this.#coordinateCapture = captureCoordinateEdit(state, state.draw.tool))) {
+      this.#draft = cloneCircles(this.#coordinateCapture.baselineCircles);
       if (event.pointerType === "touch") {
         this.#mode = "idle";
         this.#touchArmTimer = window.setTimeout(() => {
           this.#touchArmTimer = null;
-          if (this.#pointers.size !== 1 || this.#navigationUntilRelease) return;
+          if (this.#pointers.size !== 1 || this.#navigationUntilRelease
+            || !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+            this.#cancelCoordinateGesture();
+            return;
+          }
           this.#mode = state.draw.tool;
           const current = this.#pointers.get(event.pointerId);
           if (current) this.#applyBrush(current.x, current.y);
@@ -200,7 +200,35 @@ export class GestureController {
     event.preventDefault();
   };
 
+  /** Drop coordinate work as soon as its verified map generation or edit
+   * admission changes. Navigation gestures remain owned by the renderer. */
+  observeState(state: WorkspaceState): void {
+    if (this.#coordinateCapture && !hasCoordinateEditAdmission(state, this.#coordinateCapture)) {
+      this.#cancelCoordinateGesture();
+    }
+  }
+
+  #cancelCoordinateGesture(): void {
+    this.#cancelTouchArm();
+    this.#callbacks.onCirclePreview(null);
+    this.#coordinateCapture = null;
+    this.#draft = [];
+    this.#lastMapPoint = null;
+    if (this.#mode === "paint" || this.#mode === "erase" || this.#mode === "outline" || this.#mode === "idle") {
+      this.#mode = "idle";
+      this.#navigationUntilRelease = false;
+      this.#host.classList.remove("navigating");
+      for (const id of this.#pointers.keys()) this.#host.releasePointerCapture?.(id);
+      this.#pointers.clear();
+    }
+  }
+
   readonly #pointerMove = (event: PointerEvent): void => {
+    if (this.#coordinateCapture
+      && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+      this.#cancelCoordinateGesture();
+      return;
+    }
     const pointer = this.#pointers.get(event.pointerId);
     if (!pointer) {
       const map = this.#renderer.screenToMap(event.clientX, event.clientY);
@@ -266,6 +294,11 @@ export class GestureController {
   };
 
   readonly #pointerUp = (event: PointerEvent): void => {
+    if (this.#coordinateCapture
+      && !hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+      this.#cancelCoordinateGesture();
+      return;
+    }
     const pointer = this.#pointers.get(event.pointerId);
     if (!pointer) return;
     const completedMode = this.#mode;
@@ -273,13 +306,16 @@ export class GestureController {
     this.#host.releasePointerCapture?.(event.pointerId);
     this.#cancelTouchArm();
     if (this.#mode === "outline" && event.type !== "pointercancel"
+      && hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)
       && Math.hypot(pointer.x - pointer.startX, pointer.y - pointer.startY) < 7) {
       const point = this.#renderer.screenToMap(pointer.x, pointer.y);
-      if (point) this.#callbacks.onOutlinePoint?.(point);
+      if (point) this.#callbacks.onOutlinePoint?.(point, this.#coordinateCapture!);
     }
-    if ((this.#mode === "paint" || this.#mode === "erase")
-      && JSON.stringify(this.#draft) !== JSON.stringify(this.#baseline)) {
-      this.#callbacks.onCircles(this.#draft, true, this.#baseline, this.#baselineOutline);
+    if (event.type !== "pointercancel"
+      && (this.#mode === "paint" || this.#mode === "erase")
+      && hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)
+      && JSON.stringify(this.#draft) !== JSON.stringify(this.#coordinateCapture!.baselineCircles)) {
+      this.#callbacks.onCircles(this.#draft, this.#coordinateCapture!);
     } else if (event.type !== "pointercancel"
       && this.#mode !== "pinch"
       && !this.#navigationUntilRelease
@@ -289,8 +325,10 @@ export class GestureController {
       const roomId = this.#renderer.roomAt(pointer.x, pointer.y);
       if (roomId) this.#callbacks.onRoom(roomId);
     }
+    if (this.#mode === "paint" || this.#mode === "erase") this.#callbacks.onCirclePreview(null);
     if (this.#pointers.size === 0) {
       this.#mode = "idle";
+      this.#coordinateCapture = null;
       this.#host.classList.remove("navigating");
       this.#navigationUntilRelease = false;
       this.#pinchCenter = null;
@@ -317,7 +355,11 @@ export class GestureController {
     event.preventDefault();
   };
 
-  #applyBrush(clientX: number, clientY: number, publish = true): void {
+  #applyBrush(clientX: number, clientY: number): void {
+    if (!hasCoordinateEditAdmission(this.#callbacks.state(), this.#coordinateCapture)) {
+      this.#cancelCoordinateGesture();
+      return;
+    }
     const point = this.#renderer.screenToMap(clientX, clientY);
     if (!point) return;
     const state = this.#callbacks.state();
@@ -347,9 +389,7 @@ export class GestureController {
       }
     }
     this.#lastMapPoint = point;
-    if (publish && JSON.stringify(this.#draft) !== JSON.stringify(state.draw.circles)) {
-      this.#callbacks.onCircles(this.#draft, false);
-    }
+    this.#callbacks.onCirclePreview(this.#draft, this.#coordinateCapture!);
   }
 
   readonly #wheel = (event: WheelEvent): void => {
@@ -431,23 +471,26 @@ export class GestureController {
     const canvas = this.#host.querySelector<HTMLCanvasElement>(".scene-canvas");
     const bounds = canvas?.getBoundingClientRect();
     if (!bounds?.width || !bounds.height) return;
+    const capture = captureCoordinateEdit(state, state.draw.tool);
+    if (!capture) return;
     event.preventDefault();
     this.#cancelMotion();
     if (state.draw.tool === "outline") {
       const point = this.#renderer.screenToMap(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
-      if (point) this.#callbacks.onOutlinePoint?.(point);
+      if (point) this.#callbacks.onOutlinePoint?.(point, capture);
       return;
     }
-    this.#baseline = cloneCircles(state.draw.circles);
-    this.#baselineOutline = state.draw.outline ?? null;
-    this.#draft = cloneCircles(state.draw.circles);
+    this.#draft = cloneCircles(capture.baselineCircles);
     this.#lastMapPoint = null;
+    this.#coordinateCapture = capture;
     this.#mode = state.draw.tool;
-    this.#applyBrush(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2, false);
+    this.#applyBrush(bounds.left + bounds.width / 2, bounds.top + bounds.height / 2);
     this.#mode = "idle";
     this.#lastMapPoint = null;
-    if (JSON.stringify(this.#draft) !== JSON.stringify(this.#baseline)) {
-      this.#callbacks.onCircles(this.#draft, true, this.#baseline, this.#baselineOutline);
+    this.#coordinateCapture = null;
+    this.#callbacks.onCirclePreview(null);
+    if (JSON.stringify(this.#draft) !== JSON.stringify(capture.baselineCircles)) {
+      this.#callbacks.onCircles(this.#draft, capture);
     }
   }
 
@@ -505,7 +548,7 @@ export class GestureController {
 
   readonly #blur = (): void => {
     this.#spacePressed = false;
-    this.#cancelTouchArm();
+    this.#cancelCoordinateGesture();
     this.#renderer.setCursor(null);
     this.#host.classList.remove("navigating");
   };
@@ -561,8 +604,8 @@ export class GestureController {
 
   dispose(): void {
     if (this.#disposed) return;
+    this.#cancelCoordinateGesture();
     this.#disposed = true;
-    this.#cancelTouchArm();
     this.#cancelMotion();
     this.#host.removeEventListener("pointerdown", this.#pointerDown);
     this.#host.removeEventListener("pointermove", this.#pointerMove);

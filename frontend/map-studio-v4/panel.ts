@@ -8,6 +8,7 @@ import type {
   HassProjection,
   PanelLike,
   RouteLike,
+  WorkspaceAction,
   WorkspaceState,
 } from "./contracts";
 import { isWorkspaceIntent } from "./contracts";
@@ -79,6 +80,18 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   #layers: LayerHistoryController | null = null;
   #preferenceSignature = "";
 
+  protected override shouldUpdate(changed: PropertyValues<this>): boolean {
+    if (this._classic || !changed.has("hass")
+      || [...changed.keys()].some((property) => property !== "hass")) return true;
+    const previousHass = changed.get("hass") as HassLike | undefined;
+    // Connection replacement requires new HA subscriptions even when the
+    // visible projection is unchanged. Localization can also change while the
+    // selected language string remains stable.
+    if (previousHass?.connection !== this.hass?.connection
+      || previousHass?.localize !== this.hass?.localize) return true;
+    return this.#adapter.project(this.hass, this.panel, this.entryOverride) !== this.#projection;
+  }
+
   override connectedCallback(): void {
     super.connectedCallback();
     this._classic = preferredFrontend() === "v3";
@@ -104,7 +117,7 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     // host from before the detach.
     this.#projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
     this.#backend = new MaticBackend(() => this.hass);
-    this.#effects = new EffectController(this.#store, this.#backend);
+    this.#effects = new EffectController(this.#store, this.#backend, this.hass?.connection ?? null);
     this.#layers = new LayerHistoryController(this.#store);
     this.#layers.start();
     if (this.#projection) {
@@ -149,8 +162,12 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
 
   protected override willUpdate(changed: PropertyValues<this>): void {
     if (changed.has("hass") || changed.has("panel") || changed.has("entryOverride")) {
+      const previousHass = changed.get("hass") as HassLike | undefined;
+      const connectionChanged = changed.has("hass")
+        && previousHass?.connection !== this.hass?.connection;
       const projection = this.#adapter.project(this.hass, this.panel, this.entryOverride);
-      if (projection !== this.#projection) {
+      const projectionChanged = projection !== this.#projection;
+      if (projectionChanged) {
         this.#projection = projection;
         const coherence = !projection.host.connected
           ? "degraded"
@@ -173,7 +190,13 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
           locale: projection.language,
         });
       }
-      if (!this._classic) this.#effects?.sync(projection, this.panel);
+      if (!this._classic && connectionChanged) {
+        this.#stopControllers();
+        this.#startControllers();
+      } else if (!this._classic
+        && (projectionChanged || changed.has("panel") || changed.has("entryOverride"))) {
+        this.#effects?.sync(projection, this.panel);
+      }
     }
     if (changed.has("narrow") && this.#store.value.narrowHint !== this.narrow) {
       this.#store.dispatch({ type: "set-narrow-hint", value: this.narrow });
@@ -217,7 +240,7 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this.#store.dispatch(intent);
   }
 
-  #action(event: CustomEvent<{ readonly id?: unknown }>): void {
+  #action(event: CustomEvent<WorkspaceAction>): void {
     event.stopPropagation();
     if (typeof event.detail?.id !== "string") return;
     if (event.detail.id === "use-classic") {
@@ -227,7 +250,11 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
       }
       return;
     }
-    void this.#effects?.executeAction(event.detail.id);
+    if (event.detail.id === "reset-room-cadence" && "planId" in event.detail && "roomId" in event.detail && "mode" in event.detail) {
+      void this.#effects?.executeAction(event.detail);
+    } else {
+      void this.#effects?.executeAction(event.detail.id);
+    }
     this.dispatchEvent(new CustomEvent("matic-map-v4-action-requested", {
       detail: { id: event.detail.id },
       bubbles: true,

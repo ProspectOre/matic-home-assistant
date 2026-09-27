@@ -101,13 +101,16 @@ def encode_coverage_command(
     coverage_setting: CoverageSetting = CoverageSetting.OPTIMAL,
     ordered: bool = False,
     command_id_factory: Callable[[], UUID] = uuid4,
+    session_id: UUID | None = None,
     _region_settings: Sequence[CoverageSetting] | None = None,
     _region_modes: Sequence[CleaningMode] | None = None,
 ) -> bytes:
     """Encode a verified normal coverage command.
 
-    UUIDs are used for command bookkeeping only. The active mission, partition,
-    and region identifiers come from the robot.
+    UUIDs are used for command bookkeeping only. ``session_id`` pins the
+    verified field-6 session identity when a tracked caller must prove which
+    new native task accepted this command. The active mission, partition, and
+    region identifiers come from the robot.
     """
     if not 0 <= mission_id <= 0xFFFFFFFF:
         raise ValueError("mission_id must fit in an unsigned 32-bit integer")
@@ -150,7 +153,15 @@ def encode_coverage_command(
         _field(2, _field(2, _field(1, b"")))
         + _field(3, _fixed32(2, mission_id))
         + _field(5, goals)
-        + _field(6, _field(2, _wrapped_uuid(str(command_id_factory()))))
+        + _field(
+            6,
+            _field(
+                2,
+                _wrapped_uuid(
+                    str(session_id if session_id is not None else command_id_factory())
+                ),
+            ),
+        )
         + _field(7, _field(1, _wrapped_uuid(str(command_id_factory()))))
     )
     return _field(15, _field(1, _field(3, coverage)))
@@ -173,6 +184,7 @@ def encode_mixed_coverage_commands(
     settings: Sequence[CoverageSetting],
     modes: Sequence[CleaningMode],
     command_id_factory: Callable[[], UUID] = uuid4,
+    session_id: UUID | None = None,
 ) -> MixedCoverageCommands:
     """Prepare a normal start and a per-room goal update.
 
@@ -190,10 +202,12 @@ def encode_mixed_coverage_commands(
     if len({str(UUID(region)) for region in region_ids}) != len(region_ids):
         raise ValueError("mixed coverage rooms must be distinct")
     initial_count = len(_coverage_specs(modes[0], 0))
-    ids = tuple(
-        command_id_factory() for _ in range(len(region_ids) * initial_count + 2)
+    goal_ids = tuple(
+        command_id_factory() for _ in range(len(region_ids) * initial_count)
     )
-    initial_ids = iter(ids)
+    session_id = session_id or command_id_factory()
+    initial_command_id = command_id_factory()
+    initial_ids = iter((*goal_ids, initial_command_id))
     initial = encode_coverage_command(
         mission_id=mission_id,
         partition_id=partition_id,
@@ -202,16 +216,17 @@ def encode_mixed_coverage_commands(
         coverage_setting=settings[0],
         ordered=True,
         command_id_factory=lambda: next(initial_ids),
+        session_id=session_id,
     )
     updated_ids: list[UUID] = []
     for index, mode in enumerate(modes):
         count = len(_coverage_specs(mode, 0))
-        old_ids = ids[index * initial_count : (index + 1) * initial_count]
+        old_ids = goal_ids[index * initial_count : (index + 1) * initial_count]
         updated_ids.extend(old_ids[:count])
         updated_ids.extend(
             command_id_factory() for _ in range(max(0, count - initial_count))
         )
-    update_ids = iter((*updated_ids, ids[-2], command_id_factory()))
+    update_ids = iter((*updated_ids, command_id_factory()))
     update = encode_coverage_command(
         mission_id=mission_id,
         partition_id=partition_id,
@@ -220,10 +235,11 @@ def encode_mixed_coverage_commands(
         coverage_setting=settings[0],
         ordered=True,
         command_id_factory=lambda: next(update_ids),
+        session_id=session_id,
         _region_settings=settings,
         _region_modes=modes,
     )
-    return MixedCoverageCommands(initial, update, str(ids[-2]))
+    return MixedCoverageCommands(initial, update, str(session_id))
 
 
 def encode_custom_coverage_command(

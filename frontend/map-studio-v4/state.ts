@@ -5,9 +5,14 @@ import {
   MAP_PIXELS_PER_METER_AT_100,
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
+  MAX_ROOM_SEQUENCE_SIZE,
+  MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
+  type CoordinateEditCapture,
+  type CoordinateEditTool,
   type CommandState,
   type PrimaryAction,
   type ResourceStamp,
+  type AdmittedManualRoomPreview,
   type WorkspaceIntent,
   type WorkspaceState,
 } from "./contracts";
@@ -71,6 +76,7 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   fullMap: false,
   precisionOpen: false,
   dialog: null,
+  cadenceResetRequest: null,
   narrowHint: false,
   view: "top",
   appearance: "photo",
@@ -118,12 +124,15 @@ export const initialWorkspaceState = (): WorkspaceState => ({
     plans: emptyResource(),
     areas: emptyResource(),
   },
+  manualRoomPreview: emptyResource(),
+  manualRoomPreviewRetry: 0,
   selection: {
     entryId: null,
     floorId: "current",
     historyId: null,
     roomIds: [],
     roomSettings: [],
+    useRoomSchedule: true,
     cleaningMode: "vacuum",
     coverageSetting: "standard",
     planId: null,
@@ -155,6 +164,47 @@ export const initialWorkspaceState = (): WorkspaceState => ({
   locale: "en",
 });
 
+/** Stable input identity; map pixel revisions do not invalidate a room preview. */
+export const manualRoomPreviewKey = (state: WorkspaceState): string | null => {
+  const entry = state.resources.entry;
+  const entryId = state.selection.entryId;
+  if (!entry || !entryId || entry.entryId !== entryId || state.selection.roomIds.length === 0
+    || state.selection.roomIds.length > MAX_ROOM_SEQUENCE_SIZE) return null;
+  const rooms = state.selection.roomIds.map((roomId) => {
+    const settings = state.selection.roomSettings.find((room) => room.roomId === roomId);
+    if (!settings) return null;
+    return [roomId, settings.cleaningMode, settings.coverageSetting];
+  });
+  if (rooms.some((room) => room === null)) return null;
+  return JSON.stringify([
+    entryId,
+    state.dataMode,
+    state.selection.floorId,
+    state.selection.historyId,
+    state.draftFloorOrdinal,
+    state.draftMapSessionKey,
+    entry.selectedFloorOrdinal,
+    entry.mapFloorOrdinal,
+    entry.mapFloorCoherent,
+    entry.mapSessionVerified,
+    entry.mapSessionKey,
+    state.selection.useRoomSchedule,
+    rooms,
+  ]);
+};
+
+/** The single admission check shared by motion, primary-action, and UI paths. */
+export const admittedManualRoomPreview = (state: WorkspaceState): AdmittedManualRoomPreview | null => {
+  const admitted = state.manualRoomPreview.status === "ready" ? state.manualRoomPreview.value : null;
+  const entry = state.resources.entry;
+  if (!admitted || !entry || admitted.key !== manualRoomPreviewKey(state)
+    || admitted.generation !== state.generation
+    || admitted.preview.entryId !== state.selection.entryId
+    || admitted.floorKey !== [entry.selectedFloorOrdinal ?? "none", entry.mapFloorOrdinal ?? "none", entry.mapFloorCoherent ? "coherent" : "transition"].join(":")
+    || admitted.missionKey !== [entry.mapFloorOrdinal ?? "none", entry.mapSessionVerified ? "verified" : "unverified", entry.mapSessionKey ?? "no-session"].join(":")) return null;
+  return admitted;
+};
+
 const updateDraw = (
   state: WorkspaceState,
   draw: Partial<WorkspaceState["draw"]>,
@@ -162,6 +212,24 @@ const updateDraw = (
   ...state,
   draw: { ...state.draw, ...draw },
 });
+
+const isLegacyPlanReduction = (
+  state: WorkspaceState,
+  rooms: WorkspaceState["planDraft"]["rooms"],
+): boolean => {
+  const savedPlan = state.resources.plans.value?.plans.find(
+    (candidate) => candidate.id === state.planDraft.id,
+  );
+  if (!savedPlan
+    || savedPlan.rooms.length <= MAX_ROOM_SEQUENCE_SIZE
+    || savedPlan.rooms.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
+    || rooms.length <= MAX_ROOM_SEQUENCE_SIZE
+    || rooms.length >= savedPlan.rooms.length) return false;
+  const savedRoomIds = new Set(savedPlan.rooms.map((room) => room.roomId));
+  const draftRoomIds = new Set(rooms.map((room) => room.roomId));
+  return draftRoomIds.size === rooms.length
+    && [...draftRoomIds].every((roomId) => savedRoomIds.has(roomId));
+};
 
 export const draftForPlan = (plan: SavedPlan): WorkspaceState["planDraft"] => {
   return {
@@ -305,19 +373,17 @@ export const reduceWorkspace = (
       });
     }
     case "set-draft-circles": {
+      if (!hasCoordinateEditAdmission(state, intent.coordinateEdit)) return state;
       const circles: readonly AreaCircle[] = intent.circles.slice(0, 512).map((circle) => ({ ...circle }));
-      const record = intent.record !== false;
       return updateDraw(state, {
         circles,
         outline: intent.outline ?? null,
-        outlineUndo: record ? [...(state.draw.outlineUndo ?? []).slice(-99), intent.previousOutline !== undefined ? intent.previousOutline : state.draw.outline ?? null] : state.draw.outlineUndo ?? [],
-        outlineRedo: record ? [] : state.draw.outlineRedo ?? [],
-        undo: record
-          ? [...state.draw.undo.slice(-99), intent.previous ?? state.draw.circles]
-          : state.draw.undo,
-        redo: record ? [] : state.draw.redo,
+        outlineUndo: [...(state.draw.outlineUndo ?? []).slice(-99), state.draw.outline ?? null],
+        outlineRedo: [],
+        undo: [...state.draw.undo.slice(-99), state.draw.circles],
+        redo: [],
         dirty: true,
-        strokeCount: record ? state.draw.strokeCount + 1 : state.draw.strokeCount,
+        strokeCount: state.draw.strokeCount + 1,
       });
     }
     case "discard-draft":
@@ -347,18 +413,21 @@ export const reduceWorkspace = (
     case "toggle-room": {
       if (state.workflow === "plan") {
         const rooms = state.planDraft.rooms;
+        const selected = rooms.some((room) => room.roomId === intent.roomId);
+        if (!selected && rooms.length >= MAX_ROOM_SEQUENCE_SIZE) return state;
         return {
           ...state,
           planDraft: {
             ...state.planDraft,
             dirty: true,
-            rooms: rooms.some((room) => room.roomId === intent.roomId)
+            rooms: selected
               ? rooms.filter((room) => room.roomId !== intent.roomId)
               : [...rooms, { roomId: intent.roomId, cleaningMode: "vacuum", coverageSetting: "standard" }],
           },
         };
       }
       const selected = state.selection.roomIds.includes(intent.roomId);
+      if (!selected && state.selection.roomIds.length >= MAX_ROOM_SEQUENCE_SIZE) return state;
       return {
         ...state,
         selection: {
@@ -393,6 +462,20 @@ export const reduceWorkspace = (
               }
               : room),
         },
+      };
+    case "set-use-room-schedule":
+      return {
+        ...state,
+        selection: { ...state.selection, useRoomSchedule: intent.value },
+      };
+    case "retry-room-preview":
+      return { ...state, manualRoomPreviewRetry: state.manualRoomPreviewRetry + 1 };
+    case "request-room-cadence-reset":
+      if (state.planDraft.id !== intent.planId || state.planDraft.dirty) return state;
+      return {
+        ...state,
+        dialog: "confirmResetCadence",
+        cadenceResetRequest: { planId: intent.planId, roomId: intent.roomId, mode: intent.mode },
       };
     case "set-floor":
       return {
@@ -429,6 +512,8 @@ export const reduceWorkspace = (
         workflow: intent.workflow === "areaReview" ? "areaReview" : state.workflow,
       };
     case "patch-plan-draft":
+      if (intent.patch.rooms && intent.patch.rooms.length > MAX_ROOM_SEQUENCE_SIZE
+        && !isLegacyPlanReduction(state, intent.patch.rooms)) return state;
       return {
         ...state,
         planDraft: {
@@ -451,6 +536,9 @@ export const reduceWorkspace = (
     case "open-dialog":
       return { ...state, dialog: intent.dialog };
     case "dismiss-top-layer":
+      if (state.dialog === "confirmResetCadence") {
+        return { ...state, dialog: null, cadenceResetRequest: null };
+      }
       if (needsDraftConfirmation(state, intent)) return { ...state, dialog: "discardDraft" };
       if (state.dialog) return { ...state, dialog: null };
       if (state.precisionOpen) return { ...state, precisionOpen: false };
@@ -597,6 +685,34 @@ export const canEditCoordinates = (state: WorkspaceState): boolean =>
   && state.host.connected
   && state.host.robotConnected
   && !state.floor.readOnly;
+
+const coordinateEditAllowed = (state: WorkspaceState, tool: CoordinateEditTool): boolean =>
+  state.workflow === "draw"
+  && state.draw.tool === tool
+  && state.dialog === null
+  && (state.command === "idle" || state.command === "failed")
+  && canEditCoordinates(state);
+
+export const captureCoordinateEdit = (
+  state: WorkspaceState,
+  tool: CoordinateEditTool,
+): CoordinateEditCapture | null => coordinateEditAllowed(state, tool)
+  ? {
+    generation: state.generation,
+    tool,
+    baselineCircles: state.draw.circles,
+    baselineOutline: state.draw.outline ?? null,
+  }
+  : null;
+
+export const hasCoordinateEditAdmission = (
+  state: WorkspaceState,
+  capture: CoordinateEditCapture | null,
+): capture is CoordinateEditCapture => capture !== null
+  && state.generation === capture.generation
+  && state.draw.circles === capture.baselineCircles
+  && (state.draw.outline ?? null) === capture.baselineOutline
+  && coordinateEditAllowed(state, capture.tool);
 
 /**
  * Floor-scoped metadata is safe to fetch before the rendered scene is fully
@@ -792,7 +908,10 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.workflow === "rooms") {
     const count = state.selection.roomIds.length;
-    const ready = canStartMotion(state) && count > 0;
+    const admitted = admittedManualRoomPreview(state);
+    const previewCurrent = admitted !== null;
+    const previewAllowed = previewCurrent && !admitted.preview.blocker && admitted.preview.rooms.length > 0;
+    const ready = canStartMotion(state) && count > 0 && previewAllowed;
     // The counted label carries a placeholder the view cannot fill through
     // `t(labelKey, label)`, so it ships without a key and falls back to English.
     return {
@@ -803,36 +922,55 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       enabled: ready,
       ...(ready
         ? {}
-        : count
-          ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
-          : { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }),
+        : !count
+          ? { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }
+          : !canStartMotion(state)
+            ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
+            : state.manualRoomPreview.status === "error"
+              ? { reason: "The room settings preview could not be verified.", reasonKey: "v4_reason_room_preview_unavailable" }
+              : previewCurrent && admitted.preview.blocker
+                ? { reason: "The room preview is blocked. Review the map and shared schedule.", reasonKey: "v4_reason_room_preview_blocked" }
+                : { reason: "Verifying the selected room settings…", reasonKey: "v4_reason_room_preview_loading" }),
     };
   }
   if (state.workflow === "plan") {
     if (state.planDraft.dirty || !state.planDraft.id) {
+      const legacyReduction = isLegacyPlanReduction(state, state.planDraft.rooms);
+      const withinRoomLimit = state.planDraft.rooms.length <= MAX_ROOM_SEQUENCE_SIZE || legacyReduction;
       const valid = canEditCoordinates(state)
         && state.planDraft.name.trim().length > 0
-        && state.planDraft.rooms.length > 0;
+        && state.planDraft.rooms.length > 0
+        && withinRoomLimit;
       return {
         id: "save-plan",
         label: "Save plan",
         labelKey: "v4_action_save_plan",
         kind: "primary",
         enabled: valid,
-        ...(valid ? {} : { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }),
+        ...(valid ? {} : withinRoomLimit
+          ? { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }
+          : {
+            reason: "Remove rooms until 100 or fewer remain before saving.",
+            reasonKey: "v4_reason_save_plan_room_limit",
+          }),
       };
     }
+    const plan = state.resources.plans.value?.plans.find((candidate) => candidate.id === state.planDraft.id);
+    const previewReady = Boolean(plan?.nextRunPreview && !plan.nextRunPreview.blocker
+      && /^[0-9a-f]{64}$/u.test(plan.nextRunPreview.previewToken ?? ""));
     return {
       id: "run-plan",
       label: "Run this plan",
       labelKey: "v4_action_run_plan",
       kind: "primary",
-      enabled: canStartMotion(state) && state.planDraft.enabled,
+      enabled: canStartMotion(state) && state.planDraft.enabled && previewReady,
       ...(!canStartMotion(state)
         ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
         : !state.planDraft.enabled
           ? { reason: "This plan is paused. Enable it to run.", reasonKey: "v4_reason_run_plan_paused" }
-          : {}),
+          : !previewReady
+            ? { reason: "A valid next-run preview is required before starting.", reasonKey: "v4_reason_run_plan_preview" }
+            : {}),
     };
   }
   if (state.workflow === "areaReview") {

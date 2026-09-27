@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import asdict
 from hashlib import sha256
 from typing import Any
+from uuid import UUID
 
 from homeassistant.components.vacuum import Segment, StateVacuumEntity
 from homeassistant.components.vacuum.const import VacuumActivity, VacuumEntityFeature
@@ -19,11 +20,12 @@ from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
 from .client.exceptions import MaticError
 from .client.models import FloorPlan, RobotActivity, Room
-from .const import DOMAIN
+from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
 from .plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
+    PLAN_SESSION_ID,
     plan_floor_token,
     resolve_room_reference,
 )
@@ -207,6 +209,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         ordered: bool = False,
         motion_token: int | None = None,
         expected_floor_token: str | None = None,
+        managed_session_id: UUID | None = None,
         room_coverage: list[CoverageSetting] | None = None,
         room_modes: list[CleaningMode] | None = None,
     ) -> None:
@@ -299,6 +302,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         room_coverage,
                         room_modes,
                         first_room_name=rooms[0].name,
+                        session_id=managed_session_id,
                         require_current=require_current,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
@@ -313,14 +317,27 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         "Mixed coverage dispatch could not be verified"
                     ) from err
             else:
-                await self.coordinator.client.async_start_coverage(
-                    floor_plan,
-                    [room.protocol_id for room in rooms],
-                    cleaning_mode=cleaning_mode or self.coordinator.cleaning_mode,
-                    coverage_setting=coverage_setting
-                    or self.coordinator.coverage_setting,
-                    ordered=ordered,
-                )
+                command_rooms = [room.protocol_id for room in rooms]
+                mode = cleaning_mode or self.coordinator.cleaning_mode
+                setting = coverage_setting or self.coordinator.coverage_setting
+                if motion_token is not None:
+                    await self.coordinator.client.async_start_coverage(
+                        floor_plan,
+                        command_rooms,
+                        cleaning_mode=mode,
+                        coverage_setting=setting,
+                        ordered=ordered,
+                        require_settings_readback=True,
+                        session_id=managed_session_id,
+                    )
+                else:
+                    await self.coordinator.client.async_start_coverage(
+                        floor_plan,
+                        command_rooms,
+                        cleaning_mode=mode,
+                        coverage_setting=setting,
+                        ordered=ordered,
+                    )
             await self.coordinator.async_request_refresh()
 
     async def async_start(self, **kwargs: object) -> None:
@@ -619,6 +636,11 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             await self._async_command(simple_commands[normalized])
             return
         if normalized in {"clean_all", "start"}:
+            if self._managed_session_id(params) is not None:
+                raise _validation_error(
+                    "A managed session ID requires a managed room command",
+                    "invalid_plan_command",
+                )
             options = self._clean_options(params)
             options["motion_token"] = self._motion_token(params)
             options["expected_floor_token"] = self._floor_token(params)
@@ -639,8 +661,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                     translation_key="rooms_must_be_list",
                 )
             options = self._clean_options(params)
-            options["motion_token"] = self._motion_token(params)
+            motion_token = self._motion_token(params)
+            managed_session_id = self._managed_session_id(params)
+            if managed_session_id is not None and motion_token is None:
+                raise _validation_error(
+                    "The managed session ID is invalid for this room command",
+                    "invalid_plan_command",
+                )
+            if motion_token is not None and managed_session_id is None:
+                raise _validation_error(
+                    "The managed room command has no session ID",
+                    "invalid_plan_command",
+                )
+            options["motion_token"] = motion_token
             options["expected_floor_token"] = self._floor_token(params)
+            options["managed_session_id"] = managed_session_id
             await self._async_clean_rooms(self._resolve_rooms(identifiers), **options)
             return
         raise _validation_error(
@@ -652,6 +687,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
     def _resolve_rooms(self, identifiers: list[str]) -> list[Room]:
         if not identifiers:
             raise _validation_error("Select at least one Matic room", "no_rooms")
+        if len(identifiers) > MAX_ROOM_SEQUENCE_SIZE:
+            raise _validation_error(
+                f"Select at most {MAX_ROOM_SEQUENCE_SIZE} rooms at a time",
+                "room_sequence_limit",
+                {"limit": str(MAX_ROOM_SEQUENCE_SIZE)},
+            )
         rooms = self._floor_plan().rooms
         room_map = {room.id: room.name for room in rooms}
         rooms_by_id = {room.id: room for room in rooms}
@@ -746,6 +787,28 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                 "The managed plan floor token is invalid", "invalid_plan_command"
             )
         return token
+
+    @staticmethod
+    def _managed_session_id(params: dict[str, Any] | list[Any] | None) -> UUID | None:
+        """Read the command correlation UUID supplied only by the managed runner."""
+        if not isinstance(params, dict) or PLAN_SESSION_ID not in params:
+            return None
+        token = params[PLAN_SESSION_ID]
+        if not isinstance(token, str):
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            )
+        try:
+            parsed = UUID(token)
+        except ValueError as err:
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            ) from err
+        if str(parsed) != token:
+            raise _validation_error(
+                "The managed session ID is invalid", "invalid_plan_command"
+            )
+        return parsed
 
 
 def _enum_option[CleaningOptionT: (CleaningMode, CoverageSetting)](

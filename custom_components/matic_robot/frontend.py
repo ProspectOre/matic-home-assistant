@@ -22,6 +22,7 @@ from .slam_scene import (
     MaticSlamPoseView,
     MaticSlamSceneView,
 )
+from .workspace_socket import async_register as async_register_workspace_socket
 
 # Include both the packaged version and the editor content in the cache-buster.
 # Both are loaded once at import time, off the event loop.
@@ -88,6 +89,8 @@ def clear_slam_scene_cache(hass: HomeAssistant, entry_id: str) -> None:
 
 async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     """Serve and load the room editor used by integration config flows."""
+    if "workspace_socket" not in hass.data.get(__package__, {}):
+        await async_register_workspace_socket(hass)
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     path = Path(__file__).with_name("room_plan_editor.js")

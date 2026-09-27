@@ -13,9 +13,11 @@ from homeassistant.exceptions import ServiceValidationError
 
 from custom_components.matic_robot import vacuum
 from custom_components.matic_robot.client.commands import UserCommand
+from custom_components.matic_robot.const import MAX_ROOM_SEQUENCE_SIZE
 from custom_components.matic_robot.plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
+    PLAN_SESSION_ID,
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
@@ -31,20 +33,68 @@ async def test_managed_clean_token_is_required_until_external_replacement(hass) 
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
     token = manager.begin_managed_motion("synthetic-serial")
+    session_id = "11111111-1111-4111-8111-111111111111"
 
     await entity.async_send_command(
         "clean_rooms",
-        {"rooms": ["Study"], PLAN_MOTION_TOKEN: token},
+        {"rooms": ["Study"], PLAN_MOTION_TOKEN: token, PLAN_SESSION_ID: session_id},
     )
     assert manager.managed_motion_is_current("synthetic-serial", token) is True
+    assert (
+        entry.runtime_data.coordinator.client.async_start_coverage.await_args.kwargs[
+            "require_settings_readback"
+        ]
+        is True
+    )
+    assert entry.runtime_data.coordinator.client.async_start_coverage.await_args.kwargs[
+        "session_id"
+    ].hex == session_id.replace("-", "")
 
     await entity.async_send_command("clean_all")
     assert manager.managed_motion_is_current("synthetic-serial", token) is False
     with pytest.raises(ManagedMotionReplacedError):
         await entity.async_send_command(
             "clean_rooms",
-            {"rooms": ["Study"], PLAN_MOTION_TOKEN: token},
+            {"rooms": ["Study"], PLAN_MOTION_TOKEN: token, PLAN_SESSION_ID: session_id},
         )
+
+
+async def test_explicit_vacuum_room_lists_share_the_sequence_limit(hass) -> None:
+    entry = _entry()
+    state = entry.runtime_data.coordinator.data
+    floor_plan = state.floor_plan
+    template = floor_plan.rooms[0]
+    rooms = tuple(
+        replace(
+            template,
+            id=f"room-{index}",
+            name=f"Room {index}",
+            protocol_id=f"protocol-{index}",
+            id_wire=f"room-{index}".encode(),
+        )
+        for index in range(1, MAX_ROOM_SEQUENCE_SIZE + 2)
+    )
+    entry.runtime_data.coordinator.data = replace(
+        state,
+        floor_plan=replace(floor_plan, rooms=rooms),
+    )
+    entity = vacuum.MaticVacuum(entry)
+    run = AsyncMock()
+
+    with patch.object(entity, "_async_clean_rooms", run):
+        await entity.async_send_command(
+            "clean_rooms",
+            {"rooms": [room.id for room in rooms[:MAX_ROOM_SEQUENCE_SIZE]]},
+        )
+        assert len(run.await_args.args[0]) == MAX_ROOM_SEQUENCE_SIZE
+        run.reset_mock()
+        with pytest.raises(ServiceValidationError) as raised:
+            await entity.async_send_command(
+                "clean_rooms", {"rooms": [room.id for room in rooms]}
+            )
+
+    assert raised.value.translation_key == "room_sequence_limit"
+    run.assert_not_awaited()
 
 
 async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
@@ -59,6 +109,43 @@ async def test_managed_clean_token_rejects_non_integer_values(hass) -> None:
     for value in (True, "not-a-token", "A" * 64):
         with pytest.raises(ServiceValidationError, match="floor token is invalid"):
             await entity.async_send_command("clean_all", {PLAN_FLOOR_TOKEN: value})
+
+
+async def test_managed_session_marker_is_private_and_canonical(hass) -> None:
+    entry = _entry()
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    entry.runtime_data.cleaning_plans = manager
+    entity = vacuum.MaticVacuum(entry)
+    valid_session = "abcdefab-cdef-4abc-8def-abcdefabcdef"
+    token = manager.begin_managed_motion("synthetic-serial")
+
+    for value in (1, "not-a-uuid", valid_session.upper()):
+        with pytest.raises(ServiceValidationError, match="session ID is invalid"):
+            await entity.async_send_command(
+                "clean_rooms", {"rooms": ["Study"], PLAN_SESSION_ID: value}
+            )
+
+    with pytest.raises(ServiceValidationError, match="invalid for this room command"):
+        await entity.async_send_command(
+            "clean_rooms", {"rooms": ["Study"], PLAN_SESSION_ID: valid_session}
+        )
+    with pytest.raises(ServiceValidationError, match="has no session ID"):
+        await entity.async_send_command(
+            "clean_rooms", {"rooms": ["Study"], PLAN_MOTION_TOKEN: token}
+        )
+    with pytest.raises(ServiceValidationError, match="has no session ID"):
+        await entity.async_send_command(
+            "clean_rooms",
+            {
+                "rooms": ["Study"],
+                PLAN_MOTION_TOKEN: token,
+                "room_coverage": ["quick"],
+                "room_modes": ["vacuum"],
+            },
+        )
+    with pytest.raises(ServiceValidationError, match="requires a managed room command"):
+        await entity.async_send_command("clean_all", {PLAN_SESSION_ID: valid_session})
 
 
 @pytest.mark.parametrize(
@@ -86,6 +173,7 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
     floor_plan = entry.runtime_data.coordinator.data.floor_plan
     assert floor_plan is not None
     motion_token = manager.begin_managed_motion("synthetic-serial")
+    session_id = "22222222-2222-4222-8222-222222222222"
     command_lock = manager.command_lock("synthetic-serial")
     await command_lock.acquire()
 
@@ -96,6 +184,7 @@ async def test_managed_clean_rechecks_floor_inside_command_lock(
                 "rooms": ["Study"],
                 PLAN_MOTION_TOKEN: motion_token,
                 PLAN_FLOOR_TOKEN: plan_floor_token(floor_plan),
+                PLAN_SESSION_ID: session_id,
             },
         )
     )
@@ -158,6 +247,7 @@ async def test_queued_room_clean_uses_fresh_map_after_geometry_update(hass, chan
                 "rooms": ["Study"],
                 PLAN_MOTION_TOKEN: token,
                 PLAN_FLOOR_TOKEN: plan_floor_token(floor),
+                PLAN_SESSION_ID: "33333333-3333-4333-8333-333333333333",
             },
         )
     )

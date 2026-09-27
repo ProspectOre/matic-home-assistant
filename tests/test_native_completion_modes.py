@@ -8,12 +8,15 @@ from homeassistant.util import dt as dt_util
 
 from custom_components.matic_robot.client.api import _decode_cleaning_session
 from custom_components.matic_robot.client.models import CleaningSessionRecord
-from custom_components.matic_robot.plans import CleaningRoom
-from custom_components.matic_robot.services import (
+from custom_components.matic_robot.managed_executor import (
     _async_verify_leg_completion,
     _async_verify_room_completion,
     _native_completion_match,
 )
+from custom_components.matic_robot.native_completion import (
+    match_single_room_completions,
+)
+from custom_components.matic_robot.plans import CleaningRoom
 from tests.wire_builders import _bfield, _vfield
 
 
@@ -82,6 +85,114 @@ async def test_native_mode_proof_matches_only_the_dispatched_mode(
         _native_completion_match((record,), frozenset({record.key}), room, dispatched)
         is None
     )
+
+
+def test_shared_single_room_matcher_bounds_ambiguity_and_honors_baseline():
+    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    assert session is not None
+    first = CleaningSessionRecord(b"synthetic-first", session)
+    second = CleaningSessionRecord(b"synthetic-second", session)
+    room = CleaningRoom("study", "Study", "vacuum", "standard")
+    dispatched = dt_util.utcnow() - timedelta(seconds=90)
+    arguments = {
+        "room_name": room.name,
+        "cleaning_mode": room.cleaning_mode,
+        "dispatched_at": dispatched,
+        "now": dt_util.utcnow(),
+    }
+
+    assert len(match_single_room_completions((first,), **arguments)) == 1
+    assert len(match_single_room_completions((first, second), **arguments)) == 2
+    assert (
+        len(
+            match_single_room_completions(
+                (first, second), baseline={first.key}, **arguments
+            )
+        )
+        == 1
+    )
+
+
+def test_shared_matcher_preserves_distinct_legacy_admission_rules():
+    from custom_components.matic_robot.client.models import CleaningSession
+
+    now = dt_util.utcnow()
+    session = CleaningSession(
+        started_at=(now - timedelta(seconds=60)).isoformat(),
+        ended_at=(now - timedelta(seconds=5)).isoformat(),
+        duration_seconds=55,
+        rooms=("Study",),
+        room_durations=(("Study", 55),),
+        completed=True,
+    )
+    record = CleaningSessionRecord(b"synthetic-legacy", session)
+    arguments = {
+        "room_name": "Study",
+        "cleaning_mode": "mop",
+        "dispatched_at": now - timedelta(seconds=90),
+        "now": now,
+    }
+
+    assert len(match_single_room_completions((record,), **arguments)) == 1
+    assert (
+        match_single_room_completions((record,), legacy_policy="room_list", **arguments)
+        == ()
+    )
+
+    incomplete = CleaningSession(
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        duration_seconds=55,
+        rooms=("Study",),
+        room_durations=(("Study", 55),),
+        completed=False,
+        completed_rooms=("Study",),
+    )
+    incomplete_record = CleaningSessionRecord(b"synthetic-incomplete", incomplete)
+    assert (
+        match_single_room_completions(
+            (incomplete_record,), legacy_policy="room_list", **arguments
+        )
+        == ()
+    )
+
+    vacuum_evidence = CleaningSession(
+        started_at=session.started_at,
+        ended_at=session.ended_at,
+        duration_seconds=55,
+        rooms=("Study",),
+        room_durations=(("Study", 55),),
+        completed=False,
+        completed_rooms=("Study",),
+        vacuum_completed_rooms=("Study",),
+    )
+    vacuum_record = CleaningSessionRecord(b"synthetic-vacuum-proof", vacuum_evidence)
+    vacuum_arguments = {**arguments, "cleaning_mode": "vacuum"}
+    assert (
+        len(
+            match_single_room_completions(
+                (vacuum_record,), legacy_policy="room_list", **vacuum_arguments
+            )
+        )
+        == 1
+    )
+
+
+def test_shared_matcher_rejects_unsupported_legacy_policy():
+    now = dt_util.utcnow()
+    session = _decode_cleaning_session(_session_payload(_vfield(5, 2) + _vfield(6, 1)))
+    assert session is not None
+    record = CleaningSessionRecord(b"synthetic-policy", session)
+
+    with pytest.raises(ValueError, match="unsupported legacy"):
+        match_single_room_completions(
+            (record,),
+            room_name="Study",
+            cleaning_mode="vacuum",
+            dispatched_at=now - timedelta(seconds=90),
+            now=now,
+            legacy_policy="unsupported",  # type: ignore[arg-type]
+        )
 
 
 @pytest.mark.parametrize(
@@ -160,11 +271,11 @@ async def test_restart_reconciliation_retains_only_known_vacuum_dispatch(hass, m
     from types import SimpleNamespace
 
     from custom_components.matic_robot.client.models import FloorPlan, Room
-    from custom_components.matic_robot.plans import CleaningPlanManager
-    from custom_components.matic_robot.services import (
+    from custom_components.matic_robot.managed_executor import (
         _build_native_reconciliation,
         _native_reconciliation_data,
     )
+    from custom_components.matic_robot.plans import CleaningPlanManager
 
     room = CleaningRoom("study", "Study", "vacuum", "standard")
     dispatched = dt_util.utcnow() - timedelta(seconds=90)

@@ -45,13 +45,11 @@ from .coordinator import MaticCoordinator
 from .firmware import FirmwareTracker
 from .frontend import async_register_room_plan_editor, clear_slam_scene_cache
 from .llm import async_register_matic_llm_api
+from .managed_executor import OEM_STOP_RECONCILIATION_POLL_SECONDS
 from .migrations import async_migrate_entry
 from .plans import CleaningPlanManager, async_get_plan_manager
 from .restart import async_recover_managed_run
-from .services import (
-    OEM_STOP_RECONCILIATION_POLL_SECONDS,
-    async_register_services,
-)
+from .services import async_register_services
 from .slam_history import (
     SlamHistoryStore,
     async_collect_slam_history,
@@ -240,6 +238,10 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             slam_map,
             slam_history,
         )
+        workspace_socket = hass.data.get(DOMAIN, {}).get("workspace_socket")
+        track_workspace_entry = getattr(workspace_socket, "track_entry", None)
+        if callable(track_workspace_entry):
+            track_workspace_entry(entry)
         await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
         if (
             plans.recovery_run(serial_number) is not None
@@ -327,7 +329,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: MaticConfigEntry) -> boo
             nonlocal area_binding_upgrade_in_progress
             floor_plan = coordinator.data.floor_plan
             slam_map.set_expected_mission_id(
-                floor_plan.mission_id if floor_plan is not None else None
+                floor_plan.mission_id
+                if floor_plan is not None
+                else coordinator.displayed_floor_mission_id
             )
             if (
                 area_binding_upgrade_pending

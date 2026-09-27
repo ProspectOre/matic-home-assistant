@@ -344,14 +344,13 @@ export class MaticMapCanvasV4 extends LitElement {
     });
     this.#gestures = new GestureController(root, this.#renderer, {
       state: () => this.state,
-      onOutlinePoint: (point) => this.#outlineEditor.addPoint(point),
-      onCircles: (circles, record, previous, previousOutline) => this.#intent({
+      onOutlinePoint: (point, coordinateEdit) => this.#outlineEditor.addPoint(point, coordinateEdit),
+      onCircles: (circles, coordinateEdit) => this.#intent({
         type: "set-draft-circles",
         circles,
-        record,
-        ...(previous ? { previous, previousOutline: previousOutline ?? null } : {}),
-        ...(!record && previous ? { outline: previousOutline ?? null } : {}),
+        coordinateEdit,
       }),
+      onCirclePreview: (circles, coordinateEdit) => this.#renderer?.setCirclePreview(circles, coordinateEdit),
       onRoom: (roomId) => this.#intent({ type: "toggle-room", roomId }),
     });
     this.#renderer.setState(this.state);
@@ -374,6 +373,8 @@ export class MaticMapCanvasV4 extends LitElement {
       this.renderRoot.querySelector<HTMLElement>(".navigation-help button")?.focus();
     }
     if (!changed.has("state")) return;
+    this.#gestures?.observeState(this.state);
+    this.#outlineEditor.observeState(this.state);
     this.#renderer?.setState(this.state);
     if (this.state.draw.tool === "outline") this.requestUpdate();
   }

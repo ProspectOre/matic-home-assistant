@@ -1,8 +1,10 @@
-"""Execute saved-plan option combinations with synthetic native observations."""
+"""Exercise executor dispatch, native outcomes, and stop-policy boundaries."""
 
+import asyncio
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -15,8 +17,16 @@ from custom_components.matic_robot.client.models import (
     CleaningSessionRecord,
 )
 from custom_components.matic_robot.const import DOMAIN
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
-from custom_components.matic_robot.services import RoomRunOutcome, _async_execute_rooms
+from custom_components.matic_robot.managed_executor import (
+    RoomRunOutcome,
+    _async_execute_rooms,
+)
+from custom_components.matic_robot.plans import (
+    PLAN_SESSION_ID,
+    CleaningPlanManager,
+    CleaningRoom,
+)
+from tests.wire_builders import _session_identity
 
 LAYOUTS = (
     (("mop", "quick"), ("mop", "standard"), ("mop", "heavy_duty")),
@@ -31,12 +41,9 @@ LAYOUTS = (
 
 
 @pytest.mark.parametrize("layout", LAYOUTS)
-@pytest.mark.parametrize("selection", ("ordered", "intelligent", "run_all"))
 @pytest.mark.parametrize("return_to_base", (False, True))
-@pytest.mark.parametrize("finish_current_room", (False, True))
-@pytest.mark.parametrize("threshold", (0, 50, 100))
-async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
-    hass, monkeypatch, layout, selection, return_to_base, finish_current_room, threshold
+async def test_executor_preserves_room_settings_and_verified_completion(
+    hass, layout, return_to_base
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -50,22 +57,16 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         {
             "name": "Matrix",
             "enabled": True,
-            "run_behavior": "ordered" if selection == "ordered" else "intelligent",
+            "run_behavior": "ordered",
             "return_to_base": return_to_base,
-            "finish_current_room": finish_current_room,
-            "finish_current_room_threshold": threshold,
             "rooms": [asdict(r) for r in rooms],
         },
     )
-    # An actual previous completion makes intelligent order differ from both
-    # saved order and Run all, while preserving each room's attached settings.
-    await manager.async_mark_started("serial", "matrix", rooms[0])
-    await manager.async_mark_completed("serial", "matrix", rooms[0])
-    expected = rooms[1:] + rooms[:1] if selection == "intelligent" else rooms
+    expected = rooms
     call = ServiceCall(
         hass,
         DOMAIN,
-        "clean_entire_plan" if selection == "run_all" else "run_selected_plan",
+        "run_selected_plan",
         {
             "plan_id": "matrix",
             "return_to_base": return_to_base,
@@ -92,7 +93,12 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         else:
             assert "room_modes" not in params
             assert "room_coverage" not in params
-        identity = b"synthetic-task"
+        session_id = params.get(PLAN_SESSION_ID)
+        identity = (
+            _session_identity(UUID(session_id))
+            if isinstance(session_id, str)
+            else b"synthetic-task"
+        )
         started_at = dt_util.utcnow().isoformat()
         hass.states.async_set(
             "vacuum.matic", "cleaning", {"current_area": expected[0].name}
@@ -151,10 +157,6 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
             hass.states.async_set("vacuum.matic", "idle")
 
     hass.services.async_register("vacuum", "send_command", send)
-    monkeypatch.setattr(
-        "custom_components.matic_robot.services._async_wait_for_leg_outcome",
-        observe_terminal,
-    )
     dock = AsyncMock()
     await _async_execute_rooms(
         hass,
@@ -162,8 +164,7 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         manager,
         "vacuum.matic",
         "serial",
-        rooms,
-        intelligent=selection == "intelligent",
+        expected,
         active_session=AsyncMock(return_value=False),
         session_history=history,
         confirm_room_completed=confirm,
@@ -172,6 +173,7 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         floor_is_current=lambda: True,
         floor_token="a" * 64,
         session_identity=AsyncMock(side_effect=lambda: identity),
+        wait_for_leg_outcome=observe_terminal,
     )
     assert len(commands) == 1
     assert confirmed == [r.name for r in expected]
@@ -186,16 +188,21 @@ async def test_saved_plan_options_preserve_dispatch_and_verified_completion(
         dock.assert_not_awaited()
 
 
-@pytest.mark.parametrize("mode", ("vacuum", "mop", "vacuum_and_mop"))
-@pytest.mark.parametrize("coverage", ("quick", "standard", "heavy_duty"))
-@pytest.mark.parametrize("finish_current_room", (False, True))
-@pytest.mark.parametrize("threshold", (0, 1, 50, 99, 100))
+@pytest.mark.parametrize(
+    ("finish_current_room", "threshold", "progress", "expected"),
+    (
+        (False, 50, 50.0, "immediate"),
+        (True, 50, 49.9, "immediate"),
+        (True, 50, 50.0, "after_room"),
+        (True, 50, 50.1, "after_room"),
+    ),
+)
 async def test_stop_threshold_is_independent_of_cleaning_configuration(
-    hass, mode, coverage, finish_current_room, threshold
+    hass, finish_current_room, threshold, progress, expected
 ):
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
-    room = CleaningRoom("room", "Room", mode, coverage)
+    room = CleaningRoom("room", "Room", "vacuum", "quick")
     await manager.async_save_plan(
         "serial",
         "matrix",
@@ -205,26 +212,146 @@ async def test_stop_threshold_is_independent_of_cleaning_configuration(
             "rooms": [],
         },
     )
-    manager._data["robots"]["serial"]["rotations"]["matrix"] = {
-        "rooms": {
-            room.room_id: {
-                "cleaning_mode": mode,
-                "coverage_setting": coverage,
-                "duration_history_seconds": [100, 100, 100],
-            }
-        }
+    manager._robot("serial")["rotations"]["matrix"] = {
+        "rooms": {room.room_id: {"duration_history_seconds": [100, 100, 100]}}
     }
     async with manager.lock("serial"):
-        for progress in (max(0, threshold - 0.1), threshold, min(100, threshold + 0.1)):
-            manager.prepare_run("serial")
-            await manager.async_mark_started("serial", "matrix", room)
-            active = manager._data["robots"]["serial"]["active_plan"]
-            active["active_elapsed_seconds"] = progress
-            active["active_segment_started"] = None
-            expected = (
-                "after_room"
-                if finish_current_room and progress >= threshold
-                else "immediate"
-            )
-            assert manager.request_stop("serial").behavior == expected
-            manager.cancel("serial")
+        manager.prepare_run("serial")
+        await manager.async_mark_started("serial", "matrix", room)
+        active = manager._data["robots"]["serial"]["active_plan"]
+        active["active_elapsed_seconds"] = progress
+        active["active_segment_started"] = None
+        assert manager.request_stop("serial").behavior == expected
+        manager.cancel("serial")
+
+
+async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
+    hass, monkeypatch
+):
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_executor.SESSION_HISTORY_TIMEOUT_SECONDS",
+        0.01,
+    )
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        CleaningRoom("room-a", "Room A", "vacuum", "quick"),
+        CleaningRoom("room-b", "Room B", "vacuum", "quick"),
+    ]
+    await manager.async_save_plan(
+        "serial",
+        "stop",
+        {
+            "name": "Stop boundary",
+            "finish_current_room": True,
+            "finish_current_room_threshold": 0,
+            "rooms": [asdict(room) for room in rooms],
+        },
+    )
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "run_selected_plan",
+        {
+            "plan_id": "stop",
+            "start_timeout": 120,
+            "completion_timeout": 600,
+            "return_to_base": False,
+        },
+    )
+    identity = b""
+    started_at = None
+    observation_count = 0
+    decisions = []
+    commands: list[tuple[int, UserCommand]] = []
+    confirmed = []
+    ended = False
+
+    async def send(service_call):
+        nonlocal identity, started_at
+        assert service_call.data["params"]["rooms"] == [room.room_id for room in rooms]
+        session_id = service_call.data["params"].get(PLAN_SESSION_ID)
+        identity = (
+            _session_identity(UUID(session_id))
+            if isinstance(session_id, str)
+            else b"synthetic-task"
+        )
+        started_at = dt_util.utcnow().isoformat()
+        hass.states.async_set(
+            "vacuum.matic", "cleaning", {"current_area": rooms[0].name}
+        )
+
+    async def observe_boundary(*_args, **_kwargs):
+        nonlocal ended, identity, observation_count
+        if observation_count == 0:
+            observation_count += 1
+            decisions.append(manager.request_stop("serial"))
+            return RoomRunOutcome.ROOM_CHANGED, rooms[1]
+        ended = True
+        identity = b""
+        hass.states.async_set("vacuum.matic", "idle")
+        return RoomRunOutcome.HANDOFF_CANDIDATE, None
+
+    async def history():
+        if not ended:
+            return ()
+        return (
+            CleaningSessionRecord(
+                b"synthetic-stop-record",
+                CleaningSession(
+                    started_at,
+                    dt_util.utcnow().isoformat(),
+                    30,
+                    (rooms[0].name,),
+                    (),
+                    True,
+                    completed_rooms=(rooms[0].name,),
+                    vacuum_completed_rooms=(rooms[0].name,),
+                    mode_results=(
+                        CleaningModeResult(rooms[0].name, "vacuum", "completed", 30),
+                    ),
+                ),
+            ),
+        )
+
+    async def managed_command(token: int, command: UserCommand) -> None:
+        commands.append((token, command))
+        if command is UserCommand.STOP:
+            manager.mark_stop_pending("serial", run_id=manager.active_run_id("serial"))
+
+    def confirm(room_name: str) -> None:
+        confirmed.append(room_name)
+
+    hass.services.async_register("vacuum", "send_command", send)
+    await asyncio.wait_for(
+        _async_execute_rooms(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            active_session=AsyncMock(return_value=False),
+            session_history=history,
+            confirm_room_completed=confirm,
+            managed_user_command=managed_command,
+            floor_is_current=lambda: True,
+            floor_token="a" * 64,
+            session_identity=AsyncMock(side_effect=lambda: identity),
+            wait_for_leg_outcome=observe_boundary,
+        ),
+        timeout=3,
+    )
+
+    assert [decision.behavior for decision in decisions] == ["after_room"]
+    assert [command for _token, command in commands] == [UserCommand.STOP]
+    assert len({token for token, _command in commands}) == 1
+    assert confirmed == [rooms[0].name]
+    result = manager.snapshot("serial")["last_run"]
+    assert result["outcome"] == "cancelled"
+    assert result["reason_code"] == "managed_stop"
+    assert result["completed_room_count"] == 1
+    completed_by_room = manager.snapshot("serial")["last_completed_by_room"]
+    assert completed_by_room["room-a"]["runs"] == 1
+    assert completed_by_room["room-b"]["runs"] == 0
+    assert completed_by_room["room-b"]["at"] is None

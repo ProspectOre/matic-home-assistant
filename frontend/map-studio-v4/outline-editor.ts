@@ -1,14 +1,21 @@
 import { html, nothing } from "lit";
 import type { AreaOutline, AreaPoint } from "./area-outline";
 import { outlineCircles, validOutline } from "./area-outline";
-import type { WorkspaceIntent, WorkspaceState } from "./contracts";
+import type { CoordinateEditCapture, WorkspaceIntent, WorkspaceState } from "./contracts";
 import type { RendererController } from "./renderer-controller";
-import { canEditCoordinates } from "./state";
+import { captureCoordinateEdit, hasCoordinateEditAdmission } from "./state";
 
 /** Perimeter handles own only their pointer gesture. Map navigation, draft
  * history and persistence remain in the existing controllers. */
 export class OutlineEditor {
-  #drag: { index: number; pointer: number; baseline: AreaOutline; preview: AreaOutline; target: HTMLElement } | null = null;
+  #drag: {
+    index: number;
+    pointer: number;
+    baseline: AreaOutline;
+    preview: AreaOutline;
+    target: HTMLElement;
+    capture: CoordinateEditCapture;
+  } | null = null;
   #message = "";
   #selected: number | null = null;
   constructor(
@@ -20,14 +27,13 @@ export class OutlineEditor {
     private readonly focusPoint: (index: number) => void,
   ) {}
 
-  #enabled(): boolean {
-    const s = this.state();
-    return !s.dialog && s.workflow === "draw" && s.draw.tool === "outline" && canEditCoordinates(s)
-      && (s.command === "idle" || s.command === "failed");
+  #enabled(s = this.state()): boolean {
+    return captureCoordinateEdit(s, "outline") !== null;
   }
 
-  #commit(outline: AreaOutline): void {
-    if (!this.#enabled()) return;
+  #commit(outline: AreaOutline, capture?: CoordinateEditCapture): void {
+    const admitted = capture ?? captureCoordinateEdit(this.state(), "outline");
+    if (!hasCoordinateEditAdmission(this.state(), admitted)) return;
     if (!validOutline(outline)) {
       this.#message = this.t("v4_zone_invalid", "Keep the outline from crossing itself.");
       this.update();
@@ -38,15 +44,17 @@ export class OutlineEditor {
     // Saving remains disabled until it contains verified cleaning coverage.
     this.#message = outline.closed && !circles.length
       ? this.t("v4_zone_empty", "Make the zone wider and keep it on mapped floor.") : "";
-    this.intent({ type: "set-draft-circles", circles, outline });
+    this.intent({ type: "set-draft-circles", circles, outline, coordinateEdit: admitted });
   }
 
-  addPoint(point: AreaPoint): void {
-    if (!this.#enabled() || !this.renderer()?.containsMapPoint(point)) return;
+  addPoint(point: AreaPoint, capture?: CoordinateEditCapture): void {
+    const admitted = capture ?? captureCoordinateEdit(this.state(), "outline");
+    if (!hasCoordinateEditAdmission(this.state(), admitted)
+      || admitted.tool !== "outline" || !this.renderer()?.containsMapPoint(point)) return;
     const outline = this.state().draw.outline ?? { points: [], closed: false };
     if (outline.points.length >= 64) return;
     const points = [...outline.points, point];
-    this.#commit({ points, closed: points.length >= 3 });
+    this.#commit({ points, closed: points.length >= 3 }, admitted);
   }
 
   #remove(index: number): void {
@@ -69,7 +77,9 @@ export class OutlineEditor {
   }
 
   #down(event: PointerEvent, index: number): void {
-    if (!this.#enabled() || event.button !== 0 || this.#drag || (event.pointerType === "touch" && !event.isPrimary)) return;
+    if (event.button !== 0 || this.#drag || (event.pointerType === "touch" && !event.isPrimary)) return;
+    const capture = captureCoordinateEdit(this.state(), "outline");
+    if (!capture) return;
     this.#selected = index;
     this.update();
     const baseline = this.state().draw.outline;
@@ -78,14 +88,18 @@ export class OutlineEditor {
     const target = event.currentTarget as HTMLElement;
     target.focus({ preventScroll: true });
     target.setPointerCapture(event.pointerId);
-    this.#drag = { index, pointer: event.pointerId, baseline, preview: baseline, target };
+    this.#drag = { index, pointer: event.pointerId, baseline, preview: baseline, target, capture };
+  }
+
+  observeState(state: WorkspaceState): void {
+    if (this.#drag && !hasCoordinateEditAdmission(state, this.#drag.capture)) this.cancel();
   }
 
   #move(event: PointerEvent): void {
     const drag = this.#drag;
     if (!drag || drag.pointer !== event.pointerId) return;
     event.stopPropagation(); event.preventDefault();
-    if (!this.#enabled() || this.state().draw.outline !== drag.baseline) { this.cancel(); return; }
+    if (!hasCoordinateEditAdmission(this.state(), drag.capture)) { this.cancel(); return; }
     const point = this.renderer()?.screenToMap(event.clientX, event.clientY);
     if (!point || !this.renderer()?.containsMapPoint(point)) return;
     drag.preview = { ...drag.baseline, points: drag.baseline.points.map((p, i) => i === drag.index ? point : p) };
@@ -98,9 +112,7 @@ export class OutlineEditor {
     event.stopPropagation(); event.preventDefault();
     this.#drag = null;
     drag.target.releasePointerCapture(event.pointerId);
-    if (this.state().draw.outline === drag.baseline && this.#enabled()) {
-      if (drag.preview !== drag.baseline) this.#commit(drag.preview);
-    }
+    if (drag.preview !== drag.baseline) this.#commit(drag.preview, drag.capture);
     this.update();
   }
 

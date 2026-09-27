@@ -4,27 +4,16 @@ const bundleDirectory = new URL(
   "../custom_components/matic_robot/map_studio_v4/",
   import.meta.url,
 );
-const bundlePath = new URL("index.js", bundleDirectory);
-const source = await readFile(bundlePath, "utf8");
 
 // esbuild preserves the whitespace class used by Lit's template parser as a
 // literal tab plus newline. Escape only that exact sequence so the generated
 // bundle remains byte-for-byte equivalent at runtime and passes diff checks.
 const literalWhitespaceClassTail = " \t\n\\f\\r";
 const escapedWhitespaceClassTail = " \\t\\n\\f\\r";
-const occurrences = source.split(literalWhitespaceClassTail).length - 1;
-if (occurrences !== 2) {
-  throw new Error(`Unexpected Lit whitespace-class count: ${occurrences}`);
-}
-
-const normalizedWhitespace = source.replaceAll(
-  literalWhitespaceClassTail,
-  escapedWhitespaceClassTail,
-);
-
 const javascriptPaths = (await readdir(bundleDirectory, { recursive: true }))
   .filter((path) => path.endsWith(".js"))
   .sort();
+let whitespaceClassOccurrences = 0;
 
 // Some Home Assistant File Editor releases decode uploaded UTF-8 source as
 // Latin-1 before saving it. Keep every distributable JavaScript asset byte-safe
@@ -32,11 +21,14 @@ const javascriptPaths = (await readdir(bundleDirectory, { recursive: true }))
 // escapes to the same strings at runtime.
 for (const relativePath of javascriptPaths) {
   const path = new URL(relativePath, bundleDirectory);
-  const contents =
-    relativePath === "index.js"
-      ? normalizedWhitespace
-      : await readFile(path, "utf8");
-  const asciiSafeSource = contents.replace(
+  const source = await readFile(path, "utf8");
+  whitespaceClassOccurrences +=
+    source.split(literalWhitespaceClassTail).length - 1;
+  const normalizedWhitespace = source.replaceAll(
+    literalWhitespaceClassTail,
+    escapedWhitespaceClassTail,
+  );
+  const asciiSafeSource = normalizedWhitespace.replace(
     /[^\x00-\x7f]/gu,
     (character) => {
       const codePoint = character.codePointAt(0);
@@ -51,4 +43,10 @@ for (const relativePath of javascriptPaths) {
   }
 
   await writeFile(path, asciiSafeSource, "ascii");
+}
+
+if (whitespaceClassOccurrences !== 2) {
+  throw new Error(
+    `Unexpected Lit whitespace-class count across bundle: ${whitespaceClassOccurrences}`,
+  );
 }

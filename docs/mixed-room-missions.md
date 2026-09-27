@@ -34,10 +34,14 @@ the three cleaning modes and three coverage settings, including every subset of
 rooms with the observed omission. Actual client tests cover all 81 two-room
 combinations with both valid readback and a missing required goal. Synthetic
 fixtures also cover the four-room combined/vacuum/combined/combined pattern and
-larger plans. Another 108 executor cases cover saved order, intelligent rotation,
-Run all, return-to-base, finish-current-room, and threshold settings; 90 policy
-cases cover threshold edges across every mode/coverage pair. Existing lifecycle
-tests retain stop, takeover, and restart guards.
+larger plans. Six executor cases verify mixed per-room dispatch and native
+completion across three layouts, with and without return-to-base. A registered
+service-path test verifies intelligent rotation, saved-order execution, and the
+selected plan's configured order. Four focused threshold cases cover disabled,
+below, at, and above the finish-current-room boundary. A managed-executor stop
+test verifies after-room STOP ownership, one completed room, and no credit for
+the queued room. Existing lifecycle tests retain stop settlement, takeover, and
+restart guards; none of this synthetic evidence replaces physical acceptance.
 
 A valid configurable plan that aborts fails functional acceptance, even when
 STOP/DOCK cleanup succeeds. Before a release, the exact installed candidate must
