@@ -1,21 +1,20 @@
 # Matic 0.5 authority contract
 
 Status: implementation contract; evidence: `acceptance-0.5.md`. Binding inputs: the Matic Map Studio Roadmap,
-Matic Map Studio Independent Review, and the full independent review dated 2026-08-29. Historical status and release
-counts are reconciled in the evidence matrix. Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25.
+Matic Map Studio Independent Review, and the full independent review dated 2026-08-29. Historical status and
+release counts are in the evidence matrix. Baseline: public stable `v0.4.6` at `52166df`.
 Scope: integration ownership and lifecycle, map-first operation, reliable live updates, explainable cleaning, independent room cadence.
 
 ## Product authority
 
-The household administrator must understand setup, preview and verify work, start/stop safely, and recover without losing
-configuration or drafts. The map keeps one status strip, workflow, and contextual action. Mission, floor, generation,
-and resource identity are internal; user copy exposes state, consequence, and next action.
+The household administrator must understand setup, preview and verify work, start/stop safely, and recover without
+losing configuration or drafts. The map keeps one status strip, workflow, and contextual action. Mission, floor,
+generation, and resource identity are internal; user copy exposes state, consequence, and next action.
 
-The v0.4 Map Studio contract remains binding: one mounted canvas and gesture stack for map, rooms, plans,
-Areas, pose, labels, and navigation; Full map is a reversible presentation state; saved history is dated,
-floor-scoped, read-only, pose-free, and bounded to 12 snapshots/48 MiB compressed; and uncertainty disables
-dependent map, pose, edit, and motion actions together. The Locating state withholds map-dependent actions;
-while Full map is open it retains only the exit control until verification returns.
+The v0.4 Map Studio contract remains binding: one mounted canvas and gesture stack for map, rooms, plans, Areas,
+pose, labels, and navigation; Full map is reversible; saved history is dated, floor-scoped, read-only, pose-free,
+and bounded to 12 snapshots/48 MiB compressed. Uncertainty disables dependent map, pose, edit, and motion actions;
+Locating withholds them and retains only the Full map exit control until verification returns.
 
 ## Core principles
 
@@ -37,18 +36,17 @@ while Full map is open it retains only the exit control until verification retur
 
 ## Principles and ownership
 
-- Preserve credentials, entities, actions, automations, plans, Areas, preferences, local-only privacy,
-  pinned transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; proxy
-  pairing is deferred.
+- Preserve credentials, entities, actions, automations, plans, Areas, preferences, local-only privacy, pinned
+  transport identity, and safe upgrade/rollback. Direct Bluetooth pairing remains supported; proxy pairing is deferred.
 - Keep Home Assistant language, tokens, and supported panel interfaces. Bundle frontend dependencies
   locally; wrap internal Home Assistant components behind capability-tested fallbacks.
-- Every asynchronous spatial result and coordinate gesture belongs to its entry, generation, floor, mission,
-  and relevant revision. Obsolete work commits no cache, renderer, pose, draft, notice, or command state.
-  Advance generation before cancelling work; reject Area writes if their entry/floor changes during body reading.
-- Central fail-closed selectors own live map, exact pose, coordinate edit, and motion permission. Renderer
-  or transport failure cannot relax them.
-- Measure v0.4.5 under reproducible conditions before changing transport or performance defaults. Unknown or
-  unmeasured results are not release claims.
+- Every asynchronous spatial result and coordinate gesture belongs to its entry, generation, floor, mission, and
+  revision. Obsolete work commits no cache, renderer, pose, draft, notice, or command state. Advance generation
+  before cancelling; reject Area writes if their entry/floor changes during body reading.
+- Central fail-closed selectors own live map, exact pose, coordinate edit, and motion permission; renderer or
+  transport failure cannot relax them.
+- Measure v0.4.5 under reproducible conditions before changing transport or performance defaults. Unmeasured
+  results are not release claims.
 
 | Authority | Owns | Must not own |
 |---|---|---|
@@ -67,12 +65,10 @@ Existing vetted protocol commands remain the command boundary. `managed_executor
 
 ## Frontend authority
 
-`HassAdapter` owns a memoized projection of relevant HA state and authorization. `WorkspaceStore` owns
-immutable normalized resources, drafts, preferences, and derived presentation selectors. `CoherenceMachine`
-owns monotonic generation, identity, transition, and admission. `EffectController` owns abortable reads,
-subscriptions, and single-fire commands. `RendererController` owns one persistent canvas, camera, buffers,
-uploads, transferable buffers, quality, and fallback. One `GestureController` owns navigation, selection, ordering,
-and drawing. Brush previews stay in rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the gesture.
+`HassAdapter` owns the memoized HA state/authorization projection; `WorkspaceStore` owns immutable normalized resources, drafts, preferences, and selectors.
+`CoherenceMachine` owns generation, identity, transition/admission; `EffectController` owns abortable reads, subscriptions, and single-fire commands.
+`RendererController` owns the persistent canvas, cameras, buffers, uploads, transferable buffers, quality, and fallback. `GestureController` owns navigation, selection, ordering, and drawing.
+Brush previews stay in rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the gesture.
 
 Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs.
 One idempotent disposer owns every request, subscription, worker, listener, frame, object URL, and CPU/GPU allocation.
@@ -117,8 +113,9 @@ across an ambiguous identity change.
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy
 identity and cadence snapshot, before dispatch. Manual and saved-plan starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the frozen run. Only a unique, verified managed room completion advances
 progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to match
-before comparing goals. Hermes exposes no verified `coverage_plan` generation, so this is value consistency,
-not an atomic plan-version proof; keep it explicit until protocol/runtime evidence establishes freshness.
+before comparing goals. Hermes exposes no verified `coverage_plan` generation, so matching goal values are
+only a consistency guard, not causal proof of the dispatched settings. They never clear periodic coverage;
+due work remains due until a verified per-run settings signal exists. Persisted legacy proof flags are ignored.
 Partial, interrupted, skipped, unverified, UI, Activity, OEM, physical, custom-area, old aggregate,
 or ambiguous floor/name evidence does not. Keep the bounded 64-key completion receipt dedupe independent of the Activity journal.
 Delayed native reconciliation uses the original run identity and
@@ -142,11 +139,11 @@ compatibility, UI, then candidate proof. Keep implementation status separate fro
 release requires the security/resource backlog, exact-head regular review, required CI, privacy, packaging,
 Hassfest, HACS, candidate install/readback, runtime recovery, and physical evidence on the same accepted
 commit. An independent product and architecture review must find no unresolved P0/P1 findings; owner
-interaction and language acceptance is a separate gate. Regular code review, CI, independent product/architecture review, owner acceptance, RC install, runtime readback, physical cleaning, and stable promotion are independent gates; none is implied by another.
+interaction and language acceptance is a separate gate. Each gate is independent; none is implied by another.
 
-Physical acceptance is a separate, explicitly authorized bounded run. Preserve rollback and reviewed/installed fingerprints, stop automations/scripts, use administrator MCP/native preflight and post-run evidence,
-verify STOP settlement and correlated DOCK, and retain before/after cleanup receipts.
-Never infer motion or completion from screenshots, Activity rows, transient state, CI, or UI alone.
+Physical acceptance is separate and requires explicit authorization for a bounded run. Preserve rollback/fingerprints,
+stop automations/scripts, use administrator MCP/native preflight and post-run evidence, verify STOP/DOCK settlement,
+and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or UI.
 
-Out of scope for 0.5: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement.
-Reconsider mutation only if 0.4/0.5 evidence proves HA services cannot solve a stale-write or workflow limitation.
+Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement;
+reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.

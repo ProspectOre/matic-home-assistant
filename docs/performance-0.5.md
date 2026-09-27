@@ -5,8 +5,11 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
-The latest browser assets were built from source commit
-`3c60c224d26f9ed80bbcc18b0a531ff47995cb9d`. They include abort-safe preview
+The authority baseline is stable v0.4.6; the paired performance control remains
+the measured v0.4.5 build. The measured browser assets were built from source
+commit `3c60c22afd1d8043c0ef2c1d666fb145ed55a276`. The later backend-only
+fail-closed cadence correction does not change these compiled browser assets.
+They include abort-safe preview
 turn release while retaining the per-connection wire cap until actual RPC
 settlement, plus fail-closed fencing and catalog recovery for an unavailable
 initial workspace snapshot. Managed normal starts also bind to their generated
@@ -44,7 +47,7 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`3c60c224d26f9ed80bbcc18b0a531ff47995cb9d`, including preview abort recovery,
+`3c60c22afd1d8043c0ef2c1d666fb145ed55a276`, including preview abort recovery,
 the bounded in-flight RPC cap, initial-snapshot fencing, and tracked-session
 attribution.
 
@@ -78,7 +81,7 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `3c60c224d26f9ed80bbcc18b0a531ff47995cb9d` |
+| Candidate source commit | `3c60c22afd1d8043c0ef2c1d666fb145ed55a276` |
 | Candidate production bundle | `ec74800c3006c067e396d8f9635bd02fcf5d5570038fa2e68b0281674472c05c` |
 | Candidate review-only bundle | `7f907c1a8f83cba6636655cc11c8c6935add196a3ea523af7148bb93a170d792` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |

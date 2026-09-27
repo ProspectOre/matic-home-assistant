@@ -1,20 +1,24 @@
 # Matic 0.5 evidence matrix
 
-Baseline: stable `v0.4.5` at `f15dfa2`, published 2026-09-25. This ledger belongs to
+Baseline: public stable `v0.4.6` at `52166df`. The paired desktop performance
+comparison intentionally retains `v0.4.5` as its measured control. This ledger belongs to
 `architecture-0.5.md`; no 0.5 RC runtime evidence is recorded. “Preserved and
-verified” means v0.4.5 regressions remain covered, not every 0.5 scenario. “Implementation required” means acceptance is open despite partial code/tests; “Deferred” names the boundary and reason. Candidate, device, owner, and runtime results remain unverified.
+verified” means v0.4.6 regressions remain covered, not every 0.5 scenario. “Implementation required” means acceptance is open despite partial code/tests; “Deferred” names the boundary and reason. Candidate, device, owner, and runtime results remain unverified.
 
 ## Current implementation-worktree evidence
 
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
-- Candidate source `3c60c22` builds on `7c72c5d`, `8b96419`, `170e804`, and
-  `main` at `52166df`; HACS and Python package metadata both say `0.5.0`. This
-  worktree passed 3,531 Python tests at 100% (15,798 statements), Ruff, format,
-  strict mypy (61 files), privacy, and 38 focused workspace browser cases.
-  Normal starts accept only the documented mop behavior-3 readback omission;
-  all other goals, identity, and floor remain guarded. Preview deadlines and
-  aborts release logical FIFO turns; a two-wire per-connection cap remains until
+- Code candidate `658a0f7` follows the stable v0.4.6 baseline (`52166df`); HACS
+  and Python package metadata say `0.5.0`. The full suite passes 3,534 tests at
+  100% (15,832 statements), plus Ruff, format, strict mypy (61 files), privacy,
+  and clean-staging build/archive/fresh-import checks. The browser flake fix now
+  passes 10 Chromium, 3 WebKit, and 3 Firefox-safety repeats; exact-head full CI
+  remains pending. Tracked starts bind a generated UUID to command and
+  active-session identity, then compare goal values. Hermes has no verified
+  plan-generation marker, so matching is consistency-only: it never credits
+  periodic coverage, due coverage stays due, and legacy proof flags are discarded.
+  Preview aborts release logical FIFO turns while a two-wire cap remains until
   actual settlement. Malformed cadence, legacy repair, save serialization, and
   coherence/cancellation regressions remain covered.
 - Packaged-panel recovery saves/reads/reopens the 100-room repair in
@@ -81,11 +85,11 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 | Stream ordering, stable cursors, gap/overflow detection, bounded queues, backoff, cleanup, resync, and REST/poll fallback | Implementation required | Local implementation and synthetic lifecycle tests pass; resource/candidate evidence open | Consumer tests cover stale/duplicate events, gaps, epochs, overflow, reconnect, and disposal; the gated adapter routes invalidations to authenticated resource-specific reads, refreshes command-guard projections without spatial reloads, and reloads caches on resync. Synthetic tests cover unsupported snapshot/subscription fallback through the real REST catalog adapter and HA fetchWithAuth, with no global fetch; authorization blocks invalidations and uses a bounded snapshot probe for reauthentication; reconnect and disposal remain idempotent. Live HA fallback and resource budgets remain unmeasured. |
 | Explainable preview and dispatch | Implementation required | Partial local worktree evidence; parity and release acceptance open | Same deterministic order/settings/reasons, current-run order separate from next preview, stale-preview rejection, completed/partial/unattempted/unknown results, and unknown causes kept unknown. |
 | Independent per-room mopping cadence | Implementation required | Local policy/edit/recovery and packaged-panel save/reopen regressions pass; runtime acceptance open | N=1/N=3, private/shared interval edits, paused progress, fresh/shared adoption, mode-bound late/restart evidence, and duplicate credit have regressions. The Chromium/WebKit/Firefox-safety panel flow now exercises visible save/reopen, scope changes, next-clean selection, and cadence disable/re-enable; its stateful synthetic catalog applies the submitted service payload. Python tests verify backend canonicalization. `test_clean_room_sequence_schedule_selection_controls_shared_accounting` omits the schedule opt-in for the ordinary service case and verifies shared progress does not advance; `test_robot_normalization_repairs_cadence_records_without_inventing_progress` verifies legacy plans remain cadence-free until explicitly configured. N is 1–100; **Do on next clean** and resets stay separate; execution/reconciliation locks edits. Verified bindings gate new/changed shared saves; unchanged participants preserve compatibility, and rejected additions retain drafts without allocating plan IDs. Exact-candidate and interrupted-due acceptance remain open. |
-| Independent per-room coverage cadence | Implementation required | Local combinations/edit/recovery and packaged-panel save/reopen regressions pass; runtime acceptance open | All nine Quick/Optimal/Heavy Duty normal/periodic pairs qualify on the third verified clean and combine with due mopping. Mode-bound delayed/restart cases preserve unsatisfied work and reject duplicate credit; private/shared interval edits and pause/resume preserve progress. The Chromium/WebKit/Firefox-safety panel flow checks periodic-setting selection and readback, next-clean selection, and submitted service payload through a stateful synthetic catalog; Python tests cover backend normalization. N is 1–100; edit locks and separate resets remain covered. Tracked starts now reject a foreign active-session UUID before reading `coverage_plan`; the property has no verified generation marker, so freshness beyond matching values remains an acceptance gap pending protocol/runtime evidence. Interrupted-due and exact-candidate acceptance remain open. |
-| Tracked Map Studio room run uses managed safety/accounting | Implementation required | Local policy/accounting regressions pass; runtime acceptance open | Ephemeral room run is an explicit opt-in that keeps existing service behavior compatible; shared schedule, override, exact session-UUID attribution, and current-goal value matching have tests. A service-to-history regression proves custom-area completion can update room opportunity without advancing shared cadence. OEM and physical starts receive no cadence credit. Stop/dock, restart, native proof, plan freshness evidence, and exact HACS candidate remain open. |
+| Independent per-room coverage cadence | Implementation required | Policy resolution, edit/recovery, and packaged-panel regressions pass; coverage credit remains fail-closed pending causal protocol evidence | Quick/Optimal/Heavy Duty normal/periodic combinations resolve in preview and dispatch. Private/shared interval edits, pause/resume, mode-bound reconciliation, and duplicate-credit guards are tested. A matched active-session UUID plus goal values is not causal proof; completions therefore leave due coverage scheduled until a versioned or otherwise verified setting signal exists. The panel tests selection and submitted payload, not robot acceptance. N is 1–100; edits and separate resets remain covered. Runtime acceptance is open. |
+| Tracked Map Studio room run uses managed safety/accounting | Implementation required | Local policy/accounting regressions pass; runtime acceptance open | Ephemeral room run is an explicit opt-in that keeps existing service behavior compatible; shared schedule, override, session identity, and current-goal comparison have tests. The comparison cannot clear due coverage without causal evidence. A service-to-history regression proves custom-area completion can update room opportunity without advancing shared cadence. OEM and physical starts receive no cadence credit. Stop/dock, restart, native proof, and exact HACS candidate remain open. |
 | Setup, onboarding, first-clean guidance, robot/entry selection, activity, firmware, offline, support, and recovery journeys | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Exercise zero/one/multiple robots, isolated multi-robot selection, pairing and reauthentication, first successful clean guidance, firmware drift, HA/robot offline, permissions, entry removal, and actionable support/recovery; candidate unknown. |
 | Security/resource backlog and review-gate prerequisite | Implementation required | Partial worktree evidence; release acceptance open | Before the 0.5 PR, the open inventory contained only #138; the roadmap’s former 22-PR count is historical. Its dependency #48 is on `38e497e`; Canonical policy tests pass, but exact-head review is still open. #138 remains at `1064d58`; the coordinator reports quota recovery required before another diagnosed request. New review/inline capture still needs signed relay/support #326 and live provenance proof; default-branch issue-comment events have a trusted native path. Keep the gate fail-closed until authenticated exact-head child manifests and delivery completeness are proved. Preserve adverse finding history; unsigned workflow logs and routing tests do not qualify as capture evidence. |
-| Required repository and frontend checks | Implementation required | Candidate `3c60c22`: 3,531 Python tests at 100%; Ruff, format, strict mypy, privacy, and 38 focused browser tests pass; exact-head CI and regular review pending | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy; packaging parity; Hassfest; HACS. Record exact candidate, command/CI run, result, and any waiver; test counts alone do not establish quality. |
+| Required repository and frontend checks | Implementation required | Local coverage/static/privacy/package/fresh-import checks pass; targeted browser flake fix passes repeated Chromium/WebKit/Firefox-safety runs; exact-head CI and regular review pending | Python coverage 100%; Ruff lint and format; mypy; browser and architecture-contract checks; privacy; `python -m build --sdist --wheel`; `scripts/check_release_artifacts.py dist`; `scripts/check_fresh_install.py dist`; Hassfest; HACS. Record exact candidate, command/CI run, result, and any waiver; test counts alone do not establish quality. |
 | Bluetooth proxy pairing | Deferred with rationale | Outside 0.5 scope | Proxy bonding is unsupported; direct host adapter remains the supported pairing boundary. |
 | New guessed robot commands, cloud services, wholesale redesign, and mutation API replacement | Deferred with rationale | Outside 0.5 scope | No demonstrated 0.5 need; retain vetted commands and HA service boundary. Reconsider mutation only after evidence of an unsolved stale-write/workflow limitation. |
 
@@ -134,8 +138,10 @@ Security review is separate from regular review.
 Binding sources: Matic Map Studio Roadmap, Matic Map Studio Independent Review, the full 2026-08-29 review, and [managed-run contract](e2e-contract.md).
 
 The roadmap’s v0.4.4 metadata and former 22-open-security-PR inventory are
-historical. This ledger uses stable `v0.4.5` at `f15dfa2` (published 2026-09-25);
-before the implementation PR, the only open item was #138. The wiki card links to this contract and matrix and identifies the active branch; it is not release proof.
+historical. This ledger uses public stable `v0.4.6` at `52166df`; the paired
+desktop comparison uses `v0.4.5` at `f15dfa2` as its performance control. Before
+the implementation PR, the only open item was #138. The wiki card links to this
+contract and matrix and identifies the active branch; it is not release proof.
 
 ## Performance and privacy rules
 
