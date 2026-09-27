@@ -5019,9 +5019,11 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await dispatch(root, pointer("pointermove", 11, x + 20, y));
     await page.waitForTimeout(16);
     await dispatch(root, pointer("pointermove", 11, x + 40, y));
-    await page.waitForTimeout(50);
     expect((await snapshot(page)).draw).toEqual(baseline);
-    expect(await overlay.evaluate(canvas => canvas.toDataURL())).not.toBe(beforePreview);
+    await expect.poll(
+      async () => overlay.evaluate(canvas => canvas.toDataURL()),
+      { timeout: 2_000 },
+    ).not.toBe(beforePreview);
     await dispatch(root, pointer("pointerup", 11, x + 40, y));
     await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
     const committed = (await snapshot(page)).draw;
