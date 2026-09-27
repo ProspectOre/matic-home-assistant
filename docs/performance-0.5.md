@@ -5,10 +5,10 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
-The browser assets measured below were built from source commit
-`8b96419ec9c70f1841cf3ac8f0f9142f95141127`. They include the bounded preview
-RPC deadline, retry, and per-connection backpressure path. The Python
-coverage-readback change does not affect these browser measurements.
+The latest browser assets were built from source commit
+`e4fa14751e3d99b02842afcff72f5d0c0ded6c99`. They include abort-safe preview
+turn release while retaining the per-connection wire cap until actual RPC
+settlement. The Python coverage-readback change does not affect browser metrics.
 
 ## Method
 
@@ -22,10 +22,11 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The exact-source comparison was recorded at `2026-09-27T09:26:02.264Z` (September 27,
-2:26:02 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
-1280×900, DPR 1, no CPU/network throttling, and no-store assets. Other
-task-owned Python and browser checks were paused for the run. The script records
+Two exact-source comparisons ran at `2026-09-27T09:51:17.564Z` and
+`2026-09-27T09:55:50.875Z` (2:51 and 2:55 a.m. PDT) on headless Chromium
+151.0.7922.34, macOS arm64, Apple M4, 1280×900, DPR 1, no throttling, and
+no-store assets. Other task-owned checks were paused during each run. Across
+both AB/BA/AB samples, scene and bundle fingerprints matched. The script records
 conditions and fingerprints.
 The candidate uses one multi-entry compilation: review-only assets are excluded
 from shipped bytes, while the harness imports the exact production chunks.
@@ -41,30 +42,31 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`8b96419ec9c70f1841cf3ac8f0f9142f95141127`. This build includes the preview
-timeout and bounded in-flight RPC changes.
+`e4fa14751e3d99b02842afcff72f5d0c0ded6c99`, including preview abort recovery and
+the bounded in-flight RPC cap.
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 80,120 |
+| Initial production JS, estimated gzip bytes | 79,821 | 80,143 |
 | Initial distinct production JS resources | 1 | 4 |
 | Added workflow JS, estimated gzip bytes | 0 (eager) | 11,510 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
-| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
+| Input p95 estimates, six runs, ms | 32 / 32 / 32 / 32 / 32 / 32 | 32 / 32 / 32 / 32 / 32 / 32 |
 | Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 32 / 40 / 40 | 40 / 32 / 32 |
-| Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
+| Maximum observed input estimates, ms | 32 / 40 / 56 / 40 / 40 / 32 | 32 / 40 / 40 / 40 / 40 / 40 |
+| Tasks at the 50 ms Long Tasks API threshold, six runs | 0 / 0 / 0 / 0 / 0 / 0 | 0 / 0 / 0 / 0 / 0 / 0 |
 | Longest task at or above threshold | None observed | None observed |
-| Post-journey JS heap range, bytes | 5,090,112–6,818,160 | 5,881,052–6,159,752 |
+| Post-journey JS heap range, six observations, bytes | 5,105,076–5,765,056 | 5,925,140–7,524,584 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
 are below 100 ms. Candidate and baseline p95 are equal in this lab journey; this
 does not establish a speedup. No task at the Long Tasks API's 50 ms threshold
-was recorded in these three runs. Keep the routine-task gate open until
+was recorded in these six runs. Keep the routine-task gate open until
 representative runtime evidence establishes whether any such task is routine.
-Heap is one post-journey observation per run and does not establish a retention
-bound. These results do not qualify field INP, mobile, sustained runtime, or
-release acceptance.
+Candidate heap readings were 5.9–7.5 MB versus 5.1–5.8 MB at baseline, including
+one higher candidate observation. Heap is one post-journey observation per run
+and does not establish a retention bound. These results do not qualify field INP,
+mobile, sustained runtime, or release acceptance.
 
 Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 
@@ -72,9 +74,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `8b96419ec9c70f1841cf3ac8f0f9142f95141127` |
-| Candidate production bundle | `e46120c79d77d6798a94d653e8157e8cf0f33726368e83850cfb655e4f631311` |
-| Candidate review-only bundle | `4dc01d9a1adef9d6e06690255d03883c387bcdf2811e46ced92d394661a1d6a1` |
+| Candidate source commit | `e4fa14751e3d99b02842afcff72f5d0c0ded6c99` |
+| Candidate production bundle | `b7a074ab1e090de96a64ac2d2b4f76320e24fa1aa0c2daebddf0331f2ef22c94` |
+| Candidate review-only bundle | `5399849e6e46a89a34c25f080e19167c89a992dc243ae98b71f907c333226511` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up
