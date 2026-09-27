@@ -486,8 +486,9 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
 @pytest.mark.parametrize("multi_room", [False, True])
 @pytest.mark.parametrize("stale_state", ["docked", "cleaning"])
 @pytest.mark.parametrize("final_identity", [ORIGINAL, REPLACEMENT, None, b""])
+@pytest.mark.parametrize("transient_readback_error", [None, MaticError, TimeoutError])
 async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
-    hass, monkeypatch, multi_room, stale_state, final_identity
+    hass, monkeypatch, multi_room, stale_state, final_identity, transient_readback_error
 ):
     from custom_components.matic_robot.client.commands import UserCommand
 
@@ -501,6 +502,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     identity = ORIGINAL
     dispatched_identity = None
     reads = 0
+    injected_transient = False
 
     async def unconfirmed_start(*args):
         await expire_start.wait()
@@ -513,9 +515,12 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     )
 
     async def read_identity():
-        nonlocal reads
+        nonlocal reads, injected_transient
         if not dispatched:
             return b""
+        if transient_readback_error is not None and not injected_transient:
+            injected_transient = True
+            raise transient_readback_error("synthetic transient readback failure")
         reads += 1
         if bound.is_set():
             await identity_changed.wait()
@@ -961,6 +966,54 @@ async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, ba
     assert prepared.native_identity_baseline == baseline
     assert prepared.native_identity == _session_identity(dispatch_session)
     assert identity_observed == [_session_identity(dispatch_session)]
+    assert reader.await_count == 3
+
+
+@pytest.mark.parametrize("transient_error", [MaticError, TimeoutError])
+async def test_successful_dispatch_recovers_transient_post_dispatch_identity_read(
+    hass, transient_error
+):
+    from custom_components.matic_robot.managed_executor import (
+        _async_dispatch_leg_command,
+    )
+
+    sent = []
+    current_identity = b""
+    failed_post_dispatch_read = False
+
+    async def send_command(call):
+        nonlocal current_identity
+        sent.append(call.data)
+        session_id = UUID(call.data["params"][PLAN_SESSION_ID])
+        current_identity = _session_identity(session_id)
+
+    async def read_identity():
+        nonlocal failed_post_dispatch_read
+        if not sent:
+            return b""
+        if not failed_post_dispatch_read:
+            failed_post_dispatch_read = True
+            raise transient_error("synthetic transient post-dispatch read failure")
+        return current_identity
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reader = AsyncMock(side_effect=read_identity)
+    bound = []
+
+    prepared = await _async_dispatch_leg_command(
+        hass,
+        ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+        "vacuum.matic",
+        [ROOM],
+        7,
+        None,
+        session_identity=reader,
+        on_identity=bound.append,
+    )
+
+    expected_identity = _session_identity(UUID(sent[0]["params"][PLAN_SESSION_ID]))
+    assert prepared.native_identity == expected_identity
+    assert bound == [expected_identity]
     assert reader.await_count == 3
 
 

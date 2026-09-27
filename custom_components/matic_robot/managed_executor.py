@@ -313,12 +313,13 @@ async def _async_dispatch_leg_command(
         )
     except asyncio.CancelledError:
         try:
-            await _async_recover_managed_dispatch_identity(
+            identity = await _async_recover_managed_dispatch_identity(
                 session_identity,
-                on_identity,
                 managed_session_id,
                 identity_baseline,
             )
+            if identity is not None and on_identity is not None:
+                on_identity(identity)
         except asyncio.CancelledError:
             # Preserve the original cancellation while keeping recovery
             # bounded; an additional cancellation must not strand the caller.
@@ -329,16 +330,25 @@ async def _async_dispatch_leg_command(
         # example when settings readback times out. Recover cleanup ownership
         # only when the robot reports the exact session UUID carried by that
         # command; a changed or merely different identity is never ours to stop.
-        await _async_recover_managed_dispatch_identity(
+        identity = await _async_recover_managed_dispatch_identity(
             session_identity,
-            on_identity,
             managed_session_id,
             identity_baseline,
         )
+        if identity is not None and on_identity is not None:
+            on_identity(identity)
         raise
     observed = await _async_read_session_identity(session_identity)
     identity = observed if observed and observed != identity_baseline else None
     if managed_session_id is not None and session_identity is not None:
+        if identity is None or not _identity_matches_session(
+            identity, managed_session_id
+        ):
+            identity = await _async_recover_managed_dispatch_identity(
+                session_identity,
+                managed_session_id,
+                identity_baseline,
+            )
         if identity is None or not _identity_matches_session(
             identity, managed_session_id
         ):
@@ -362,29 +372,25 @@ def _identity_matches_session(identity: bytes, session_id: UUID) -> bool:
 
 async def _async_recover_managed_dispatch_identity(
     reader: Callable[[], Awaitable[bytes | None]] | None,
-    on_identity: Callable[[bytes | None], None] | None,
     session_id: UUID | None,
     baseline: bytes | None,
-) -> None:
+) -> bytes | None:
     """Boundedly recover only this command's identity after an uncertain write."""
-    if reader is None or on_identity is None or session_id is None:
-        return
+    if reader is None or session_id is None:
+        return None
     try:
         async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
             while True:
                 observed = await _async_read_session_identity(reader)
                 if observed and observed != baseline:
-                    if _identity_matches_session(observed, session_id):
-                        on_identity(observed)
-                    return
+                    return (
+                        observed
+                        if _identity_matches_session(observed, session_id)
+                        else None
+                    )
                 await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
     except TimeoutError:
-        return
-    except Exception as err:
-        _LOGGER.debug(
-            "Managed session identity recovery unavailable (%s)", type(err).__name__
-        )
-        return
+        return None
 
 
 async def _async_run_room(
@@ -2370,7 +2376,10 @@ async def _async_read_session_identity(
         return None
     try:
         return await reader()
-    except MaticError:
+    except Exception as err:
+        _LOGGER.debug(
+            "Matic session identity read unavailable (%s)", type(err).__name__
+        )
         return None
 
 
