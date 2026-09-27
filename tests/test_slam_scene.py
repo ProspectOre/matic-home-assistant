@@ -36,6 +36,7 @@ from custom_components.matic_robot.client.slam_map import decode_slam_tile
 from custom_components.matic_robot.const import DOMAIN
 from custom_components.matic_robot.frontend import DATA_SLAM_SCENE_VIEW
 from custom_components.matic_robot.plans import (
+    CleaningPlanManager,
     RoomSequenceLimitError,
     plan_floor_token,
     room_cadence_identity,
@@ -1501,6 +1502,108 @@ async def test_plan_workspace_projects_saved_and_shared_cadence_state() -> None:
     assert saved_call.kwargs["identity"] == shared_call.kwargs["identity"]
 
 
+async def test_plan_workspace_preserves_invalid_cadence_reasons_and_other_rooms() -> (
+    None
+):
+    runtime = _runtime()
+    room = {
+        "room_id": "room-1",
+        "cleaning_mode": "vacuum",
+        "coverage_setting": "standard",
+    }
+    runtime.cleaning_plans.plans.return_value = {
+        "legacy": {"rooms": [room]},
+        "unconfigured": {"rooms": [room]},
+    }
+    invalid = {
+        "cadence": None,
+        "cadence_progress": None,
+        "cadence_reasons": ["invalid_cadence_policy"],
+    }
+
+    def cadence_state(_serial, plan_id, *_args, use_shared_schedule=False, **_kwargs):
+        if plan_id == "legacy" or use_shared_schedule:
+            return invalid
+        return {"cadence": None}
+
+    runtime.cleaning_plans.cadence_editor_state = MagicMock(side_effect=cadence_state)
+    request_hass = _hass(_entry(runtime))
+
+    response = await MaticPlansView().get(_request(request_hass), "entry")
+
+    payload = json.loads(response.body)
+    assert response.status == HTTPStatus.OK
+    assert payload["plans"][0]["rooms"][0]["cadence_reasons"] == [
+        "invalid_cadence_policy"
+    ]
+    assert payload["plans"][1]["rooms"][0] == room
+    assert payload["rooms"][0]["shared_cadence_reasons"] == ["invalid_cadence_policy"]
+
+
+async def test_plan_workspace_projects_malformed_persisted_cadence_safely(hass) -> None:
+    runtime = _runtime()
+    floor_plan = runtime.coordinator.data.floor_plan
+    assert floor_plan is not None
+    runtime.coordinator.data.floor_plan = replace(
+        floor_plan,
+        rooms=(
+            *floor_plan.rooms,
+            Room(
+                "room-2",
+                "Office",
+                "protocol-2",
+                b"room-2",
+                ((1.0, 0.0), (1.3, 0.0), (1.3, 0.3), (1.0, 0.3)),
+            ),
+        ),
+    )
+    manager = CleaningPlanManager(hass)
+    robot = manager._robot("synthetic-serial")
+    robot["plans"] = {
+        "invalid-private": {
+            "name": "Invalid private cadence",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {"mop_every_n": 0},
+                }
+            ],
+        },
+        "healthy": {
+            "name": "Healthy plan",
+            "rooms": [
+                {
+                    "room_id": "room-2",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+        },
+    }
+    robot["shared_room_cadence"]["room-2"] = {
+        "policy": {
+            "coverage_every_n": 2,
+            "periodic_coverage_setting": [],
+        },
+        "progress": {"mop": 0, "coverage": 1},
+    }
+    runtime.cleaning_plans = manager
+    request_hass = _hass(_entry(runtime))
+
+    response = await MaticPlansView().get(_request(request_hass), "entry")
+
+    payload = json.loads(response.body)
+    plans = {plan["id"]: plan for plan in payload["plans"]}
+    assert response.status == HTTPStatus.OK
+    assert plans["invalid-private"]["rooms"][0]["cadence_reasons"] == [
+        "invalid_cadence_policy"
+    ]
+    assert plans["healthy"]["rooms"][0]["room_id"] == "room-2"
+    assert payload["rooms"][1]["shared_cadence_reasons"] == ["invalid_cadence_policy"]
+
+
 async def test_plan_workspace_projects_read_only_policy_preview_and_boundaries(
     monkeypatch,
 ) -> None:
@@ -1688,8 +1791,15 @@ async def test_plan_workspace_projects_unavailable_cadence_identity() -> None:
         "room_id": "room-1",
         "cleaning_mode": CleaningMode.VACUUM.value,
         "coverage_setting": CoverageSetting.OPTIMAL.value,
+        "cadence": None,
+        "cadence_progress": None,
+        "cadence_reasons": ["room_not_on_current_map"],
     }
-    assert payload["rooms"][0] == {"room_id": "room-1", "name": "Kitchen"}
+    assert payload["rooms"][0] == {
+        "room_id": "room-1",
+        "name": "Kitchen",
+        "shared_cadence_reasons": ["room_not_on_current_map"],
+    }
     runtime.cleaning_plans.cadence_editor_state.assert_not_called()
 
 

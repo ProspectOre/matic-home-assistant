@@ -564,6 +564,80 @@ async def test_floor_watcher_refreshes_changed_mission_and_labels(
     assert coordinator._map_refresh_due == 0.0
 
 
+async def test_floor_watcher_revokes_verified_map_after_same_mission_signature_change(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    old_floor = MappedFloor(42, "Main", "1" * 64)
+    new_floor = MappedFloor(42, "Main", "2" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (old_floor,)
+    coordinator._verified_floor_mission_id = 42
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"changed")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(new_floor, (new_floor,)),
+    )
+    generation = coordinator._floor_read_generation
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator._displayed_floor_mission_id == 42
+    assert coordinator._displayed_floor_signature == (new_floor,)
+    assert coordinator._verified_floor_mission_id is None
+    assert coordinator._floor_read_generation == generation + 1
+    assert coordinator.data.floor_plan is None
+    coordinator.async_request_refresh.assert_awaited_once_with()
+
+
+async def test_floor_read_rejects_old_signature_and_accepts_single_plan_payload(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    old_floor = MappedFloor(42, "Main", "1" * 64)
+    new_floor = MappedFloor(42, "Main", "2" * 64)
+    old_map = FloorPlan(42, "partition", b"", (), mapped_floors=(old_floor,))
+    new_map = replace(old_map, mapped_floors=(new_floor,))
+    client.async_get_floor_plan.return_value = old_map
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (old_floor,)
+    coordinator._verified_floor_mission_id = 42
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"changed")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(new_floor, (new_floor,)),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator.data.floor_plan is None
+    assert await coordinator._async_optional_floor_plan() is None
+    assert coordinator.data.floor_plan is None
+
+    unannotated_single_plan = replace(new_map, mapped_floors=())
+    client.async_get_floor_plan.return_value = unannotated_single_plan
+    assert await coordinator._async_optional_floor_plan() is unannotated_single_plan
+    assert coordinator._cached_floor_plan is unannotated_single_plan
+
+
 async def test_floor_watcher_preserves_published_map_when_invalidated_read_matches(
     hass, monkeypatch
 ) -> None:
@@ -618,6 +692,59 @@ async def test_floor_watcher_preserves_published_map_when_invalidated_read_match
     assert replacement_state.floor_plan is floor_plan
     assert coordinator.data.floor_plan is floor_plan
     client.async_get_floor_plan.assert_awaited_with(expected_mission_id=42)
+
+
+async def test_repeated_displayed_mission_revokes_conflicting_verified_read(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    mapped_floor = MappedFloor(42, "Main", "1" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+    coordinator._displayed_floor_mission_id = 42
+    coordinator._displayed_floor_signature = (mapped_floor,)
+    coordinator._verified_floor_mission_id = 84
+    coordinator._map_refresh_due = 0.0
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def stale_floor_read(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id == 84
+        read_started.set()
+        await release_read.wait()
+        return floor_plan
+
+    client.async_get_floor_plan.side_effect = stale_floor_read
+    floor_read = asyncio.create_task(coordinator._async_optional_floor_plan())
+    await read_started.wait()
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"same")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(mapped_floor, (mapped_floor,)),
+    )
+    generation = coordinator._floor_read_generation
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    assert coordinator._verified_floor_mission_id is None
+    assert coordinator.expected_floor_mission_id == 42
+    assert coordinator._floor_read_generation == generation + 1
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    release_read.set()
+
+    assert await floor_read is floor_plan
+    assert coordinator.data.floor_plan is floor_plan
+    assert coordinator._cached_floor_plan is floor_plan
+    assert coordinator._floor_reads_in_flight == 0
 
 
 async def test_floor_read_does_not_preserve_map_after_same_mission_signature_change(

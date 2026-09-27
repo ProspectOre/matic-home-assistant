@@ -6,6 +6,7 @@ import {
   MAP_ZOOM_MAX,
   MAP_ZOOM_MIN,
   MAX_ROOM_SEQUENCE_SIZE,
+  MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
   type CoordinateEditCapture,
   type CoordinateEditTool,
   type CommandState,
@@ -914,16 +915,37 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
   }
   if (state.workflow === "plan") {
     if (state.planDraft.dirty || !state.planDraft.id) {
+      const savedPlan = state.resources.plans.value?.plans.find(
+        (candidate) => candidate.id === state.planDraft.id,
+      );
+      const savedRoomIds = new Set(savedPlan?.rooms.map((room) => room.roomId) ?? []);
+      const draftRoomIds = new Set(state.planDraft.rooms.map((room) => room.roomId));
+      const legacyReduction = Boolean(
+        savedPlan
+        && savedPlan.rooms.length > MAX_ROOM_SEQUENCE_SIZE
+        && savedPlan.rooms.length <= MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
+        && state.planDraft.rooms.length > MAX_ROOM_SEQUENCE_SIZE
+        && state.planDraft.rooms.length < savedPlan.rooms.length
+        && draftRoomIds.size === state.planDraft.rooms.length
+        && [...draftRoomIds].every((roomId) => savedRoomIds.has(roomId)),
+      );
+      const withinRoomLimit = state.planDraft.rooms.length <= MAX_ROOM_SEQUENCE_SIZE || legacyReduction;
       const valid = canEditCoordinates(state)
         && state.planDraft.name.trim().length > 0
-        && state.planDraft.rooms.length > 0;
+        && state.planDraft.rooms.length > 0
+        && withinRoomLimit;
       return {
         id: "save-plan",
         label: "Save plan",
         labelKey: "v4_action_save_plan",
         kind: "primary",
         enabled: valid,
-        ...(valid ? {} : { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }),
+        ...(valid ? {} : withinRoomLimit
+          ? { reason: "Add a plan name and at least one room.", reasonKey: "v4_reason_save_plan" }
+          : {
+            reason: "Remove rooms until 100 or fewer remain before saving.",
+            reasonKey: "v4_reason_save_plan_room_limit",
+          }),
       };
     }
     const plan = state.resources.plans.value?.plans.find((candidate) => candidate.id === state.planDraft.id);

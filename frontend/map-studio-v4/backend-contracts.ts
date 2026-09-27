@@ -1,6 +1,9 @@
 import type { AreaOutline } from "./area-outline";
 import { validOutline } from "./area-outline";
-import { MAX_ROOM_SEQUENCE_SIZE } from "./contracts";
+import {
+  MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
+  MAX_ROOM_SEQUENCE_SIZE,
+} from "./contracts";
 export const CATALOG_URL = "/api/matic_robot/slam_entries";
 export const SCENE_HEADER_BYTES = 24;
 export const SCENE_POINT_STRIDE = 8;
@@ -741,7 +744,7 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
       : boundedString(payload.selected_plan, 128, "invalid-selected-plan"),
     plans: payload.plans.map((candidate) => {
       const plan = objectValue(candidate, "invalid-plan");
-      if (!Array.isArray(plan.rooms) || plan.rooms.length > 256 || !Array.isArray(plan.room_order)) {
+      if (!Array.isArray(plan.rooms) || plan.rooms.length > MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE || !Array.isArray(plan.room_order)) {
         throw new ContractError("invalid-plan-rooms");
       }
       const runBehavior = plan.run_behavior;
@@ -757,7 +760,7 @@ export const parsePlansCatalog = (value: unknown): PlansCatalog => {
         rooms: plan.rooms.map((roomCandidate) => {
           return parsePlanRoom(roomCandidate);
         }),
-        roomOrder: plan.room_order.slice(0, 256).map((roomId) =>
+        roomOrder: plan.room_order.slice(0, MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE).map((roomId) =>
           boundedString(roomId, 128, "invalid-room-order")),
         returnToBase: booleanValue(plan.return_to_base, "invalid-return-to-base"),
         finishCurrentRoom: booleanValue(plan.finish_current_room, "invalid-finish-room"),

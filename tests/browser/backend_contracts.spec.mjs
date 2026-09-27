@@ -124,6 +124,30 @@ test("saved-plan parsing preserves a room-limit blocker without inventing a prev
   expect(result).toEqual({ blocker: "plan_room_limit", previewToken: null });
 });
 
+test("legacy saved plans remain editable up to the bounded recovery cap", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    const parse = count => {
+      const candidate = structuredClone(payload);
+      candidate.plans[0].rooms = Array.from({ length: count }, (_, index) => ({
+        room_id: `room-${index}`,
+        cleaning_mode: "vacuum",
+        coverage_setting: "standard",
+      }));
+      candidate.plans[0].room_order = candidate.plans[0].rooms.map(room => room.room_id);
+      try {
+        return parsePlansCatalog(candidate).plans[0].rooms.length;
+      } catch (error) {
+        return error.code ?? "unknown";
+      }
+    };
+    return { legacy: parse(102), cap: parse(256), over: parse(257) };
+  }, plansPayload());
+
+  expect(result).toEqual({ legacy: 102, cap: 256, over: "invalid-plan-rooms" });
+});
+
 test("saved-plan preview parsing enforces the shared room-sequence limit", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async payload => {

@@ -4172,8 +4172,18 @@ async def test_reset_cadence_rejects_unknown_room_and_shared_pending_owner(
 
 
 def test_robot_normalization_repairs_cadence_records_without_inventing_progress():
+    legacy_plan = {
+        "name": "Legacy",
+        "rooms": [
+            {
+                "room_id": "room-a",
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+            }
+        ],
+    }
     robot = {
-        "plans": {},
+        "plans": {"legacy": deepcopy(legacy_plan)},
         "areas": {},
         "rooms": {},
         "rotations": {},
@@ -4207,6 +4217,8 @@ def test_robot_normalization_repairs_cadence_records_without_inventing_progress(
             "progress": {"mop": 2, "coverage": 0},
         }
     }
+    assert robot["plans"]["legacy"] == legacy_plan
+    assert "cadence" not in robot["plans"]["legacy"]["rooms"][0]
     assert robot["native_completion_dedup"] == ["b" * 64]
 
 

@@ -37,6 +37,7 @@ def test_normalize_cadence_policy_accepts_independent_rules() -> None:
     [
         ("not-an-object", "vacuum", "standard", "must be an object"),
         ({"scope": "robot"}, "vacuum", "standard", "scope"),
+        ({"scope": []}, "vacuum", "standard", "scope"),
         ({"mop_every_n": True}, "vacuum", "standard", "between 1 and 100"),
         ({"coverage_every_n": 2}, "vacuum", "standard", "periodic coverage"),
         (
@@ -47,6 +48,12 @@ def test_normalize_cadence_policy_accepts_independent_rules() -> None:
         ),
         (
             {"coverage_every_n": 3, "periodic_coverage_setting": "turbo"},
+            "vacuum",
+            "standard",
+            "periodic coverage",
+        ),
+        (
+            {"coverage_every_n": 2, "periodic_coverage_setting": []},
             "vacuum",
             "standard",
             "periodic coverage",

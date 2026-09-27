@@ -1361,7 +1361,8 @@ class MaticPlansView(HomeAssistantView):
                         cleaning_mode,
                         coverage_setting,
                     )
-                    if cadence["cadence"] is not None:
+                    cadence_reasons = cadence.get("cadence_reasons", [])
+                    if cadence["cadence"] is not None or cadence_reasons:
                         plan_room_projection.update(cadence)
                 rooms.append(plan_room_projection)
             plans.append(
@@ -1407,6 +1408,10 @@ class MaticPlansView(HomeAssistantView):
                         "shared_cadence_reasons": cadence["cadence_reasons"],
                     }
                 )
+            elif cadence.get("cadence_reasons"):
+                workspace_room_projection["shared_cadence_reasons"] = cadence[
+                    "cadence_reasons"
+                ]
             room_projections.append(workspace_room_projection)
         return self.json(
             {

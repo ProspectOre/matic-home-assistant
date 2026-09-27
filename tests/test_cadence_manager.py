@@ -861,6 +861,46 @@ async def test_manual_cadence_editor_state_reads_shared_room_schedule(hass):
     assert state["cadence_reasons"] == ["mop_due"]
 
 
+@pytest.mark.parametrize("shared", [False, True], ids=["private", "shared"])
+async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) -> None:
+    manager = _manager(hass)
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    robot = manager._robot("serial")
+    robot["plans"]["home"] = {
+        "name": "Home",
+        "rooms": [
+            {
+                "room_id": room.room_id,
+                "cleaning_mode": "vacuum",
+                "coverage_setting": "standard",
+                "cadence": (
+                    {"scope": "shared", "mop_every_n": 3}
+                    if shared
+                    else {"mop_every_n": 0}
+                ),
+            }
+        ],
+    }
+    if shared:
+        robot["shared_room_cadence"][room.room_id] = {
+            "policy": {"mop_every_n": 0},
+            "progress": {"mop": 1, "coverage": 0},
+        }
+
+    state = manager.cadence_editor_state(
+        "serial",
+        "home",
+        room,
+        identity=room_cadence_identity(_floor(), room.room_id),
+    )
+
+    assert state == {
+        "cadence": None,
+        "cadence_progress": None,
+        "cadence_reasons": ["invalid_cadence_policy"],
+    }
+
+
 @pytest.mark.parametrize("case", _CADENCE_COMPLETION_CASES)
 async def test_late_native_completion_advances_shared_schedule_exactly_once(
     hass,

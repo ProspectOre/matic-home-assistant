@@ -503,12 +503,7 @@ line-height: var(--ms-lh-snug);
   }
 
   #togglePlanRoom(roomId: string): void {
-    const current = this.state.planDraft.rooms;
-    const existing = current.find((room) => room.roomId === roomId);
-    const rooms = existing
-      ? current.filter((room) => room.roomId !== roomId)
-      : [...current, { roomId, cleaningMode: "vacuum", coverageSetting: "standard" } satisfies PlanRoom];
-    this.#intent({ type: "patch-plan-draft", patch: { rooms } });
+    this.#intent({ type: "toggle-room", roomId });
   }
 
   #patchPlanRoom(index: number, patch: Partial<PlanRoom>): void {

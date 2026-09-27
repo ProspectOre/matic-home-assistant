@@ -299,6 +299,7 @@
     "v4_reason_save_area_details": "Add an area name and at least one mark.",
     "v4_reason_save_area_draw": "Draw the area first.",
     "v4_reason_save_plan": "Add a plan name and at least one room.",
+    "v4_reason_save_plan_room_limit": "Remove rooms until 100 or fewer remain before saving.",
     "v4_reason_stop": "The robot is already stopping.",
     "v4_reason_stopping": "Waiting for the robot to settle.",
     "v4_reconnecting": "Reconnecting",

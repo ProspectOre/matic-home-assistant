@@ -47,6 +47,7 @@ from .client.models import FloorPlan
 from .const import (
     DATA_FIRMWARE_TRACKER,
     DOMAIN,
+    MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
     MAX_ROOM_SEQUENCE_SIZE,
 )
 from .firmware import (
@@ -241,7 +242,7 @@ SAVE_PLAN_SCHEMA = cv.make_entity_service_schema(
         vol.Required("rooms"): vol.All(
             cv.ensure_list,
             [SAVED_PLAN_ROOM_SCHEMA],
-            vol.Length(min=1, max=MAX_ROOM_SEQUENCE_SIZE),
+            vol.Length(min=1, max=MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE),
         ),
         vol.Optional("return_to_base", default=True): cv.boolean,
         vol.Optional("finish_current_room", default=False): cv.boolean,

@@ -315,7 +315,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       const state = element.getWorkspaceSnapshot();
       const catalog = state.resources.plans.value;
       const template = catalog.rooms[0];
-      const rooms = Array.from({ length: 101 }, (_, index) => ({
+      const rooms = Array.from({ length: 102 }, (_, index) => ({
         ...template,
         roomId: `legacy-room-${index + 1}`,
         name: `Legacy room ${index + 1}`,
@@ -364,8 +364,16 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("alert").filter({ hasText: "exceeds the 100-room limit" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Run this plan", exact: true })).toBeDisabled();
     const rooms = gallery.getByRole("group", { name: "Plan rooms" });
+    const draftRoomCount = () => page.evaluate(
+      (tag) => document.querySelector(tag).getWorkspaceSnapshot().planDraft.rooms.length,
+      GALLERY_TAG,
+    );
     await rooms.locator(".plan-room-label input[type=checkbox]").first().uncheck();
+    expect(await draftRoomCount()).toBe(101);
     await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+    await rooms.locator(".plan-room-label input[type=checkbox]").nth(1).uncheck();
+    await expect(gallery.getByRole("button", { name: "Save plan", exact: true })).toBeEnabled();
+    expect(await draftRoomCount()).toBe(100);
   });
 
   test("requires review when a saved-plan preview changes before dispatch", async ({ page }) => {

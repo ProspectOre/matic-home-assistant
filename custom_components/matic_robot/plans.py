@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import math
 import struct
+from collections import Counter
 from collections.abc import (
     AsyncIterator,
     Callable,
@@ -49,6 +50,7 @@ from .const import (
     DATA_PLAN_MANAGER,
     DOMAIN,
     EVENT_PLAN_DOCKED,
+    MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE,
     MAX_ROOM_SEQUENCE_SIZE,
 )
 from .native_completion import match_single_room_completions
@@ -1409,24 +1411,48 @@ class CleaningPlanManager:
             )
         saved_plan = deepcopy(dict(plan))
         raw_rooms = saved_plan.get("rooms", [])
-        if isinstance(raw_rooms, Sequence) and not isinstance(raw_rooms, str):
-            previous_rooms = plans.get(plan_id, {}).get("rooms", [])
-            previous_count = (
-                len(previous_rooms)
-                if isinstance(previous_rooms, Sequence)
-                and not isinstance(previous_rooms, str)
-                else 0
+        previous_rooms: Sequence[object] = ()
+        if isinstance(raw_rooms, Sequence) and not isinstance(raw_rooms, (str, bytes)):
+            previous_plan = plans.get(plan_id, {})
+            raw_previous_rooms = (
+                previous_plan.get("rooms", [])
+                if isinstance(previous_plan, Mapping)
+                else []
             )
-            if len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE and (
-                previous_count <= MAX_ROOM_SEQUENCE_SIZE
-                or len(raw_rooms) > previous_count
-            ):
+            previous_rooms = (
+                raw_previous_rooms
+                if isinstance(raw_previous_rooms, Sequence)
+                and not isinstance(raw_previous_rooms, (str, bytes))
+                else ()
+            )
+            previous_count = len(previous_rooms)
+            previous_room_ids = Counter(
+                str(room["room_id"])
+                for room in previous_rooms
+                if isinstance(room, Mapping) and room.get("room_id")
+            )
+            raw_room_ids = [
+                str(room["room_id"])
+                for room in raw_rooms
+                if isinstance(room, Mapping) and room.get("room_id")
+            ]
+            legacy_room_reduction = (
+                MAX_ROOM_SEQUENCE_SIZE
+                < len(raw_rooms)
+                <= MAX_LEGACY_PLAN_ROOM_SEQUENCE_SIZE
+                and previous_count > MAX_ROOM_SEQUENCE_SIZE
+                and len(raw_rooms) < previous_count
+                and len(raw_room_ids) == len(raw_rooms)
+                and len(set(raw_room_ids)) == len(raw_room_ids)
+                and not (Counter(raw_room_ids) - previous_room_ids)
+            )
+            if len(raw_rooms) > MAX_ROOM_SEQUENCE_SIZE and not legacy_room_reduction:
                 raise RoomSequenceLimitError(
                     f"A plan can include at most {MAX_ROOM_SEQUENCE_SIZE} rooms"
                 )
         prior_rooms = {
             str(room.get("room_id")): room
-            for room in plans.get(plan_id, {}).get("rooms", [])
+            for room in previous_rooms
             if isinstance(room, Mapping) and room.get("room_id")
         }
         normalized_rooms: list[dict[str, Any]] = []
@@ -2102,24 +2128,25 @@ class CleaningPlanManager:
                 stored_policy = {"scope": "shared", **schedule["policy"]}
             elif use_shared_schedule:
                 stored_policy = None
-        policy = (
-            normalize_cadence_policy(
-                stored_policy,
-                cleaning_mode=(
-                    str(raw_room.get("cleaning_mode", room.cleaning_mode))
-                    if isinstance(raw_room, Mapping) and not use_shared_schedule
-                    else room.cleaning_mode
-                ),
-                coverage_setting=(
-                    str(raw_room.get("coverage_setting", room.coverage_setting))
-                    if isinstance(raw_room, Mapping) and not use_shared_schedule
-                    else room.coverage_setting
-                ),
-            )
-            if isinstance(stored_policy, Mapping)
-            else None
-        )
+        policy: dict[str, Any] | None = None
         try:
+            policy = (
+                normalize_cadence_policy(
+                    stored_policy,
+                    cleaning_mode=(
+                        str(raw_room.get("cleaning_mode", room.cleaning_mode))
+                        if isinstance(raw_room, Mapping) and not use_shared_schedule
+                        else room.cleaning_mode
+                    ),
+                    coverage_setting=(
+                        str(raw_room.get("coverage_setting", room.coverage_setting))
+                        if isinstance(raw_room, Mapping) and not use_shared_schedule
+                        else room.coverage_setting
+                    ),
+                )
+                if isinstance(stored_policy, Mapping)
+                else None
+            )
             _effective, snapshots = self.resolve_cadence(
                 serial_number,
                 plan_id,

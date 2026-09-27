@@ -70,6 +70,25 @@ ERROR_CONFIRMATION_POLLS = 2
 CUES_UPDATE_INTERVAL_SECONDS = 1.0
 
 
+def _floor_plan_matches_displayed(
+    floor_plan: FloorPlan | None,
+    mission_id: int | None,
+    signature: tuple[MappedFloor, ...] | None,
+) -> bool:
+    """Check displayed identity while honoring the single-plan wire shape."""
+    if (
+        floor_plan is None
+        or mission_id is None
+        or signature is None
+        or floor_plan.mission_id != mission_id
+    ):
+        return False
+    # The protocol client deliberately skips the mission catalog for a single
+    # coverage plan. That payload has no mapped-floor signature to compare, so
+    # its exact mission ID is the strongest available identity evidence.
+    return not floor_plan.mapped_floors or floor_plan.mapped_floors == signature
+
+
 @dataclass(frozen=True, slots=True)
 class MaticCuesEvent:
     """One privacy-safe Cues lifecycle event."""
@@ -235,19 +254,31 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         self._displayed_floor_mission_id != active_floor.mission_id
                         or self._displayed_floor_signature != displayed_signature
                     )
-                    invalidated_read = (
-                        identity_changed and self._floor_reads_in_flight > 0
+                    verified_conflict = (
+                        self._verified_floor_mission_id is not None
+                        and self._verified_floor_mission_id != active_floor.mission_id
                     )
-                    if identity_changed:
+                    floor_plan = self.data.floor_plan if self.data is not None else None
+                    published_map_matches = _floor_plan_matches_displayed(
+                        floor_plan, active_floor.mission_id, displayed_signature
+                    )
+                    verified_invalidated = (
+                        self._verified_floor_mission_id is not None
+                        and (verified_conflict or not published_map_matches)
+                    )
+                    invalidates_read = identity_changed or verified_invalidated
+                    invalidated_read = (
+                        invalidates_read and self._floor_reads_in_flight > 0
+                    )
+                    if invalidates_read:
                         self._floor_read_generation += 1
+                    if verified_invalidated:
+                        # The displayed mission and floor signature are the
+                        # immediate localization authority for later reads.
+                        self._verified_floor_mission_id = None
                     self._displayed_floor_mission_id = active_floor.mission_id
                     self._displayed_floor_signature = displayed_signature
-                    floor_plan = self.data.floor_plan if self.data is not None else None
-                    if (
-                        floor_plan is not None
-                        and floor_plan.mission_id == active_floor.mission_id
-                        and floor_plan.mapped_floors == mission_state.mapped_floors
-                    ):
+                    if published_map_matches:
                         if invalidated_read:
                             # The matching published map remains valid, but a
                             # read admitted under the prior identity was
@@ -258,9 +289,6 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     # This stream is the robot's immediate localization signal.
                     # A previously verified map identity may only be a replayed
                     # scene at the dock, so it cannot override this newer state.
-                    if self._verified_floor_mission_id is not None:
-                        self._verified_floor_mission_id = None
-                        self._floor_read_generation += 1
                     self._map_refresh_due = 0.0
                     # Revoke the old floor before awaiting the replacement read.
                     if self.data is not None and self.data.floor_plan is not None:
@@ -615,9 +643,19 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         # fallbacks. A stale read can retain a published map only when its
         # mission and mapped-floor signature still match the current display.
         current_expected_mission_id = self.expected_floor_mission_id
+        displayed_signature_conflict = (
+            current_expected_mission_id == self._displayed_floor_mission_id
+            and self._displayed_floor_signature is not None
+            and not _floor_plan_matches_displayed(
+                floor_plan,
+                self._displayed_floor_mission_id,
+                self._displayed_floor_signature,
+            )
+        )
         if (
             self._floor_read_generation != read_generation
             or current_expected_mission_id != expected_mission_id
+            or displayed_signature_conflict
             or (
                 current_expected_mission_id is not None
                 and (
@@ -630,14 +668,15 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             published_floor_plan = (
                 self.data.floor_plan if self.data is not None else None
             )
-            if (
-                published_floor_plan is not None
-                and published_floor_plan.mission_id == self._displayed_floor_mission_id
-                and published_floor_plan.mapped_floors
-                == self._displayed_floor_signature
-                and (
-                    current_expected_mission_id is None
-                    or published_floor_plan.mission_id == current_expected_mission_id
+            if _floor_plan_matches_displayed(
+                published_floor_plan,
+                self._displayed_floor_mission_id,
+                self._displayed_floor_signature,
+            ) and (
+                current_expected_mission_id is None
+                or (
+                    published_floor_plan is not None
+                    and published_floor_plan.mission_id == current_expected_mission_id
                 )
             ):
                 # A concurrent identity event can revoke this read while

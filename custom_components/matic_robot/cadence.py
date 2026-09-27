@@ -21,7 +21,7 @@ def normalize_cadence_policy(
     if not isinstance(value, Mapping):
         raise ValueError("room cadence must be an object")
     scope = value.get("scope", "plan")
-    if scope not in {"plan", "shared"}:
+    if not isinstance(scope, str) or scope not in {"plan", "shared"}:
         raise ValueError("room cadence scope must be plan or shared")
     mop_interval = validate_cadence_interval(value.get("mop_every_n"), "mop_every_n")
     coverage_interval = validate_cadence_interval(
@@ -30,13 +30,19 @@ def normalize_cadence_policy(
     periodic_coverage = value.get("periodic_coverage_setting")
     if coverage_interval is None:
         periodic_coverage = None
-    elif periodic_coverage not in _COVERAGE_SETTINGS:
+    elif (
+        not isinstance(periodic_coverage, str)
+        or periodic_coverage not in _COVERAGE_SETTINGS
+    ):
         raise ValueError(
             "periodic coverage is required when coverage cadence is enabled"
         )
     if mop_interval is not None and cleaning_mode != "vacuum":
         raise ValueError("mop cadence requires vacuum as the normal cleaning mode")
-    if coverage_setting not in _COVERAGE_SETTINGS:
+    if (
+        not isinstance(coverage_setting, str)
+        or coverage_setting not in _COVERAGE_SETTINGS
+    ):
         raise ValueError("room coverage setting is invalid")
     do_mop_next = value.get("do_mop_next", False)
     if not isinstance(do_mop_next, bool):

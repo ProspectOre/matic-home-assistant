@@ -112,7 +112,7 @@ def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
             "cleaning_mode": "vacuum",
             "coverage_setting": "standard",
         }
-        for index in range(MAX_ROOM_SEQUENCE_SIZE + 1)
+        for index in range(257)
     ]
     entity = {"entity_id": ["vacuum.test"]}
     for schema, payload in (
@@ -124,14 +124,21 @@ def test_room_service_schemas_share_the_bounded_sequence_size() -> None:
             PREVIEW_ROOM_SEQUENCE_SCHEMA,
             {**entity, "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE]},
         ),
-        (
-            SAVE_PLAN_SCHEMA,
-            {**entity, "name": "Bounded", "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE]},
-        ),
     ):
         assert len(schema(payload)["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
         with pytest.raises(vol.Invalid):
-            schema({**payload, "rooms": rooms})
+            schema({**payload, "rooms": rooms[: MAX_ROOM_SEQUENCE_SIZE + 1]})
+
+    save_payload = {
+        **entity,
+        "name": "Bounded",
+        "rooms": rooms[:MAX_ROOM_SEQUENCE_SIZE],
+    }
+    assert len(SAVE_PLAN_SCHEMA(save_payload)["rooms"]) == MAX_ROOM_SEQUENCE_SIZE
+    assert len(SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms[:101]})["rooms"]) == 101
+    assert len(SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms[:256]})["rooms"]) == 256
+    with pytest.raises(vol.Invalid):
+        SAVE_PLAN_SCHEMA({**save_payload, "rooms": rooms})
 
     clean_payload = {**entity, "rooms": [room["room"] for room in rooms]}
     assert (
@@ -1523,7 +1530,6 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     services = await _registered_services(hass, manager)
     service_data = {
         "entity_id": ["vacuum.test"],
-        "use_room_schedule": use_room_schedule,
         "rooms": [
             {
                 "room": room.id,
@@ -1532,6 +1538,8 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             }
         ],
     }
+    if use_room_schedule:
+        service_data["use_room_schedule"] = True
     if override_room_schedule:
         service_data["override_room_schedule"] = True
     call = ServiceCall(
@@ -2978,6 +2986,142 @@ async def test_legacy_plan_can_be_pruned_one_room_at_a_time(hass) -> None:
         == MAX_ROOM_SEQUENCE_SIZE
     )
     assert manager._store.async_save.await_count == 2
+
+
+async def test_save_plan_allows_only_strict_legacy_room_reductions(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    rooms = [
+        {
+            "room_id": f"room-{index}",
+            "cleaning_mode": "vacuum",
+            "coverage_setting": "standard",
+        }
+        for index in range(1, 103)
+    ]
+    manager._robot("serial")["plans"]["legacy"] = {
+        "name": "Legacy",
+        "enabled": True,
+        "run_behavior": "ordered",
+        "rooms": rooms,
+        "room_order": [room["room_id"] for room in rooms],
+    }
+    room_map = {f"room-{index}": f"Room {index}" for index in range(1, 103)}
+    services = await _registered_services(hass, manager)
+
+    def save_call(plan_id: str, selected_rooms: list[dict[str, str]]) -> ServiceCall:
+        return ServiceCall(
+            hass,
+            DOMAIN,
+            "save_plan",
+            SAVE_PLAN_SCHEMA(
+                {
+                    "entity_id": ["vacuum.test"],
+                    "plan_id": plan_id,
+                    "name": "Legacy" if plan_id == "legacy" else "New plan",
+                    "rooms": [
+                        {
+                            "room": room_map[room["room_id"]],
+                            "cleaning_mode": room["cleaning_mode"],
+                            "coverage_setting": room["coverage_setting"],
+                        }
+                        for room in selected_rooms
+                    ],
+                }
+            ),
+        )
+
+    context = ("vacuum.test", SimpleNamespace(), "serial", room_map)
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch(
+            "custom_components.matic_robot.services._plan_cadence_bindings",
+            return_value=(None, {}),
+        ),
+    ):
+        # An equal-size replacement cannot masquerade as legacy recovery.
+        equal_size_with_new_room = [*rooms[:-1], {**rooms[-1], "room_id": "room-1"}]
+        with pytest.raises(ServiceValidationError) as equal_size_error:
+            await _registered_handler(services, "save_plan")(
+                save_call("legacy", equal_size_with_new_room)
+            )
+        assert equal_size_error.value.translation_key == "invalid_plan"
+        assert manager._store.async_save.await_count == 0
+
+        duplicate_room = [*rooms[1:100], rooms[0], rooms[0]]
+        with pytest.raises(ServiceValidationError) as duplicate_error:
+            await _registered_handler(services, "save_plan")(
+                save_call("legacy", duplicate_room)
+            )
+        assert duplicate_error.value.translation_key == "invalid_plan"
+        assert manager._store.async_save.await_count == 0
+
+        for selected_rooms in (rooms[1:], rooms[2:]):
+            await _registered_handler(services, "save_plan")(
+                save_call("legacy", selected_rooms)
+            )
+
+        assert len(manager.plan("serial", "legacy")["rooms"]) == 100
+        assert manager._store.async_save.await_count == 2
+
+        with pytest.raises(ServiceValidationError) as new_plan_error:
+            await _registered_handler(services, "save_plan")(
+                save_call("new", rooms[1:])
+            )
+        assert new_plan_error.value.translation_key == "invalid_plan"
+        assert "new" not in manager.plans("serial")
+        assert manager._store.async_save.await_count == 2
+
+
+@pytest.mark.parametrize("legacy_rooms", [None, 17])
+async def test_save_plan_recovers_malformed_persisted_room_container(
+    hass, legacy_rooms
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager._robot("serial")["plans"]["damaged"] = {
+        "name": "Damaged legacy plan",
+        "rooms": legacy_rooms,
+    }
+    room_map = {"room-kitchen": "Kitchen"}
+    services = await _registered_services(hass, manager)
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        "save_plan",
+        SAVE_PLAN_SCHEMA(
+            {
+                "entity_id": ["vacuum.test"],
+                "plan_id": "damaged",
+                "name": "Recovered plan",
+                "rooms": [{"room": "Kitchen"}],
+            }
+        ),
+    )
+
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=("vacuum.test", SimpleNamespace(), "serial", room_map),
+        ),
+        patch(
+            "custom_components.matic_robot.services._plan_cadence_bindings",
+            return_value=(None, {}),
+        ),
+    ):
+        await _registered_handler(services, "save_plan")(call)
+
+    assert manager.plan("serial", "damaged")["rooms"] == [
+        {
+            "room_id": "room-kitchen",
+            "cleaning_mode": "vacuum_and_mop",
+            "coverage_setting": "standard",
+        }
+    ]
+    manager._store.async_save.assert_awaited_once()
 
 
 async def test_save_plan_reports_the_per_robot_plan_limit(hass) -> None:
