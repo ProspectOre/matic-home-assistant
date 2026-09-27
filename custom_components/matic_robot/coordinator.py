@@ -114,6 +114,7 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
         self._displayed_floor_signature: tuple[MappedFloor, ...] | None = None
         self._verified_floor_mission_id: int | None = None
         self._floor_read_generation = 0
+        self._floor_reads_in_flight = 0
         self._cached_telemetry: RobotTelemetry | None = None
         self._map_refresh_due = 0.0
         self._slow_refresh_due = 0.0
@@ -230,10 +231,14 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                     if states_received > 1:
                         retry_delay = 1
                     displayed_signature = mission_state.mapped_floors
-                    if (
+                    identity_changed = (
                         self._displayed_floor_mission_id != active_floor.mission_id
                         or self._displayed_floor_signature != displayed_signature
-                    ):
+                    )
+                    invalidated_read = (
+                        identity_changed and self._floor_reads_in_flight > 0
+                    )
+                    if identity_changed:
                         self._floor_read_generation += 1
                     self._displayed_floor_mission_id = active_floor.mission_id
                     self._displayed_floor_signature = displayed_signature
@@ -243,6 +248,12 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
                         and floor_plan.mission_id == active_floor.mission_id
                         and floor_plan.mapped_floors == mission_state.mapped_floors
                     ):
+                        if invalidated_read:
+                            # The matching published map remains valid, but a
+                            # read admitted under the prior identity was
+                            # revoked. Schedule its replacement immediately.
+                            self._map_refresh_due = 0.0
+                            await self.async_request_refresh()
                         continue
                     # This stream is the robot's immediate localization signal.
                     # A previously verified map identity may only be a replayed
@@ -587,9 +598,13 @@ class MaticCoordinator(DataUpdateCoordinator[RobotState]):
             return self._cached_floor_plan
         floor_plan: FloorPlan | None
         try:
-            floor_plan = await self.client.async_get_floor_plan(
-                expected_mission_id=expected_mission_id
-            )
+            self._floor_reads_in_flight += 1
+            try:
+                floor_plan = await self.client.async_get_floor_plan(
+                    expected_mission_id=expected_mission_id
+                )
+            finally:
+                self._floor_reads_in_flight -= 1
             refresh_due = now + MAP_UPDATE_INTERVAL_SECONDS
         except MaticError as err:
             _LOGGER.debug("Optional Hermes floor plan unavailable: %s", err)

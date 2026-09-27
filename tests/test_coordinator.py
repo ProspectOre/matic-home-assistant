@@ -564,6 +564,62 @@ async def test_floor_watcher_refreshes_changed_mission_and_labels(
     assert coordinator._map_refresh_due == 0.0
 
 
+async def test_floor_watcher_retries_invalidated_read_when_published_map_matches(
+    hass, monkeypatch
+) -> None:
+    client = _client()
+    mapped_floor = MappedFloor(42, "Main", "1" * 64)
+    floor_plan = FloorPlan(42, "partition", b"", (), mapped_floors=(mapped_floor,))
+    client.async_get_floor_plan.return_value = floor_plan
+    coordinator = _coordinator(hass, client)
+    coordinator.async_set_updated_data(await coordinator._async_update_data())
+
+    read_started = asyncio.Event()
+    release_read = asyncio.Event()
+
+    async def slow_floor_read(*, expected_mission_id: int | None = None) -> FloorPlan:
+        assert expected_mission_id is None
+        read_started.set()
+        await release_read.wait()
+        return floor_plan
+
+    client.async_get_floor_plan.side_effect = slow_floor_read
+    coordinator._map_refresh_due = 0.0
+    poll = asyncio.create_task(coordinator._async_update_data())
+    await read_started.wait()
+
+    coordinator.async_request_refresh = AsyncMock()
+
+    async def entries(_name):
+        yield HermesCollectionEntry(b"", b"matching")
+        raise asyncio.CancelledError
+
+    client.async_subscribe_collection_entries = entries
+    monkeypatch.setattr(
+        "custom_components.matic_robot.coordinator.decode_mission_client_state",
+        lambda _payload: MissionClientState(mapped_floor, (mapped_floor,)),
+    )
+    with pytest.raises(asyncio.CancelledError):
+        await coordinator.async_watch_floor_plan()
+
+    coordinator.async_request_refresh.assert_awaited_once_with()
+    assert coordinator._map_refresh_due == 0.0
+    release_read.set()
+    stale_state = await poll
+    assert stale_state.floor_plan is None
+    assert coordinator._floor_reads_in_flight == 0
+
+    coordinator.async_set_updated_data(stale_state)
+    assert coordinator.data.floor_plan is None
+    client.async_get_floor_plan.side_effect = None
+    replacement_state = await coordinator._async_update_data()
+    coordinator.async_set_updated_data(replacement_state)
+
+    assert replacement_state.floor_plan is floor_plan
+    assert coordinator.data.floor_plan is floor_plan
+    client.async_get_floor_plan.assert_awaited_with(expected_mission_id=42)
+
+
 async def test_floor_watcher_ignores_unknown_state_and_retries_failures(
     hass, monkeypatch
 ) -> None:
