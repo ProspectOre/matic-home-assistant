@@ -17,8 +17,8 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The exact-source comparison began at `2026-09-27T05:05:00.208Z` (September 26,
-10:05:00 p.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+The exact-source comparison began at `2026-09-27T07:10:07.207Z` (September 27,
+12:10:07 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no CPU/network throttling, and no-store assets. Other
 task-owned Python and browser checks were paused for the run. The script records
 conditions and fingerprints.
@@ -35,23 +35,22 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 
 ## Latest paired result
 
-Measured against the compiled assets for source head
-`acbdbc051fd4ac9575d3ee84ca9c123504ac61e2`:
-The later 0.5 integration commits change backend/tests/metadata only; they do not
-alter these compiled frontend assets.
+Measured against the compiled assets for source commit
+`3d8c165c313de86ed8772f27db361953c586e6c0`. This run includes the bounded
+legacy-plan repair controls and packaged bundle shipped by that candidate.
 
 | Measure | Stable v0.4.5 | 0.5 worktree |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 79,833 |
+| Initial production JS, estimated gzip bytes | 79,821 | 80,013 |
 | Initial distinct production JS resources | 1 | 4 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,520 |
-| Review-only initial JS, estimated gzip bytes | Included above | 4,545 (not shipped) |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,488 |
+| Review-only initial JS, estimated gzip bytes | Included above | 4,568 (not shipped) |
 | Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
 | Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 40 / 40 / 40 | 32 / 40 / 40 |
+| Maximum observed input estimates, ms | 32 / 32 / 32 | 32 / 40 / 32 |
 | Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
 | Longest task at or above threshold | None observed | None observed |
-| Post-journey JS heap range, bytes | 5,019,288–6,770,748 | 7,428,944–7,521,468 |
+| Post-journey JS heap range, bytes | 5,055,468–6,836,400 | 5,881,168–7,484,220 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
 are below 100 ms. Candidate and baseline p95 are equal in this lab journey; this
@@ -68,9 +67,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `acbdbc051fd4ac9575d3ee84ca9c123504ac61e2` |
-| Candidate production bundle | `ddcb4fc4883f66c20553afe58522065913105c27f4f6804be08215309e7ab1a7` |
-| Candidate review-only bundle | `8346b5b539d58c0ead31b9488e7348717bea0f40d5665a2439a017f577da2ddc` |
+| Candidate source commit | `3d8c165c313de86ed8772f27db361953c586e6c0` |
+| Candidate production bundle | `3104b4e4a5fbf97faf4e234d3e98207910253571cf9177bf2914eba979489414` |
+| Candidate review-only bundle | `09ab8abbd5a2ad3e7f426cde3fc7897cdcd7333551288eadc5ee46051839eafd` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up

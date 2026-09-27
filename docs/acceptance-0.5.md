@@ -14,19 +14,22 @@ owner, and runtime result remains unverified until its evidence is recorded.
 Local source evidence and exact-head CI are distinct from an RC, owner acceptance,
 or release proof. Evidence refreshed on 2026-09-27:
 
-- Source commit `f8cad9467ed41acf932d88e25bf5ae0bf776c089` incorporates current
-  `main` at `52166df` plus the invalidated-read map-continuity fix. Its full Python
-  suite passed 3,488 tests at 100% (15,724 statements). Ruff lint/format, strict
-  mypy (61 source files), and privacy also pass. Focused executor cases, registered
-  service routing, native mixed-readback coverage, and managed STOP ownership all
-  pass; coordinator regressions prove map continuity only for the same verified
-  mission and floor signature.
-- The production frontend is unchanged since bundle source `acbdbc0`; exact-head
-  browser CI passed 771 cases on `8046e1d`. The current candidate changes only
-  backend, test, metadata, and evidence files; browser, Hassfest, HACS, and Python CI
-  are still required for `f8cad94`. The prior capped-retry, cadence round-trip,
-  connected-lifecycle, and packaged-panel checks remain separate synthetic
-  contract evidence, not live HA acceptance.
+- Source commit `3d8c165c313de86ed8772f27db361953c586e6c0` incorporates current
+  `main` at `52166df` and closes the reviewed map-signature, malformed-cadence,
+  and legacy-plan recovery defects. Its full Python suite passed 3,500 tests at
+  100% (15,744 statements). Ruff lint/format, strict mypy (61 source files), and
+  privacy pass. The coordinator now rejects stale annotated map signatures while
+  retaining the protocol's unannotated single-plan response; a real manager and
+  plans endpoint test covers malformed private/shared cadence without dropping
+  healthy plans or rooms. Independent GPT-6 Luna review found no residual issues.
+- The packaged frontend changed for bounded legacy-plan recovery. The full browser
+  suite passed 771 tests on that bundle across Chromium, WebKit, Firefox safety
+  workflows, and mobile Chrome; the added 102/256/257 parser-boundary regression
+  also passes separately. Frontend typecheck/build and the current paired bundle
+  measurement pass their size/input targets; see
+  [performance-0.5.md](performance-0.5.md). Exact-head GitHub CI, Hassfest/HACS,
+  and regular PR review remain pending for the final PR head; `3d8c165` is the
+  implementation source used for these local results.
 - The prior Python CI collection failure came from an inherited test importing
   `RoomRunOutcome` through `services` after its canonical ownership moved to
   `managed_executor`. The matrix now imports the owner and injects a typed waiter
@@ -49,10 +52,10 @@ or release proof. Evidence refreshed on 2026-09-27:
   diagnosis of prior findings before requesting a fresh exact-head regular review.
   Final CI and regular review must qualify the current evidence head; merge gates
   remain open.
-- The [paired performance comparison](performance-0.5.md) records the compiled
-  asset fingerprints, identical synthetic scenes, size/input measurements, and
-  unresolved task-duration gate. Desktop lab measurements do not establish
-  mobile, frame/GPU, sustained-memory, or live transport budgets.
+- The [paired performance comparison](performance-0.5.md) records the current
+  compiled asset fingerprints, identical synthetic scenes, size/input
+  measurements, and unresolved task-duration gate. Desktop lab measurements do
+  not establish mobile, frame/GPU, sustained-memory, or live transport budgets.
 - Parser tests cover no-worker recovery, ownership/disposal, and real-worker
   1,500,000-point accept / 1,500,001 reject. A 100-update HA regression observes
   zero workspace commits, component updates/renders, or service requests.
