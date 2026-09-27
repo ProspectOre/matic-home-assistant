@@ -5,6 +5,11 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
+The browser assets measured below were built from `9e935fb`; commit `170e804`
+changes backend plan persistence and tests only, leaving the measured frontend
+source and packaged assets unchanged. The paired measurements therefore describe
+the current compiled panel, not backend storage timing.
+
 ## Method
 
 Build with `npm run build:map-studio-v4`, then run
