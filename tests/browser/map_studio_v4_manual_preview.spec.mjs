@@ -76,6 +76,44 @@ async function setupEffects(page, { initialPreview = null, previewProvider } = {
   return page;
 }
 
+async function setupPreviewWireHarness(page, moduleName, deadlineDelays) {
+  await page.route(`**/${moduleName}`, (route) => route.fulfill({
+    contentType: "text/javascript", body: bundle.outputFiles[0].text,
+  }));
+  await page.goto("/");
+  await page.evaluate(async ({ moduleName, deadlineDelays }) => {
+    const { MaticBackend } = await import(`/${moduleName}`);
+    const nativeSetTimeout = window.setTimeout.bind(window);
+    let deadlineCount = 0;
+    window.setTimeout = ((callback, delay, ...args) => {
+      if (delay !== 15_000) return nativeSetTimeout(callback, delay, ...args);
+      const fastDelay = deadlineDelays[deadlineCount] ?? deadlineDelays.at(-1);
+      deadlineCount += 1;
+      return nativeSetTimeout(callback, fastDelay, ...args);
+    });
+    const calls = [];
+    const pending = [];
+    const response = (token) => ({ context: {}, response: {
+      entry_id: "synthetic-entry", floor_token: "f".repeat(64), preview_token: token.repeat(64),
+      rooms: [{ room_id: "room-a", name: "Kitchen", cleaning_mode: "vacuum", coverage_setting: "standard", cadence_reasons: [] }],
+      mission_boundaries: [], blocker: null,
+    } });
+    const connection = { sendMessagePromise: async (message) => {
+      calls.push(message);
+      return await new Promise(resolve => pending.push(resolve));
+    } };
+    const args = ["vacuum.synthetic", [{ room: "room-a", cleaning_mode: "vacuum", coverage_setting: "standard" }], false];
+    const waitForCalls = async (count) => {
+      for (let i = 0; i < 200 && calls.length < count; i += 1) await new Promise(resolve => nativeSetTimeout(resolve, 1));
+    };
+    window.previewWireHarness = {
+      createBackend: () => new MaticBackend(() => ({ connection })),
+      calls, pending, response, args, waitForCalls,
+      restore: () => { window.setTimeout = nativeSetTimeout; },
+    };
+  }, { moduleName, deadlineDelays });
+}
+
 test("@safety uses the HA websocket response envelope and sends a read-only scheduled preview", async ({ page }) => {
   await page.route("**/backend-contract-test.js", (route) => route.fulfill({
     contentType: "text/javascript", body: bundle.outputFiles[0].text,
@@ -241,6 +279,160 @@ test("@safety serializes concurrent requests and skips an aborted queued waiter"
     return { calls: calls.length, afterCanceled, maximumActive };
   });
   expect(result).toEqual({ calls: 5, afterCanceled: 2, maximumActive: 1 });
+});
+
+test("@safety a timed-out preview releases its turn without letting its late response release a newer turn", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-preview-timeout-test.js", [30, 300, 300, 30, 300]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const backend = h.createBackend();
+    const { args, calls, pending, response, waitForCalls } = h;
+    try {
+      const first = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      await waitForCalls(1);
+      const second = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      const third = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+
+      const firstError = await first;
+      await waitForCalls(2);
+      const callsAfterTimeout = calls.length;
+      // Keep the first transport unresolved until the second turn is active.
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const callsAfterLateFirst = calls.length;
+      pending[1](response("b"));
+      const secondToken = await second;
+      await waitForCalls(3);
+      pending[2](response("c"));
+      const thirdToken = await third;
+
+      const canceled = new AbortController();
+      const fourth = backend.previewRoomSequence(...args, canceled.signal).then(() => "resolved", error => error.name);
+      await waitForCalls(4);
+      const fifth = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      canceled.abort();
+      const fourthError = await fourth;
+      await waitForCalls(5);
+      const callsAfterAbortedDeadline = calls.length;
+      pending[3](response("d"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const callsAfterLateAbortedFirst = calls.length;
+      pending[4](response("e"));
+      const fifthToken = await fifth;
+      return { firstError, callsAfterTimeout, callsAfterLateFirst, secondToken, thirdToken, fourthError,
+        callsAfterAbortedDeadline, callsAfterLateAbortedFirst, fifthToken, totalCalls: calls.length };
+    } finally {
+      backend.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "preview-timeout", callsAfterTimeout: 2,
+    callsAfterLateFirst: 2, secondToken: "b".repeat(64), thirdToken: "c".repeat(64), fourthError: "AbortError",
+    callsAfterAbortedDeadline: 5, callsAfterLateAbortedFirst: 5, fifthToken: "e".repeat(64), totalCalls: 5 });
+});
+
+test("@safety a queued preview deadline expires without breaking the FIFO reservation", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-queued-preview-timeout-test.js", [90, 25, 500, 500]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const backend = h.createBackend();
+    const { args, calls, pending, response, waitForCalls } = h;
+    try {
+      const first = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      await waitForCalls(1);
+      const second = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      const third = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      const secondError = await second;
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const callsBeforeFirstDeadline = calls.length;
+      const firstError = await first;
+      await waitForCalls(2);
+      const fourth = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 5));
+      const callsAfterLateFirst = calls.length;
+      pending[1](response("c"));
+      const thirdToken = await third;
+      await waitForCalls(3);
+      pending[2](response("d"));
+      const fourthToken = await fourth;
+      return { firstError, secondError, callsBeforeFirstDeadline, callsAfterLateFirst, thirdToken, fourthToken, totalCalls: calls.length };
+    } finally {
+      backend.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "preview-timeout", secondError: "preview-timeout",
+    callsBeforeFirstDeadline: 1, callsAfterLateFirst: 2, thirdToken: "c".repeat(64),
+    fourthToken: "d".repeat(64), totalCalls: 3 });
+});
+
+test("@safety unresolved preview wires are capped per connection and a settled orphan frees a slot", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-preview-wire-cap-test.js", [30, 100, 300, 500]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const backend = h.createBackend();
+    const { args, calls, pending, response, waitForCalls } = h;
+    try {
+      const first = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      await waitForCalls(1);
+      const second = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      const third = backend.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      const firstError = await first;
+      const secondError = await second;
+      const thirdError = await third;
+      const callsAtWireLimit = calls.length;
+
+      // Both timed-out transports remain outstanding until one settles.
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const fresh = backend.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      await waitForCalls(3);
+      pending[2](response("d"));
+      const freshToken = await fresh;
+      return { firstError, secondError, thirdError, callsAtWireLimit, freshToken, totalCalls: calls.length };
+    } finally {
+      backend.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "preview-timeout", secondError: "preview-timeout",
+    thirdError: "preview-unavailable", callsAtWireLimit: 2, freshToken: "d".repeat(64), totalCalls: 3 });
+});
+
+test("@safety preview wire cap survives backend disposal while orphaned RPCs remain unresolved", async ({ page }) => {
+  await setupPreviewWireHarness(page, "backend-preview-dispose-cap-test.js", [40, 120, 400, 600]);
+  const result = await page.evaluate(async () => {
+    const h = window.previewWireHarness;
+    const { args, calls, pending, response, waitForCalls } = h;
+    const backendA = h.createBackend();
+    let backendB;
+    try {
+      const first = backendA.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      await waitForCalls(1);
+      const second = backendA.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      const firstError = await first;
+      const secondError = await second;
+      backendA.dispose();
+
+      backendB = h.createBackend();
+      const blockedError = await backendB.previewRoomSequence(...args).then(() => "resolved", error => error.code ?? error.name);
+      const callsAtCap = calls.length;
+      pending[0](response("a"));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      const fresh = backendB.previewRoomSequence(...args).then(value => value.previewToken, error => error.code ?? error.name);
+      await waitForCalls(3);
+      pending[2](response("d"));
+      const freshToken = await fresh;
+      return { firstError, secondError, blockedError, callsAtCap, freshToken, totalCalls: calls.length };
+    } finally {
+      backendA.dispose();
+      backendB?.dispose();
+      h.restore();
+    }
+  });
+  expect(result).toEqual({ firstError: "preview-timeout", secondError: "preview-timeout",
+    blockedError: "preview-unavailable", callsAtCap: 2, freshToken: "d".repeat(64), totalCalls: 3 });
 });
 
 test("@safety a generation and selection change discard old responses before admitting the latest preview", async ({ page }) => {

@@ -34,6 +34,8 @@ const REQUEST_TIMEOUTS = {
   mutation: 20_000,
   roomPreview: 15_000,
 } as const;
+const MAX_OUTSTANDING_ROOM_PREVIEW_WIRES = 2;
+const roomPreviewWireCountByConnection = new WeakMap<object, number>();
 
 export class BackendError extends Error {
   readonly code: string;
@@ -447,9 +449,6 @@ export class MaticBackend {
     const interrupted = new Promise<never>((_resolve, reject) => { rejectAbort = reject; });
     const abort = (): void => rejectAbort(new DOMException("Aborted", "AbortError"));
     signal?.addEventListener("abort", abort, { once: true });
-    const deadline = new Promise<never>((_resolve, reject) => {
-      timeout = window.setTimeout(() => reject(new BackendError("preview-timeout")), REQUEST_TIMEOUTS.roomPreview);
-    });
     const previous = this.#roomPreviewWireInFlight.get(connection);
     let releaseTurn!: () => void;
     const turn = new Promise<void>((resolve) => { releaseTurn = resolve; });
@@ -464,10 +463,26 @@ export class MaticBackend {
       }
     };
     let wireStarted = false;
+    // The deadline includes time spent in the FIFO queue. A queued timeout
+    // rejects that caller immediately, but only an active wire turn can release
+    // itself here; queued turns release after their predecessor in finally.
+    const deadline = new Promise<never>((_resolve, reject) => {
+      timeout = window.setTimeout(() => {
+        timeout = null;
+        reject(new BackendError("preview-timeout"));
+      }, REQUEST_TIMEOUTS.roomPreview);
+    });
+    void deadline.catch(() => {
+      if (wireStarted) release();
+    });
     try {
       if (previous) {
         await Promise.race([previous, interrupted, deadline]);
         if (signal?.aborted) throw new DOMException("Aborted", "AbortError");
+      }
+      const outstandingWires = roomPreviewWireCountByConnection.get(connection) ?? 0;
+      if (outstandingWires >= MAX_OUTSTANDING_ROOM_PREVIEW_WIRES) {
+        throw new BackendError("preview-unavailable");
       }
       const wire = connection.sendMessagePromise<unknown>({
           type: "call_service",
@@ -485,8 +500,21 @@ export class MaticBackend {
           },
           return_response: true,
         });
+      roomPreviewWireCountByConnection.set(connection, outstandingWires + 1);
       wireStarted = true;
-      void wire.then(release, release);
+      let wireCountReleased = false;
+      const settleWire = (): void => {
+        if (!wireCountReleased) {
+          wireCountReleased = true;
+          const remainingWires = (roomPreviewWireCountByConnection.get(connection) ?? 1) - 1;
+          if (remainingWires === 0) roomPreviewWireCountByConnection.delete(connection);
+          else roomPreviewWireCountByConnection.set(connection, remainingWires);
+        }
+        release();
+        if (timeout !== null) window.clearTimeout(timeout);
+        timeout = null;
+      };
+      void wire.then(settleWire, settleWire);
       const response = await Promise.race([
         wire,
         interrupted,
@@ -502,8 +530,9 @@ export class MaticBackend {
       if (!wireStarted) {
         if (previous) void previous.then(release, release);
         else release();
+        if (timeout !== null) window.clearTimeout(timeout);
+        timeout = null;
       }
-      if (timeout !== null) window.clearTimeout(timeout);
       signal?.removeEventListener("abort", abort);
     }
   }

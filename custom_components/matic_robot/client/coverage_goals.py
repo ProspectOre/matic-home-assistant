@@ -16,15 +16,16 @@ _SPEC_FIELDS = frozenset((1, 2, 4, 5))
 type CoverageGoalSignature = tuple[str, int, int, int, int]
 
 
-def mixed_coverage_readback_matches(
+def coverage_readback_matches(
     expected: Counter[CoverageGoalSignature],
     actual: Counter[CoverageGoalSignature],
 ) -> bool:
     """Allow the observed mop behavior-three omission independently per room.
 
-    Each affected room must retain exactly its other three mop behaviors at
-    the requested setting. All vacuum goals and every other signature remain
-    exact; an omission in one room cannot compensate for another room's goals.
+    This applies to managed normal and mixed coverage readback. Each affected
+    room must retain exactly its other three mop behaviors at the requested
+    setting. All vacuum goals and every other signature remain exact; an
+    omission in one room cannot compensate for another room's goals.
     """
     if not expected:
         return False

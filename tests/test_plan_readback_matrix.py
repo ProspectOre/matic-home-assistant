@@ -22,7 +22,7 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
-    mixed_coverage_readback_matches,
+    coverage_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan
@@ -76,12 +76,12 @@ def test_three_room_configuration_matrix(configuration):
             goal for goal, remove in zip(optional, omitted, strict=True) if remove
         )
         actual = expected - missing
-        assert mixed_coverage_readback_matches(expected, actual)
+        assert coverage_readback_matches(expected, actual)
         # No room may lose any other vacuum or mop goal, even when its peers
         # have the same mode/setting and complete retained goal sets.
         for goal in actual:
             if goal[2:] != (0, 1, 3):
-                assert not mixed_coverage_readback_matches(
+                assert not coverage_readback_matches(
                     expected, actual - Counter({goal: 1})
                 )
 
@@ -94,7 +94,7 @@ def test_normalization_scales_by_room_without_mission_wide_limit(room_count, mod
     expected = Counter(coverage_command_goal_signatures(commands.update))
     actual = Counter(coverage_plan_goal_signatures(_readback(commands.update)))
     assert (expected - actual).total() == room_count
-    assert mixed_coverage_readback_matches(expected, actual)
+    assert coverage_readback_matches(expected, actual)
 
 
 def test_four_room_combined_vacuum_combined_combined_regression():
@@ -106,9 +106,9 @@ def test_four_room_combined_vacuum_combined_combined_regression():
     actual = Counter(coverage_plan_goal_signatures(_readback(commands.update)))
     assert expected.total() == 44
     assert actual.total() == 41
-    assert mixed_coverage_readback_matches(expected, actual)
+    assert coverage_readback_matches(expected, actual)
     initial = Counter(coverage_command_goal_signatures(commands.initial))
-    assert not mixed_coverage_readback_matches(expected, initial)
+    assert not coverage_readback_matches(expected, initial)
 
 
 @pytest.mark.parametrize("field", range(5))
@@ -120,7 +120,7 @@ def test_normalization_rejects_changed_room_setting_floor_mode_or_behavior(field
         changed = list(goal)
         changed[field] = str(UUID(int=999)) if field == 0 else 99
         corrupted = actual - Counter({goal: 1}) + Counter({tuple(changed): 1})
-        assert not mixed_coverage_readback_matches(expected, corrupted)
+        assert not coverage_readback_matches(expected, corrupted)
 
 
 def test_normalization_rejects_duplicates_and_goals_borrowed_from_another_room():
@@ -128,8 +128,8 @@ def test_normalization_rejects_duplicates_and_goals_borrowed_from_another_room()
     expected = Counter(coverage_command_goal_signatures(commands.update))
     actual = Counter(coverage_plan_goal_signatures(_readback(commands.update)))
     first, second = [goal for goal in actual if goal[-1] == 0]
-    assert not mixed_coverage_readback_matches(expected, actual + Counter({first: 1}))
-    assert not mixed_coverage_readback_matches(
+    assert not coverage_readback_matches(expected, actual + Counter({first: 1}))
+    assert not coverage_readback_matches(
         expected, actual - Counter({second: 1}) + Counter({first: 1})
     )
 
@@ -146,14 +146,14 @@ def test_normalization_requires_complete_unique_sibling_goals_in_expected_comman
         malformed = expected.copy()
         malformed[sibling] = count
         actual = malformed - Counter({optional: 1})
-        assert not mixed_coverage_readback_matches(malformed, actual)
+        assert not coverage_readback_matches(malformed, actual)
     duplicate = expected + Counter({optional: 1})
-    assert not mixed_coverage_readback_matches(duplicate, expected)
+    assert not coverage_readback_matches(duplicate, expected)
     # Even a malformed command with two settings for one room cannot make
     # two omissions for that room look like independent normalizations.
     extra = Counter({(optional[0], 0, 0, 1, behavior): 1 for behavior in range(4)})
     malformed = expected + extra
-    assert not mixed_coverage_readback_matches(
+    assert not coverage_readback_matches(
         malformed, malformed - Counter({optional: 1, (optional[0], 0, 0, 1, 3): 1})
     )
 

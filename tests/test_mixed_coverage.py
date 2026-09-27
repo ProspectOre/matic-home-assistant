@@ -30,7 +30,7 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
-    mixed_coverage_readback_matches,
+    coverage_readback_matches,
 )
 from custom_components.matic_robot.client.exceptions import MaticError
 from custom_components.matic_robot.client.models import FloorPlan
@@ -86,7 +86,7 @@ def _deterministic_mixed_commands(**kwargs):
     )
 
 
-def _synthetic_goal(spec=None, *, duplicate_round=False):
+def _synthetic_goal(spec=None, *, duplicate_round=False, region_id=ROOMS[0]):
     if spec is None:
         spec = (
             _varint_field(1, 1)
@@ -101,7 +101,7 @@ def _synthetic_goal(spec=None, *, duplicate_round=False):
     target = (
         _field(1, _field(1, _wrapped_uuid(PARTITION)))
         + _field(2, _field(1, b""))
-        + _field(3, _field(3, _field(2, _wrapped_uuid(ROOMS[0]))))
+        + _field(3, _field(3, _field(2, _wrapped_uuid(region_id))))
     )
     encoded = _field(6, round_key) + _field(7, target)
     return encoded + (_field(6, round_key) if duplicate_round else b"")
@@ -127,6 +127,23 @@ def _plan_for_goals(*goals):
     return _field(
         7,
         _field(1, b"".join(_field(1, goal) for goal in goals)),
+    )
+
+
+def _plan_for_signatures(signatures):
+    return _plan_for_goals(
+        *(
+            _synthetic_goal(
+                spec=(
+                    _varint_field(1, setting)
+                    + _varint_field(2, floor)
+                    + _varint_field(4, mode)
+                    + _varint_field(5, behavior)
+                ),
+                region_id=region,
+            )
+            for region, setting, floor, mode, behavior in signatures
+        )
     )
 
 
@@ -198,13 +215,13 @@ def test_coverage_plan_readback_matches_full_transmitted_goal_multiset():
     assert Counter(readback) == Counter(expected)
 
 
-def _normal_coverage_fixture():
+def _normal_coverage_fixture(mode=Mode.VACUUM):
     floor = FloorPlan(42, PARTITION, b"partition", ())
     payload = encode_coverage_command(
         mission_id=42,
         partition_id=PARTITION,
         region_ids=ROOMS[:1],
-        cleaning_mode=Mode.VACUUM,
+        cleaning_mode=mode,
         coverage_setting=Setting.QUICK,
     )
     return floor, payload
@@ -228,6 +245,82 @@ async def test_normal_coverage_readback_requires_exact_retained_goals():
 
     assert client.async_get_cleaning_session_identity.await_count == 2
     client.async_get_floor_plan.assert_awaited_once()
+
+
+@pytest.mark.parametrize("mode", (Mode.MOP, Mode.BOTH))
+async def test_normal_start_accepts_only_the_observed_mop_goal_omission(mode):
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture(mode)
+    identity = b"managed-native-session"
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"", identity, identity]
+    )
+    client._async_send_user_payload = AsyncMock()
+    client.async_get_property = AsyncMock(
+        return_value=coverage_plan_from_command(payload, drop_goal_index=-1)
+    )
+    client.async_get_floor_plan = AsyncMock(return_value=floor)
+
+    await client.async_start_coverage(
+        floor,
+        ROOMS[:1],
+        cleaning_mode=mode,
+        coverage_setting=Setting.QUICK,
+        require_settings_readback=True,
+    )
+
+    client._async_send_user_payload.assert_awaited_once()
+    client.async_get_floor_plan.assert_awaited_once()
+
+
+@pytest.mark.parametrize(
+    "mode,corruption",
+    (
+        (Mode.MOP, "missing_mop_sibling"),
+        (Mode.BOTH, "missing_vacuum_goal"),
+        (Mode.MOP, "changed_setting"),
+        (Mode.MOP, "extra_goal"),
+    ),
+)
+async def test_normal_start_fails_closed_on_other_readback_changes(
+    mode, corruption, monkeypatch
+):
+    client = MaticHermesClient("robot.invalid", 16320)
+    floor, payload = _normal_coverage_fixture(mode)
+    expected = list(coverage_command_goal_signatures(payload))
+    actual = expected.copy()
+    if corruption == "missing_mop_sibling":
+        actual.remove(next(goal for goal in actual if goal[2:] == (0, 1, 0)))
+    elif corruption == "missing_vacuum_goal":
+        actual.remove(next(goal for goal in actual if goal[2:4] == (0, 0)))
+    elif corruption == "changed_setting":
+        index = next(i for i, goal in enumerate(actual) if goal[3:] == (1, 2))
+        goal = actual[index]
+        actual[index] = (goal[0], goal[1] + 1, *goal[2:])
+    else:
+        actual.append(actual[0])
+
+    identity = b"managed-native-session"
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", identity])
+    client._async_send_user_payload = AsyncMock()
+    client.async_get_property = AsyncMock(return_value=_plan_for_signatures(actual))
+    client.async_get_floor_plan = AsyncMock()
+    clock = iter((0.0, 100.0))
+    monkeypatch.setattr(
+        "custom_components.matic_robot.client.api.monotonic", lambda: next(clock)
+    )
+
+    with pytest.raises(MaticError, match="did not retain requested coverage settings"):
+        await client.async_start_coverage(
+            floor,
+            ROOMS[:1],
+            cleaning_mode=mode,
+            coverage_setting=Setting.QUICK,
+            require_settings_readback=True,
+        )
+
+    client._async_send_user_payload.assert_awaited_once()
+    client.async_get_floor_plan.assert_not_awaited()
 
 
 async def test_normal_coverage_readback_rejects_unavailable_task_identity():
@@ -321,19 +414,19 @@ def test_coverage_plan_readback_preserves_missing_goal_as_mismatch():
 
     assert len(readback) == 11
     assert Counter(readback) != Counter(expected)
-    assert mixed_coverage_readback_matches(Counter(expected), Counter(readback))
+    assert coverage_readback_matches(Counter(expected), Counter(readback))
 
 
 def test_mixed_readback_normalization_rejects_other_missing_or_changed_goals():
     expected = Counter(coverage_command_goal_signatures(OFFICIAL_MOP))
-    assert not mixed_coverage_readback_matches(Counter(), Counter())
+    assert not coverage_readback_matches(Counter(), Counter())
     for index in (0, -2):
         actual = Counter(
             coverage_plan_goal_signatures(
                 coverage_plan_from_command(OFFICIAL_MOP, drop_goal_index=index)
             )
         )
-        assert not mixed_coverage_readback_matches(expected, actual)
+        assert not coverage_readback_matches(expected, actual)
 
     normalized = Counter(
         coverage_plan_goal_signatures(
@@ -342,15 +435,11 @@ def test_mixed_readback_normalization_rejects_other_missing_or_changed_goals():
     )
     optional = next(goal for goal in expected if goal[3:] == (1, 3))
     required = next(goal for goal in expected if goal[3:] == (1, 2))
-    assert mixed_coverage_readback_matches(expected, normalized)
-    assert not mixed_coverage_readback_matches(
-        expected, normalized + Counter({required: 1})
-    )
-    assert not mixed_coverage_readback_matches(
-        expected, normalized + Counter({optional: 2})
-    )
+    assert coverage_readback_matches(expected, normalized)
+    assert not coverage_readback_matches(expected, normalized + Counter({required: 1}))
+    assert not coverage_readback_matches(expected, normalized + Counter({optional: 2}))
     changed_setting = (*required[:1], 2, *required[2:])
-    assert not mixed_coverage_readback_matches(
+    assert not coverage_readback_matches(
         expected, normalized - Counter({required: 1}) + Counter({changed_setting: 1})
     )
 
@@ -367,7 +456,7 @@ def test_mixed_readback_normalization_rejects_unupdated_initial_plan():
     initial = Counter(
         coverage_plan_goal_signatures(coverage_plan_from_command(commands.initial))
     )
-    assert not mixed_coverage_readback_matches(expected, initial)
+    assert not coverage_readback_matches(expected, initial)
 
 
 def test_mixed_readback_normalizes_each_mop_room_independently():
@@ -381,7 +470,7 @@ def test_mixed_readback_normalizes_each_mop_room_independently():
     expected = Counter(coverage_command_goal_signatures(commands.update))
     optional = Counter({goal: 1 for goal in expected if goal[3:] == (1, 3)})
     assert optional.total() == 2
-    assert mixed_coverage_readback_matches(expected, expected - optional)
+    assert coverage_readback_matches(expected, expected - optional)
 
 
 def test_coverage_plan_readback_ignores_unknown_spec_extensions():
