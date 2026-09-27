@@ -1,9 +1,9 @@
 # Matic 0.5 evidence matrix
 
-Baseline: public stable `v0.4.6` at `52166df`. The paired desktop performance
-comparison intentionally retains `v0.4.5` as its measured control. This ledger belongs to
-`architecture-0.5.md`; no 0.5 RC runtime evidence is recorded. “Preserved and
-verified” means v0.4.6 regressions remain covered, not every 0.5 scenario. “Implementation required” means acceptance is open despite partial code/tests; “Deferred” names the boundary and reason. Candidate, device, owner, and runtime results remain unverified.
+Baseline: stable `v0.4.6` (`52166df`); desktop control: `v0.4.5`; authority
+`architecture-0.5.md`. RC1 readback is recorded, but tracked-manual acceptance failed.
+“Preserved and verified” covers v0.4.6 regressions; implementation remains open;
+deferred items state their boundary and reason.
 
 ## Current implementation-worktree evidence
 
@@ -52,11 +52,15 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   and revalidates the catalog before controls recover. Status invalidations
   refresh only the catalog. Transport stays off until live parity, resource
   budgets, and switchover evidence pass.
-- Exact-candidate install, owner walkthrough, assistive technology, physical
-  Android/iOS, live transport baseline, and robot acceptance remain open.
-  Review-infrastructure #138 remains blocked on the shared policy in dev-workspace
-  #48 and authenticated review/inline-event capture; candidate-controlled workflow
-  logs do not establish provenance. The unsigned listener prototype is unpublished.
+- RC1 `v0.5.0-rc1` at `bec3173` matched 91-file digest `e9639e0788001a5cc532c992f89daa3b8bd7eadd2c0d2137ac22774d2d668c47`; rollback `v0.4.6` at `52166df` matched 79-file digest `0d3102b983f824a6b632e7d181ded05ffbb9bdbbe77a74cb861893caee2c8cd9`.
+  Postrestart coordinator/map ready; robot docked/native-inactive, runner unlocked,
+  no reconciliation; terminal add-on stopped. Bounded tracked-manual vacuum failed
+  `robot_error` without matching native completion; cleanup suppressed STOP on
+  unproven ownership. Logs do not distinguish dispatch/readback from robot error
+  state; movement is unverified and schedules are unchanged.
+- Owner/changed-flow, accessibility, Android/iOS, live transport budgets, and robot
+  acceptance remain open. Review #138 is blocked on shared policy #48 and authenticated
+  review capture; candidate logs lack provenance. Unsigned listener stays unpublished.
 
 | Requirement | Contract disposition | 0.5 evidence status | Evidence required; current gap |
 |---|---|---|
@@ -106,7 +110,7 @@ refer to the full independent review’s edge-case matrix and quality plan.
 | Full map and responsive shell preservation | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Resize/orientation, Full map entry/exit, transition while expanded (Locating retains only exit control), access/no-robot/unsupported exit; preserve canvas, floor, camera, selection, draft, history, workflow, primary action, and focus. Review rows 190–193. |
 | Renderer, worker, decompression, CPU, GPU, and large-scene faults | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | WebGL unavailable/context loss, GPU pressure, slow CPU/network, very large scene, worker unavailable, and decompression unavailable; fallback, progressive upload, memory/GPU stability, and seeded large-scene evidence. Review rows 185–190 and 220–222. |
 | Touch, keyboard, assistive technology, RTL, zoom, and draft input | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Pointer cancellation, pinch handoff, Draw precision, wheel/Space navigation, accidental paint, draft exit/transition, locale/RTL, 200/400% zoom, screen reader, keyboard/switch, reduced motion, and forced colors; public-contract browser, VoiceOver/NVDA, and visual evidence. Review rows 194–201 and 213–217. |
-| Performance, privacy, delivery, runtime, rollback, and physical acceptance | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | HA firehose with zero unrelated work, privacy-safe support, install/update/rollback, exact runtime readback, and current→second classified map→current physical proof with labels/pose/history/actions and no repeated Repair. Review rows 218–220; quality plan rows 265–281. |
+| Performance, privacy, delivery, runtime, rollback, and physical acceptance | Preserved and verified (baseline) | Local regressions verified; RC1 fingerprint/restart readback passed; tracked-manual run failed; full acceptance open | HA firehose with zero unrelated work, privacy-safe support, install/update/rollback, verified changed flow, and current→second classified map→current physical proof with labels/pose/history/actions and no repeated Repair. Review rows 218–220; quality plan rows 265–281. |
 
 ## Gate sequence and release receipts
 
@@ -122,7 +126,7 @@ The roadmap gates are independent and ordered; test counts, screenshots, a merge
 | E4 — Security | Reconciled backlog, clean exact-head review and required CI, privacy/packaging/Hassfest/HACS, hostile-input/resource evidence, and fail-closed behavior. |
 | E5 — Independent product/architecture review | Independent written review of the exact candidate; zero unresolved P0/P1 findings, with each finding dispositioned and any repair re-reviewed on the updated head. |
 | E6 — Owner interaction/language acceptance | Separate owner walkthrough and acceptance of setup, common cleaning, recovery, accessibility, and user-facing language; record remaining limitations. |
-| F — Exact candidate/runtime | HACS beta pre-release loaded version and reviewed SHA, rollback copy, installed-tree fingerprint, restart/readback, reconnect/map coherence, exact changed-flow proof, and current → second classified map → current with correct labels/pose/history/actions, no wrong-floor fallback, and no repeated Repair. These runtime and physical gates remain open until evidence is recorded. |
+| F — Exact candidate/runtime | HACS RC1, reviewed candidate/rollback fingerprints, restart readback, reconnect, and visible map coherence are recorded. The tracked-manual attempt failed `robot_error` without matching native completion; movement is unverified. Gate remains open for a verified changed flow, guarded failures, STOP/restart, map transition, and owner acceptance. |
 
 For physical runs, record explicit owner authorization, pre/post administrator
 MCP/native plan, operations and history evidence, no active automations/scripts,
