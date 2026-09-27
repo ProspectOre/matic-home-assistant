@@ -1345,10 +1345,10 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("preserves dirty drafts on browser-layer dismissal and freezes forms during a save", async ({ page }) => {
     const gallery = await loadGallery(page);
-    await page.evaluate(async (tag) => {
+    await page.evaluate((tag) => {
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
-      const { reduceWorkspace } = await import("/map_studio_v4-review/review.js");
+      const { reduceWorkspace } = window.__galleryModule;
       element.replaceWorkspaceState(reduceWorkspace({ ...state, workflow: "plan", planDraft: { ...state.planDraft, dirty: true } }, { type: "dismiss-top-layer" }));
     }, GALLERY_TAG);
     await expect(gallery.getByRole("dialog", { name: "Discard plan changes?" })).toBeVisible();
@@ -2385,8 +2385,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: "Clean a custom area" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Return to the live map" })).toBeVisible();
 
-    const workflows = await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    const workflows = await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const element = document.querySelector(tag);
       const state = element.getWorkspaceSnapshot();
       return ["rooms", "plan", "draw", "areaReview"].map((workflow) =>
@@ -2432,14 +2432,14 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.locator("#sheet-body")).toBeVisible();
 
     // Room choices are immediately visible; long forms start at full height.
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       document.querySelector(tag).replaceWorkspaceState(module.createGalleryState("rooms"));
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await expect(gallery.locator("#sheet-body")).toBeVisible();
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       document.querySelector(tag).replaceWorkspaceState({ ...module.createGalleryState("ready"), workflow: "plan" });
     }, GALLERY_TAG);
     await expect(sheet).toHaveAttribute("data-detent", "full");
@@ -2470,8 +2470,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("dialog", { name: "Delete this plan?" })).toHaveCount(0);
     expect(await page.evaluate(() => window.__mapStudioActions)).toEqual(["delete-plan"]);
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("draw"),
@@ -3146,8 +3146,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(gallery.getByRole("button", { name: "Resume cleaning" })).toBeVisible();
     await expect(gallery.getByRole("button", { name: "Stop cleaning" })).toBeVisible();
 
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const galleryElement = document.querySelector(tag);
       galleryElement.replaceWorkspaceState({
         ...module.createGalleryState("transition"),
@@ -5384,8 +5384,8 @@ for (const activity of ["docked", "idle"]) {
   for (const betweenLegs of [false, true]) {
     test(`an active plan remains in progress while the robot is ${activity}${betweenLegs ? " between legs" : ""}`, async ({ page }) => {
       const gallery = await loadGallery(page);
-      await page.evaluate(async ({ tag, activity, betweenLegs }) => {
-        const module = await import("/map_studio_v4-review/review.js");
+      await page.evaluate(({ tag, activity, betweenLegs }) => {
+        const module = window.__galleryModule;
         const state = module.createGalleryState("ready");
         document.querySelector(tag).replaceWorkspaceState({ ...state, activity,
           managedLock: true, resources: { ...state.resources, entry: { ...state.resources.entry, activePlan: !betweenLegs, runnerLocked: betweenLegs } } });
@@ -5401,8 +5401,8 @@ for (const activity of ["docked", "idle"]) {
 for (const ordered of [false, true]) {
   test(`mixed-settings guidance respects ${ordered ? "saved order" : "rotation"}`, async ({ page }) => {
     const gallery = await loadGallery(page);
-    await page.evaluate(async ({ tag, ordered }) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate(({ tag, ordered }) => {
+      const module = window.__galleryModule;
       const state = module.createGalleryState("ready");
       document.querySelector(tag).replaceWorkspaceState({ ...state, workflow: "plan", planDraft: {
         ...state.planDraft, runBehavior: ordered ? "ordered" : "intelligent", rooms: [
@@ -5488,8 +5488,8 @@ for (const width of [1024, 1100]) {
   test(`selected-room chip stays below camera controls at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     const gallery = await loadGallery(page, { scenario: "rooms" });
-    await page.evaluate(async (tag) => {
-      const module = await import("/map_studio_v4-review/review.js");
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
       const state = module.createGalleryState("rooms");
       document.querySelector(tag).replaceWorkspaceState({ ...state, view: "three",
         selection: { ...state.selection, roomIds: ["room-a", "room-b"] } });
