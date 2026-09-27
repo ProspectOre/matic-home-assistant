@@ -67,7 +67,7 @@ async function loadQualityModules(page) {
     bundle: true, format: "esm", write: false,
   });
   await page.route("**/quality-modules.js", (route) => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
-  await page.goto("/");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
 for (const action of ["save-plan", "clean-rooms"]) {

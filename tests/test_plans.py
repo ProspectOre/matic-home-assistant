@@ -1224,6 +1224,7 @@ async def test_leg_dispatch_sends_one_ordered_multi_room_mission(hass) -> None:
     assert params["coverage"] == "standard"
     assert params[PLAN_MOTION_TOKEN] == 7
     assert params[PLAN_FLOOR_TOKEN] == "a" * 64
+    assert len(params["_matic_plan_session"]) == 36
 
 
 async def test_leg_dispatch_keeps_single_room_unordered(hass) -> None:
@@ -4678,7 +4679,10 @@ async def test_room_execution_uses_its_individual_settings() -> None:
             active_session=AsyncMock(return_value=False),
         )
 
-    assert services.async_call.await_args.args[2] == {
+    dispatched = services.async_call.await_args.args[2]
+    session_id = dispatched["params"].pop("_matic_plan_session")
+    assert len(session_id) == 36
+    assert dispatched == {
         "entity_id": "vacuum.matic",
         "command": "clean_rooms",
         "params": {

@@ -20,8 +20,9 @@ from enum import StrEnum
 from functools import partial
 from time import monotonic
 from typing import Any
-from uuid import uuid4
+from uuid import UUID, uuid4
 
+from google.protobuf.message import DecodeError
 from homeassistant.components.vacuum.const import DOMAIN as VACUUM_DOMAIN
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import ATTR_ENTITY_ID
@@ -43,6 +44,7 @@ from homeassistant.util import dt as dt_util
 from .client.commands import UserCommand
 from .client.exceptions import MaticError
 from .client.models import CleaningSessionRecord
+from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
 from .native_completion import match_single_room_completions
 from .plans import (
@@ -51,6 +53,7 @@ from .plans import (
 from .plans import (
     PLAN_FLOOR_TOKEN,
     PLAN_MOTION_TOKEN,
+    PLAN_SESSION_ID,
     CleaningPlanManager,
     CleaningRoom,
     ManagedMotionReplacedError,
@@ -75,6 +78,7 @@ ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS = 1
 SESSION_HISTORY_ATTEMPTS = 151
 SESSION_HISTORY_RETRY_SECONDS = 2
 SESSION_HISTORY_TIMEOUT_SECONDS = 300
+DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS = 10
 OEM_STOP_RECONCILIATION_POLL_SECONDS = 5
 # A completed native leg can leave the robot in ``returning`` while the
 # firmware finishes its dock/settle handoff. Do not dispatch a different
@@ -271,6 +275,12 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
+    managed_session_id = (
+        uuid4()
+        if motion_token is not None
+        and len({(room.cleaning_mode, room.coverage_setting) for room in leg}) == 1
+        else None
+    )
     dispatched_at = dt_util.utcnow()
     params: dict[str, Any] = {
         "rooms": [room.room_id for room in leg],
@@ -280,6 +290,8 @@ async def _async_dispatch_leg_command(
     }
     if motion_token is not None:
         params[PLAN_MOTION_TOKEN] = motion_token
+    if managed_session_id is not None:
+        params[PLAN_SESSION_ID] = str(managed_session_id)
     if len({(room.cleaning_mode, room.coverage_setting) for room in leg}) > 1:
         params["room_coverage"] = [room.coverage_setting for room in leg]
         params["room_modes"] = [room.cleaning_mode for room in leg]
@@ -287,24 +299,92 @@ async def _async_dispatch_leg_command(
         params[PLAN_FLOOR_TOKEN] = floor_token
     if on_dispatch is not None:
         on_dispatch()
-    await hass.services.async_call(
-        VACUUM_DOMAIN,
-        "send_command",
-        {
-            ATTR_ENTITY_ID: entity_id,
-            "command": "clean_rooms",
-            "params": params,
-        },
-        blocking=True,
-        context=call.context,
-    )
+    try:
+        await hass.services.async_call(
+            VACUUM_DOMAIN,
+            "send_command",
+            {
+                ATTR_ENTITY_ID: entity_id,
+                "command": "clean_rooms",
+                "params": params,
+            },
+            blocking=True,
+            context=call.context,
+        )
+    except asyncio.CancelledError:
+        try:
+            await _async_recover_managed_dispatch_identity(
+                session_identity,
+                on_identity,
+                managed_session_id,
+                identity_baseline,
+            )
+        except asyncio.CancelledError:
+            # Preserve the original cancellation while keeping recovery
+            # bounded; an additional cancellation must not strand the caller.
+            pass
+        raise
+    except Exception:
+        # A tracked vacuum service can fail after START reached Hermes, for
+        # example when settings readback times out. Recover cleanup ownership
+        # only when the robot reports the exact session UUID carried by that
+        # command; a changed or merely different identity is never ours to stop.
+        await _async_recover_managed_dispatch_identity(
+            session_identity,
+            on_identity,
+            managed_session_id,
+            identity_baseline,
+        )
+        raise
     observed = await _async_read_session_identity(session_identity)
     identity = observed if observed and observed != identity_baseline else None
+    if managed_session_id is not None and session_identity is not None:
+        if identity is None or not _identity_matches_session(
+            identity, managed_session_id
+        ):
+            raise RoomTakenOverError(
+                "The dispatched native task could not be verified after readback"
+            )
     if on_identity is not None:
         on_identity(identity)
     return _PreparedRoomDispatch(
         leg, history_baseline, dispatched_at, identity_baseline, identity
     )
+
+
+def _identity_matches_session(identity: bytes, session_id: UUID) -> bool:
+    """Correlate an opaque native identity to the UUID in our dispatched command."""
+    try:
+        return uuid_string(identity) == str(session_id)
+    except DecodeError:
+        return False
+
+
+async def _async_recover_managed_dispatch_identity(
+    reader: Callable[[], Awaitable[bytes | None]] | None,
+    on_identity: Callable[[bytes | None], None] | None,
+    session_id: UUID | None,
+    baseline: bytes | None,
+) -> None:
+    """Boundedly recover only this command's identity after an uncertain write."""
+    if reader is None or on_identity is None or session_id is None:
+        return
+    try:
+        async with asyncio.timeout(DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS):
+            while True:
+                observed = await _async_read_session_identity(reader)
+                if observed and observed != baseline:
+                    if _identity_matches_session(observed, session_id):
+                        on_identity(observed)
+                    return
+                await asyncio.sleep(ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS)
+    except TimeoutError:
+        return
+    except Exception as err:
+        _LOGGER.debug(
+            "Managed session identity recovery unavailable (%s)", type(err).__name__
+        )
+        return
 
 
 async def _async_run_room(

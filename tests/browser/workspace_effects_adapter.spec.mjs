@@ -256,6 +256,67 @@ test("an initial unverified empty snapshot fences the retained map and recovers 
   await page.evaluate(() => window.adapterHarness.controller.dispose());
 });
 
+test("authorization loss revokes retained floor proof before returning", async ({ page }) => {
+  await setup(page);
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.backend.pose = async () => ({ position: [4.475, 3.475], source: "latest_pose",
+      revision: 7, poseRevision: 4, floorCoherent: true,
+      mapSessionKey: h.store.value.resources.entry.mapSessionKey, freshness: "live" });
+    return h.controller.refreshPose();
+  });
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.map.exactPose)).toBe(true);
+  const before = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { generation: h.store.value.generation, available: h.store.value.map.available,
+      exactPose: h.store.value.map.exactPose, edit: h.canEditCoordinates(h.store.value),
+      motion: h.canStartMotion(h.store.value), counts: { plans: h.counts.plans,
+        areas: h.counts.areas, history: h.counts.history, scene: h.counts.scene } };
+  });
+  expect(before).toMatchObject({ exactPose: true, edit: true, motion: true });
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.catalogResolve = null;
+    h.backend.catalog = async () => {
+      h.counts.catalog += 1;
+      return await new Promise(resolve => { h.catalogResolve = resolve; });
+    };
+    const failedSnapshot = h.snapshotFor("synthetic-entry");
+    failedSnapshot.identity.floor_mission_id = null;
+    failedSnapshot.identity.floor_verified = false;
+    failedSnapshot.status = { state: "unavailable", reason: "authorization", retryable: false };
+    failedSnapshot.payload.available = false;
+    failedSnapshot.payload.entry = null;
+    h.callbacks[0]({ type: "snapshot", snapshot: failedSnapshot });
+  });
+  await expect.poll(() => page.evaluate(() => Boolean(window.adapterHarness.catalogResolve))).toBe(true);
+  const fenced = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { generation: h.store.value.generation, coherence: h.store.value.coherence,
+      available: h.store.value.map.available, exactPose: h.store.value.map.exactPose,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value),
+      counts: { plans: h.counts.plans, areas: h.counts.areas,
+        history: h.counts.history, scene: h.counts.scene } };
+  });
+  expect(fenced).toEqual({ generation: before.generation + 1, coherence: "verifying",
+    available: before.available, exactPose: false, edit: false, motion: false, counts: before.counts });
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.catalogResolve([h.store.value.resources.entry]);
+  });
+  await expect.poll(() => page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { coherence: h.store.value.coherence,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value) };
+  })).toEqual({ coherence: "current", edit: true, motion: true });
+  await expect.poll(() => page.evaluate(counts => {
+    const h = window.adapterHarness;
+    return h.counts.plans > counts.plans && h.counts.areas > counts.areas
+      && h.counts.scene > counts.scene;
+  }, before.counts)).toBe(true);
+  await page.evaluate(() => window.adapterHarness.controller.dispose());
+});
+
 test("same-identity snapshot health changes immediately close edit and motion guards", async ({ page }) => {
   await setup(page);
   const before = await page.evaluate(() => {

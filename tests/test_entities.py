@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, call, patch
+from uuid import UUID
 
 import pytest
 from homeassistant.components.vacuum.const import VacuumActivity
@@ -45,7 +46,11 @@ from custom_components.matic_robot.client.models import (
 )
 from custom_components.matic_robot.coordinator import MaticCuesEvent
 from custom_components.matic_robot.entity import MaticEntity
-from custom_components.matic_robot.plans import PLAN_MOTION_TOKEN, PlanStopDecision
+from custom_components.matic_robot.plans import (
+    PLAN_MOTION_TOKEN,
+    PLAN_SESSION_ID,
+    PlanStopDecision,
+)
 from custom_components.matic_robot.slam_map_store import (
     CANDIDATE_CLASSIFICATION_SECONDS,
     SlamMapStore,
@@ -1870,7 +1875,11 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
 
     await entity.async_send_command(
         "clean_rooms",
-        {"rooms": ["room-2"], PLAN_MOTION_TOKEN: 7},
+        {
+            "rooms": ["room-2"],
+            PLAN_MOTION_TOKEN: 7,
+            PLAN_SESSION_ID: "11111111-1111-4111-8111-111111111111",
+        },
     )
 
     coverage_call = (
@@ -1882,6 +1891,7 @@ async def test_managed_vacuum_room_clean_requires_settings_readback() -> None:
         "coverage_setting": CoverageSetting.STANDARD,
         "ordered": False,
         "require_settings_readback": True,
+        "session_id": UUID("11111111-1111-4111-8111-111111111111"),
     }
     entry.runtime_data.cleaning_plans.managed_command.assert_called_once_with(
         "synthetic-serial", 7

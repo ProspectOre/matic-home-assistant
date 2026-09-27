@@ -54,7 +54,7 @@ function syntheticDelta(base, scene, baseRevision, revision) {
 }
 
 async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
-  await page.goto("/");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
   await page.evaluate(async () => {
     window.__galleryModule = await import("/map_studio_v4-review/review.js");
   });
@@ -81,7 +81,7 @@ async function loadEffectHarness(page) {
   await page.route("**/plan-recovery-test.js", (route) => route.fulfill({
     contentType: "text/javascript", body: bundle.outputFiles[0].text,
   }));
-  await page.goto("/");
+  await page.goto("/", { waitUntil: "domcontentloaded" });
 }
 
 async function snapshot(page) {
@@ -2994,7 +2994,7 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("opens Custom areas on a blank draft and preserves only an explicit edit", async ({ page }) => {
     const scene = syntheticScene("Room", 10);
-    await page.goto("/");
+    await page.goto("/", { waitUntil: "domcontentloaded" });
     await page.addScriptTag({ url: "/map_studio_v4-review/review.js", type: "module" });
     await page.evaluate(async (sceneBytes) => {
       await customElements.whenDefined("matic-map-panel-v0-4-0");

@@ -400,6 +400,7 @@ export class EffectController {
               !== (entry.mapFloorCoherent && entry.mapSessionVerified);
           if (snapshot.status.reason === "authorization") {
             this.#workspaceFence = null;
+            if (floorVerificationLost) this.#refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
             return;
           }
           const previous = this.#workspaceFence;

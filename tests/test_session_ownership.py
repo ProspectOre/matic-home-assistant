@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -16,7 +17,13 @@ from custom_components.matic_robot.managed_executor import (
     _async_execute_rooms,
     _async_wait_for_owned_resume,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.plans import (
+    PLAN_SESSION_ID,
+    CleaningPlanManager,
+    CleaningRoom,
+    ManagedMotionReplacedError,
+)
+from tests.wire_builders import _session_identity
 
 ROOM = CleaningRoom("room-kitchen", "Kitchen", "vacuum", "standard")
 ORIGINAL = b"synthetic-original-session"
@@ -28,6 +35,10 @@ def fast_identity_polls(monkeypatch):
     monkeypatch.setattr(
         "custom_components.matic_robot.managed_executor.ACTIVE_SESSION_UNKNOWN_RETRY_SECONDS",
         0.001,
+    )
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_executor.DISPATCH_IDENTITY_RECOVERY_TIMEOUT_SECONDS",
+        0.02,
     )
 
 
@@ -79,7 +90,9 @@ async def test_lost_session_releases_plan_without_stop_credit_or_next_leg(
     dispatched = []
 
     async def send_command(call):
+        nonlocal identity
         dispatched.append(call.data)
+        identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
 
     hass.services.async_register("vacuum", "send_command", send_command)
@@ -323,6 +336,56 @@ async def test_started_task_with_unknown_identity_retires_without_stopping(
     assert manager.snapshot("serial")["active_plan"] is None
 
 
+async def test_owned_start_binds_new_identity_before_activity_projection(hass):
+    from custom_components.matic_robot.managed_executor import (
+        _async_wait_for_owned_start,
+    )
+
+    identity = _session_identity(UUID("22222222-2222-4222-8222-222222222222"))
+    reader = AsyncMock(return_value=identity)
+    bound = []
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+
+    state = await _async_wait_for_owned_start(
+        hass,
+        "vacuum.matic",
+        1,
+        None,
+        ROOM,
+        reader,
+        bound.append,
+        b"",
+        None,
+    )
+
+    assert state == "cleaning"
+    assert bound == [identity]
+
+
+async def test_owned_start_wait_honors_cancellation_before_identity_read(hass):
+    from custom_components.matic_robot.managed_executor import (
+        _async_wait_for_owned_start,
+    )
+
+    cancel_event = asyncio.Event()
+    cancel_event.set()
+    reader = AsyncMock(return_value=REPLACEMENT)
+
+    with pytest.raises(PlanCancelledError):
+        await _async_wait_for_owned_start(
+            hass,
+            "vacuum.matic",
+            1,
+            cancel_event,
+            ROOM,
+            reader,
+            lambda _: None,
+            b"",
+            None,
+        )
+    reader.assert_not_awaited()
+
+
 @pytest.mark.parametrize("multi_room", [False, True])
 @pytest.mark.parametrize("identity", [ORIGINAL, REPLACEMENT, None])
 @pytest.mark.parametrize("suspension", ["paused", "low_charge"])
@@ -354,6 +417,9 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
 
     async def dispatch(call):
         dispatched.append(call.data)
+        reader.return_value = _session_identity(
+            UUID(call.data["params"][PLAN_SESSION_ID])
+        )
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
 
     hass.services.async_register("vacuum", "send_command", dispatch)
@@ -398,7 +464,11 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
     )
     await asyncio.wait_for(suspended.wait(), 1)
     # Replace the native session and unload before the next polling interval.
-    reader.return_value = identity
+    reader.return_value = (
+        _session_identity(UUID(dispatched[0]["params"][PLAN_SESSION_ID]))
+        if identity == ORIGINAL
+        else identity
+    )
     await asyncio.wait_for(manager.async_cancel_and_wait("serial"), 1)
     await runner
     if identity == ORIGINAL:
@@ -414,12 +484,10 @@ async def test_unload_cleanup_rechecks_native_owner_before_stop(
 
 
 @pytest.mark.parametrize("multi_room", [False, True])
-@pytest.mark.parametrize(
-    "stale_state,delayed_identity", [("docked", False), ("cleaning", True)]
-)
+@pytest.mark.parametrize("stale_state", ["docked", "cleaning"])
 @pytest.mark.parametrize("final_identity", [ORIGINAL, REPLACEMENT, None, b""])
 async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
-    hass, monkeypatch, multi_room, stale_state, delayed_identity, final_identity
+    hass, monkeypatch, multi_room, stale_state, final_identity
 ):
     from custom_components.matic_robot.client.commands import UserCommand
 
@@ -431,6 +499,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
     identity_changed = asyncio.Event()
     expire_start = asyncio.Event()
     identity = ORIGINAL
+    dispatched_identity = None
     reads = 0
 
     async def unconfirmed_start(*args):
@@ -448,8 +517,6 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         if not dispatched:
             return b""
         reads += 1
-        if delayed_identity and reads <= 2:
-            return b"" if reads == 1 else None
         if bound.is_set():
             await identity_changed.wait()
             expire_start.set()
@@ -457,7 +524,12 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         return identity
 
     async def dispatch(call):
+        nonlocal identity, dispatched_identity
         dispatched.append(call.data)
+        dispatched_identity = _session_identity(
+            UUID(call.data["params"][PLAN_SESSION_ID])
+        )
+        identity = dispatched_identity
         # The native task accepted the command, but HA still has the old
         # activity or an unrelated room. Neither confirms the new start.
         hass.states.async_set("vacuum.matic", stale_state, {"current_area": "Hallway"})
@@ -494,7 +566,7 @@ async def test_start_timeout_stops_only_the_task_bound_before_ha_confirmation(
         )
     )
     await asyncio.wait_for(bound.wait(), 1)
-    identity = final_identity
+    identity = dispatched_identity if final_identity == ORIGINAL else final_identity
     identity_changed.set()
     with pytest.raises(ServiceValidationError) as error:
         await asyncio.wait_for(runner, 1)
@@ -543,9 +615,15 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
 
     async def dispatch(call):
         commands.append(call.data)
+        nonlocal identity
         command_returned.set()
         if dispatch_result == "rejected":
             raise MaticError("command rejected")
+        if dispatch_result == "new_task":
+            identity = REPLACEMENT
+        elif dispatch_result == "cancelled":
+            identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
+            raise asyncio.CancelledError
 
     hass.services.async_register("vacuum", "send_command", dispatch)
     rooms = [ROOM]
@@ -577,28 +655,23 @@ async def test_existing_oem_task_is_not_adopted_by_a_managed_start(
     )
     await asyncio.wait_for(command_returned.wait(), 1)
     if dispatch_result == "new_task":
-        # The unchanged old HA state must not count as the new mission.
-        await asyncio.sleep(0.005)
-        assert not started.is_set()
-        identity = REPLACEMENT
-        await asyncio.wait_for(started.wait(), 1)
-        await manager.async_cancel_and_wait("serial")
-        await runner
-        sender.assert_awaited_once()
-        assert sender.await_args.args[1] is UserCommand.STOP
-    elif dispatch_result == "cancelled":
-        await asyncio.sleep(0.005)
-        await manager.async_cancel_and_wait("serial")
-        await runner
+        with pytest.raises(ServiceValidationError) as error:
+            await runner
+        assert error.value.translation_key == "room_taken_over"
         assert not started.is_set()
         sender.assert_not_awaited()
+    elif dispatch_result == "cancelled":
+        with pytest.raises(asyncio.CancelledError):
+            await runner
+        assert sender.await_count == 1
+        assert sender.await_args.args[1] is UserCommand.STOP
     else:
         with pytest.raises(ServiceValidationError) as error:
             await runner
         assert error.value.translation_key == (
             "robot_command_failed"
             if dispatch_result == "rejected"
-            else "plan_start_timeout"
+            else "room_taken_over"
         )
         assert not started.is_set()
         sender.assert_not_awaited()
@@ -664,7 +737,7 @@ async def test_unexpected_outer_abort_cannot_stop_a_replacement(
     async def dispatch(call):
         nonlocal identity
         commands.append(call.data)
-        identity = ORIGINAL
+        identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
         hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
 
     async def fail_after_replacement(*args, **kwargs):
@@ -718,8 +791,9 @@ async def test_final_dock_cannot_interrupt_an_independent_native_task(
     hass, identity, allowed
 ):
     from custom_components.matic_robot.client.commands import UserCommand
-    from custom_components.matic_robot.managed_executor import _guard_native_commands
-    from custom_components.matic_robot.plans import ManagedMotionReplacedError
+    from custom_components.matic_robot.managed_executor import (
+        _guard_native_commands,
+    )
 
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
@@ -850,9 +924,25 @@ async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, ba
         _async_dispatch_leg_command,
     )
 
-    command = AsyncMock()
-    hass.services.async_register("vacuum", "send_command", command)
-    reader = AsyncMock(side_effect=[transient, baseline, REPLACEMENT])
+    sent = []
+    current_identity = None
+    baseline_reads = iter((transient, baseline))
+
+    async def send_command(call):
+        nonlocal current_identity
+        sent.append(call.data)
+        current_identity = _session_identity(UUID(call.data["params"][PLAN_SESSION_ID]))
+
+    async def read_identity():
+        if current_identity is not None:
+            return current_identity
+        value = next(baseline_reads)
+        if isinstance(value, Exception):
+            raise value
+        return value
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    reader = AsyncMock(side_effect=read_identity)
     identity_observed = []
     call = ServiceCall(
         hass, "matic_robot", "intelligent_clean", {"plan_id": "test-plan"}
@@ -867,8 +957,307 @@ async def test_dispatch_retries_a_transient_unknown_baseline(hass, transient, ba
         session_identity=reader,
         on_identity=identity_observed.append,
     )
-    command.assert_awaited_once()
+    dispatch_session = UUID(sent[0]["params"][PLAN_SESSION_ID])
     assert prepared.native_identity_baseline == baseline
-    assert prepared.native_identity == REPLACEMENT
-    assert identity_observed == [REPLACEMENT]
+    assert prepared.native_identity == _session_identity(dispatch_session)
+    assert identity_observed == [_session_identity(dispatch_session)]
     assert reader.await_count == 3
+
+
+@pytest.mark.parametrize(
+    "reported",
+    ["command", "transient_command", "replacement", "ended", "reader_error"],
+)
+async def test_failed_managed_dispatch_recovers_only_its_exact_session(hass, reported):
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.matic_robot.managed_executor import (
+        _async_dispatch_leg_command,
+    )
+
+    sent = []
+    replacement_identity = _session_identity(
+        UUID("44444444-4444-4444-8444-444444444444")
+    )
+    current_identity = b""
+    recovery_reads = 0
+
+    async def fail_after_dispatch(call):
+        nonlocal current_identity
+        sent.append(call.data)
+        session_id = UUID(call.data["params"][PLAN_SESSION_ID])
+        current_identity = (
+            _session_identity(session_id)
+            if reported in {"command", "transient_command"}
+            else replacement_identity
+            if reported == "replacement"
+            else b""
+        )
+        raise HomeAssistantError("synthetic readback failure")
+
+    hass.services.async_register("vacuum", "send_command", fail_after_dispatch)
+
+    async def read_identity():
+        nonlocal recovery_reads
+        recovery_reads += 1
+        if reported == "reader_error" and sent:
+            raise RuntimeError("synthetic unexpected read failure")
+        if reported == "transient_command" and recovery_reads == 1:
+            raise MaticError("synthetic transient read failure")
+        return current_identity
+
+    reader = AsyncMock(side_effect=read_identity)
+    bound = []
+
+    expected_failure = (
+        "synthetic dispatch failure"
+        if reported == "pre_transmission"
+        else "synthetic readback failure"
+    )
+    with pytest.raises(HomeAssistantError, match=expected_failure):
+        await _async_dispatch_leg_command(
+            hass,
+            ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+            "vacuum.matic",
+            [ROOM],
+            7,
+            None,
+            session_identity=reader,
+            on_identity=bound.append,
+        )
+
+    command_identity = _session_identity(UUID(sent[0]["params"][PLAN_SESSION_ID]))
+    assert command_identity != replacement_identity
+    assert bound == (
+        [current_identity] if reported in {"command", "transient_command"} else []
+    )
+
+
+@pytest.mark.parametrize(
+    "reported",
+    ["command", "transient_command", "replacement", "pre_transmission", "unreadable"],
+)
+async def test_failed_managed_dispatch_stops_only_its_exact_session(hass, reported):
+    from homeassistant.exceptions import HomeAssistantError
+
+    from custom_components.matic_robot.client.commands import UserCommand
+    from custom_components.matic_robot.managed_executor import _async_run_room
+
+    manager = SimpleNamespace(
+        async_mark_started=AsyncMock(return_value=False),
+        async_mark_failed=AsyncMock(),
+        async_replace_managed_motion=AsyncMock(),
+    )
+    replacement_identity = _session_identity(
+        UUID("44444444-4444-4444-8444-444444444444")
+    )
+    current_identity = b""
+
+    async def fail_after_dispatch(call):
+        nonlocal current_identity
+        if reported == "pre_transmission":
+            raise HomeAssistantError("synthetic dispatch failure")
+        session_id = UUID(call.data["params"][PLAN_SESSION_ID])
+        current_identity = (
+            _session_identity(session_id)
+            if reported in {"command", "transient_command"}
+            else replacement_identity
+            if reported == "replacement"
+            else MaticError("synthetic readback unavailable")
+        )
+        raise HomeAssistantError("synthetic readback failure")
+
+    hass.services.async_register("vacuum", "send_command", fail_after_dispatch)
+
+    reads = 0
+
+    async def read_identity():
+        nonlocal reads
+        reads += 1
+        if reported == "transient_command" and reads == 2:
+            raise MaticError("synthetic transient read failure")
+        if isinstance(current_identity, Exception):
+            raise current_identity
+        return current_identity
+
+    sender = AsyncMock()
+    call = ServiceCall(
+        hass,
+        "matic_robot",
+        "intelligent_clean",
+        {
+            "plan_id": "synthetic-plan",
+            "start_timeout": 1,
+            "completion_timeout": 1,
+            "return_to_base": True,
+        },
+    )
+
+    expected_failure = (
+        "synthetic dispatch failure"
+        if reported == "pre_transmission"
+        else "synthetic readback failure"
+    )
+    with pytest.raises(HomeAssistantError, match=expected_failure):
+        await _async_run_room(
+            hass,
+            call,
+            manager,
+            "vacuum.matic",
+            "synthetic-serial",
+            ROOM,
+            motion_token=7,
+            session_history=AsyncMock(return_value=()),
+            managed_user_command=sender,
+            session_identity=read_identity,
+        )
+
+    if reported in {"command", "transient_command"}:
+        sender.assert_awaited_once_with(7, UserCommand.STOP)
+    else:
+        sender.assert_not_awaited()
+    manager.async_mark_failed.assert_awaited_once()
+
+
+@pytest.mark.parametrize("reported", ["command", "replacement", "double_cancel"])
+async def test_cancelled_managed_dispatch_stops_only_its_exact_session(hass, reported):
+    from custom_components.matic_robot.client.commands import UserCommand
+    from custom_components.matic_robot.managed_executor import _async_execute_rooms
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    current_identity = b""
+    transmitted = asyncio.Event()
+    recovery_started = asyncio.Event()
+    release_recovery = asyncio.Event()
+    replacement_identity = _session_identity(
+        UUID("55555555-5555-4555-8555-555555555555")
+    )
+    sent = []
+
+    async def stalled_after_transmission(call):
+        nonlocal current_identity
+        session_id = UUID(call.data["params"][PLAN_SESSION_ID])
+        current_identity = (
+            _session_identity(session_id)
+            if reported in {"command", "double_cancel"}
+            else replacement_identity
+        )
+        transmitted.set()
+        await asyncio.Future()
+
+    async def read_identity():
+        if reported == "double_cancel" and transmitted.is_set():
+            recovery_started.set()
+            await release_recovery.wait()
+        return current_identity
+
+    async def send_managed_command(token, command):
+        async with manager.managed_command("serial", token):
+            sent.append(command)
+
+    hass.states.async_set("vacuum.matic", "cleaning", {"current_area": ROOM.name})
+    hass.services.async_register("vacuum", "send_command", stalled_after_transmission)
+    runner = asyncio.create_task(
+        _async_execute_rooms(
+            hass,
+            ServiceCall(
+                hass,
+                "matic_robot",
+                "intelligent_clean",
+                {
+                    "plan_id": "synthetic-plan",
+                    "start_timeout": 1,
+                    "completion_timeout": 1,
+                    "return_to_base": True,
+                },
+            ),
+            manager,
+            "vacuum.matic",
+            "serial",
+            [ROOM],
+            session_identity=read_identity,
+            session_history=AsyncMock(return_value=()),
+            managed_user_command=send_managed_command,
+        )
+    )
+    await transmitted.wait()
+    runner.cancel()
+    if reported == "double_cancel":
+        await recovery_started.wait()
+        runner.cancel()
+        release_recovery.set()
+    with pytest.raises(asyncio.CancelledError):
+        await runner
+    assert sent == ([UserCommand.STOP] if reported == "command" else [])
+
+
+async def test_local_replacement_between_owner_read_and_stop_suppresses_stop(hass):
+    from custom_components.matic_robot.client.commands import UserCommand
+    from custom_components.matic_robot.managed_executor import _guard_native_commands
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    token = manager.begin_managed_motion("serial")
+    expected_identity = _session_identity(UUID("66666666-6666-4666-8666-666666666666"))
+    identity_read = asyncio.Event()
+    release_identity = asyncio.Event()
+    transmitted = []
+
+    async def read_identity():
+        identity_read.set()
+        await release_identity.wait()
+        return expected_identity
+
+    async def send_command(command_token, command):
+        async with manager.managed_command("serial", command_token):
+            transmitted.append(command)
+
+    guarded = _guard_native_commands(
+        send_command, manager, "serial", read_identity, lambda: expected_identity
+    )
+    assert guarded is not None
+    stop = asyncio.create_task(guarded(token, UserCommand.STOP))
+    await identity_read.wait()
+    async with manager.external_motion("serial"):
+        pass
+    release_identity.set()
+    with pytest.raises(ManagedMotionReplacedError):
+        await stop
+    assert transmitted == []
+
+
+@pytest.mark.parametrize("replacement", ["different", "ended"])
+async def test_successful_managed_dispatch_rejects_a_replaced_or_missing_session(
+    hass, replacement
+):
+    from custom_components.matic_robot.managed_executor import (
+        _async_dispatch_leg_command,
+    )
+
+    current_identity = b""
+    replacement_identity = _session_identity(
+        UUID("55555555-5555-4555-8555-555555555555")
+    )
+
+    async def replace_after_readback(_call):
+        nonlocal current_identity
+        current_identity = replacement_identity if replacement == "different" else b""
+
+    hass.services.async_register("vacuum", "send_command", replace_after_readback)
+    reader = AsyncMock(side_effect=lambda: current_identity)
+    bound = []
+
+    with pytest.raises(RoomTakenOverError, match="could not be verified"):
+        await _async_dispatch_leg_command(
+            hass,
+            ServiceCall(hass, "matic_robot", "intelligent_clean", {}),
+            "vacuum.matic",
+            [ROOM],
+            7,
+            None,
+            session_identity=reader,
+            on_identity=bound.append,
+        )
+
+    assert bound == []

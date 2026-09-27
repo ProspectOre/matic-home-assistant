@@ -8,6 +8,7 @@ nothing in this module encodes a real robot credential, address, or map.
 from __future__ import annotations
 
 import struct
+from uuid import UUID
 
 
 def _varint(value: int) -> bytes:
@@ -38,6 +39,13 @@ def _fixed32(number: int, value: float) -> bytes:
 def _fixed64(number: int, value: int) -> bytes:
     """Encode a 64-bit fixed (wire type 1) field."""
     return _varint((number << 3) | 1) + struct.pack("<Q", value)
+
+
+def _session_identity(session_id: UUID) -> bytes:
+    """Encode the synthetic UUID fields returned by native session reads."""
+    return _fixed64(1, session_id.int >> 64) + _fixed64(
+        2, session_id.int & ((1 << 64) - 1)
+    )
 
 
 # Aliases matching the historical names used by individual test modules.

@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import asdict
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
+from uuid import UUID
 
 import pytest
 from homeassistant.core import ServiceCall
@@ -20,7 +21,12 @@ from custom_components.matic_robot.managed_executor import (
     RoomRunOutcome,
     _async_execute_rooms,
 )
-from custom_components.matic_robot.plans import CleaningPlanManager, CleaningRoom
+from custom_components.matic_robot.plans import (
+    PLAN_SESSION_ID,
+    CleaningPlanManager,
+    CleaningRoom,
+)
+from tests.wire_builders import _session_identity
 
 LAYOUTS = (
     (("mop", "quick"), ("mop", "standard"), ("mop", "heavy_duty")),
@@ -87,7 +93,12 @@ async def test_executor_preserves_room_settings_and_verified_completion(
         else:
             assert "room_modes" not in params
             assert "room_coverage" not in params
-        identity = b"synthetic-task"
+        session_id = params.get(PLAN_SESSION_ID)
+        identity = (
+            _session_identity(UUID(session_id))
+            if isinstance(session_id, str)
+            else b"synthetic-task"
+        )
         started_at = dt_util.utcnow().isoformat()
         hass.states.async_set(
             "vacuum.matic", "cleaning", {"current_area": expected[0].name}
@@ -259,7 +270,12 @@ async def test_after_room_stop_stops_once_and_leaves_remaining_room_uncredited(
     async def send(service_call):
         nonlocal identity, started_at
         assert service_call.data["params"]["rooms"] == [room.room_id for room in rooms]
-        identity = b"synthetic-task"
+        session_id = service_call.data["params"].get(PLAN_SESSION_ID)
+        identity = (
+            _session_identity(UUID(session_id))
+            if isinstance(session_id, str)
+            else b"synthetic-task"
+        )
         started_at = dt_util.utcnow().isoformat()
         hass.states.async_set(
             "vacuum.matic", "cleaning", {"current_area": rooms[0].name}

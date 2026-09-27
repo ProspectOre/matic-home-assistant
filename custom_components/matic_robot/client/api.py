@@ -1254,9 +1254,13 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         coverage_setting: CoverageSetting,
         ordered: bool = False,
         require_settings_readback: bool = False,
+        session_id: UUID | None = None,
     ) -> None:
         """Start an exact normal-coverage command for local room IDs."""
-        session_id = uuid4() if require_settings_readback else None
+        if not require_settings_readback and session_id is not None:
+            raise MaticError("An untracked coverage command cannot own a session ID")
+        if require_settings_readback and session_id is None:
+            session_id = uuid4()
         payload = encode_coverage_command(
             mission_id=floor_plan.mission_id,
             partition_id=floor_plan.partition_protocol_id,

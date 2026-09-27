@@ -8,6 +8,7 @@ from contextlib import nullcontext
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 from unittest.mock import call as mock_call
+from uuid import UUID
 
 import pytest
 from google.protobuf.message import DecodeError
@@ -1783,6 +1784,7 @@ def _operational_state_for_codes(*codes, error_codes=()):
 
 async def test_tracked_coverage_allows_retained_identity_when_charging():
     client = MaticHermesClient("robot.invalid", 16320)
+    session_id = UUID("11111111-1111-4111-8111-111111111111")
     client.async_get_cleaning_session_identity = AsyncMock(
         return_value=b"retained-native-session"
     )
@@ -1801,6 +1803,7 @@ async def test_tracked_coverage_allows_retained_identity_when_charging():
         cleaning_mode=CleaningMode.VACUUM,
         coverage_setting=CoverageSetting.QUICK,
         require_settings_readback=True,
+        session_id=session_id,
     )
 
     client._async_send_user_payload.assert_awaited_once()
@@ -1811,6 +1814,29 @@ async def test_tracked_coverage_allows_retained_identity_when_charging():
         ]
         == b"retained-native-session"
     )
+    assert client._async_wait_for_coverage_readback.await_args.kwargs[
+        "expected_session_id"
+    ] == str(session_id)
+
+
+async def test_untracked_coverage_rejects_a_managed_session_id():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client._async_send_user_payload = AsyncMock()
+    with pytest.raises(MaticError, match="cannot own a session ID"):
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.QUICK,
+            session_id=UUID("11111111-1111-4111-8111-111111111111"),
+        )
+
+    client._async_send_user_payload.assert_not_awaited()
 
 
 @pytest.mark.parametrize(
