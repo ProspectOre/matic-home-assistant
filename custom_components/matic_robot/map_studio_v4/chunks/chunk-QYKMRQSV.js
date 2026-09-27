@@ -16,7 +16,7 @@ var w=100,d1=1e3,j=.2,m1=2.5,X=64,W2=C=>!C||typeof C!="object"?!1:typeof C.type=
 --ms-bar-text: var(--app-header-text-color, var(--ms-text));
 --ms-local: var(--card-background-color, #fff);
 --ms-text: var(--primary-text-color, #1f2933);
---ms-text-quiet: var(--secondary-text-color, #5b6b75);
+--ms-text-quiet: color-mix(in srgb, var(--secondary-text-color, #5b6b75) 90%, var(--ms-text));
 --ms-text-disabled: var(--disabled-text-color, #8a959c);
 --ms-line: var(--divider-color, color-mix(in srgb, var(--ms-text) 14%, transparent));
 --ms-line-strong: color-mix(in srgb, var(--ms-text) 26%, transparent);
@@ -68,7 +68,7 @@ var w=100,d1=1e3,j=.2,m1=2.5,X=64,W2=C=>!C||typeof C!="object"?!1:typeof C.type=
 --ms-surface-sunken: var(--secondary-background-color, #141e23);
 --ms-local: var(--card-background-color, #1a262d);
 --ms-text: var(--primary-text-color, #eef4f7);
---ms-text-quiet: var(--secondary-text-color, #a4b3bc);
+--ms-text-quiet: color-mix(in srgb, var(--secondary-text-color, #a4b3bc) 90%, var(--ms-text));
 --ms-text-disabled: var(--disabled-text-color, #7c8a92);
 --ms-danger: var(--error-color, #f2837b);
 --ms-warning: var(--warning-color, #e0a63a);
@@ -162,7 +162,7 @@ white-space: nowrap;
 .ms-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-danger) 10%, var(--ms-local)); }
 }
 .ms-btn[aria-pressed="true"], .ms-btn[aria-checked="true"] {
-color: var(--ms-accent);
+color: var(--ms-text);
 background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
 border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line));
 }

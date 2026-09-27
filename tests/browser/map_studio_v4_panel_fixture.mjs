@@ -22,8 +22,12 @@ function sceneBytes() {
 
 const emptyPlans = { rooms: [], plans: [], selected_plan: null };
 
-export async function installPanelFixture(page, { planResponses = [emptyPlans] } = {}) {
-  const bundle = await build({
+export async function installPanelFixture(page, {
+  initialPlanCatalog = emptyPlans,
+  moduleSource = "typescript",
+} = {}) {
+  const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
+  const bundle = moduleSource === "typescript" ? await build({
     stdin: {
       contents: 'export { MATIC_MAP_PANEL_TAG } from "./frontend/map-studio-v4/panel";',
       resolveDir: process.cwd(),
@@ -31,7 +35,7 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
     bundle: true,
     format: "esm",
     write: false,
-  });
+  }) : null;
   await page.addInitScript(() => {
     window.__panelFixtureResources = {
       workersCreated: 0, workersTerminated: 0, urlsCreated: 0, urlsRevoked: 0,
@@ -70,10 +74,12 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
       return remove.call(this, type, listener, options);
     };
   });
-  await page.route(`**${PANEL_MODULE}`, (route) => route.fulfill({
-    contentType: "text/javascript",
-    body: bundle.outputFiles[0].text,
-  }));
+  if (bundle) {
+    await page.route(`**${PANEL_MODULE}`, (route) => route.fulfill({
+      contentType: "text/javascript",
+      body: bundle.outputFiles[0].text,
+    }));
+  }
   await page.goto("/");
   await page.evaluate(async ({ module, scenes, plans }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
@@ -121,7 +127,35 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
     const pendingHistoryScenes = [];
     const serviceCalls = [];
     let planReads = 0;
-    let savedPlanResponses = 0;
+    const planCatalog = structuredClone(plans || { rooms: [], plans: [], selected_plan: null });
+    const applySavedPlan = (data) => {
+      const plan = planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
+      if (!plan) throw new Error(`unknown synthetic plan: ${data.plan_id}`);
+      plan.name = data.name;
+      plan.enabled = data.enabled;
+      plan.run_behavior = data.run_behavior;
+      plan.return_to_base = data.return_to_base;
+      plan.finish_current_room = data.finish_current_room;
+      plan.finish_current_room_threshold = data.finish_current_room_threshold;
+      plan.room_order = data.rooms.map((room) => room.room);
+      plan.rooms = data.rooms.map((room) => ({
+        room_id: room.room,
+        cleaning_mode: room.cleaning_mode,
+        coverage_setting: room.coverage_setting,
+        cadence: room.cadence && {
+          scope: room.cadence.scope,
+          mop_every_n: room.cadence.mop_every_n,
+          coverage_every_n: room.cadence.coverage_every_n,
+          // save_plan clears this when coverage cadence is disabled; backend tests cover it.
+          periodic_coverage_setting: room.cadence.coverage_every_n == null
+            ? null
+            : room.cadence.periodic_coverage_setting,
+          do_mop_next: room.cadence.do_mop_next,
+          do_coverage_next: room.cadence.do_coverage_next,
+        },
+      }));
+      if (data.select) planCatalog.selected_plan = plan.id;
+    };
     const fetchWithAuth = async (path) => {
       if (path.endsWith("slam_entries")) return json(catalog);
       if (path.endsWith("slam_history/synthetic")) return json(history);
@@ -129,8 +163,7 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
       if (path.endsWith("areas/synthetic")) return json(areas);
       if (path.endsWith("plans/synthetic")) {
         planReads += 1;
-        const responseIndex = Math.min(savedPlanResponses, plans.length - 1);
-        return json(structuredClone(plans[responseIndex]));
+        return json(structuredClone(planCatalog));
       }
       if (path.endsWith("slam_scene/history")) {
         return new Promise((resolve) => pendingHistoryScenes.push(() => resolve(new Response(new Uint8Array(scenes), {
@@ -153,7 +186,7 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
         callService: async (domain, service, data, target) => {
           serviceCalls.push({ domain, service, data: structuredClone(data), target: structuredClone(target) });
           if (domain === "matic_robot" && service === "save_plan") {
-            savedPlanResponses = Math.min(savedPlanResponses + 1, plans.length - 1);
+            applySavedPlan(data);
           }
         },
       };
@@ -173,9 +206,9 @@ export async function installPanelFixture(page, { planResponses = [emptyPlans] }
         serviceCalls: serviceCalls.length,
       }),
     };
-  }, { module: PANEL_MODULE, scenes: sceneBytes(), plans: planResponses });
+  }, { module: modulePath, scenes: sceneBytes(), plans: initialPlanCatalog });
   return {
     panelTag: await page.evaluate(() => window.__panelFixture.panelTag),
-    modulePath: PANEL_MODULE,
+    modulePath,
   };
 }

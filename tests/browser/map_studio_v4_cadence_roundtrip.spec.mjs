@@ -1,13 +1,14 @@
+import AxeBuilder from "@axe-core/playwright";
 import { expect, test } from "@playwright/test";
 import { installPanelFixture } from "./map_studio_v4_panel_fixture.mjs";
 
-const cadence = (scope, mopEvery, coverageEvery, periodicCoverage) => ({
+const cadence = (scope, mopEvery, coverageEvery, periodicCoverage, doMopNext = false, doCoverageNext = false) => ({
   scope,
   mop_every_n: mopEvery,
   coverage_every_n: coverageEvery,
   periodic_coverage_setting: periodicCoverage,
-  do_mop_next: false,
-  do_coverage_next: false,
+  do_mop_next: doMopNext,
+  do_coverage_next: doCoverageNext,
 });
 
 const planCatalog = ({ enabled = true, policy }) => ({
@@ -26,23 +27,44 @@ const planCatalog = ({ enabled = true, policy }) => ({
   }],
 });
 
-test("plan editor submits cadence edits and renders scripted saved-plan catalogs", async ({ page }) => {
+const expectNoSeriousAccessibilityViolations = async (page, workflow) => {
+  const waitForTransitions = () => page.evaluate(async () => {
+    const transitions = document.getAnimations({ subtree: true })
+      .filter((animation) => "transitionProperty" in animation);
+    await Promise.all(transitions.map((animation) => animation.finished.catch(() => undefined)));
+  });
+
+  try {
+    for (const colorScheme of ["light", "dark"]) {
+      await page.emulateMedia({ colorScheme, reducedMotion: "reduce" });
+      await waitForTransitions();
+      const { violations } = await new AxeBuilder({ page }).analyze();
+      const serious = violations
+        .filter(({ impact }) => impact === "serious" || impact === "critical")
+        .map(({ id, impact, help, nodes }) => ({
+          id,
+          impact,
+          help,
+          nodes: nodes.map(({ target, failureSummary }) => ({ target, failureSummary })),
+        }));
+      expect(serious, `${workflow} (${colorScheme}) has serious or critical accessibility violations`).toEqual([]);
+    }
+  } finally {
+    await page.emulateMedia({ colorScheme: "light", reducedMotion: null });
+    await waitForTransitions();
+  }
+};
+
+const exerciseCadenceRoundtrip = async ({ page }) => {
   const privateInitial = cadence("plan", 2, 3, "quick");
-  const sharedEdited = cadence("shared", 7, 5, "heavy_duty");
-  const privateEdited = cadence("plan", 4, 2, "standard");
+  const sharedEdited = cadence("shared", 7, 5, "heavy_duty", true, true);
+  const privateEdited = cadence("plan", 4, 2, "standard", true, true);
+  const cadenceDisabledWrite = cadence("plan", null, null, "standard");
   const cadenceDisabled = cadence("plan", null, null, null);
   const cadenceReenabled = cadence("plan", 4, 2, "standard");
-  // The fixture models a canonicalized server readback. Python policy tests
-  // verify that the backend clears this setting when cadence is disabled.
-  const cadenceDisabledWrite = cadence("plan", null, null, "standard");
   const fixture = await installPanelFixture(page, {
-    planResponses: [
-      planCatalog({ policy: privateInitial }),
-      planCatalog({ policy: sharedEdited }),
-      planCatalog({ policy: privateEdited }),
-      planCatalog({ policy: cadenceDisabled }),
-      planCatalog({ policy: cadenceReenabled }),
-    ],
+    initialPlanCatalog: planCatalog({ policy: privateInitial }),
+    moduleSource: "packaged",
   });
   await page.evaluate(() => {
     const panel = window.__panelFixture.createPanel();
@@ -59,6 +81,7 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
     const resource = document.querySelector("[data-cadence-roundtrip='true']").getWorkspaceSnapshot().resources.plans;
     return { status: resource.status, problem: resource.problem };
   })).toEqual({ status: "ready", problem: null });
+  await expectNoSeriousAccessibilityViolations(page, "ready workspace");
   await panel.getByRole("button", { name: /^Run a plan/ }).click();
   const editPlan = panel.getByRole("button", { name: /Daily clean.*Edit plan/ });
   await expect(editPlan).toBeVisible();
@@ -66,10 +89,19 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
 
   const schedule = panel.getByLabel("Plan rooms").locator("details").first();
   await schedule.locator("summary").click();
+  if ((page.viewportSize()?.width ?? Infinity) <= 600) {
+    const sheet = panel.locator(".mobile-sheet");
+    await expect(sheet).toBeVisible();
+    await expect(sheet).toHaveAttribute("data-detent", "full");
+    await expect(sheet.locator(".sheet-body")).toBeVisible();
+  }
+  await expectNoSeriousAccessibilityViolations(page, "plan cadence editor");
   const scope = schedule.getByLabel("Schedule scope for Kitchen");
   const mopInterval = schedule.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
   const coverageInterval = schedule.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");
   const coverageSetting = schedule.getByLabel("Periodic coverage setting for Kitchen");
+  const mopNext = schedule.getByLabel("Do vacuum and mop on the next clean for Kitchen");
+  const coverageNext = schedule.getByLabel("Use periodic coverage on the next clean for Kitchen");
   const save = panel.getByRole("button", { name: "Save plan", exact: true });
 
   const waitForReadback = async (saveCount, expectedEnabled, expectedPolicy) => {
@@ -91,8 +123,8 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
         mopEveryN: expectedPolicy.mop_every_n,
         coverageEveryN: expectedPolicy.coverage_every_n,
         periodicCoverageSetting: expectedPolicy.periodic_coverage_setting,
-        doMopNext: false,
-        doCoverageNext: false,
+        doMopNext: expectedPolicy.do_mop_next,
+        doCoverageNext: expectedPolicy.do_coverage_next,
       },
       savedEnabled: expectedEnabled,
       savedCadence: {
@@ -100,8 +132,8 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
         mopEveryN: expectedPolicy.mop_every_n,
         coverageEveryN: expectedPolicy.coverage_every_n,
         periodicCoverageSetting: expectedPolicy.periodic_coverage_setting,
-        doMopNext: false,
-        doCoverageNext: false,
+        doMopNext: expectedPolicy.do_mop_next,
+        doCoverageNext: expectedPolicy.do_coverage_next,
       },
     });
   };
@@ -110,6 +142,8 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
   await mopInterval.fill("7");
   await coverageInterval.fill("5");
   await coverageSetting.selectOption("heavy_duty");
+  await mopNext.check();
+  await coverageNext.check();
   await save.click();
   await waitForReadback(1, true, sharedEdited);
   await expect(scope).toHaveValue("shared");
@@ -124,6 +158,9 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
   await expect(reopenedSchedule.getByLabel("Schedule scope for Kitchen")).toHaveValue("shared");
   await expect(reopenedSchedule.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100")).toHaveValue("7");
   await expect(reopenedSchedule.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100")).toHaveValue("5");
+  await expect(reopenedSchedule.getByLabel("Periodic coverage setting for Kitchen")).toHaveValue("heavy_duty");
+  await expect(reopenedSchedule.getByLabel("Do vacuum and mop on the next clean for Kitchen")).toBeChecked();
+  await expect(reopenedSchedule.getByLabel("Use periodic coverage on the next clean for Kitchen")).toBeChecked();
 
   await scope.selectOption("plan");
   await mopInterval.fill("4");
@@ -138,6 +175,8 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
   if (!(await schedule.evaluate((details) => details.open))) {
     await schedule.locator("summary").click();
   }
+  await mopNext.uncheck();
+  await coverageNext.uncheck();
   await mopInterval.fill("");
   await coverageInterval.fill("");
   await save.click();
@@ -180,4 +219,7 @@ test("plan editor submits cadence edits and renders scripted saved-plan catalogs
     target: { entity_id: "vacuum.synthetic" },
   })));
   expect(await page.evaluate(() => window.__panelFixture.planReads)).toBeGreaterThanOrEqual(5);
-});
+};
+
+test("plan editor saves cadence choices and restores them from the packaged panel @safety", exerciseCadenceRoundtrip);
+test("plan editor restores cadence choices on touch viewports @mobile", exerciseCadenceRoundtrip);

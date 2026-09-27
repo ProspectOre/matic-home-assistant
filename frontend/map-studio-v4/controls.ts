@@ -68,7 +68,7 @@ white-space: nowrap;
 .ms-btn--danger:hover:not(:disabled):not([aria-disabled="true"]) { background: color-mix(in srgb, var(--ms-danger) 10%, var(--ms-local)); }
 }
 .ms-btn[aria-pressed="true"], .ms-btn[aria-checked="true"] {
-color: var(--ms-accent);
+color: var(--ms-text);
 background: color-mix(in srgb, var(--ms-accent) 12%, var(--ms-local));
 border-color: color-mix(in srgb, var(--ms-accent) 45%, var(--ms-line));
 }

@@ -3346,6 +3346,29 @@ test.describe("Map Studio v0.4 foundation", () => {
 
   test("keeps first-use supporting copy at AA contrast in light and dark themes", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.addScriptTag({
+      type: "module",
+      content: `
+        import { createGalleryState, withGalleryRoomPreview } from "/map_studio_v4-review/review.js";
+        const rooms = createGalleryState("rooms");
+        const roomIds = ["room-a", "room-b"];
+        window.__contrastGalleryStates = {
+          preview: withGalleryRoomPreview({
+            ...rooms,
+            selection: {
+              ...rooms.selection,
+              roomIds,
+              roomSettings: roomIds.map((roomId) => ({
+                roomId,
+                cleaningMode: "vacuum",
+                coverageSetting: "standard",
+              })),
+            },
+          }),
+          empty: { ...rooms, selection: { ...rooms.selection, roomIds: [] } },
+        };
+      `,
+    });
 
     const contrastRatios = async (selector) => gallery.locator(selector).evaluateAll((elements) => {
       const channel = (value) => {
@@ -3386,28 +3409,12 @@ test.describe("Map Studio v0.4 foundation", () => {
       await gallery.evaluate((element) => element.setScenario("ready"));
       await expectContrast(".quick-actions .ms-row__body small");
       await expectContrast(".floor-switcher");
-      await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4-review/review.js");
-        const rooms = module.createGalleryState("rooms");
-        const roomIds = ["room-a", "room-b"];
-        element.replaceWorkspaceState(module.withGalleryRoomPreview({
-          ...rooms,
-          selection: {
-            ...rooms.selection,
-            roomIds,
-            roomSettings: roomIds.map((roomId) => ({
-              roomId,
-              cleaningMode: "vacuum",
-              coverageSetting: "standard",
-            })),
-          },
-        }));
+      await gallery.evaluate((element) => {
+        element.replaceWorkspaceState(window.__contrastGalleryStates.preview);
       });
       await expectContrast(".action-summary");
-      await gallery.evaluate(async (element) => {
-        const module = await import("/map_studio_v4-review/review.js");
-        const rooms = module.createGalleryState("rooms");
-        element.replaceWorkspaceState({ ...rooms, selection: { ...rooms.selection, roomIds: [] } });
+      await gallery.evaluate((element) => {
+        element.replaceWorkspaceState(window.__contrastGalleryStates.empty);
       });
       await expectContrast(".action-reason");
       await gallery.evaluate((element) => element.setScenario("draw"));
