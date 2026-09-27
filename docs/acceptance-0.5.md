@@ -10,15 +10,18 @@ verified” means v0.4.6 regressions remain covered, not every 0.5 scenario. “
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
 - The 0.5 implementation branch follows the stable v0.4.6 baseline (`52166df`);
-  HACS and Python package metadata say `0.5.0`. The full suite passes 3,534 tests at
-  100% (15,832 statements), plus Ruff, format, strict mypy (61 files), privacy,
-  and clean-staging build/archive/fresh-import checks. The browser flake fix now
+  HACS and Python package metadata say `0.5.0`. The full suite passes 3,591 tests at
+  100% (15,909 statements), plus Ruff, format, strict mypy (61 files), privacy,
+  and clean-staging build/archive/fresh-import checks. Managed mixed legs carry
+  one preallocated UUID through the vacuum service and both existing field-6
+  payloads; a replacement during post-command refresh is rejected without
+  binding or stopping it. The browser flake fix now
   passes 10 Chromium, 3 WebKit, and 3 Firefox-safety repeats. A previous hosted
   candidate passed all 796 browser cases; a later run exposed a garbage-collected
   test import, now corrected to use the module retained by `loadGallery`. The
   current exact-head CI and regular review remain required before merge. Tracked
-  starts bind a generated UUID to command and
-  active-session identity, then compare goal values. Hermes has no verified
+  starts bind a generated UUID to command and active-session identity,
+  including heterogeneous mixed legs, then compare goal values. Hermes has no verified
   plan-generation marker, so matching is consistency-only: it never credits
   periodic coverage, due coverage stays due, and legacy proof flags are discarded.
   Preview aborts release logical FIFO turns while a two-wire cap remains until

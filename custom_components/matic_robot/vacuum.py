@@ -302,6 +302,7 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                         room_coverage,
                         room_modes,
                         first_room_name=rooms[0].name,
+                        session_id=managed_session_id,
                         require_current=require_current,
                         require_owned=require_owned,
                         prepare_stop=prepare_stop,
@@ -662,19 +663,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
             options = self._clean_options(params)
             motion_token = self._motion_token(params)
             managed_session_id = self._managed_session_id(params)
-            mixed_settings = "room_coverage" in options or "room_modes" in options
-            if managed_session_id is not None and (
-                motion_token is None or mixed_settings
-            ):
+            if managed_session_id is not None and motion_token is None:
                 raise _validation_error(
                     "The managed session ID is invalid for this room command",
                     "invalid_plan_command",
                 )
-            if (
-                motion_token is not None
-                and not mixed_settings
-                and managed_session_id is None
-            ):
+            if motion_token is not None and managed_session_id is None:
                 raise _validation_error(
                     "The managed room command has no session ID",
                     "invalid_plan_command",

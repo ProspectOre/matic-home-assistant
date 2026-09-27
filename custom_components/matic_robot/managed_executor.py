@@ -275,12 +275,7 @@ async def _async_dispatch_leg_command(
         raise _validation_error(
             "The robot's room map is unavailable", "room_plan_unavailable"
         )
-    managed_session_id = (
-        uuid4()
-        if motion_token is not None
-        and len({(room.cleaning_mode, room.coverage_setting) for room in leg}) == 1
-        else None
-    )
+    managed_session_id = uuid4() if motion_token is not None else None
     dispatched_at = dt_util.utcnow()
     params: dict[str, Any] = {
         "rooms": [room.room_id for room in leg],

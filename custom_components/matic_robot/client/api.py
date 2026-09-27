@@ -1308,6 +1308,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         rollback_stop: Callable[[], Awaitable[None]],
         on_recovery_stop_transmitted: Callable[[], None] | None = None,
         checkpoint_initial_session: Callable[[str], Awaitable[None]] | None = None,
+        session_id: UUID | None = None,
     ) -> None:
         """Start then update only our accepted, still-current native mission.
 
@@ -1322,6 +1323,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             region_ids=region_ids,
             settings=settings,
             modes=modes,
+            session_id=session_id,
         )
         expected_goals = Counter(coverage_command_goal_signatures(commands.update))
         require_current()

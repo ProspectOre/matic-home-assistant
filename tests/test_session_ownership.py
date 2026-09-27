@@ -1017,6 +1017,91 @@ async def test_successful_dispatch_recovers_transient_post_dispatch_identity_rea
     assert reader.await_count == 3
 
 
+async def test_mixed_dispatch_rejects_replacement_during_vacuum_refresh(
+    hass, monkeypatch
+):
+    from custom_components.matic_robot.managed_executor import (
+        _async_run_leg,
+    )
+    from custom_components.matic_robot.vacuum import MaticVacuum
+    from tests.test_entities import _entry
+
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    session_id = UUID("77777777-7777-4777-8777-777777777777")
+    monkeypatch.setattr(
+        "custom_components.matic_robot.managed_executor.uuid4", lambda: session_id
+    )
+    current_identity = b""
+    bound = []
+    sender = AsyncMock()
+    entry = _entry()
+    entry.runtime_data.cleaning_plans = manager
+    entity = MaticVacuum(entry)
+
+    async def start_mixed_coverage(*_args, **kwargs):
+        nonlocal current_identity
+        current_identity = _session_identity(kwargs["session_id"])
+
+    async def refresh_after_dispatch():
+        nonlocal current_identity
+        current_identity = REPLACEMENT
+
+    entry.runtime_data.coordinator.client.async_start_mixed_coverage = AsyncMock(
+        side_effect=start_mixed_coverage
+    )
+    entry.runtime_data.coordinator.async_request_refresh = AsyncMock(
+        side_effect=refresh_after_dispatch
+    )
+
+    async def send_command(call):
+        await entity.async_send_command(call.data["command"], call.data["params"])
+
+    async def read_identity():
+        return current_identity
+
+    hass.services.async_register("vacuum", "send_command", send_command)
+    rooms = [
+        CleaningRoom("room-1", "Kitchen", "vacuum", "standard"),
+        CleaningRoom("room-2", "Study", "mop", "quick"),
+    ]
+    motion_token = manager.begin_managed_motion("synthetic-serial")
+
+    with pytest.raises(ServiceValidationError) as error:
+        await _async_run_leg(
+            hass,
+            ServiceCall(
+                hass,
+                "matic_robot",
+                "intelligent_clean",
+                {
+                    "plan_id": "synthetic-plan",
+                    "start_timeout": 10,
+                    "completion_timeout": 10,
+                },
+            ),
+            manager,
+            "vacuum.matic",
+            "synthetic-serial",
+            rooms,
+            motion_token=motion_token,
+            session_history=AsyncMock(return_value=()),
+            managed_user_command=sender,
+            session_identity=read_identity,
+            on_native_identity=bound.append,
+        )
+
+    assert error.value.translation_key == "room_taken_over"
+    client = entry.runtime_data.coordinator.client
+    client.async_start_mixed_coverage.assert_awaited_once()
+    assert (
+        client.async_start_mixed_coverage.await_args.kwargs["session_id"] == session_id
+    )
+    entry.runtime_data.coordinator.async_request_refresh.assert_awaited_once()
+    assert bound == [None]
+    sender.assert_not_awaited()
+
+
 @pytest.mark.parametrize(
     "reported",
     ["command", "transient_command", "replacement", "ended", "reader_error"],

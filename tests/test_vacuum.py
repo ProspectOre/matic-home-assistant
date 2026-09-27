@@ -134,13 +134,12 @@ async def test_managed_session_marker_is_private_and_canonical(hass) -> None:
         await entity.async_send_command(
             "clean_rooms", {"rooms": ["Study"], PLAN_MOTION_TOKEN: token}
         )
-    with pytest.raises(ServiceValidationError, match="invalid for this room command"):
+    with pytest.raises(ServiceValidationError, match="has no session ID"):
         await entity.async_send_command(
             "clean_rooms",
             {
                 "rooms": ["Study"],
                 PLAN_MOTION_TOKEN: token,
-                PLAN_SESSION_ID: valid_session,
                 "room_coverage": ["quick"],
                 "room_modes": ["vacuum"],
             },
