@@ -2252,6 +2252,8 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
+    study = CleaningRoom("room-study", "Study", "vacuum", "quick")
+    office = CleaningRoom("room-office", "Office", "mop", "heavy_duty")
     await manager.async_save_plan(
         "serial",
         "upstairs",
@@ -2261,19 +2263,37 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             "run_behavior": "ordered",
             "rooms": [
                 {
-                    "room_id": "room-study",
-                    "cleaning_mode": "vacuum",
-                    "coverage_setting": "quick",
+                    "room_id": room.room_id,
+                    "cleaning_mode": room.cleaning_mode,
+                    "coverage_setting": room.coverage_setting,
                 }
+                for room in (study, office)
             ],
             "return_to_base": True,
         },
     )
+    await manager.async_mark_started("serial", "upstairs", study)
+    await manager.async_mark_completed("serial", "upstairs", study)
     services = await _registered_services(hass, manager)
     floor_plan = _area_floor_plan()
     floor_plan = replace(
         floor_plan,
-        rooms=(replace(floor_plan.rooms[0], id="room-study", name="Study"),),
+        rooms=(
+            Room(
+                "room-study",
+                "Study",
+                "protocol-study",
+                b"study",
+                floor_plan.rooms[0].boundary,
+            ),
+            Room(
+                "room-office",
+                "Office",
+                "protocol-office",
+                b"office",
+                floor_plan.rooms[0].boundary,
+            ),
+        ),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -2296,13 +2316,22 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             ),
         )
     )
-    context = ("vacuum.test", entry, "serial", {"room-study": "Study"})
-    call = ServiceCall(
-        hass,
-        DOMAIN,
-        "intelligent_clean",
-        SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Upstairs"}),
+    context = (
+        "vacuum.test",
+        entry,
+        "serial",
+        {"room-study": "Study", "room-office": "Office"},
     )
+
+    def service_call(service: str) -> ServiceCall:
+        return ServiceCall(
+            hass,
+            DOMAIN,
+            service,
+            SAVED_PLAN_SERVICE_SCHEMA(
+                {"entity_id": ["vacuum.test"], "plan": "Upstairs"}
+            ),
+        )
 
     async def exercise_managed_command(*_args, **kwargs) -> None:
         token = manager.begin_managed_motion("serial")
@@ -2321,12 +2350,46 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
             AsyncMock(side_effect=exercise_managed_command),
         ) as execute,
     ):
-        await _registered_handler(services, "intelligent_clean")(call)
-        await _registered_handler(services, "clean_entire_plan")(call)
-        await _registered_handler(services, "run_selected_plan")(call)
-        preview = await _registered_handler(services, "preview_plan")(call)
+        await _registered_handler(services, "intelligent_clean")(
+            service_call("intelligent_clean")
+        )
+        await _registered_handler(services, "clean_entire_plan")(
+            service_call("clean_entire_plan")
+        )
+        await _registered_handler(services, "run_selected_plan")(
+            service_call("run_selected_plan")
+        )
+        preview = await _registered_handler(services, "preview_plan")(
+            service_call("preview_plan")
+        )
 
     assert execute.await_count == 3
+    dispatched_orders = [
+        [
+            (room.room_id, room.cleaning_mode, room.coverage_setting)
+            for room in args.args[5]
+        ]
+        for args in execute.await_args_list
+    ]
+    assert dispatched_orders == [
+        [
+            ("room-office", "mop", "heavy_duty"),
+            ("room-study", "vacuum", "quick"),
+        ],
+        [
+            ("room-study", "vacuum", "quick"),
+            ("room-office", "mop", "heavy_duty"),
+        ],
+        [
+            ("room-study", "vacuum", "quick"),
+            ("room-office", "mop", "heavy_duty"),
+        ],
+    ]
+    assert [args.args[1].service for args in execute.await_args_list] == [
+        "intelligent_clean",
+        "clean_entire_plan",
+        "run_selected_plan",
+    ]
     assert "intelligent" not in execute.await_args_list[0].kwargs
     assert execute.await_args_list[0].kwargs["refresh"] is (
         coordinator.async_request_refresh
@@ -2354,6 +2417,7 @@ async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     assert preview["plan_name"] == "Upstairs"
     assert preview["run_behavior"] == "ordered"
     assert preview["rooms"][0]["room_id"] == "room-study"
+    assert preview["rooms"][1]["room_id"] == "room-office"
     assert len(preview["preview_token"]) == 64
 
     token_call = ServiceCall(

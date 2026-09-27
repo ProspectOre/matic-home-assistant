@@ -15,7 +15,10 @@ from custom_components.matic_robot.client.commands import (
 from custom_components.matic_robot.client.commands import (
     CoverageSetting as Setting,
 )
-from custom_components.matic_robot.client.commands import encode_mixed_coverage_commands
+from custom_components.matic_robot.client.commands import (
+    UserCommand,
+    encode_mixed_coverage_commands,
+)
 from custom_components.matic_robot.client.coverage_goals import (
     coverage_command_goal_signatures,
     coverage_plan_goal_signatures,
@@ -165,12 +168,14 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     args = _arguments(configuration)
     floor = FloorPlan(42, PARTITION, b"partition", ())
     identity = b""
+    started_identity = b""
     update = b""
 
     async def send(payload, *, command_name):
-        nonlocal identity, update
+        nonlocal identity, started_identity, update
         if command_name == "START_COVERAGE":
-            identity = first_bytes(_coverage(payload), 6)
+            started_identity = first_bytes(_coverage(payload), 6)
+            identity = started_identity
         else:
             assert command_name == "UPDATE_COVERAGE"
             update = payload
@@ -188,8 +193,17 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
     )
     client.async_get_floor_plan = AsyncMock(return_value=floor)
     client.async_get_property = AsyncMock(side_effect=get_property)
-    client.async_send_user_command = AsyncMock()
+    stopped_sessions = []
+
+    async def send_stop(command, *, on_transmitted=None):
+        stopped_sessions.append((command, identity))
+        assert on_transmitted is not None
+        on_transmitted()
+
+    client.async_send_user_command = AsyncMock(side_effect=send_stop)
     prepare_stop, rollback_stop = AsyncMock(), AsyncMock()
+    require_owned = Mock()
+    recovery_stop_transmitted = Mock()
     monkeypatch.setattr(
         "custom_components.matic_robot.client.api.monotonic", iter((0.0, 9.0)).__next__
     )
@@ -202,19 +216,27 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
             args["modes"],
             first_room_name="First",
             require_current=Mock(),
-            require_owned=Mock(),
+            require_owned=require_owned,
             prepare_stop=prepare_stop,
             rollback_stop=rollback_stop,
+            on_recovery_stop_transmitted=recovery_stop_transmitted,
         )
 
     if drop_required:
         with pytest.raises(MaticError, match="did not retain all requested"):
             await dispatch()
         prepare_stop.assert_awaited_once()
-        client.async_send_user_command.assert_awaited_once()
+        stop = client.async_send_user_command.await_args
+        assert stop.args == (UserCommand.STOP,)
+        assert set(stop.kwargs) == {"on_transmitted"}
+        assert callable(stop.kwargs["on_transmitted"])
+        assert stopped_sessions == [(UserCommand.STOP, started_identity)]
+        recovery_stop_transmitted.assert_called_once_with()
+        require_owned.assert_called()
     else:
         await dispatch()
         prepare_stop.assert_not_awaited()
         client.async_send_user_command.assert_not_awaited()
+        recovery_stop_transmitted.assert_not_called()
     assert client._async_send_user_payload.await_count == 2
     rollback_stop.assert_not_awaited()
