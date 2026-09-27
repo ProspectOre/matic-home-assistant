@@ -13,10 +13,10 @@ test.beforeEach(async ({ browserName }) => {
   test.skip(browserName !== "chromium", "Workspace effects adapter runs once in Chromium");
 });
 
-const setup = async (page) => {
+const setup = async (page, deferInitialSnapshot = false) => {
   await page.route("**/adapter.js", route => route.fulfill({ contentType: "text/javascript", body: bundle.outputFiles[0].text }));
   await page.goto("/");
-  await page.evaluate(async () => {
+  await page.evaluate(async (deferInitialSnapshot) => {
     const { EffectController, WorkspaceStore, canEditCoordinates, canStartMotion, syntheticEntry, syntheticPlans, syntheticAreas, syntheticHistory } = await import("/adapter.js");
     const callbacks = [];
     const wireCatalogEntry = entry => ({ entry_id: entry.entryId, scene_url: entry.sceneUrl,
@@ -45,8 +45,11 @@ const setup = async (page) => {
       schema: 1, capabilities: { snapshot: 1 }, epoch: "epoch-a", sequence, coherence_generation: generation,
       revisions: { ...revisionState }, resources };
     };
+    let initialSnapshotResolve = null;
     const connection = { subscribeMessage: async callback => { callbacks.push(callback); return () => {}; },
-      sendMessagePromise: async message => snapshotFor(message.entry_id) };
+      sendMessagePromise: async message => deferInitialSnapshot
+        ? await new Promise(resolve => { initialSnapshotResolve = resolve; })
+        : snapshotFor(message.entry_id) };
     const counts = { catalog: 0, plans: 0, areas: 0, history: 0, scene: 0 };
     // This adapter contract test exercises invalidation routing, not the
     // independent long-poll delta loop. Keep that loop out of the fixture so
@@ -67,13 +70,22 @@ const setup = async (page) => {
     const controller = new EffectController(store, backend, connection, true);
     controller.sync(projection("synthetic-entry"), undefined);
     window.adapterHarness = { callbacks, counts, store, controller, projection, snapshotFor, backend, invalidation,
+      initialSnapshotPending: () => initialSnapshotResolve !== null,
+      resolveInitialSnapshot: value => { if (!initialSnapshotResolve) return false; initialSnapshotResolve(value); return true; },
       canEditCoordinates, canStartMotion,
       setCatalogEntry: value => { catalogEntry = value; } };
-  });
+  }, deferInitialSnapshot);
   await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.catalog)).toBeGreaterThan(0);
   await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.resources.entry?.entryId)).toBe("synthetic-entry");
-  await expect.poll(() => page.evaluate(() => window.adapterHarness.callbacks.length)).toBe(1);
+  if (!deferInitialSnapshot) {
+    await expect.poll(() => page.evaluate(() => window.adapterHarness.callbacks.length)).toBe(1);
+  } else {
+    await expect.poll(() => page.evaluate(() => window.adapterHarness.initialSnapshotPending())).toBe(true);
+  }
   await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.map.floorCoherent)).toBe(true);
+  if (deferInitialSnapshot) {
+    await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.resources.scene.status)).toBe("ready");
+  }
   await page.evaluate(async () => {
     const h = window.adapterHarness;
     h.preOpen = { coherence: h.store.value.coherence, map: h.store.value.map, host: h.store.value.host,
@@ -181,6 +193,66 @@ test("snapshot catalog projection updates managed command guards without map rel
   expect(after.history).toBe(before.history);
   expect(after.scene).toBe(before.scene);
   expect(after.generation).toBe(before.generation);
+  await page.evaluate(() => window.adapterHarness.controller.dispose());
+});
+
+test("an initial unverified empty snapshot fences the retained map and recovers from catalog revalidation", async ({ page }) => {
+  await setup(page, true);
+  const before = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { generation: h.store.value.generation, catalog: h.counts.catalog, scene: h.counts.scene,
+      available: h.store.value.map.available };
+  });
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.catalogResolve = null;
+    h.backend.catalog = async () => {
+      h.counts.catalog += 1;
+      return await new Promise(resolve => { h.catalogResolve = resolve; });
+    };
+    const failedSnapshot = h.snapshotFor("synthetic-entry");
+    failedSnapshot.identity.floor_mission_id = null;
+    failedSnapshot.identity.floor_verified = false;
+    failedSnapshot.status = { state: "unavailable", reason: "snapshot_required", retryable: false };
+    failedSnapshot.payload.available = false;
+    failedSnapshot.payload.entry = null;
+    h.initialSnapshotReleased = h.resolveInitialSnapshot(failedSnapshot);
+  });
+  await expect.poll(() => page.evaluate(() => ({ released: window.adapterHarness.initialSnapshotReleased,
+    catalogResolve: Boolean(window.adapterHarness.catalogResolve), callbacks: window.adapterHarness.callbacks.length,
+    generation: window.adapterHarness.store.value.generation, coherence: window.adapterHarness.store.value.coherence,
+    catalogCalls: window.adapterHarness.counts.catalog }))).toMatchObject({ catalogResolve: true });
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.callbacks.length)).toBe(1);
+  const fenced = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { generation: h.store.value.generation, coherence: h.store.value.coherence,
+      available: h.store.value.map.available, exactPose: h.store.value.map.exactPose,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value),
+      scene: h.counts.scene };
+  });
+  expect(fenced).toEqual({ generation: before.generation + 1, coherence: "verifying",
+    available: before.available, exactPose: false, edit: false, motion: false, scene: before.scene });
+
+  await page.evaluate(() => {
+    const h = window.adapterHarness;
+    h.catalogResolve([h.store.value.resources.entry]);
+  });
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.scene)).toBe(before.scene + 1);
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.store.value.resources.scene.status)).toBe("ready");
+  const recovered = await page.evaluate(() => {
+    const h = window.adapterHarness;
+    return { coherence: h.store.value.coherence, exactPose: h.store.value.map.exactPose,
+      edit: h.canEditCoordinates(h.store.value), motion: h.canStartMotion(h.store.value),
+      health: h.store.value.resources.entry?.health, catalog: h.store.value.resources.catalog.status,
+      scene: h.store.value.resources.scene.status, floorCoherent: h.store.value.map.floorCoherent,
+      sessionVerified: h.store.value.map.sessionVerified };
+  });
+  expect(recovered).toMatchObject({ coherence: "current", exactPose: false, edit: true, motion: true,
+    health: "ready", scene: "ready", floorCoherent: true, sessionVerified: true });
+
+  const plansBefore = await page.evaluate(() => window.adapterHarness.counts.plans);
+  await page.evaluate(() => window.adapterHarness.callbacks[0](window.adapterHarness.invalidation(1, ["plans"], { plans: 1 })));
+  await expect.poll(() => page.evaluate(() => window.adapterHarness.counts.plans)).toBe(plansBefore + 1);
   await page.evaluate(() => window.adapterHarness.controller.dispose());
 });
 

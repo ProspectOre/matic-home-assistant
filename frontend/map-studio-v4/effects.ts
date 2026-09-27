@@ -395,9 +395,9 @@ export class EffectController {
             transport.requestResync("invalid_message");
             return;
           }
-          if (!projectedEntry && entry?.entryId === entryId
+          const floorVerificationLost = !projectedEntry && entry?.entryId === entryId
             && snapshot.identity.floor_verified
-              !== (entry.mapFloorCoherent && entry.mapSessionVerified)) return;
+              !== (entry.mapFloorCoherent && entry.mapSessionVerified);
           if (snapshot.status.reason === "authorization") {
             this.#workspaceFence = null;
             return;
@@ -426,6 +426,14 @@ export class EffectController {
           this.#workspaceFence = { entryId: snapshot.entry_id, epoch: snapshot.epoch,
             sequence: snapshot.sequence, coherenceGeneration: snapshot.coherence_generation,
             revisions: snapshot.revisions };
+          if (floorVerificationLost) {
+            // A coordinator failure can produce an empty, unverified snapshot
+            // while the REST-backed projection still contains the last good
+            // floor. Treat that snapshot as a lost proof: close live controls
+            // and revalidate the catalog before trusting the retained scene.
+            this.#refreshSpatialBoundary(entryId, ["plans", "areas", "history"]);
+            return;
+          }
           if (spatialFenceChanged || projectionIdentityChanged) {
             this.#refreshSpatialBoundary(entryId, changedResources);
             return;
