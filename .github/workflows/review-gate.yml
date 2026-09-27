@@ -47,9 +47,11 @@ jobs:
           PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
           EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          HISTORY_HEAD_SHA:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '4789d6a51d81fd72b000389b6c82999c386a0714a70f01e7601731fbe8813b38'
+          EXPECTED_SHA256: '62d7ee4b2b103b3a7bed370fb1e34fdc9ba0d4438f078e440cbf9d8bfd033aac'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: ''
         shell: bash
         run: |
           set -euo pipefail
@@ -60,6 +62,12 @@ jobs:
           if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent -f state=pending \
               -f context=review-gate -f description='Loading canonical review policy' \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          fi
+          if [[ "${AUDIT_MODE:-false}" != true && "${HISTORY_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ \
+                && "$HISTORY_HEAD_SHA" != "${EVENT_HEAD_SHA:-}" ]]; then
+            gh api "repos/$REPO/statuses/$HISTORY_HEAD_SHA" --silent -f state=pending \
+              -f context=review-gate -f description='Relayed review event pending history reconciliation' \
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           fi
           # Authenticated review comments carry their reviewed commit even
@@ -88,7 +96,7 @@ jobs:
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           fi
           policy="$(mktemp "$RUNNER_TEMP/review-policy.XXXXXX")"
-          trap 'rm -f "$policy" "$policy.dependencies.py"' EXIT
+          trap 'rm -f "$policy" "$policy.dependencies.py" "$policy.issue-comment-receipts.py"' EXIT
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/$REPO/contents/.github/review-gate/evaluate.sh?ref=$POLICY_REF" > "$policy"
           gh api -H 'Accept: application/vnd.github.raw+json' \
@@ -97,8 +105,18 @@ jobs:
           [[ "${actual%% *}" == "$EXPECTED_SHA256" ]] || exit 1
           actual="$(shasum -a 256 "$policy.dependencies.py")"
           [[ "${actual%% *}" == "$EXPECTED_DEPENDENCY_SHA256" ]] || exit 1
+          receipt_path=""
+          if [[ -n "$EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256" ]]; then
+            receipt_path="$policy.issue-comment-receipts.py"
+            gh api -H 'Accept: application/vnd.github.raw+json' \
+              "repos/$REPO/contents/.github/review-gate/issue_comment_receipts.py?ref=$POLICY_REF" > "$receipt_path"
+            actual="$(shasum -a 256 "$receipt_path")"
+            [[ "${actual%% *}" == "$EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256" ]] || exit 1
+            chmod 400 "$receipt_path"
+          fi
           chmod 400 "$policy" "$policy.dependencies.py"
           echo "path=$policy" >> "$GITHUB_OUTPUT"
+          echo "receipt_path=$receipt_path" >> "$GITHUB_OUTPUT"
           trap - EXIT
       - name: Evaluate exact-head regular review
         env:
