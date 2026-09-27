@@ -2801,6 +2801,7 @@ test.describe("Map Studio v0.4 foundation", () => {
       await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
       const cadence = gallery.getByLabel("Plan rooms").locator("details").first();
       await cadence.locator("summary").click();
+      await expect(cadence.getByText("Coverage stays due until the robot confirms which setting it applied, so it may be requested again on later cleans.")).toBeVisible();
       const scope = cadence.getByLabel("Schedule scope for Kitchen");
       const mopInterval = cadence.getByLabel("Vacuum and mop interval for Kitchen, from 1 to 100");
       const coverageInterval = cadence.getByLabel("Periodic coverage interval for Kitchen, from 1 to 100");

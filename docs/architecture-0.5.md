@@ -102,9 +102,10 @@ Map Studio one-off managed runs by default; existing untracked service calls nev
 edited on. A newly enabled schedule starts at zero; joining adopts existing shared progress; leaving shared
 scope starts plan-scoped progress at zero; interval changes preserve count; disable pauses; reset is
 explicit; new or newly private progress starts at zero. Each interval is an integer from 1 through 100.
-Users can explicitly choose **Do on next clean** for the next qualifying room run of each rule, separately
-from normal cadence. Creating or joining a shared schedule, or starting a fresh private schedule, must be
-explained before save; N=3 is due on qualifying clean three. Mopping and coverage have separate reset actions.
+**Do on next clean** requests that rule on the next qualifying run. Due work stays due until its modes and
+settings are verified. Mopping has verified mode evidence; coverage lacks causal per-run setting evidence, so
+due coverage may be requested again on later cleans. Explain shared-schedule joins and fresh private schedules
+before save; N=3 is due on clean three. Mopping and coverage have separate reset actions.
 Reserve every queued room's affected schedule before the first execution await; block its edit or reset
 through execution or pending native reconciliation, and restore reservations during recovery. Unrelated schedules remain available. Bind
 progress to verified robot/floor/room identity, preserve it across room renames, and never transfer it

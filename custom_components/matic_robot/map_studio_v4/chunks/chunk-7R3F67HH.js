@@ -588,7 +588,7 @@ inline-size: min(18rem, calc(100vw - 1.5rem));
           </button>
         </div>`:b`<div class="workflow-loading" role="status" aria-live="polite">
         ${this.#e("v4_workflow_loading","Loading workspace tools\u2026")}
-      </div>`)}#J(){this.#p||customElements.get(ie)||(this._workflowLoadFailed=!1,this.#p=import("./workflow-panel-XVDMHLZA.js").then(()=>{this.#p=null,this.requestUpdate()}).catch(()=>{this.#p=null,this._workflowLoadFailed=!0}))}#se;#oe(e,n){let r=In(e,this.localize);return b`
+      </div>`)}#J(){this.#p||customElements.get(ie)||(this._workflowLoadFailed=!1,this.#p=import("./workflow-panel-L2V5CVXY.js").then(()=>{this.#p=null,this.requestUpdate()}).catch(()=>{this.#p=null,this._workflowLoadFailed=!0}))}#se;#oe(e,n){let r=In(e,this.localize);return b`
       <div class="panel-heading">
         ${e.workflow!=="none"?b`
           <button
