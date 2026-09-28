@@ -18,7 +18,7 @@ from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import MaticConfigEntry
 from .client.commands import CleaningMode, CoverageSetting, UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import FloorPlan, RobotActivity, Room
 from .const import DOMAIN, MAX_ROOM_SEQUENCE_SIZE
 from .entity import MaticEntity
@@ -312,6 +312,12 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
                             checkpoint_initial_session if run_id is not None else None
                         ),
                     )
+                except CoverageGuardError as err:
+                    raise ServiceValidationError(
+                        err.safe_message,
+                        translation_domain=DOMAIN,
+                        translation_key=err.reason_code,
+                    ) from err
                 except (MaticError, TimeoutError) as err:
                     raise HomeAssistantError(
                         "Mixed coverage dispatch could not be verified"

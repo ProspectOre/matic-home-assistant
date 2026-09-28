@@ -32,7 +32,11 @@ from custom_components.matic_robot.client.coverage_goals import (
     coverage_plan_goal_signatures,
     coverage_readback_matches,
 )
-from custom_components.matic_robot.client.exceptions import MaticError
+from custom_components.matic_robot.client.exceptions import (
+    CoverageGuardError,
+    CoverageGuardReason,
+    MaticError,
+)
 from custom_components.matic_robot.client.models import FloorPlan, RobotOperationalState
 from custom_components.matic_robot.client.wire import (
     bytes_fields,
@@ -996,19 +1000,20 @@ async def test_mixed_dispatch_rejects_unverified_preflight(mixed_client, failure
     client, _, args = mixed_client
     if failure == "unknown_identity":
         client.async_get_cleaning_session_identity = AsyncMock(return_value=None)
-        error = "identity is unavailable"
+        reason = CoverageGuardReason.IDENTITY_UNAVAILABLE
     elif failure == "unknown_activity":
         client.async_get_active_cleaning_session_state = AsyncMock(return_value=None)
-        error = "activity is unavailable"
+        reason = CoverageGuardReason.ACTIVITY_UNAVAILABLE
     else:
         client.async_get_cleaning_session_identity = AsyncMock(
             side_effect=[b"", b"replacement-session"]
         )
-        error = "mission changed"
+        reason = CoverageGuardReason.IDENTITY_CHANGED
 
-    with pytest.raises(MaticError, match=error):
+    with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_mixed_coverage(**args)
 
+    assert caught.value.reason is reason
     client._async_send_user_payload.assert_not_awaited()
 
 

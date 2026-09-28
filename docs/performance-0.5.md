@@ -7,12 +7,12 @@ The release ledger is
 
 The authority baseline is stable v0.4.6; the paired performance control remains
 the measured v0.4.5 build. The latest browser assets were built from source
-commit `c028ffeab677d26d630023bd38cd8642bafca921`. They include abort-safe
-preview turn release while retaining the per-connection wire cap until actual
-RPC settlement, fail-closed workspace fencing and catalog recovery, immediate
-snapshot retry after robot reauthentication, and oversized legacy-plan repair.
-Managed starts bind to their generated native session UUID before accepting
-current-goal readback.
+commit `ca1a46b79b5f2b92b3937dcb7c24a687cb115c9c`. They include one effect-owned
+preference observer with debounced persistence, commit-only history requests,
+linear selected-room lookup, safe typed coverage recovery, and Safari Full map
+focus. Existing preview wire caps, coherence fencing, catalog recovery, and
+legacy-plan repair remain covered. This measurement qualifies the common
+navigation journey; focused browser tests cover the changed interaction bounds.
 
 ## Method
 
@@ -26,8 +26,8 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The latest exact-source comparison ran at `2026-09-27T16:13:36.883Z`
-(9:13 a.m. PDT) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+The latest exact-source comparison ran at `2026-09-28T03:16:24.915Z`
+(8:16 p.m. PDT on September 27) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no throttling, and no-store assets. Other task-owned checks
 were paused. Three fresh contexts per build ran in AB/BA/AB order; scene and
 bundle fingerprints matched across all six samples. The script records
@@ -46,28 +46,28 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`c028ffeab677d26d630023bd38cd8642bafca921`.
+`ca1a46b79b5f2b92b3937dcb7c24a687cb115c9c`.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
 |---|---:|---:|
-| Initial production JS, estimated gzip bytes | 79,821 | 80,322 |
+| Initial production JS, estimated gzip bytes | 79,821 | 80,712 |
 | Initial distinct production JS resources | 1 | 4 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,580 |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,704 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
-| Input p95 estimates, three runs, ms | 32 / 32 / 32 | 32 / 32 / 32 |
-| Median / range of p95 estimates, ms | 32 / 32–32 | 32 / 32–32 |
-| Maximum observed input estimates, ms | 48 / 32 / 40 | 32 / 32 / 40 |
+| Input p95 estimates, three runs, ms | 48 / 48 / 48 | 48 / 48 / 48 |
+| Median / range of p95 estimates, ms | 48 / 48–48 | 48 / 48–48 |
+| Maximum observed input estimates, ms | 48 / 48 / 64 | 48 / 48 / 48 |
 | Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
 | Longest task at or above threshold | None observed | None observed |
-| Post-journey JS heap range, three observations, bytes | 5,395,584–5,706,144 | 5,888,636–7,419,304 |
+| Post-journey JS heap range, three observations, bytes | 5,153,036–5,504,452 | 4,237,136–6,612,488 |
 
 The 90 KiB initial and 30 KiB workflow size budgets pass; input p95 estimates
 are below 100 ms. Candidate and baseline median p95 are equal in this lab
 journey; this does not establish a speedup. Neither build produced a task at
 the Long Tasks API's 50 ms threshold in these three samples. Keep the
 routine-task gate open until representative runtime evidence establishes
-whether any such task is routine. Candidate heap readings were 5.9–7.4 MB
-versus 5.4–5.7 MB at baseline.
+whether any such task is routine. Candidate heap readings were 4.2–6.6 MB
+versus 5.2–5.5 MB at baseline.
 Heap is one post-journey observation per run and does not establish a retention
 bound. These results do not qualify field INP, mobile, sustained runtime, or
 release acceptance.
@@ -78,9 +78,9 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `c028ffeab677d26d630023bd38cd8642bafca921` |
-| Candidate production bundle | `23b96e354f65ac6017776c91f7bbf7aad5037d24437c12f7c127697300397f6f` |
-| Candidate review-only bundle | `ce58f0338240612bee555af0af6b9df45f23f614302d4973ab3aa9b526ddd209` |
+| Candidate source commit | `ca1a46b79b5f2b92b3937dcb7c24a687cb115c9c` |
+| Candidate production bundle | `59096c02028637a1ee9482649f29287e50f512d7b2ba02cde0187228451edc04` |
+| Candidate review-only bundle | `61f2e6ccbcf7d99465216711df3cedb69a1e0f63539b04760aa1f4c8106caa14` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Earlier drawing and compositor follow-up

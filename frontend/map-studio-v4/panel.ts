@@ -20,7 +20,6 @@ import { LayerHistoryController } from "./layer-history";
 import {
   preferredFrontend,
   setPreferredFrontend,
-  type MapPreferences,
 } from "./preferences";
 import "./shell";
 import { initialWorkspaceState, WorkspaceStore } from "./state";
@@ -78,7 +77,6 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   #backend: MaticBackend | null = null;
   #effects: EffectController | null = null;
   #layers: LayerHistoryController | null = null;
-  #preferenceSignature = "";
 
   protected override shouldUpdate(changed: PropertyValues<this>): boolean {
     if (this._classic || !changed.has("hass")
@@ -97,7 +95,6 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this._classic = preferredFrontend() === "v3";
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
-      this.#savePreferences(state);
     });
     if (!this._classic) this.#startControllers();
   }
@@ -142,22 +139,6 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this.#effects?.dispose();
     this.#effects = null;
     this.#backend = null;
-  }
-
-  #savePreferences(state: WorkspaceState): void {
-    if (!this.#effects) return;
-    const preferences: MapPreferences = {
-      version: 4,
-      view: state.view,
-      appearance: state.appearance,
-      labels: state.labelsVisible,
-      quality: state.quality,
-      cameras: state.cameras,
-    };
-    const signature = JSON.stringify(preferences);
-    if (signature === this.#preferenceSignature) return;
-    this.#preferenceSignature = signature;
-    this.#effects.schedulePreferences(preferences);
   }
 
   protected override willUpdate(changed: PropertyValues<this>): void {

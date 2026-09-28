@@ -231,8 +231,6 @@
     "v4_map_history_detail": "Saved maps are floor-scoped and read only.",
     "v4_saved_map_read_only_title": "Saved map is read only",
     "v4_saved_map_read_only_detail": "Return to the live map to choose rooms, run a plan, or draw a custom area.",
-    "v4_saved_map_read_only_notice": "Cleaning is unavailable on a saved map",
-    "v4_saved_map_read_only_notice_detail": "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area.",
     "v4_map_options": "Map options",
     "v4_open_navigation": "Open Home Assistant sidebar",
     "v4_map_state": "Map state",
@@ -1200,6 +1198,18 @@
     },
     "robot_error": {
       "message": "The selected Matic robot reported an error."
+    },
+    "coverage_identity_unavailable": {
+      "message": "Could not verify the current cleaning task. Check the robot status, then try again."
+    },
+    "coverage_activity_unavailable": {
+      "message": "Could not verify whether the robot is cleaning. Check the robot status, then try again."
+    },
+    "coverage_native_session_active": {
+      "message": "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task."
+    },
+    "coverage_identity_changed": {
+      "message": "The cleaning task changed during setup. Check the robot status, then try again."
     },
     "robot_stop_pending": {
       "message": "Matic is completing its OEM stop countdown; wait until it docks."

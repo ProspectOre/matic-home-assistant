@@ -73,7 +73,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { BackendError } from "./frontend/map-studio-v4/backend"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -779,10 +779,10 @@ test.describe("Map Studio v0.4 foundation", () => {
       });
     }
   }
-  test("ignores an old start response after changing robots or closing the panel @safety", async ({ page }) => {
+  test("ignores an old start response, including a late coverage guard, after changing robots or closing the panel @safety", async ({ page }) => {
     await loadEffectHarness(page);
     const results = await page.evaluate(async () => {
-      const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
       const results = [];
       for (const close of [false, true]) {
         for (const rejectLate of [false, true]) {
@@ -799,7 +799,9 @@ test.describe("Map Studio v0.4 foundation", () => {
             service: (domain, service, data, entity) => {
               calls.push([service, entity]);
               return new Promise((resolve, reject) => {
-                completeStart = () => rejectLate ? reject(new Error("Old response")) : resolve();
+              completeStart = () => rejectLate
+                ? reject(new BackendError("coverage_identity_changed", null, "The cleaning task changed during setup. Check the robot status, then try again."))
+                : resolve();
               });
             },
             dispose() {},
@@ -827,6 +829,53 @@ test.describe("Map Studio v0.4 foundation", () => {
       return results;
     });
     expect(results).toEqual(Array.from({ length: 4 }, () => ({ calls: [["run_selected_plan", "vacuum.synthetic"]], preserved: true })));
+  });
+  test("shows allowlisted guard recovery text and keeps generic service errors generic", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const { EffectController, BackendError, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+      const messages = {
+        coverage_identity_unavailable: "Could not verify the current cleaning task. Check the robot status, then try again.",
+        coverage_activity_unavailable: "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
+        coverage_native_session_active: "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
+        coverage_identity_changed: "The cleaning task changed during setup. Check the robot status, then try again.",
+      };
+      const notices = [];
+      for (const [code, message] of Object.entries(messages)) {
+        const initial = { ...createGalleryState("ready"), workflow: "plan" };
+        const store = new WorkspaceStore(initial);
+        const backend = {
+          plans: async () => initial.resources.plans.value,
+          service: async () => { throw new BackendError(code, null, message); },
+          dispose() {},
+        };
+        const effects = new EffectController(store, backend);
+        effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+        await effects.executeAction("run-plan");
+        notices.push(store.value.notice?.text);
+        effects.dispose();
+      }
+      const initial = { ...createGalleryState("ready"), workflow: "plan" };
+      const store = new WorkspaceStore(initial);
+      const backend = {
+        plans: async () => initial.resources.plans.value,
+        service: async () => { throw new Error("secret untrusted service text"); },
+        dispose() {},
+      };
+      const effects = new EffectController(store, backend);
+      effects.sync({ host: initial.host, activity: initial.activity, batteryPercent: 92, robotLabel: "Synthetic", robots: initial.robots, language: "en", userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic" });
+      await effects.executeAction("run-plan");
+      const untrustedNotice = store.value.notice?.text;
+      effects.dispose();
+      return { notices, untrustedNotice };
+    });
+    expect(result.notices).toEqual([
+      "Could not verify the current cleaning task. Check the robot status, then try again.",
+      "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
+      "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
+      "The cleaning task changed during setup. Check the robot status, then try again.",
+    ]);
+    expect(result.untrustedNotice).toBe("The action could not be confirmed. Check the robot status before trying again.");
   });
   test("ends Starting when a managed service returns at the end of its run", async ({ page }) => {
     await loadEffectHarness(page);
@@ -2395,7 +2444,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
 
     await expect(gallery.getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
-    await expect(gallery).toContainText("Return to the live map below to choose rooms, run a plan, or draw a custom area.");
+    const recoveryExplanation = gallery.getByText("Return to the live map to choose rooms, run a plan, or draw a custom area.", { exact: true });
+    await expect(recoveryExplanation).toHaveCount(1);
+    await expect(recoveryExplanation).toBeVisible();
     await expect(gallery.getByRole("button", { name: "One-time clean" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run a plan" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Clean a custom area" })).toHaveCount(0);

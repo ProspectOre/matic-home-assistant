@@ -37,6 +37,8 @@ from custom_components.matic_robot.client.exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
     CertificateMismatchError,
+    CoverageGuardError,
+    CoverageGuardReason,
     EndpointUnsupportedError,
     MaticError,
     PairingModeRequiredError,
@@ -1840,22 +1842,31 @@ async def test_untracked_coverage_rejects_a_managed_session_id():
 
 
 @pytest.mark.parametrize(
-    ("state", "message"),
+    ("state", "reason"),
     [
-        (_operational_state_for_codes(119), "requires an idle native session"),
-        (_operational_state_for_codes(120), "requires an idle native session"),
-        (_operational_state_for_codes(104), "activity is unavailable"),
-        (_operational_state_for_codes(999), "activity is unavailable"),
-        (_operational_state_for_codes(104, 119), "activity is unavailable"),
-        (_operational_state_for_codes(106, 119), "activity is unavailable"),
-        (_operational_state_for_codes(106, 999), "activity is unavailable"),
+        (_operational_state_for_codes(119), CoverageGuardReason.NATIVE_SESSION_ACTIVE),
+        (_operational_state_for_codes(120), CoverageGuardReason.NATIVE_SESSION_ACTIVE),
+        (_operational_state_for_codes(104), CoverageGuardReason.ACTIVITY_UNAVAILABLE),
+        (_operational_state_for_codes(999), CoverageGuardReason.ACTIVITY_UNAVAILABLE),
+        (
+            _operational_state_for_codes(104, 119),
+            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+        ),
+        (
+            _operational_state_for_codes(106, 119),
+            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+        ),
+        (
+            _operational_state_for_codes(106, 999),
+            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+        ),
         (
             _operational_state_for_codes(104, error_codes=("synthetic-error",)),
-            "activity is unavailable",
+            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
         ),
     ],
 )
-async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, message):
+async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, reason):
     client = MaticHermesClient("robot.invalid", 16320)
     client.async_get_cleaning_session_identity = AsyncMock(
         return_value=b"retained-native-session"
@@ -1864,7 +1875,7 @@ async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, me
     client._async_send_user_payload = AsyncMock()
     client._async_wait_for_coverage_readback = AsyncMock()
 
-    with pytest.raises(MaticError, match=message):
+    with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
             FloorPlan(
                 1,
@@ -1880,6 +1891,7 @@ async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, me
 
     client._async_send_user_payload.assert_not_awaited()
     client._async_wait_for_coverage_readback.assert_not_awaited()
+    assert caught.value.reason is reason
 
 
 async def test_tracked_coverage_rejects_unavailable_identity_before_state_read():
@@ -1889,7 +1901,7 @@ async def test_tracked_coverage_rejects_unavailable_identity_before_state_read()
     client._async_send_user_payload = AsyncMock()
     client._async_wait_for_coverage_readback = AsyncMock()
 
-    with pytest.raises(MaticError, match="identity is unavailable"):
+    with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
             FloorPlan(
                 1,
@@ -1906,6 +1918,7 @@ async def test_tracked_coverage_rejects_unavailable_identity_before_state_read()
     client.async_get_state.assert_not_awaited()
     client._async_send_user_payload.assert_not_awaited()
     client._async_wait_for_coverage_readback.assert_not_awaited()
+    assert caught.value.reason is CoverageGuardReason.IDENTITY_UNAVAILABLE
 
 
 async def test_tracked_coverage_rejects_identity_change_before_dispatch():
@@ -1917,7 +1930,7 @@ async def test_tracked_coverage_rejects_identity_change_before_dispatch():
     client._async_send_user_payload = AsyncMock()
     client._async_wait_for_coverage_readback = AsyncMock()
 
-    with pytest.raises(MaticError, match="mission changed before coverage"):
+    with pytest.raises(CoverageGuardError) as caught:
         await client.async_start_coverage(
             FloorPlan(
                 1,
@@ -1933,6 +1946,7 @@ async def test_tracked_coverage_rejects_identity_change_before_dispatch():
 
     client._async_send_user_payload.assert_not_awaited()
     client._async_wait_for_coverage_readback.assert_not_awaited()
+    assert caught.value.reason is CoverageGuardReason.IDENTITY_CHANGED
 
 
 async def test_untracked_coverage_skips_managed_identity_and_readback_guards():
