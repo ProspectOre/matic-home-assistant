@@ -120,6 +120,7 @@ fi
 event_name="${EVENT_NAME:-${GITHUB_EVENT_NAME:-}}"
 event_path="${FORWARDED_EVENT_PATH:-${GITHUB_EVENT_PATH:-}}"
 historical_event_head=false
+native_security_finding_observed=false
 
 body_targets_review_head() {
   local body="$1" target_head="$2"
@@ -1593,7 +1594,7 @@ require_clean_regular_snapshot() {
     stamp_review_gate pending "Unresolved finding history; fix code or record authorized review dismissal"
     gate_pending
   fi
-  if [[ "$(security_history_head "$gate_snapshot")" == "$head_sha" ]] && ! security_findings_dismissed "$gate_snapshot"; then
+  if [[ "$native_security_finding_observed" == true ]] || { [[ "$(security_history_head "$gate_snapshot")" == "$head_sha" ]] && ! security_findings_dismissed "$gate_snapshot"; }; then
     stamp_review_gate pending "Security findings were reported on this head; push a fresh head"
     gate_pending
   fi
@@ -2019,7 +2020,7 @@ def clean_security_envelope:
   # Only actual regular evidence may revoke a regular verdict. Classify each
   # immutable body independently: a quota response is neutral, but replacing
   # a prior clean result or finding still withdraws that prior evidence.
-  if [[ "$security_event" != true ]] && jq -e \
+  if jq -e \
       '.comment.id | type == "number" and . > 0 and floor == .' "$event_path" >/dev/null; then
     event_regular_evidence=false
     event_regular_finding=false
@@ -2037,19 +2038,19 @@ def clean_security_envelope:
             <<< "$event_body_evidence" >/dev/null; then
           event_regular_finding=true
         fi
-        break
       fi
     done < <(jq -r '[.comment.body // "", .changes.body.from // ""] | unique[] | select(length > 0) | @base64' "$event_path")
+    # Both immutable bodies matter: API visibility and lexical body ordering
+    # must not hide a finding added by an edit or withdrawn from its prior body.
+    if [[ "$native_event_head_bound" == true && "$event_regular_finding" == true ]] &&
+       jq -e '.action == "created" or .action == "edited"' "$event_path" >/dev/null; then
+      stamp_status "review-finding-history" pending \
+        "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$event_comment_id; event:captured" >/dev/null
+      edited_finding=true
+    fi
     if [[ "$(jq -r '.action' "$event_path")" == created && "$native_event_head_bound" == true ]]; then
-      # A native creation can be observed after the mutable comment has
-      # already disappeared from the API. Preserve an adverse regular body
-      # before the clean verdict scan; clean/quota creations remain neutral.
+      # Creation is not a withdrawal; only actual adverse evidence blocks it.
       edited_clean=true
-      if [[ "$event_regular_finding" == true ]]; then
-        stamp_status "review-finding-history" pending \
-          "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$event_comment_id; event:captured" >/dev/null
-        edited_finding=true
-      fi
     elif [[ "$event_regular_evidence" != true ]]; then
       edited_clean=true
     fi
@@ -2141,6 +2142,7 @@ def clean_security_envelope:
       fi
       stamp_status "review-security-history" pending \
         "Security findings observed for PR #$pr_number on head $head_sha; $security_marker; event:captured" >/dev/null
+      native_security_finding_observed=true
       edited_clean=true
     else
       withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
