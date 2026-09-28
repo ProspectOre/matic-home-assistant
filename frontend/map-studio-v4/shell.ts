@@ -380,9 +380,31 @@ export class MaticMapShellV4 extends LitElement {
   #drag: SheetDrag | null = null;
   #bodySwipe: BodySwipe | null = null;
 
+  #fullscreenElement(): Element | null {
+    const root = this.renderRoot;
+    return root instanceof ShadowRoot
+      ? root.fullscreenElement ?? document.fullscreenElement
+      : document.fullscreenElement;
+  }
+
   readonly #fullscreenChange = (): void => {
-    this._browserFullscreen = document.fullscreenElement === this.renderRoot.querySelector(".app");
+    this._browserFullscreen = this.#isAppFullscreen();
   };
+
+  #isAppFullscreen(): boolean {
+    const root = this.renderRoot;
+    const app = root.querySelector(".app");
+    const scopedFullscreenElement = root instanceof ShadowRoot ? root.fullscreenElement : null;
+    if (scopedFullscreenElement) return scopedFullscreenElement === app;
+
+    const documentFullscreenElement = document.fullscreenElement;
+    for (let current: Node | null = this; current;) {
+      if (current === documentFullscreenElement) return true;
+      const tree = current.getRootNode();
+      current = tree instanceof ShadowRoot ? tree.host : null;
+    }
+    return false;
+  }
 
   readonly #outsidePointer = (event: PointerEvent): void => {
     if (!this._overflowOpen) return;
@@ -820,7 +842,7 @@ export class MaticMapShellV4 extends LitElement {
       return;
     }
     const app = this.renderRoot.querySelector<HTMLElement>(".app");
-    if (document.fullscreenElement) void document.exitFullscreen();
+    if (this.#fullscreenElement()) void document.exitFullscreen();
     else void app?.requestFullscreen();
   }
 

@@ -68,7 +68,7 @@ def resolve_room_sequence(
     }
     effective_rooms, cadence_by_room = manager.resolve_cadence(
         serial_number,
-        "quick_clean",
+        None,
         rooms,
         floor_token=floor_token,
         room_identities=room_identities,

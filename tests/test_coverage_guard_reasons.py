@@ -217,9 +217,15 @@ async def test_mixed_vacuum_boundary_preserves_localized_guard(hass) -> None:
     client.async_start_coverage.assert_not_awaited()
 
 
-async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass) -> None:
+@pytest.mark.parametrize(
+    "reason",
+    [
+        CoverageGuardReason.NATIVE_SESSION_ACTIVE,
+        CoverageGuardReason.ACTIVITY_UNAVAILABLE,
+    ],
+)
+async def test_mixed_guard_fails_run_without_credit_stop_or_replacement(hass, reason):
     """Final run accounting preserves a pre-write mixed guard as failed."""
-    reason = CoverageGuardReason.NATIVE_SESSION_ACTIVE
     error = CoverageGuardError(reason)
 
     async def reject_dispatch(_call) -> None:

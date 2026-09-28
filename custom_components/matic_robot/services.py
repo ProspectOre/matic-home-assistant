@@ -663,98 +663,106 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 and entry.runtime_data.slam_map.floor_plan_is_current(floor_plan)
             )
 
-        execution_call = ServiceCall(
-            hass,
-            DOMAIN,
-            call.service,
-            {
-                "plan_id": "quick_clean",
-                "start_timeout": 120,
-                "completion_timeout": 21600,
-                "return_to_base": bool(call.data["return_to_base"]),
-            },
-            context=call.context,
-        )
-
-        async def async_managed_command(token: int, command: UserCommand) -> None:
-            await _async_managed_user_command(
+        internal_plan_id = manager.reserve_manual_room_sequence_plan_id(serial_number)
+        try:
+            execution_call = ServiceCall(
                 hass,
-                entry,
-                manager,
-                serial_number,
-                entity_id,
-                call.context,
-                token,
-                command,
+                DOMAIN,
+                call.service,
+                {
+                    "plan_id": internal_plan_id,
+                    "start_timeout": 120,
+                    "completion_timeout": 21600,
+                    "return_to_base": bool(call.data["return_to_base"]),
+                },
+                context=call.context,
             )
 
-        initial_sequence_token = resolved["preview_token"]
-
-        def validate_prepared_run() -> None:
-            """Reject map, policy, settings, or progress changes before dispatch."""
-            current_floor_plan = _current_floor_plan(entry)
-            current_room_map = {room.id: room.name for room in current_floor_plan.rooms}
-            try:
-                current = resolve_room_sequence(
+            async def async_managed_command(token: int, command: UserCommand) -> None:
+                await _async_managed_user_command(
+                    hass,
+                    entry,
                     manager,
                     serial_number,
-                    current_floor_plan,
-                    current_room_map,
-                    call.data["rooms"],
-                    entry_id=str(getattr(entry, "entry_id", "")),
-                    return_to_base=bool(call.data["return_to_base"]),
-                    use_room_schedule=use_room_schedule,
-                    override_room_schedule=override_room_schedule,
-                    room_resolver=_resolve_room_id,
-                )
-            except ValueError as err:
-                raise _validation_error(
-                    str(err), "invalid_plan", {"error": str(err)}
-                ) from err
-            if current["preview_token"] != initial_sequence_token:
-                raise _validation_error(
-                    "The room-sequence resolution changed before starting",
-                    "invalid_plan",
+                    entity_id,
+                    call.context,
+                    token,
+                    command,
                 )
 
-        await _async_execute_rooms(
-            hass,
-            execution_call,
-            manager,
-            entity_id,
-            serial_number,
-            rooms,
-            cadence_by_room=cadence_by_room,
-            refresh=entry.runtime_data.coordinator.async_request_refresh,
-            active_session=(
-                entry.runtime_data.client.async_has_active_cleaning_session
-            ),
-            session_history=partial(
-                entry.runtime_data.client.async_get_cleaning_session_records,
-                strict=True,
-            ),
-            session_identity=(
-                entry.runtime_data.client.async_get_cleaning_session_identity
-            ),
-            confirm_room_completed=(
-                entry.runtime_data.coordinator.async_confirm_room_completed
-            ),
-            managed_user_command=async_managed_command,
-            mapped_room_names=tuple(room_map.values()),
-            floor_is_current=floor_is_current,
-            floor_token=execution_floor_token,
-            set_activity_run_id=getattr(
-                getattr(entry.runtime_data.client, "activity_journal", None),
-                "set_run_id",
-                None,
-            ),
-            get_activity_run_id=getattr(
-                getattr(entry.runtime_data.client, "activity_journal", None),
-                "current_run_id",
-                None,
-            ),
-            validate_prepared_run=validate_prepared_run,
-        )
+            initial_sequence_token = resolved["preview_token"]
+
+            def validate_prepared_run() -> None:
+                """Reject map, policy, settings, or progress changes before dispatch."""
+                current_floor_plan = _current_floor_plan(entry)
+                current_room_map = {
+                    room.id: room.name for room in current_floor_plan.rooms
+                }
+                try:
+                    current = resolve_room_sequence(
+                        manager,
+                        serial_number,
+                        current_floor_plan,
+                        current_room_map,
+                        call.data["rooms"],
+                        entry_id=str(getattr(entry, "entry_id", "")),
+                        return_to_base=bool(call.data["return_to_base"]),
+                        use_room_schedule=use_room_schedule,
+                        override_room_schedule=override_room_schedule,
+                        room_resolver=_resolve_room_id,
+                    )
+                except ValueError as err:
+                    raise _validation_error(
+                        str(err), "invalid_plan", {"error": str(err)}
+                    ) from err
+                if current["preview_token"] != initial_sequence_token:
+                    raise _validation_error(
+                        "The room-sequence resolution changed before starting",
+                        "invalid_plan",
+                    )
+
+            await _async_execute_rooms(
+                hass,
+                execution_call,
+                manager,
+                entity_id,
+                serial_number,
+                rooms,
+                cadence_by_room=cadence_by_room,
+                refresh=entry.runtime_data.coordinator.async_request_refresh,
+                active_session=(
+                    entry.runtime_data.client.async_has_active_cleaning_session
+                ),
+                session_history=partial(
+                    entry.runtime_data.client.async_get_cleaning_session_records,
+                    strict=True,
+                ),
+                session_identity=(
+                    entry.runtime_data.client.async_get_cleaning_session_identity
+                ),
+                confirm_room_completed=(
+                    entry.runtime_data.coordinator.async_confirm_room_completed
+                ),
+                managed_user_command=async_managed_command,
+                mapped_room_names=tuple(room_map.values()),
+                floor_is_current=floor_is_current,
+                floor_token=execution_floor_token,
+                set_activity_run_id=getattr(
+                    getattr(entry.runtime_data.client, "activity_journal", None),
+                    "set_run_id",
+                    None,
+                ),
+                get_activity_run_id=getattr(
+                    getattr(entry.runtime_data.client, "activity_journal", None),
+                    "current_run_id",
+                    None,
+                ),
+                validate_prepared_run=validate_prepared_run,
+            )
+        finally:
+            manager.release_manual_room_sequence_plan_id(
+                serial_number, internal_plan_id
+            )
 
     hass.services.async_register(
         DOMAIN,

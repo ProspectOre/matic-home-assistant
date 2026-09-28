@@ -1926,7 +1926,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager._store.version == 1
-    assert manager._store.minor_version == 8
+    assert manager._store.minor_version == 9
     assert manager._store._private is True
     stored = {
         "robots": {
@@ -1995,7 +1995,149 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager._store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 9, stored)
+        await manager._store._async_migrate_func(1, 10, stored)
+
+
+async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    room_id = "room-office"
+    identity = "a" * 64
+    shared = {
+        "scope": "shared",
+        "schedule_active": True,
+        "mop_every_n": 3,
+        "coverage_every_n": None,
+        "periodic_coverage_setting": None,
+        "effective_cleaning_mode": "vacuum_and_mop",
+        "effective_coverage_setting": "quick",
+        "mop_due": True,
+        "coverage_due": False,
+        "identity": identity,
+    }
+    private = {**shared, "scope": "plan"}
+    pending = {
+        "plan_id": "quick_clean",
+        "room_id": room_id,
+        "room": "Office",
+        "dispatched_at": "2026-09-28T17:00:00+00:00",
+        "expires_at": "2099-09-28T17:00:00+00:00",
+        "cleaning_mode": "vacuum_and_mop",
+        "run_id": "manual-run-1",
+        "cadence_state": private,
+    }
+    old_pending_key = plans_module._native_reconciliation_key(pending)
+    plans = {
+        "quick_clean": {"name": "Quick Clean", "rooms": []},
+        plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID: {
+            "name": "Legacy saved plan",
+            "rooms": [],
+        },
+    }
+    private_progress = {"mop": 2, "coverage": 1}
+    robot = {
+        "plans": plans,
+        "plan_room_cadence": {
+            "quick_clean": {
+                room_id: {"identity": identity, "progress": private_progress}
+            }
+        },
+        "last_run": {
+            "run_id": "manual-run-1",
+            "plan_id": "quick_clean",
+            "plan_name": "Quick Clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "data": {"plan_id": "quick_clean"},
+                "cadence_by_room": {room_id: private, "room-kitchen": shared},
+            },
+        },
+        "active_plan": {
+            "run_id": "manual-run-1",
+            "plan_id": "quick_clean",
+            "plan_name": "Quick Clean",
+            "room_id": room_id,
+        },
+        "pending_native_reconciliation": pending,
+        "native_completion_dedup": [old_pending_key, "unrelated-key"],
+    }
+    saved_run = {
+        "run_id": "saved-run",
+        "plan_id": "quick_clean",
+        "service": "run_selected_plan",
+        "outcome": "running",
+    }
+    no_shared = {
+        "plans": {},
+        "last_run": {
+            "run_id": "manual-run-2",
+            "plan_id": "quick_clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+            "recovery_checkpoint": {
+                "data": {"plan_id": "quick_clean"},
+                "cadence_by_room": {room_id: private},
+            },
+        },
+    }
+    malformed = {
+        "plans": {},
+        "last_run": {
+            "run_id": "",
+            "plan_id": "quick_clean",
+            "service": "clean_room_sequence",
+            "outcome": "running",
+        },
+    }
+    data = {
+        "robots": {
+            "serial": robot,
+            "saved": {"last_run": saved_run},
+            "no_shared": no_shared,
+            "malformed": malformed,
+        }
+    }
+
+    migrated = await manager._store._async_migrate_func(1, 8, data)
+
+    target = f"{plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
+    migrated_robot = migrated["robots"]["serial"]
+    run = migrated_robot["last_run"]
+    assert run["plan_id"] == target
+    assert run["plan_name"] == "Map Studio room clean"
+    assert run["recovery_checkpoint"]["data"]["plan_id"] == target
+    assert run["recovery_checkpoint"]["cadence_by_room"] == {"room-kitchen": shared}
+    assert migrated_robot["active_plan"]["plan_id"] == target
+    assert migrated_robot["active_plan"]["plan_name"] == "Map Studio room clean"
+    migrated_pending = migrated_robot["pending_native_reconciliation"]
+    assert migrated_pending["plan_id"] == target
+    assert "cadence_state" not in migrated_pending
+    new_pending_key = plans_module._native_reconciliation_key(migrated_pending)
+    assert migrated_robot["native_completion_dedup"] == [
+        new_pending_key,
+        "unrelated-key",
+    ]
+    assert migrated_robot["plans"] == plans
+    assert (
+        migrated_robot["plan_room_cadence"]["quick_clean"][room_id]["progress"]
+        == private_progress
+    )
+    assert migrated["robots"]["saved"]["last_run"] == saved_run
+    assert (
+        "cadence_by_room"
+        not in migrated["robots"]["no_shared"]["last_run"]["recovery_checkpoint"]
+    )
+    assert migrated["robots"]["no_shared"]["last_run"]["plan_id"] == (
+        plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    )
+    malformed_run = migrated["robots"]["malformed"]["last_run"]
+    assert malformed_run["run_id"] == ""
+    assert malformed_run["plan_id"] == "quick_clean"
+
+    await manager._store._async_migrate_func(1, 8, migrated)
+    assert migrated_robot["last_run"]["plan_id"] == target
 
 
 async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> None:
@@ -2078,6 +2220,95 @@ async def test_unfinished_rooms_remain_due_without_monopolizing_rotation(hass) -
     assert snapshot["failed_runs"] == 2
     assert snapshot["cancelled_runs"] == 1
     assert manager.choose("serial", "away", [kitchen, study]) == [kitchen, study]
+
+
+async def test_stale_run_completion_cannot_credit_new_run_with_same_plan_id(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    checkpoint = {"completed_room_ids": [], "cadence_by_room": {}}
+    manager._robot("serial").update(
+        {
+            "last_run": {
+                "run_id": "current-run",
+                "plan_id": "away",
+                "outcome": "running",
+                "room_count": 1,
+                "completed_room_count": 0,
+                "recovery_checkpoint": checkpoint,
+            },
+            "active_plan": {
+                "run_id": "current-run",
+                "plan_id": "away",
+                "room_id": room.room_id,
+            },
+        }
+    )
+
+    accepted = await manager.async_mark_completed(
+        "serial", "away", room, run_id="superseded-run"
+    )
+
+    assert accepted is False
+    assert manager._robot("serial")["rotations"] == {}
+    assert manager._robot("serial")["active_plan"]["run_id"] == "current-run"
+    assert manager._robot("serial")["last_run"]["completed_room_count"] == 0
+    manager._store.async_save.assert_not_awaited()
+
+    assert await manager.async_mark_completed(
+        "serial", "away", room, run_id="current-run"
+    )
+    assert manager._robot("serial")["last_run"]["completed_room_count"] == 1
+    assert manager._robot("serial")["active_plan"] is None
+
+
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "interrupted"])
+async def test_terminal_run_cannot_credit_late_completion(hass, outcome: str) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    robot = manager._robot("serial")
+    robot.update(
+        {
+            "plan_room_cadence": {
+                "away": {room.room_id: {"identity": "existing", "progress": 2}}
+            },
+            "last_run": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "outcome": outcome,
+                "room_count": 1,
+                "completed_room_count": 0,
+                "recovery_checkpoint": {
+                    "completed_room_ids": [],
+                    "cadence_by_room": {
+                        room.room_id: {
+                            "scope": "shared",
+                            "identity": "late-completion",
+                            "progress": 0,
+                        }
+                    },
+                },
+            },
+            "active_plan": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "room_id": room.room_id,
+            },
+        }
+    )
+    robot = manager._robot("serial")
+    before = deepcopy(robot)
+
+    accepted = await manager.async_mark_completed(
+        "serial", "away", room, run_id="finished-run", duration_seconds=120
+    )
+
+    assert accepted is False
+    assert manager._robot("serial") == before
+    manager._store.async_save.assert_not_awaited()
 
 
 async def test_three_room_short_runs_cycle_after_terminal_outcomes(hass) -> None:
@@ -4941,7 +5172,10 @@ async def test_active_session_clearing_at_dock_is_not_completion_credit() -> Non
     manager.async_mark_completed.assert_not_awaited()
 
 
-async def test_new_native_completed_record_credits_only_after_manager_commit() -> None:
+@pytest.mark.parametrize("ownership_current", [True, False])
+async def test_new_native_completed_record_credits_only_after_manager_commit(
+    ownership_current: bool,
+) -> None:
     """A new, overlapping, single-room native success is positive evidence."""
     services = SimpleNamespace(async_call=AsyncMock())
     bus = SimpleNamespace(async_fire=MagicMock())
@@ -4954,7 +5188,9 @@ async def test_new_native_completed_record_credits_only_after_manager_commit() -
     manager = SimpleNamespace(
         async_mark_started=AsyncMock(),
         async_mark_completed=AsyncMock(
-            side_effect=lambda *_args: order.append("manager_commit")
+            side_effect=lambda *_args, **_kwargs: (
+                order.append("manager_commit") or ownership_current
+            )
         ),
         async_mark_ended_unverified=AsyncMock(),
         async_mark_verifying=AsyncMock(),
@@ -5006,23 +5242,45 @@ async def test_new_native_completed_record_credits_only_after_manager_commit() -
             AsyncMock(return_value=RoomRunOutcome.HANDOFF_CANDIDATE),
         ),
     ):
-        await _async_run_room(
-            hass,
-            _call(hass),
-            manager,
-            "vacuum.matic",
-            "serial",
-            _room("Kitchen", "room-kitchen"),
-            active_session=AsyncMock(return_value=False),
-            session_history=history,
-            confirm_room_completed=confirm,
-        )
+        if ownership_current:
+            await _async_run_room(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                _room("Kitchen", "room-kitchen"),
+                active_session=AsyncMock(return_value=False),
+                session_history=history,
+                confirm_room_completed=confirm,
+            )
+        else:
+            with pytest.raises(PlanCancelledError, match="ownership changed"):
+                await _async_run_room(
+                    hass,
+                    _call(hass),
+                    manager,
+                    "vacuum.matic",
+                    "serial",
+                    _room("Kitchen", "room-kitchen"),
+                    active_session=AsyncMock(return_value=False),
+                    session_history=history,
+                    confirm_room_completed=confirm,
+                )
 
     manager.async_mark_verifying.assert_awaited_once()
     manager.async_mark_completed.assert_awaited_once()
     manager.async_mark_ended_unverified.assert_not_awaited()
-    assert order == ["manager_commit", "tracker_confirm"]
-    assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_completed"
+    if ownership_current:
+        assert order == ["manager_commit", "tracker_confirm"]
+        assert bus.async_fire.call_args_list[-1].args[0] == "matic_robot_room_completed"
+    else:
+        assert order == ["manager_commit"]
+        confirm.assert_not_called()
+        assert all(
+            call.args[0] != "matic_robot_room_completed"
+            for call in bus.async_fire.call_args_list
+        )
 
 
 async def test_managed_plan_rejects_duplicate_room_names_before_dispatch() -> None:
@@ -6162,8 +6420,9 @@ async def test_a_task_that_ends_in_place_is_not_a_completion_candidate(hass) -> 
 
 
 @pytest.mark.parametrize("real_store", [False, True])
+@pytest.mark.parametrize("reject_second_credit", [False, True])
 async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
-    hass, real_store
+    hass, real_store, reject_second_credit
 ) -> None:
     """One leg mission glides room to room; credit comes from one record."""
     rooms = [_room("Kitchen", "room-kitchen"), _room("Office", "room-office")]
@@ -6171,6 +6430,8 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     if real_store:
         await manager.async_load()
         manager.async_mark_completed = AsyncMock(wraps=manager.async_mark_completed)
+    if reject_second_credit:
+        manager.async_mark_completed = AsyncMock(side_effect=[True, False])
     commands = []
 
     async def send_command(call) -> None:
@@ -6214,25 +6475,43 @@ async def test_leg_runs_two_rooms_in_one_mission_without_redispatch(
     )
     sender = AsyncMock()
 
-    completed = await _async_run_leg(
-        hass,
-        _call(hass),
-        manager,
-        "vacuum.matic",
-        "serial",
-        rooms,
-        refresh=AsyncMock(),
-        session_history=history,
-        managed_user_command=sender,
-        motion_token=7,
-    )
+    if reject_second_credit:
+        with pytest.raises(PlanCancelledError, match="ownership changed"):
+            await _async_run_leg(
+                hass,
+                _call(hass),
+                manager,
+                "vacuum.matic",
+                "serial",
+                rooms,
+                refresh=AsyncMock(),
+                session_history=history,
+                managed_user_command=sender,
+                motion_token=7,
+            )
+        completed = False
+    else:
+        completed = await _async_run_leg(
+            hass,
+            _call(hass),
+            manager,
+            "vacuum.matic",
+            "serial",
+            rooms,
+            refresh=AsyncMock(),
+            session_history=history,
+            managed_user_command=sender,
+            motion_token=7,
+        )
     await hass.async_block_till_done()
 
-    assert completed is True
+    assert completed is (not reject_second_credit)
     assert len(commands) == 1
     assert commands[0]["params"]["rooms"] == ["room-kitchen", "room-office"]
     assert started_events == ["Kitchen", "Office"]
-    assert sorted(completed_events) == ["Kitchen", "Office"]
+    assert sorted(completed_events) == (
+        ["Kitchen"] if reject_second_credit else ["Kitchen", "Office"]
+    )
     assert manager.async_mark_completed.await_count == 2
     assert record is not None
     for call_args in manager.async_mark_completed.await_args_list:

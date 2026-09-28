@@ -4144,12 +4144,35 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.evaluate(() => window.__modernPanel.remove());
   });
 
-  test("keeps native browser fullscreen as an optional secondary control", async ({ page }) => {
+  test("keeps native browser fullscreen as an optional secondary control @safety", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate(() => {
       window.__v4FullscreenRequested = false;
+      const panel = document.querySelector("matic-map-studio-gallery-v0-4-0");
+      const shell = panel.shadowRoot.querySelector("matic-map-shell-v4");
+      const root = shell.shadowRoot;
+      const app = root.querySelector(".app");
+      let fullscreenElement = null;
+      let exposesScopedFullscreen = true;
+      Object.defineProperty(root, "fullscreenElement", {
+        configurable: true,
+        get: () => exposesScopedFullscreen ? fullscreenElement : null,
+      });
+      Object.defineProperty(document, "fullscreenElement", {
+        configurable: true,
+        get: () => fullscreenElement ? panel : null,
+      });
+      window.__v4ExposeScopedFullscreen = (expose) => {
+        exposesScopedFullscreen = expose;
+      };
       Element.prototype.requestFullscreen = async function requestFullscreen() {
-        window.__v4FullscreenRequested = this.classList.contains("app");
+        window.__v4FullscreenRequested = this === app;
+        fullscreenElement = this;
+        document.dispatchEvent(new Event("fullscreenchange"));
+      };
+      document.exitFullscreen = async () => {
+        fullscreenElement = null;
+        document.dispatchEvent(new Event("fullscreenchange"));
       };
     });
     await gallery.getByRole("button", { name: "Map options" }).click();
@@ -4161,6 +4184,43 @@ test.describe("Map Studio v0.4 foundation", () => {
     await expect(menu.getByRole("button", { name: /classic/i })).toHaveCount(0);
     await menu.getByRole("button", { name: "Full screen", exact: true }).click();
     expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    })).toBeVisible();
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    }).click();
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    })).toBeVisible();
+
+    await page.evaluate(() => window.__v4ExposeScopedFullscreen(false));
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    }).click();
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    })).toBeVisible();
+    await gallery.locator("#map-options").getByRole("button", {
+      name: "Leave full screen",
+      exact: true,
+    }).click();
+
+    await gallery.getByRole("button", { name: "Map options" }).click();
+    await expect(gallery.locator("#map-options").getByRole("button", {
+      name: "Full screen",
+      exact: true,
+    })).toBeVisible();
   });
 
   test("coalesces 100 unrelated Home Assistant updates without workspace churn", async ({ page }) => {

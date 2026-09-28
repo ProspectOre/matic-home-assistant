@@ -13,5 +13,8 @@
     "esbuild": "0.28.2",
     "lit": "3.3.3",
     "typescript": "7.0.2"
+  },
+  "allowScripts": {
+    "esbuild@0.28.2": true
   }
 }
