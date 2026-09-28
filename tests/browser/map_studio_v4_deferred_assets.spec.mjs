@@ -453,3 +453,89 @@ test("a newer v4 preference cancels an in-flight saved classic restore", async (
   await expect.poll(() => page.evaluate((tag) => document.querySelector(tag)._classic, fixture.panelTag)).toBe(false);
   expect(await page.evaluate(() => localStorage.getItem("matic-map-studio:preferred-frontend"))).toBe("v4");
 });
+
+for (const selectorCase of [
+  { tag: "ha-selector-matic-room-plan", implementation: "matic-room-plan-editor-impl", label: "room-plan" },
+  { tag: "ha-selector-matic-area", implementation: "matic-area-editor-impl", label: "area" },
+]) {
+  test(`${selectorCase.label} selector validity follows required state while loading, failed, and mounted`, async ({ page }) => {
+    await page.goto("/");
+    let firstRequestCount = 0;
+    let retryRequestCount = 0;
+    let releaseFirstRequest;
+    let notifyFirstRequest;
+    const firstRequestStarted = new Promise((resolve) => { notifyFirstRequest = resolve; });
+    const firstRequestReleased = new Promise((resolve) => { releaseFirstRequest = resolve; });
+    await page.route("**/room-plan-editor.js?load_attempt=1", async (route) => {
+      firstRequestCount += 1;
+      notifyFirstRequest();
+      const disposition = await Promise.race([
+        firstRequestReleased.then(() => "fail"),
+        new Promise((resolve) => setTimeout(() => resolve("timeout"), 5000)),
+      ]);
+      if (disposition === "fail") {
+        await route.fulfill({ status: 503, contentType: "text/javascript", body: "unavailable" });
+      } else {
+        await route.abort();
+      }
+    });
+    await page.route("**/room-plan-editor.js?load_attempt=2", async (route) => {
+      retryRequestCount += 1;
+      await route.continue();
+    });
+    await page.evaluate(async ({ selectorTag }) => {
+      await import("/room-plan-editor-loader.js");
+      const optional = document.createElement(selectorTag);
+      const required = document.createElement(selectorTag);
+      // HA can update a selector's required flag before attaching it.
+      optional.required = true;
+      optional.required = false;
+      required.required = false;
+      required.required = true;
+      optional.value = [];
+      required.value = [];
+      optional.selector = selectorTag.endsWith("area") ? { scene_url: null, rooms: [] } : { rooms: [] };
+      required.selector = selectorTag.endsWith("area") ? { scene_url: null, rooms: [] } : { rooms: [] };
+      window.__validitySelectors = { optional, required };
+      document.body.append(optional, required);
+    }, { selectorTag: selectorCase.tag });
+    await firstRequestStarted;
+    expect(firstRequestCount).toBe(1);
+    expect(await page.evaluate(() => ({
+      optional: window.__validitySelectors.optional.reportValidity(),
+      required: window.__validitySelectors.required.reportValidity(),
+    }))).toEqual({ optional: true, required: false });
+
+    releaseFirstRequest();
+    await expect(page.locator("[role=alert]")).toHaveCount(2);
+    expect(await page.evaluate(() => ({
+      optional: window.__validitySelectors.optional.reportValidity(),
+      required: window.__validitySelectors.required.reportValidity(),
+    }))).toEqual({ optional: true, required: false });
+
+    await page.evaluate(() => {
+      window.__validitySelectors.optional.required = true;
+      window.__validitySelectors.required.required = false;
+    });
+    expect(await page.evaluate(() => ({
+      optional: window.__validitySelectors.optional.reportValidity(),
+      required: window.__validitySelectors.required.reportValidity(),
+    }))).toEqual({ optional: false, required: true });
+
+    await page.evaluate(() => window.__validitySelectors.optional.shadowRoot.querySelector("button").click());
+    await expect.poll(() => page.evaluate((tag) =>
+      Boolean(window.__validitySelectors.optional.shadowRoot.querySelector(tag)),
+    selectorCase.implementation)).toBe(true);
+    await page.evaluate(() => window.__validitySelectors.required.shadowRoot.querySelector("button").click());
+    await expect.poll(() => page.evaluate((tag) =>
+      Boolean(window.__validitySelectors.required.shadowRoot.querySelector(tag)),
+    selectorCase.implementation)).toBe(true);
+    expect(retryRequestCount).toBe(1);
+    expect(await page.evaluate(() => ({
+      optional: window.__validitySelectors.optional.reportValidity(),
+      required: window.__validitySelectors.required.reportValidity(),
+    }))).toEqual(selectorCase.label === "area"
+      ? { optional: false, required: true }
+      : { optional: true, required: true });
+  });
+}

@@ -96,9 +96,8 @@ class MaticLazySelector extends HTMLElement {
   }
 
   reportValidity() {
-    // A required field must never pass validation while its implementation is
-    // still loading or has failed to load.
-    return this._implementation?.reportValidity() ?? false;
+    // Preserve optional config fields while loading or after an asset failure.
+    return this._implementation ? this._implementation.reportValidity() : !this._required;
   }
 
   _sync(property) {
