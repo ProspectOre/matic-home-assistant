@@ -2382,6 +2382,50 @@ def test_legacy_manual_rotation_keeps_row_owner_and_latest_completion() -> None:
         assert robot["rotations"]["quick_clean"]["rooms"] == {}
 
 
+def test_legacy_manual_rotation_equal_completions_keep_a_valid_duration() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    cases = (
+        ("not-a-duration", 200, 200),
+        (100, "not-a-duration", 100),
+        (100, 200, 100),
+        (None, 200, 200),
+        ("not-a-duration", 0, None),
+    )
+
+    for source_duration, target_duration, expected_duration in cases:
+        source = {
+            "run_id": "manual-run",
+            "last_result": "failed",
+            "last_completed": "2026-03-02T00:00:00+00:00",
+        }
+        target = {
+            "run_id": "private-run",
+            "last_result": "completed",
+            "last_completed": "2026-03-01T19:00:00-05:00",
+        }
+        if source_duration is not None:
+            source["last_duration_seconds"] = source_duration
+        if target_duration is not None:
+            target["last_duration_seconds"] = target_duration
+        robot = {
+            "rotations": {
+                "quick_clean": {"rooms": {"room-a": source}},
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        # Equal activity leaves the target row's run/result ownership intact.
+        assert migrated["run_id"] == "private-run"
+        assert migrated["last_result"] == "completed"
+        if expected_duration is None:
+            assert "last_duration_seconds" not in migrated
+        else:
+            assert migrated["last_duration_seconds"] == expected_duration
+
+
 def test_legacy_manual_rotation_drops_stale_duration_without_completion_duration() -> (
     None
 ):

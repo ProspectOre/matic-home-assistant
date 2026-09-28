@@ -355,18 +355,31 @@ def _move_legacy_manual_rotation(
             selected = record if source_is_newer else existing
             source_completion = _latest_timestamp_value(record.get("last_completed"))
             target_completion = _latest_timestamp_value(existing.get("last_completed"))
-            completion_record: dict[str, Any] | None = None
             newest_completion: tuple[float, str] | None = None
-            if source_completion is not None and (
+            completion_duration: int | float | None = None
+            source_duration = _valid_duration_seconds(
+                record.get("last_duration_seconds")
+            )
+            target_duration = _valid_duration_seconds(
+                existing.get("last_duration_seconds")
+            )
+            source_completion_wins = source_completion is not None and (
                 target_completion is None
-                or source_completion[0] >= target_completion[0]
-            ):
+                or source_completion[0] > target_completion[0]
+                or (
+                    source_completion[0] == target_completion[0]
+                    and (source_duration is not None or target_duration is None)
+                )
+            )
+            if source_completion_wins:
+                # Equal instants permit either row's duration; prefer source
+                # deterministically when both durations are valid.
                 newest_completion = source_completion
-                completion_record = record
+                completion_duration = source_duration
             elif target_completion is not None:
                 newest_completion = target_completion
-                completion_record = existing
-            if newest_completion is not None and completion_record is not None:
+                completion_duration = target_duration
+            if newest_completion is not None:
                 # Row ownership describes the latest run and must keep its
                 # run_id/result pair. Completion time is an independent
                 # aggregate: a newer failed/manual attempt can own the row
@@ -374,18 +387,24 @@ def _move_legacy_manual_rotation(
                 # Keep only duration evidence attached to that completion;
                 # do not merge duration history or counts without run provenance.
                 selected["last_completed"] = newest_completion[1]
-                duration = completion_record.get("last_duration_seconds")
-                if (
-                    isinstance(duration, int | float)
-                    and not isinstance(duration, bool)
-                    and (isinstance(duration, int) or math.isfinite(duration))
-                    and duration > 0
-                ):
-                    selected["last_duration_seconds"] = duration
+                if completion_duration is not None:
+                    selected["last_duration_seconds"] = completion_duration
                 else:
                     selected.pop("last_duration_seconds", None)
             target_rooms[room_id] = selected
         legacy_rooms.pop(room_id, None)
+
+
+def _valid_duration_seconds(value: object) -> int | float | None:
+    """Return positive finite duration evidence in seconds."""
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and (isinstance(value, int) or math.isfinite(value))
+        and value > 0
+    ):
+        return value
+    return None
 
 
 def _quarantine_legacy_manual_cadence(robot: dict[str, Any]) -> None:
