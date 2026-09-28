@@ -1586,12 +1586,8 @@ class CleaningPlanManager:
         robot = self._robot(serial_number)
         before = deepcopy(robot)
         plans = robot["plans"]
-        if (
-            plan_id not in plans
-            and _is_manual_room_sequence_plan_id(plan_id)
-            and self._manual_room_sequence_plan_id_in_use(serial_number, plan_id)
-        ):
-            raise ValueError("This ID is reserved for an active Map Studio room run")
+        if plan_id not in plans and _is_manual_room_sequence_plan_id(plan_id):
+            raise ValueError("This ID is reserved for manual Map Studio room runs")
         if plan_id not in plans and len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
             raise SavedPlanLimitError(
                 "A Matic robot can have at most "
@@ -3209,6 +3205,7 @@ class CleaningPlanManager:
             not isinstance(run, dict)
             or run.get("run_id") != run_id
             or run.get("plan_id") != plan_id
+            or run.get("outcome") != "running"
         ):
             return False
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
@@ -3860,28 +3857,6 @@ class CleaningPlanManager:
         if plan is None and _is_manual_room_sequence_plan_id(plan_id):
             return "Map Studio room clean"
         return str(plan.get("name", plan_id)) if plan else plan_id
-
-    def _manual_room_sequence_plan_id_in_use(
-        self, serial_number: str, plan_id: str
-    ) -> bool:
-        """Protect transient IDs from a saved-plan race and restart recovery."""
-        robot = self._robot(serial_number)
-        if plan_id in self._manual_room_sequence_reservations.get(serial_number, set()):
-            return True
-        last_run = robot.get("last_run")
-        if (
-            isinstance(last_run, Mapping)
-            and last_run.get("plan_id") == plan_id
-            and last_run.get("outcome") == "running"
-        ):
-            return True
-        return any(
-            isinstance(owner, Mapping) and owner.get("plan_id") == plan_id
-            for owner in (
-                robot.get("active_plan"),
-                robot.get("pending_native_reconciliation"),
-            )
-        )
 
     def _area_name(self, serial_number: str, area_id: str | None) -> str | None:
         if area_id is None:

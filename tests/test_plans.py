@@ -2264,6 +2264,53 @@ async def test_stale_run_completion_cannot_credit_new_run_with_same_plan_id(
     assert manager._robot("serial")["active_plan"] is None
 
 
+@pytest.mark.parametrize("outcome", ["completed", "failed", "cancelled", "interrupted"])
+async def test_terminal_run_cannot_credit_late_completion(hass, outcome: str) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    room = _room("Kitchen", "room-kitchen")
+    robot = manager._robot("serial")
+    robot.update(
+        {
+            "plan_room_cadence": {
+                "away": {room.room_id: {"identity": "existing", "progress": 2}}
+            },
+            "last_run": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "outcome": outcome,
+                "room_count": 1,
+                "completed_room_count": 0,
+                "recovery_checkpoint": {
+                    "completed_room_ids": [],
+                    "cadence_by_room": {
+                        room.room_id: {
+                            "scope": "shared",
+                            "identity": "late-completion",
+                            "progress": 0,
+                        }
+                    },
+                },
+            },
+            "active_plan": {
+                "run_id": "finished-run",
+                "plan_id": "away",
+                "room_id": room.room_id,
+            },
+        }
+    )
+    robot = manager._robot("serial")
+    before = deepcopy(robot)
+
+    accepted = await manager.async_mark_completed(
+        "serial", "away", room, run_id="finished-run", duration_seconds=120
+    )
+
+    assert accepted is False
+    assert manager._robot("serial") == before
+    manager._store.async_save.assert_not_awaited()
+
+
 async def test_three_room_short_runs_cycle_after_terminal_outcomes(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

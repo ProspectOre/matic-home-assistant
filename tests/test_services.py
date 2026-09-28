@@ -1148,7 +1148,12 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
                     "room_id": room.id,
                     "cleaning_mode": "vacuum",
                     "coverage_setting": "standard",
-                    "cadence": {"scope": "shared", "mop_every_n": 2},
+                    "cadence": {
+                        "scope": "shared",
+                        "mop_every_n": 2,
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "quick",
+                    },
                 }
             ],
         },
@@ -1156,7 +1161,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         room_identities={room.id: identity},
     )
     schedule = manager._robot("serial")["shared_room_cadence"][room.id]
-    schedule["progress"] = {"mop": 1, "coverage": 0}
+    schedule["progress"] = {"mop": 1, "coverage": 1}
     entry = SimpleNamespace(
         entry_id="entry-preview",
         runtime_data=SimpleNamespace(
@@ -1216,7 +1221,8 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
 
     assert len(preview["preview_token"]) == 64
     assert preview["rooms"][0]["cleaning_mode"] == "vacuum_and_mop"
-    assert preview["rooms"][0]["cadence_reasons"] == ["mop_due"]
+    assert preview["rooms"][0]["cadence_reasons"] == ["mop_due", "coverage_due"]
+    assert preview["rooms"][0]["coverage_setting"] == "quick"
     assert [item["room_id"] for item in preview["rooms"]] == [
         room.id,
         second_room.id,
@@ -1341,7 +1347,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         await _registered_handler(services, "clean_room_sequence")(dispatch_call)
     execute_with_mutation.assert_awaited_once()
 
-    schedule["progress"] = {"mop": 1, "coverage": 0}
+    schedule["progress"] = {"mop": 1, "coverage": 1}
     schedule["policy"]["do_mop_next"] = False
     schedule["identity"] = identity
 
@@ -1520,6 +1526,11 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         floor_token=plan_floor_token(floor_plan),
         room_identities={room.id: identity},
     )
+    # Preserve this pre-existing legacy plan while exercising manual-run IDs.
+    manager._robot("serial")["plans"][MANUAL_ROOM_SEQUENCE_PLAN_ID] = {
+        "name": "Legacy saved plan",
+        "rooms": [],
+    }
     await manager.async_save_plan(
         "serial",
         MANUAL_ROOM_SEQUENCE_PLAN_ID,
@@ -1654,11 +1665,11 @@ async def test_manual_room_run_identity_preserves_legacy_saved_plan_ids(hass) ->
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     manager.release_manual_room_sequence_plan_id("serial", "unreserved")
-    await manager.async_save_plan(
-        "serial",
-        MANUAL_ROOM_SEQUENCE_PLAN_ID,
-        {"name": "Existing plan", "rooms": []},
-    )
+    # A saved plan that predates the private namespace remains editable.
+    manager._robot("serial")["plans"][MANUAL_ROOM_SEQUENCE_PLAN_ID] = {
+        "name": "Existing plan",
+        "rooms": [],
+    }
     await manager.async_save_plan(
         "serial",
         MANUAL_ROOM_SEQUENCE_PLAN_ID,
@@ -1670,11 +1681,21 @@ async def test_manual_room_run_identity_preserves_legacy_saved_plan_ids(hass) ->
 
     first = manager.reserve_manual_room_sequence_plan_id("serial")
     assert first == f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
-    with pytest.raises(ValueError, match="active Map Studio room run"):
+    with pytest.raises(ValueError, match="reserved for manual Map Studio room runs"):
         await manager.async_save_plan("serial", first, {"name": "Collision"})
     manager.release_manual_room_sequence_plan_id("serial", first)
-    await manager.async_save_plan("serial", first, {"name": "Next plan", "rooms": []})
-    assert manager.plan("serial", first)["name"] == "Next plan"
+    with pytest.raises(ValueError, match="reserved for manual Map Studio room runs"):
+        await manager.async_save_plan(
+            "serial", first, {"name": "Spoofed plan", "rooms": []}
+        )
+
+    # A legacy plan already using this ID may still be edited after release.
+    manager._robot("serial")["plans"][first] = {
+        "name": "Legacy manual plan",
+        "rooms": [],
+    }
+    await manager.async_save_plan("serial", first, {"name": "Edited plan", "rooms": []})
+    assert manager.plan("serial", first)["name"] == "Edited plan"
 
     second = manager.reserve_manual_room_sequence_plan_id("serial")
     assert second == f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_2"
@@ -1684,10 +1705,12 @@ async def test_manual_room_run_identity_preserves_legacy_saved_plan_ids(hass) ->
         "plan_id": second,
         "outcome": "running",
     }
-    with pytest.raises(ValueError, match="active Map Studio room run"):
+    with pytest.raises(ValueError, match="reserved for manual Map Studio room runs"):
         await manager.async_save_plan("serial", second, {"name": "Still active"})
     manager._robot("serial")["last_run"] = None
-    await manager.async_save_plan("serial", second, {"name": "Next plan", "rooms": []})
+    manager.release_manual_room_sequence_plan_id("serial", second)
+    with pytest.raises(ValueError, match="reserved for manual Map Studio room runs"):
+        await manager.async_save_plan("serial", second, {"name": "Released ID"})
 
 
 async def test_manual_room_reservation_skips_persisted_run_owners(hass) -> None:
