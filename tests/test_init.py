@@ -964,7 +964,6 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
         MANIFEST_VERSION,
         MATIC_ICONS_PATH,
         MATIC_MAP_PANEL_ELEMENT,
-        MATIC_MAP_STUDIO_PATH,
         MATIC_MAP_STUDIO_V4_PATH,
         MATIC_MAP_STUDIO_V4_ROOT_PATH,
         ROOM_PLAN_EDITOR_BUNDLE_VERSION,
@@ -990,17 +989,15 @@ async def test_setup_registers_configuration_editor_when_frontend_is_loaded() ->
     assert MATIC_ICONS_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     assert ROOM_PLAN_EDITOR_PATH in registered_paths
     assert ROOM_PLAN_EDITOR_LOADER_PATH in registered_paths
-    assert MATIC_MAP_STUDIO_PATH in registered_paths
     assert ROOM_PLAN_EDITOR_LOADER_PATH in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     assert ROOM_PLAN_EDITOR_PATH not in hass.data[frontend.DATA_EXTRA_MODULE_URL]
-    assert MATIC_MAP_STUDIO_PATH not in hass.data[frontend.DATA_EXTRA_MODULE_URL]
     panel = hass.data[frontend.DATA_PANELS]["matic-map"]
     assert panel.require_admin is True
     assert panel.sidebar_icon == "matic:robot"
     assert panel.config_panel_domain is None
     assert panel.config["_panel_custom"]["name"] == MATIC_MAP_PANEL_ELEMENT
     assert panel.config["_panel_custom"]["module_url"] == MATIC_MAP_STUDIO_V4_PATH
-    assert panel.config["classic_module_url"] == MATIC_MAP_STUDIO_PATH
+    assert "classic_module_url" not in panel.config
     assert ROOM_PLAN_EDITOR_ROOT_PATH in ROOM_PLAN_EDITOR_PATH
 
 

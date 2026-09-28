@@ -20,6 +20,11 @@ class MaticLazySelector extends HTMLElement {
   constructor(implementationTag) {
     super();
     this.attachShadow({ mode: "open" });
+    this.shadowRoot.innerHTML = `
+      <style>:host { display: block; min-width: 0; }</style>
+      <div id="content"></div>
+    `;
+    this._content = this.shadowRoot.querySelector("#content");
     this._implementationTag = implementationTag;
     this._hass = undefined;
     this._selector = {};
@@ -107,8 +112,8 @@ class MaticLazySelector extends HTMLElement {
   async _ensureImplementation() {
     if (!this.isConnected) return;
     if (this._implementation) {
-      if (this._implementation.parentNode !== this.shadowRoot) {
-        this.shadowRoot.replaceChildren(this._implementation);
+      if (this._implementation.parentNode !== this._content) {
+        this._content.replaceChildren(this._implementation);
       }
       return;
     }
@@ -123,7 +128,7 @@ class MaticLazySelector extends HTMLElement {
         const value = this[`_${property}`];
         if (value !== undefined) implementation[property] = value;
       }
-      this.shadowRoot.replaceChildren(implementation);
+      this._content.replaceChildren(implementation);
       this._implementation = implementation;
       this._value = implementation.value;
     } catch {
@@ -145,7 +150,7 @@ class MaticLazySelector extends HTMLElement {
       button.addEventListener("click", this._retry, { once: true });
       contents.push(button);
     }
-    this.shadowRoot.replaceChildren(...contents);
+    this._content.replaceChildren(...contents);
   }
 
   _localize(key, fallback) {

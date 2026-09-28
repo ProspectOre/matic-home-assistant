@@ -312,12 +312,6 @@ class MaticRoomPlanEditor extends HTMLElement {
 if (!customElements.get("matic-room-plan-editor-impl")) {
   customElements.define("matic-room-plan-editor-impl", MaticRoomPlanEditor);
 }
-// Classic Map Studio can still load this catalog-provided module directly.
-// Keep its public selector available without the lazy adapter.
-if (!customElements.get("ha-selector-matic-room-plan")) {
-  customElements.define("ha-selector-matic-room-plan", class MaticRoomPlanEditorPublic extends MaticRoomPlanEditor {});
-}
-
 class MaticAreaEditor extends HTMLElement {
   constructor() {
     super();
@@ -452,13 +446,6 @@ class MaticAreaEditor extends HTMLElement {
       && /^\/api\/matic_robot\/slam_scene\/[A-Za-z0-9]+$/.test(url)
       ? url
       : undefined;
-  }
-
-  _embedded() {
-    return Boolean(
-      this._selector?.embedded
-      || this._selector?.["matic-area"]?.embedded,
-    );
   }
 
   _localize(key, fallback) {
@@ -1090,7 +1077,6 @@ class MaticAreaEditor extends HTMLElement {
   }
 
   _toggleExpanded() {
-    if (this._embedded()) return;
     this._expanded = !this._expanded;
     const workspace = this.shadowRoot.querySelector(".workspace");
     workspace.classList.toggle("expanded", this._expanded);
@@ -1110,10 +1096,6 @@ class MaticAreaEditor extends HTMLElement {
     if (!this.isConnected) return;
     const workspace = this.shadowRoot.querySelector(".workspace");
     if (!workspace) return;
-    if (this._embedded()) {
-      this._restorePageScroll();
-      return;
-    }
     if (this._expanded) {
       if (this._previousBodyOverflow === undefined) {
         this._previousBodyOverflow = document.body.style.overflow;
@@ -1371,7 +1353,7 @@ class MaticAreaEditor extends HTMLElement {
       event.preventDefault();
       if (event.shiftKey) this._redo();
       else this._undo();
-    } else if (event.key === "Escape" && !this._embedded()) {
+    } else if (event.key === "Escape") {
       event.preventDefault();
       this._toggleExpanded();
     } else if (event.key.toLowerCase() === "d") {
@@ -1407,8 +1389,6 @@ class MaticAreaEditor extends HTMLElement {
         .workspace { color: var(--primary-text-color); background: var(--card-background-color); }
         .workspace::backdrop { background: rgba(0, 0, 0, .68); backdrop-filter: blur(3px); }
         .workspace.expanded { position: fixed; inset: 0; width: 100vw; height: 100dvh; max-width: none; max-height: none; margin: 0; border: 0; padding: 0; box-sizing: border-box; background: #0b1118; overflow: hidden; }
-        .workspace.embedded { position: relative; width: 100%; height: 100%; min-height: 0; max-width: none; max-height: none; border: 0; padding: 0; box-sizing: border-box; background: #0b1118; overflow: hidden; }
-        .workspace.embedded .expand, .workspace.embedded .title-group { display: none; }
         .topbar { position: absolute; top: 14px; right: 14px; left: 14px; display: flex; gap: 10px; align-items: flex-start; pointer-events: none; z-index: 5; }
         .topbar > * { pointer-events: auto; }
         .title-group { display: grid; gap: 2px; margin-right: 8px; }
@@ -1477,7 +1457,6 @@ class MaticAreaEditor extends HTMLElement {
           .zoom-control { display: none; }
           .map-options-panel { right: 0; left: auto; width: min(250px, calc(100vw - 32px)); }
           .footer { right: auto; bottom: max(8px, env(safe-area-inset-bottom)); left: max(8px, env(safe-area-inset-left)); max-width: calc(100% - 16px); overflow-x: auto; padding: 3px; scrollbar-width: none; }
-          .workspace.embedded .footer { bottom: calc(72px + env(safe-area-inset-bottom)); }
           .footer::-webkit-scrollbar { display: none; }
           .footer button { min-height: 44px; }
           .radius input[type=range] { width: 110px; }
@@ -1485,8 +1464,8 @@ class MaticAreaEditor extends HTMLElement {
           .count { display: none; }
         }
       </style>
-      <button class="launcher" type="button" ${this._expanded || this._embedded() ? "hidden" : ""}>${this._localize("expand_map", "Open full-screen editor")}</button>
-      <dialog class="workspace ${this._embedded() ? "embedded" : (this._expanded ? "expanded" : "")}" ${this._embedded() ? "open" : ""}>
+      <button class="launcher" type="button" ${this._expanded ? "hidden" : ""}>${this._localize("expand_map", "Open full-screen editor")}</button>
+      <dialog class="workspace ${this._expanded ? "expanded" : ""}">
         <div class="topbar">
           <div class="title-group">
             <span class="title">${this._localize("area_editor_title", "Custom area studio")}</span>
@@ -2033,7 +2012,4 @@ class MaticAreaEditor extends HTMLElement {
 
 if (!customElements.get("matic-area-editor-impl")) {
   customElements.define("matic-area-editor-impl", MaticAreaEditor);
-}
-if (!customElements.get("ha-selector-matic-area")) {
-  customElements.define("ha-selector-matic-area", class MaticAreaEditorPublic extends MaticAreaEditor {});
 }

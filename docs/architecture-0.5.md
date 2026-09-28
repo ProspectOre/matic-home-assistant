@@ -1,9 +1,9 @@
 # Matic 0.5 authority contract
 
-Status: implementation contract; evidence: `acceptance-0.5.md`. Binding inputs: the Matic Map Studio Roadmap,
-Matic Map Studio Independent Review, and the full independent review dated 2026-08-29. Historical status and
-release counts are in the evidence matrix. Baseline: public stable `v0.4.6` at `52166df`.
+Status: implementation contract; evidence: `acceptance-0.5.md`. Baseline: public stable `v0.4.6` at `52166df`.
+Binding inputs: the Matic Map Studio Roadmap, architecture authority, and full 2026-08-29 independent review; historical status and release counts are refreshed in the evidence matrix.
 Scope: integration ownership and lifecycle, map-first operation, reliable live updates, explainable cleaning, independent room cadence.
+Owner refinement (2026-09-27): Map Studio v4 is the sole workspace UI. Remove Classic, its switch and saved frontend choice; preserve HA-native configuration forms and safe map/view preferences.
 
 ## Product authority
 
@@ -86,7 +86,7 @@ The administrator-only v1 workspace contract contains a versioned snapshot and s
   one canonical invalidation envelope;
 - duplicate/stale/out-of-order rejection, gap and overflow detection, bounded queues, reconnect/backoff,
   subscription cleanup, and full resynchronization after gaps, restart, epoch or identity changes; and
-- authenticated REST for large scenes, deltas, and history, with the legacy adapter retained through 0.5.x.
+- authenticated REST for large scenes, deltas, and history, with the REST adapter retained through 0.5.x.
   Polling fallback preserves authorization, generation admission, and command guards.
 
 Delivery is staged: (A) baseline/budgets, (B) snapshot contract, (C) reversible adapter with visible-state
