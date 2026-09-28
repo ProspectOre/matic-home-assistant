@@ -349,10 +349,42 @@ def _move_legacy_manual_rotation(
             target_time = _latest_timestamp_value(
                 existing.get("last_opportunity"), existing.get("last_completed")
             )
-            if target_time is None or (
+            source_is_newer = target_time is None or (
                 source_time is not None and source_time[0] > target_time[0]
+            )
+            selected = record if source_is_newer else existing
+            source_completion = _latest_timestamp_value(record.get("last_completed"))
+            target_completion = _latest_timestamp_value(existing.get("last_completed"))
+            completion_record: dict[str, Any] | None = None
+            newest_completion: tuple[float, str] | None = None
+            if source_completion is not None and (
+                target_completion is None
+                or source_completion[0] >= target_completion[0]
             ):
-                target_rooms[room_id] = record
+                newest_completion = source_completion
+                completion_record = record
+            elif target_completion is not None:
+                newest_completion = target_completion
+                completion_record = existing
+            if newest_completion is not None and completion_record is not None:
+                # Row ownership describes the latest run and must keep its
+                # run_id/result pair. Completion time is an independent
+                # aggregate: a newer failed/manual attempt can own the row
+                # while the other row still has the latest verified completion.
+                # Keep only duration evidence attached to that completion;
+                # do not merge duration history or counts without run provenance.
+                selected["last_completed"] = newest_completion[1]
+                duration = completion_record.get("last_duration_seconds")
+                if (
+                    isinstance(duration, int | float)
+                    and not isinstance(duration, bool)
+                    and (isinstance(duration, int) or math.isfinite(duration))
+                    and duration > 0
+                ):
+                    selected["last_duration_seconds"] = duration
+                else:
+                    selected.pop("last_duration_seconds", None)
+            target_rooms[room_id] = selected
         legacy_rooms.pop(room_id, None)
 
 

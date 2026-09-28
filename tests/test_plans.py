@@ -2308,6 +2308,152 @@ def test_legacy_manual_rotation_preserves_newest_room_authority() -> None:
     assert robot["rotations"]["quick_clean"]["rooms"] == {}
 
 
+def test_legacy_manual_rotation_keeps_row_owner_and_latest_completion() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    cases = (
+        # The moved run owns the latest opportunity, while the target owns
+        # the latest verified completion.
+        (
+            {
+                "run_id": "manual-run",
+                "last_result": "failed",
+                "last_opportunity": "2026-03-03T00:00:00+00:00",
+                "last_completed": "2026-03-01T00:00:00+00:00",
+                "last_duration_seconds": 100,
+            },
+            {
+                "run_id": "private-run",
+                "last_result": "completed",
+                "last_opportunity": "2026-03-01T00:00:00+00:00",
+                "last_completed": "2026-03-02T00:00:00+00:00",
+                "last_duration_seconds": 200,
+            },
+            "manual-run",
+            "failed",
+            "2026-03-02T00:00:00+00:00",
+            200,
+        ),
+        # The target owns the latest opportunity, while the moved run owns
+        # the latest verified completion.
+        (
+            {
+                "run_id": "manual-run",
+                "last_result": "completed",
+                "last_opportunity": "2026-03-01T00:00:00+00:00",
+                "last_completed": "2026-03-04T00:00:00+00:00",
+                "last_duration_seconds": 100,
+            },
+            {
+                "run_id": "private-run",
+                "last_result": "failed",
+                "last_opportunity": "2026-03-05T00:00:00+00:00",
+                "last_completed": "2026-03-01T00:00:00+00:00",
+                "last_duration_seconds": 200,
+            },
+            "private-run",
+            "failed",
+            "2026-03-04T00:00:00+00:00",
+            100,
+        ),
+    )
+
+    for (
+        source,
+        target,
+        owner_run_id,
+        owner_result,
+        latest_completed,
+        latest_duration,
+    ) in cases:
+        robot = {
+            "rotations": {
+                "quick_clean": {"rooms": {"room-a": source}},
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        assert migrated["run_id"] == owner_run_id
+        assert migrated["last_result"] == owner_result
+        assert migrated["last_completed"] == latest_completed
+        assert migrated["last_duration_seconds"] == latest_duration
+        assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_rotation_drops_stale_duration_without_completion_duration() -> (
+    None
+):
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    for duration in (None, "not-a-duration"):
+        target = {
+            "run_id": "private-run",
+            "last_result": "completed",
+            "last_opportunity": "2026-03-02T00:00:00+00:00",
+            "last_completed": "2026-03-02T00:00:00+00:00",
+        }
+        if duration is not None:
+            target["last_duration_seconds"] = duration
+        robot = {
+            "rotations": {
+                "quick_clean": {
+                    "rooms": {
+                        "room-a": {
+                            "run_id": "manual-run",
+                            "last_result": "failed",
+                            "last_opportunity": "2026-03-03T00:00:00+00:00",
+                            "last_duration_seconds": 100,
+                        }
+                    }
+                },
+                manual_id: {"rooms": {"room-a": target}},
+            }
+        }
+
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+        migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+        assert migrated["run_id"] == "manual-run"
+        assert migrated["last_result"] == "failed"
+        assert migrated["last_completed"] == "2026-03-02T00:00:00+00:00"
+        assert "last_duration_seconds" not in migrated
+
+
+def test_legacy_manual_rotation_ignores_malformed_completion_timestamp() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    robot = {
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-a": {
+                        "run_id": "manual-run",
+                        "last_result": "failed",
+                        "last_opportunity": "2026-03-03T00:00:00+00:00",
+                    }
+                }
+            },
+            manual_id: {
+                "rooms": {
+                    "room-a": {
+                        "run_id": "private-run",
+                        "last_result": "completed",
+                        "last_opportunity": "2026-03-02T00:00:00+00:00",
+                        "last_completed": "not-a-timestamp",
+                    }
+                }
+            },
+        }
+    }
+
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    migrated = robot["rotations"][manual_id]["rooms"]["room-a"]
+    assert migrated["run_id"] == "manual-run"
+    assert migrated["last_result"] == "failed"
+    assert "last_completed" not in migrated
+
+
 def test_legacy_manual_rotation_repairs_malformed_namespaces() -> None:
     manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
     for robot in (
