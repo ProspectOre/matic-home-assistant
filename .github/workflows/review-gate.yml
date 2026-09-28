@@ -1,7 +1,7 @@
 # Generated adapter; edit scripts/review-gate/adapters in ProspectOre/dev-workspace.
 name: Regular Review Gate
 
-run-name: "review-gate #${{ inputs.pull_request || github.event.pull_request.number }}"
+run-name: "${{ inputs.review_capture_id != '' && format('Review gate PR #{0} | policy-workflow-sha={1} | event-capture={2} | event-head={3} | event-history-head={4}', inputs.pull_request, github.workflow_sha, inputs.review_capture_id, fromJSON(inputs.review_event).pull_request.head.sha, fromJSON(inputs.review_event).review.commit_id || fromJSON(inputs.review_event).comment.original_commit_id) || format('review-gate #{0}', inputs.pull_request || github.event.pull_request.number) }}"
 
 on:
   pull_request_target:
@@ -14,16 +14,41 @@ on:
         description: Pull request number
         required: true
         type: string
+      audit:
+        description: Reconcile the current state after a captured review event
+        required: false
+        default: false
+        type: boolean
+      review_event_name:
+        description: Signed review webhook event name
+        required: false
+        type: string
+      review_event:
+        description: Bounded signed review event envelope
+        required: false
+        type: string
+      review_capture_id:
+        description: Numeric receipt ID derived from the signed delivery UUID
+        required: false
+        type: string
+      review_event_delivery_id:
+        description: Signed review webhook delivery UUID
+        required: false
+        type: string
+      review_event_signature:
+        description: HMAC signature over the signed review envelope
+        required: false
+        type: string
 
 # The latest state-changing PR event wins. Dedicated routers classify review and
 # issue-comment events before dispatching here, so ignored security activity
 # cannot cancel an evaluator that is enforcing this gate.
 concurrency:
-  group: review-gate-${{ github.event.pull_request.number || inputs.pull_request || github.ref }}
-  cancel-in-progress: true
+  group: ${{ inputs.audit == true && format('review-gate-audit-{0}', inputs.pull_request) || inputs.review_capture_id != '' && format('review-gate-event-{0}', github.run_id) || format('review-gate-{0}', github.event.pull_request.number || inputs.pull_request || github.ref) }}
+  cancel-in-progress: ${{ inputs.audit == true || inputs.review_capture_id == '' }}
 
 permissions:
-  actions: read
+  actions: write
   contents: read
   issues: read
   pull-requests: write
@@ -36,20 +61,115 @@ jobs:
       github.event_name == 'workflow_dispatch'
       || github.event.pull_request.number != null
     runs-on: ${{ vars.USE_HOSTED_RUNNERS != 'false' && vars.USE_HOSTED_LINUX != 'false' && 'ubuntu-latest' || fromJSON('["self-hosted","macOS","ARM64","mbp"]') }}
+    environment: review-event-relay
     steps:
+      - id: signal-relay-event
+        if: >-
+          inputs.review_capture_id != '' || inputs.review_event_name != '' ||
+          inputs.review_event != '' || inputs.review_event_delivery_id != '' ||
+          inputs.review_event_signature != ''
+        env:
+          TARGET_PR: ${{ inputs.pull_request || github.event.pull_request.number || github.event.issue.number }}
+          FORWARDED_EVENT_NAME: ${{ inputs.review_event_name }}
+          FORWARDED_EVENT: ${{ inputs.review_event }}
+          FORWARDED_EVENT_DELIVERY_ID: ${{ inputs.review_event_delivery_id }}
+          FORWARDED_EVENT_SIGNATURE: ${{ inputs.review_event_signature }}
+          REVIEW_CAPTURE_ID: ${{ inputs.review_capture_id }}
+          REVIEW_EVENT_RELAY_SECRET: ${{ secrets.REVIEW_EVENT_RELAY_SECRET }}
+          EXPECTED_REPO: ${{ github.repository }}
+          EXPECTED_REPO_ID: ${{ github.event.repository.id }}
+          EXPECTED_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
+          [[ "$TARGET_PR" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$REVIEW_CAPTURE_ID" =~ ^[1-9][0-9]*$ ]] || exit 1
+          [[ "$FORWARDED_EVENT_NAME" == pull_request_review || "$FORWARDED_EVENT_NAME" == pull_request_review_comment ]] || exit 1
+          [[ "$FORWARDED_EVENT_DELIVERY_ID" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] || exit 1
+          [[ "$FORWARDED_EVENT_SIGNATURE" =~ ^[0-9a-f]{64}$ && "$REVIEW_EVENT_RELAY_SECRET" =~ ^[0-9a-f]{64}$ ]] || exit 1
+          event_bytes="$(printf '%s' "$FORWARDED_EVENT" | wc -c | tr -d ' ')"
+          (( event_bytes > 0 && event_bytes <= 60000 )) || exit 1
+          jq -e --arg repo "$EXPECTED_REPO" --arg id "$EXPECTED_REPO_ID" \
+            --arg pr "$TARGET_PR" --arg base "$EXPECTED_DEFAULT_BRANCH" \
+            --arg event "$FORWARDED_EVENT_NAME" '
+              def sha: type == "string" and test("^[0-9a-f]{40}$");
+              def actor: type == "object" and (.id | type == "number" and . > 0)
+                and (.login | type == "string" and length > 0)
+                and (.type == "User" or .type == "Bot");
+              type == "object" and .schema_version == 1
+              and .repository.full_name == $repo and (.repository.id | tostring) == $id
+              and (.pull_request.number | tostring) == $pr
+              and .pull_request.base.ref == $base
+              and (.pull_request.head.sha | sha) and (.pull_request.base.sha | sha)
+              and .event_name == $event
+              and ((if $event == "pull_request_review" then
+                (.action == "submitted" or .action == "edited" or .action == "dismissed")
+                and (.review.id | type == "number" and . > 0)
+                and (.review.user | actor) and (.review.commit_id | sha)
+                and (.review.body == null or (.review.body | type == "string"))
+                and (.review.submitted_at | type == "string")
+              else
+                (.action == "created" or .action == "edited" or .action == "deleted")
+                and (.comment.id | type == "number" and . > 0)
+                and (.comment.user | actor) and (.comment.original_commit_id | sha)
+                and (.comment.pull_request_review_id | type == "number" and . > 0)
+                and (.comment.body == null or (.comment.body | type == "string"))
+                and (.comment.updated_at | type == "string")
+              end) and (.action != "edited" or (.changes.body.from | type == "string")))' \
+            <<< "$FORWARDED_EVENT" >/dev/null
+          python3 - <<'PY'
+          import hashlib, hmac, json, os, re
+          name = os.environ['FORWARDED_EVENT_NAME']
+          delivery = os.environ['FORWARDED_EVENT_DELIVERY_ID'].lower()
+          capture = os.environ['REVIEW_CAPTURE_ID']
+          raw = os.environ['FORWARDED_EVENT']
+          secret = os.environ['REVIEW_EVENT_RELAY_SECRET']
+          signature = os.environ['FORWARDED_EVENT_SIGNATURE']
+          if not re.fullmatch(r'[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}', delivery):
+              raise SystemExit('invalid relay delivery identity')
+          envelope = json.loads(raw)
+          if envelope.get('delivery_id') != delivery or envelope.get('event_name') != name \
+                  or capture != str(int(delivery.replace('-', ''), 16)):
+              raise SystemExit('relay capture identity mismatch')
+          message = f'{name}\n{delivery}\n{raw}'.encode('utf-8')
+          expected = hmac.new(secret.encode('ascii'), message, hashlib.sha256).hexdigest()
+          if not hmac.compare_digest(expected, signature):
+              raise SystemExit('relay signature mismatch')
+          PY
+          event_head="$(jq -er '.pull_request.head.sha' <<< "$FORWARDED_EVENT")"
+          history_head="$(jq -er 'if .review? != null then .review.commit_id else .comment.original_commit_id end' <<< "$FORWARDED_EVENT")"
+          expected_pending="Review event $(jq -r '.action' <<< "$FORWARDED_EVENT") for PR #$TARGET_PR"
+          receipt_heads=("$event_head")
+          if [[ "$history_head" != "$event_head" ]]; then receipt_heads+=("$history_head"); fi
+          for receipt_head in "${receipt_heads[@]}"; do
+            receipt="$(gh api "repos/$EXPECTED_REPO/commits/$receipt_head/statuses?per_page=100" --paginate --slurp \
+              | jq -c --arg context "review-event-capture/$REVIEW_CAPTURE_ID" \
+                '[.[][] | select(.context == $context)][0] // null')"
+            jq -e --arg pending "$expected_pending" \
+              --arg consumed "Review event capture consumed for PR #$TARGET_PR" \
+              '(.state == "pending" and .description == $pending)
+               or (.state == "success" and .description == $consumed)' <<< "$receipt" >/dev/null
+          done
+          event_path="$(mktemp "$RUNNER_TEMP/review-event.XXXXXX")"
+          printf '%s' "$FORWARDED_EVENT" > "$event_path"
+          chmod 400 "$event_path"
+          printf 'pr=%s\nevent_path=%s\ncapture_id=%s\nhead=%s\nhistory_head=%s\n' \
+            "$TARGET_PR" "$event_path" "$REVIEW_CAPTURE_ID" "$event_head" "$history_head" >> "$GITHUB_OUTPUT"
       - id: canonical
         name: Load pinned canonical review policy
         env:
-          AUDIT_MODE: ${{ github.event_name == 'schedule' }}
+          AUDIT_MODE: ${{ github.event_name == 'schedule' || inputs.audit == true }}
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
           POLICY_REF: ${{ github.workflow_sha }}
           PR_NUMBER: ${{ inputs.pull_request || github.event.pull_request.number || github.event.issue.number || github.event.workflow_run.pull_requests[0].number }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-          HISTORY_HEAD_SHA:
+          EVENT_PR_NUMBER: ${{ steps.signal-relay-event.outputs.pr || github.event.pull_request.number }}
+          EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || github.event.pull_request.head.sha }}
+          HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '62d7ee4b2b103b3a7bed370fb1e34fdc9ba0d4438f078e440cbf9d8bfd033aac'
+          EXPECTED_SHA256: '042634d14526d2561a129422c8bac1c45d83ca23188d83fa06b2c7e7e427a8f7'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: ''
         shell: bash
@@ -123,8 +243,15 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GH_TOKEN: ${{ github.token }}
           INPUT_PR: ${{ inputs.pull_request }}
-          EVENT_PR_NUMBER: ${{ github.event.pull_request.number }}
-          EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          EVENT_PR_NUMBER: ${{ steps.signal-relay-event.outputs.pr || github.event.pull_request.number }}
+          EVENT_NAME: ${{ inputs.review_event_name || github.event_name }}
+          FORWARDED_EVENT_PATH: ${{ steps.signal-relay-event.outputs.event_path }}
+          REVIEW_CAPTURE_ID: ${{ steps.signal-relay-event.outputs.capture_id }}
+          REVIEW_CAPTURE_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head }}
+          REVIEW_CAPTURE_HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head }}
+          EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.signal-relay-event.outputs.head || github.event.pull_request.head.sha }}
+          RECORD_EVENT_ONLY: ${{ steps.signal-relay-event.outputs.capture_id != '' }}
+          AUDIT_MODE: ${{ inputs.audit == true }}
           REPO: ${{ github.repository }}
           REVIEW_BOT: chatgpt-codex-connector[bot]
           REVIEW_BOT_LOGIN: chatgpt-codex-connector
@@ -139,11 +266,18 @@ jobs:
           SECURITY_REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
         shell: bash
         run: |
+          if [[ -n "$FORWARDED_EVENT_PATH" ]]; then export GITHUB_EVENT_PATH="$FORWARDED_EVENT_PATH"; fi
           bash "$CANONICAL_REVIEW_GATE"
+          if [[ -n "$REVIEW_CAPTURE_ID" ]]; then
+            [[ "$REVIEW_CAPTURE_ID" =~ ^[1-9][0-9]*$ && "$REVIEW_CAPTURE_HEAD_SHA" =~ ^[0-9a-f]{40}$ && "$REVIEW_CAPTURE_HISTORY_HEAD_SHA" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            # The separate completion consumer writes receipts only after this run succeeds.
+          fi
       - name: Remove canonical policy temporary file
         if: always()
         env:
+          FORWARDED_EVENT_PATH: ${{ steps.signal-relay-event.outputs.event_path }}
           POLICY_PATH: ${{ steps.canonical.outputs.path }}
         shell: bash
         run: |
           if [[ -n "$POLICY_PATH" ]]; then rm -f -- "$POLICY_PATH" "$POLICY_PATH.dependencies.py"; fi
+          if [[ -n "$FORWARDED_EVENT_PATH" ]]; then rm -f -- "$FORWARDED_EVENT_PATH"; fi

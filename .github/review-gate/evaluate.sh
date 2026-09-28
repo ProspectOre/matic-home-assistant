@@ -255,7 +255,8 @@ capture_receipt_is_authenticated() {
     and .conclusion == "success"
     and ((.display_title // "") | test("^Review gate PR #" + $pr
       + " \\| policy-workflow-sha=[0-9a-f]{40} \\| event-capture=" + $capture
-      + " \\| event-head=" + $head + "$"))
+      + " \\| (event-head=" + $head + "( \\| event-history-head=[0-9a-f]{40})?"
+      + "|event-head=[0-9a-f]{40} \\| event-history-head=" + $head + ")$"))
   ' <<< "$run" >/dev/null || return 1
   return 0
 }
@@ -719,6 +720,10 @@ def clean_security_envelope:
             or (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
           def coordinator_prelude:
             test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
+          def coordinator_result_for_head:
+            if coordinator_prelude then
+              (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
+            else false end;
           def coordinator_metadata:
             test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
           def security_result_section:
@@ -737,7 +742,8 @@ def clean_security_envelope:
            | select(($result | contains_security_marker) or
                    (($result | contains_security_heading) and
                     ($result | has_security_report_link)))
-           | select(($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
+           | select((($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
+                    or ($body | coordinator_result_for_head))
            | {source: "issue-comment", id: (.id // 0 | tostring), body: $body}]'
   )"
   jq -cn --argjson reviews "$review_findings" --argjson comments "$issue_comment_findings" --argjson inline "$inline_findings" '$reviews + $comments + $inline | unique'
@@ -1845,6 +1851,10 @@ def clean_security_envelope:
       (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
     def coordinator_prelude:
       test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
+    def coordinator_result_for_head:
+      if coordinator_prelude then
+        (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
+      else false end;
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
     def security_result_section:
@@ -1893,8 +1903,10 @@ def clean_security_envelope:
       (contains_security_heading and
        (has_security_report_link or ((ascii_downcase) | clean_security_envelope)));
     [.comment.body // "", .changes.body.from // .comment.body // ""] | map(
-      (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
-      (security_result_section | is_security_event))
+      . as $body
+      | ((contains("`" + $head + "`") or contains("`" + $prefix + "`"))
+         or ($body | coordinator_result_for_head))
+        and ($body | security_result_section | is_security_event))
   ' "$event_path")"
   if jq -e 'any' <<< "$security_event_states" >/dev/null; then
     security_event=true
@@ -1915,6 +1927,10 @@ def clean_security_envelope:
       (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
     def coordinator_prelude:
       test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
+    def coordinator_result_for_head:
+      if coordinator_prelude then
+        (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
+      else false end;
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
     def security_result_section:
@@ -1959,8 +1975,10 @@ def clean_security_envelope:
         and ((($lower | clean_security_envelope) | not)
              or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
     ([.comment.body // "", .changes.body.from // ""] | any(
-      (contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
-      (security_result_section | . as $result | (ascii_downcase) as $lower
+      . as $body
+      | ((contains("`" + $head + "`") or contains("`" + $prefix + "`"))
+         or ($body | coordinator_result_for_head))
+        and ($body | security_result_section | . as $result | (ascii_downcase) as $lower
        | ($result | contains_security_marker) or
          (($result | contains_security_heading) and
           ($result | has_security_report_link)))))
