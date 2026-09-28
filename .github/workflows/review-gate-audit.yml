@@ -73,7 +73,7 @@ jobs:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           EXPECTED_SHA256: 'bd869d7e3cffd51f26de34a6c4bd01f1f7054fb0a410bf9630fd60c1bc207979'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '20cfa5ee56db1552eff823e304974a35fa7086c63733568263a454652d87365c'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '534fa573f2b5c9c9211e184a05d8c91e661e8c633a159cf9462a0d3c614200ee'
         shell: bash
         run: |
           set -euo pipefail

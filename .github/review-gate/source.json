@@ -7,11 +7,11 @@
     "version": 1,
     "workflow": "review-gate.yml",
     "ref": "refs/heads/main",
-    "sha256": "8db7410646148da9d677d5a5851241b6c861d91f862f8d29ca8e9ce30389caef",
+    "sha256": "6e67b3737dfe50e7ec3fc5c5310dcdc6036bfd366242da80b6afb118a2f669c7",
     "completionWorkflow": "review-gate-capture-completion.yml",
     "completionSha256": "47c8a5b60076075c8efde0e225b980c69271fb53fd53e9b6c6b56adee6336be3"
   },
-  "issueCommentReceiptsSha256": "20cfa5ee56db1552eff823e304974a35fa7086c63733568263a454652d87365c",
+  "issueCommentReceiptsSha256": "534fa573f2b5c9c9211e184a05d8c91e661e8c633a159cf9462a0d3c614200ee",
   "generated": true,
   "managedWorkflows": [
     ".github/workflows/review-gate-audit.yml",
