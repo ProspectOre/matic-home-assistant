@@ -8,8 +8,8 @@ RC3 install/restart and focused desktop UI checks passed; earlier RC1/RC2 tracke
 
 Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
-- The 0.5 branch follows stable v0.4.6 (`52166df`); HACS and Python package metadata say `0.5.0`. Local backend source `a48541c` passes
-  3,618 Python tests at 100% (15,951 statements), Ruff, format, strict mypy (61 files), privacy, and clean Git-staging archive/fresh-import checks.
+- The 0.5 branch follows stable v0.4.6 (`52166df`); HACS and Python package metadata say `0.5.0`. Local product source `92e1605` passes
+  3,613 Python tests at 100% (15,947 statements), Ruff, format, strict mypy (61 files), privacy, and clean Git-staging archive/fresh-import checks.
   This source is not installed; HACS RC3 `990e55c` contains the earlier `ca1a46b` source. Packaged 100-room recovery
   passes in Chromium and WebKit. Mixed coverage requires a stable,
   inactive native identity before its first write; retained completed IDs cannot claim a new active run, and a replacement during post-command
@@ -25,7 +25,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   [performance-0.5.md](performance-0.5.md).
 - Source `ca1a46b` revalidates saved-plan authority after executor waits, including tokenless starts; typed pre-write coverage guards retain safe reasons and skip cleanup STOP. Persistence-boundary interleavings prove exactly-once credit without replacing the accounting owner. Preferences have one effect/persistence owner; history scrubbing commits on change; sheet controls cannot initiate swipes; selection uses one linear scan. Full map explicitly receives focus for Safari Escape, and duplicate saved-map copy is removed. Independent backend and frontend review found no unresolved findings. PR #184 received clean regular review for exact head `0bbbc5b` and merged as `990e55c` with an identical tree.
 - All 826 final browser cases passed in PR #184 CI (run `36373202823`); Python/coverage/lint/types/privacy passed (`36373203074`) and HACS/Hassfest passed (`36373202821`). The merge commit also passed Test, Browser UI, and Validate (`36373902858`, `36373902973`, `36373902988`).
-- The `a48541c` audit fences Area writes on positive same-floor session replacement, advances generations before cancellation, and retains safe reads through unverified gaps. Clear selection commits once with no intermediate preview; admin-only preview rejects missing principals. Optional classic/editor assets load on demand with preserved selector properties, reconnect state, shared retry, and actionable failure recovery. PR #186 head `8cbf2b6` passes all 862 browser cases, Python/coverage, packaging, HACS, and Hassfest. Source `444c373` then fixes saved Classic restoration after late HA configuration, detached controller admission, explicit retry after failure, and changed preferences during import; 24 packaged Chromium/WebKit lifecycle cases and 55 packaging/privacy cases pass. Source `0c1923d` also preserves optional selector validity through loading/failure and delegates validity after mount; all 26 deferred-loading Chromium/WebKit cases pass. Updated full CI and regular review remain required. Whole startup includes registered HA modules: 83,359 gzip bytes, down from 141,981. Latest lab input p95 is 72/80/64 ms; Long Task peaks of 89/80/54 ms keep task-duration qualification open.
+- Product source `92e1605` makes Map Studio the sole workspace under the owner’s explicit refinement: Classic, its switch, frontend-choice logic, static route, embedded Area mode, and obsolete strings/tests are removed. Safe view/camera preferences and HA Configure forms remain. The audit also fences same-floor Area writes, advances generations before cancellation, preserves safe reads through verification gaps, makes Clear atomic, and rejects missing preview principals. Lazy selectors retain properties, events, reconnect state, retry, and optional/required validity; detached panels stay idle. The original 807-case browser suite passes; the added eight desktop WebKit Configure cases pass after replacing a forced click on a clipped checkbox with visible-label and keyboard interaction, also verified in Chromium. Two independent source reviews and an independent translation audit found no actionable issue. Exact-head CI and regular review remain required. Complete startup is 82,279 gzip bytes; the latest paired lab reports input p95 48/40/40 ms and no Long Tasks, with runtime/mobile qualification still open. Earlier failed measurements remain in the performance record.
 - The prior Python CI collection failure is fixed by importing `RoomRunOutcome` from `managed_executor` and injecting a typed waiter per execution; no duplicate service authority or global test monkeypatch remains.
 - Ownership checks cover candidate cancellation, shared transport errors, firmware
   persistence failure/cancellation, overlapping writers, floor revocation and
@@ -38,7 +38,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   ownership defect; cancellation and retained-draft regressions cover its repair.
 - The [paired performance comparison](performance-0.5.md) records the current
   compiled asset fingerprints, identical synthetic scenes, size/input
-  measurements, and unresolved task-duration gate. Desktop lab measurements do
+  measurements, and unresolved runtime budgets. Desktop lab measurements do
   not establish mobile, frame/GPU, sustained-memory, or live transport budgets.
 - Parser tests cover no-worker recovery, ownership/disposal, and real-worker
   1,500,000-point accept / 1,500,001 reject. A 100-update HA regression observes
@@ -63,7 +63,7 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
 | Requirement | Contract disposition | 0.5 evidence status | Evidence required; current gap |
 |---|---|---|
-| One mounted canvas and gesture stack for map, rooms, plans, Areas, and Full map | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Public browser workflows plus canvas/gesture identity through Areas, Full map, remount, resize, and context loss; candidate unknown. |
+| One Map Studio UI, mounted canvas, and gesture stack for map, rooms, plans, Areas, and Full map | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Public browser workflows plus canvas/gesture identity through Areas, Full map, remount, resize, and context loss; candidate unknown. |
 | One status strip, workflow, and contextual primary action across Ready, Locating, Active, Paused, Returning, Error, History, Offline, Access, No-robot, Unsupported, and Multi-robot | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | State-family component/browser matrix and command-gate tests; candidate owner interaction/language acceptance unknown. |
 | Desktop inspector and safe-area mobile sheet with detents, scroll ownership, and responsive layouts | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | 320/360/390/600/768/1024/1440, portrait/landscape tablet, real iOS Safari and Android Chrome; no responsive/mobile scenario runtime receipt yet. |
 | Reversible Full map through toolbar, Escape, HA Back, and browser Back | Preserved and verified (baseline) | Local source regression verified; named 0.5 acceptance evidence unverified | Pointer/keyboard/popstate matrix must preserve floor, camera, selection, draft, history, workflow, status, Stop, and focus; unknown. |
@@ -120,7 +120,7 @@ The roadmap gates are independent and ordered; test counts, screenshots, a merge
 |---|---|
 | A — Baseline/budgets | Reproducible v0.4.5 and Samsung-tablet measurements for latency, traffic, reconnect, stalls, memory, GPU, and recovery; numerical budgets and known physical gaps recorded. |
 | B — Snapshot contract | Atomic admission, typed errors/reasons, authorization, parity, multi-entry isolation, old storage/service compatibility, and contract tests. |
-| C — Compatible adapter | Reversible switch, visible-state parity, unchanged command guards, and working legacy/v1 fallback. |
+| C — Compatible adapter | Reversible transport switch, visible-state parity, unchanged command guards, and working REST/v1 transport fallback. Map Studio is the sole UI under the owner's 2026-09-27 refinement. |
 | D — Live transport | Loss, duplicate, reorder, gap, overflow, restart, reconnect, floor transition, backoff, cleanup, polling fallback, and budget evidence before default switchover. |
 | E/E2/E3 — UI and cadence | Public-contract browser/accessibility evidence plus explainable results, cadence scope/reset/persistence, preview/dispatch parity, and guarded due-work behavior. |
 | E4 — Security | Reconciled backlog, clean exact-head review and required CI, privacy/packaging/Hassfest/HACS, hostile-input/resource evidence, and fail-closed behavior. |
