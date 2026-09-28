@@ -1,13 +1,13 @@
 // Offline, synthetic lab comparison. Build the candidate first, then run:
-// node scripts/measure_map_studio_performance.mjs [baseline-ref] [--headed]
+// node scripts/measure_map_studio_performance.mjs [baseline-ref] [--headed] [--trace-dir path]
 // Prints JSON; does not contact HA, a robot, or external origins. Lab Event
 // Timing samples do not establish field INP, mobile performance, or GPU FPS.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, readdir, stat } from "node:fs/promises";
+import { mkdir, readFile, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:http";
-import { cpus, platform, arch } from "node:os";
-import { dirname, join } from "node:path";
+import { cpus, loadavg, platform, arch } from "node:os";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseArgs } from "node:util";
 import { gzipSync } from "node:zlib";
@@ -16,9 +16,14 @@ import { chromium } from "@playwright/test";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const bundlePath = "custom_components/matic_robot/map_studio_v4";
 const reviewBundlePath = "tests/browser/.generated/map-studio-v4-review";
-const { values, positionals } = parseArgs({ options: { headed: { type: "boolean", default: false } }, allowPositionals: true });
+const { values, positionals } = parseArgs({ options: {
+  headed: { type: "boolean", default: false },
+  "trace-dir": { type: "string" },
+}, allowPositionals: true });
 if (positionals.length > 1) throw new Error("Expected at most one baseline ref");
 const headless = !values.headed;
+const traceDirectory = values["trace-dir"] ? resolve(values["trace-dir"]) : null;
+if (traceDirectory) await mkdir(traceDirectory, { recursive: true });
 const git = (...args) => execFileSync("git", args, { cwd: root, maxBuffer: 16 * 1024 * 1024 });
 const baseline = git("rev-parse", "--verify", "--end-of-options", `${positionals[0] || "v0.4.5"}^{commit}`).toString().trim();
 const assets = { baseline: new Map(), candidate: new Map() };
@@ -92,6 +97,7 @@ try {
   for (const order of [["baseline", "candidate"], ["candidate", "baseline"], ["baseline", "candidate"]]) {
     for (const variant of order) {
       const context = await browser.newContext({ viewport: { width: 1280, height: 900 }, deviceScaleFactor: 1, serviceWorkers: "block" });
+      let tracing = false;
       try {
         const page = await context.newPage();
         const errors = [];
@@ -141,6 +147,13 @@ try {
         };
         await planJourney(); // Warm the lazy workflow before the common journey.
         const warmedScripts = [...new Set(requests)].filter(productionRequest);
+        const traceFile = traceDirectory ? `${samples.length + 1}-${variant}.json` : null;
+        if (traceFile) {
+          await browser.startTracing(page, { path: join(traceDirectory, traceFile), screenshots: false,
+            categories: ["toplevel", "devtools.timeline", "disabled-by-default-devtools.timeline", "blink.user_timing", "v8", "cc", "gpu"] });
+          tracing = true;
+        }
+        const hostLoadBefore = loadavg();
         await page.evaluate(() => { window.__maticBenchmark.start = performance.now(); });
         for (let index = 0; index < 60; index++) {
           await gallery.getByRole("button", { name: index % 2 ? "2D" : "3D", exact: true }).click();
@@ -162,6 +175,8 @@ try {
           }
           return { interactions: [...interactions.values()], longTasks: tasks.filter(task => task.start >= start).map(task => task.duration) };
         });
+        const hostLoadAfter = loadavg();
+        if (tracing) { await browser.stopTracing(); tracing = false; }
         if (errors.length) throw new Error(JSON.stringify(errors));
         if (measured.interactions.length > 100) throw new Error("unexpected interaction count");
         const metricValues = (await session.send("Performance.getMetrics")).metrics;
@@ -170,7 +185,8 @@ try {
         // Impute unreported interactions at the 16 ms reporting threshold.
         // This is an estimate: recorded durations retain browser quantization.
         const estimated = [...measured.interactions, ...Array(100 - measured.interactions.length).fill(16)];
-        samples.push({ variant, sceneFingerprint, initialUniqueScripts: initialScripts.length,
+        samples.push({ variant, sceneFingerprint, traceFile, hostLoadBefore, hostLoadAfter,
+          initialUniqueScripts: initialScripts.length,
           initialScriptEstimatedGzipBytes: gzipBytes(initialScripts), workflowAddedUniqueScripts: warmedScripts.length - initialScripts.length,
           hostExtraModuleEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes : null,
           wholeIntegrationInitialEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes + gzipBytes(initialScripts) : null,
@@ -181,7 +197,10 @@ try {
           inputMaxEstimateMs: Math.max(...estimated), longTasksOver50Ms: measured.longTasks.length,
           longestTaskMs: Math.max(0, ...measured.longTasks),
           jsHeapUsedBytesAfterJourney: metricValues.find(metric => metric.name === "JSHeapUsedSize")?.value ?? null });
-      } finally { await context.close(); }
+      } finally {
+        if (tracing) await browser.stopTracing();
+        await context.close();
+      }
     }
   }
   if (new Set(samples.map(sample => sample.sceneFingerprint)).size !== 1) throw new Error("baseline and candidate synthetic scenes differ");
@@ -191,16 +210,18 @@ try {
     return [variant, { inputP95EstimateMs: { min: Math.min(...values), median: quantile(values, 0.5), max: Math.max(...values) },
       longTasksOver50MsByRun: runs.map(sample => sample.longTasksOver50Ms) }];
   }));
-  console.log(JSON.stringify({ schema: 3, measuredAt: new Date().toISOString(), baseline,
+  console.log(JSON.stringify({ schema: 4, measuredAt: new Date().toISOString(), baseline,
     bundles: Object.fromEntries(Object.entries(assets).map(([name, files]) => [name, fingerprint(files)])),
     reviewOnlyBundle: fingerprint(reviewAssets),
     registeredFrontendAssets: fingerprint(registeredAssets),
     conditions: { browser: browser.version(), platform: platform(), arch: arch(), cpuModel: cpus()[0]?.model,
+      logicalCpus: cpus().length, tracing: Boolean(traceDirectory),
       viewport: "1280x900", dpr: 1, headless, network: "loopback, unthrottled", cpuThrottle: 1,
       cache: "new browser context per sample; no-store assets", order: "AB BA AB",
       journey: "60 2D/3D toggles, 5 plan-preview/edit/back loops, 10 room-list/back loops; lazy workflow warmed first" },
     limits: ["Synthetic lab proxy; not field INP or mobile/robot acceptance", "Scene hash must match between builds",
       "Event Timing threshold 16 ms; unreported interactions imputed at 16 ms; browser quantization retained",
+      "Tracing adds diagnostic overhead; trace-enabled timings do not qualify the untraced performance gate",
       "Gzip bytes are offline size estimates; the loopback server sends uncompressed JavaScript",
       "Candidate review-only assets are reported separately; shared compiled production chunks serve the synthetic journey",
       "Candidate includes actual registered HA extra modules; historical baseline is panel-only and has no host-wide byte total",
