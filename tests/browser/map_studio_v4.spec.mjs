@@ -5024,6 +5024,7 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
       async () => overlay.evaluate(canvas => canvas.toDataURL()),
       { timeout: 2_000 },
     ).not.toBe(beforePreview);
+    expect((await snapshot(page)).draw).toEqual(baseline);
     await dispatch(root, pointer("pointerup", 11, x + 40, y));
     await expect.poll(async () => (await snapshot(page)).draw.circles.length).toBeGreaterThan(0);
     const committed = (await snapshot(page)).draw;

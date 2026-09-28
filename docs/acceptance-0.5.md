@@ -53,11 +53,11 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   refresh only the catalog. Transport stays off until live parity, resource
   budgets, and switchover evidence pass.
 - RC1 `v0.5.0-rc1` at `bec3173` matched 91-file digest `e9639e0788001a5cc532c992f89daa3b8bd7eadd2c0d2137ac22774d2d668c47`; rollback `v0.4.6` at `52166df` matched 79-file digest `0d3102b983f824a6b632e7d181ded05ffbb9bdbbe77a74cb861893caee2c8cd9`.
-  Postrestart coordinator/map ready; robot docked/native-inactive, runner unlocked,
-  no reconciliation; terminal add-on stopped. Bounded tracked-manual vacuum failed
-  `robot_error` without matching native completion; cleanup suppressed STOP on
-  unproven ownership. Logs do not distinguish dispatch/readback from robot error
-  state; movement is unverified and schedules are unchanged.
+  Postrestart coordinator/map ready; terminal add-on stopped. MCP confirms
+  room-started → room-failed → plan-finished as `robot_error` (`cause=unknown`),
+  with no matching native-history record. Readback is docked/native-inactive,
+  runner unlocked, no reconciliation; Activity retention ends before the run.
+  Cleanup suppressed STOP without proven ownership; dispatch and movement remain unknown; schedules were not changed.
 - Owner/changed-flow, accessibility, Android/iOS, live transport budgets, and robot
   acceptance remain open. Review #138 is blocked on shared policy #48 and authenticated
   review capture; candidate logs lack provenance. Unsigned listener stays unpublished.
