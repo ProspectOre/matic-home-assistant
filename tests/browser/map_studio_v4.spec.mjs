@@ -1348,6 +1348,124 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
+  for (const outcome of ["success", "error"]) {
+    test(`@safety disconnect fences an in-flight pose ${outcome} before cancellation`, async ({ page }) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async (outcome) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore(initial);
+        let finish;
+        let hold = false;
+        let abortedGeneration;
+        const effects = new EffectController(store, {
+          catalog: async () => [{ ...initial.resources.entry, deltaUrl: null }],
+          history: async () => initial.resources.history.value,
+          scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+          pose: async (_url, signal) => {
+            if (!hold) return initial.resources.pose.value;
+            signal.addEventListener("abort", () => { abortedGeneration = store.value.generation; }, { once: true });
+            // A transport can settle after abort; admission must still reject it.
+            return new Promise((resolve, reject) => {
+              finish = () => outcome === "success"
+                ? resolve(initial.resources.pose.value) : reject(new Error("Late transport failure"));
+            });
+          },
+          dispose() {},
+        });
+        const projection = {
+          host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en",
+          userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+        };
+        try {
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          const connectedGeneration = store.value.generation;
+          const retainedScene = store.value.resources.scene.value;
+          hold = true;
+          const pending = effects.refreshPose();
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const disconnectedGeneration = store.value.generation;
+          finish();
+          await pending;
+          const disconnected = {
+            pose: store.value.resources.pose, exactPose: store.value.map.exactPose,
+            coherence: store.value.coherence, retainedScene: store.value.resources.scene.value === retainedScene,
+          };
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const repeatedDisconnectGeneration = store.value.generation;
+          hold = false;
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          return {
+            connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
+            disconnected, recovered: store.value.map.exactPose && store.value.coherence === "current",
+          };
+        } finally { effects.dispose(); }
+      }, outcome);
+      expect(result.disconnectedGeneration).toBeGreaterThan(result.connectedGeneration);
+      expect(result.abortedGeneration).toBe(result.disconnectedGeneration);
+      expect(result.repeatedDisconnectGeneration).toBe(result.disconnectedGeneration);
+      expect(result.disconnected).toEqual({
+        pose: { status: "idle", value: null, problem: null }, exactPose: false,
+        coherence: "degraded", retainedScene: true,
+      });
+      expect(result.recovered).toBe(true);
+    });
+  }
+
+  for (const force of [false, true]) {
+    for (const outcome of ["success", "error"]) {
+      test(`@safety reconnect supersedes a ${force ? "forced" : "polling"} catalog ${outcome} without waiting for polling`, async ({ page }) => {
+        await loadEffectHarness(page);
+        const result = await page.evaluate(async ({ force, outcome }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const entry = { ...initial.resources.entry, deltaUrl: null };
+          let reads = 0;
+          let finish;
+          const problems = [];
+          const unsubscribe = store.subscribe((state) => {
+            if (state.resources.catalog.problem) problems.push(state.resources.catalog.problem);
+          });
+          const effects = new EffectController(store, {
+            catalog: async () => {
+              if (++reads !== 2) return [entry];
+              return new Promise((resolve, reject) => {
+                finish = () => outcome === "success"
+                  ? resolve([entry]) : reject(new Error("Obsolete connection failed"));
+              });
+            },
+            history: async () => initial.resources.history.value,
+            scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+            pose: async () => initial.resources.pose.value,
+            dispose() {},
+          });
+          const projection = {
+            host: initial.host, activity: initial.activity, batteryPercent: 92,
+            robotLabel: "Synthetic", robots: initial.robots, language: "en",
+            userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+          };
+          try {
+            effects.sync(projection);
+            await effects.refreshCatalog(true);
+            const pending = effects.refreshCatalog(force);
+            effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+            effects.sync(projection);
+            finish();
+            await pending;
+            return { reads, problems, status: store.value.resources.catalog.status, coherence: store.value.coherence };
+          } finally { unsubscribe(); effects.dispose(); }
+        }, { force, outcome });
+        expect(result).toEqual({ reads: 3, problems: [], status: "ready", coherence: "current" });
+      });
+    }
+  }
+
   test("retries history reads and retains the selected saved floor label", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {

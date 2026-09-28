@@ -740,6 +740,26 @@ test("transient subscription failure retries after the initial snapshot", async 
   expect(await page.evaluate(() => window.workspaceHarness.unsubscribed)).toBe(1);
 });
 
+for (const outcome of ["success", "error"]) {
+  test(`disposed transport ignores a late initial snapshot ${outcome}`, async ({ page }) => {
+    await load(page);
+    await page.clock.install();
+    await page.evaluate(async ({ outcome, value }) => {
+      const h = window.workspaceHarness;
+      const pending = h.transport.start();
+      h.transport.dispose();
+      if (outcome === "success") h.snapshotResolve(value);
+      else h.rejectInitialSnapshot(new Error("Obsolete connection failed"));
+      await pending;
+    }, { outcome, value: snapshot(0) });
+    await page.clock.fastForward(5_000);
+    expect(await page.evaluate(() => {
+      const h = window.workspaceHarness;
+      return { events: h.events, errors: h.errors, reads: h.snapshotCalls, subscriptions: h.subscribeCalls };
+    })).toEqual({ events: [], errors: [], reads: 1, subscriptions: 0 });
+  });
+}
+
 test("dispose cancels a scheduled snapshot retry", async ({ page }) => {
   await load(page);
   await page.clock.install();
