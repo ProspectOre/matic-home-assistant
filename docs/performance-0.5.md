@@ -6,7 +6,7 @@ The release ledger is
 [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
-Current product source is `a48541c5a49ec45c9c83a580678d55d4610ac960`.
+Current product source is `444c373af67b108db5d116c18a543026fe1a0632`.
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
@@ -29,8 +29,8 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The untraced comparison ran at `2026-09-28T05:00:26.438Z`
-(10:00 p.m. PDT on September 27) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+The untraced comparison ran at `2026-09-28T05:49:16.811Z`
+(10:49 p.m. PDT on September 27) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no throttling, and no-store assets. Other task-owned checks
 were paused. Three fresh contexts per build ran in AB/BA/AB order; scene and
 bundle fingerprints matched across all six samples. The script records
@@ -51,33 +51,33 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 ## Latest paired result
 
 Measured against the compiled assets for source commit
-`a48541c5a49ec45c9c83a580678d55d4610ac960`.
+`444c373af67b108db5d116c18a543026fe1a0632`.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
 |---|---:|---:|
-| Initial v4 JS, estimated gzip bytes | 79,821 | 81,364 |
+| Initial v4 JS, estimated gzip bytes | 79,821 | 81,405 |
 | Initial distinct v4 JS resources | 1 | 4 |
 | Registered global modules, estimated gzip bytes | Unmeasured | 1,965 |
-| Complete initial integration JS, estimated gzip bytes | Unmeasured | 83,329 |
+| Complete initial integration JS, estimated gzip bytes | Unmeasured | 83,370 |
 | Added workflow JS, estimated gzip bytes | 0 (eager) | 11,704 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
-| Input p95 estimates, three runs, ms | 120 / 80 / 192 | 168 / 72 / 176 |
-| Median / range of p95 estimates, ms | 120 / 80–192 | 168 / 72–176 |
-| Maximum observed input estimates, ms | 160 / 240 / 232 | 288 / 152 / 280 |
-| Tasks at the 50 ms Long Tasks API threshold, three runs | 46 / 7 / 32 | 21 / 7 / 34 |
-| Longest task per run, ms | 147 / 203 / 201 | 278 / 136 / 260 |
-| Post-journey JS heap range, three observations, bytes | 5,338,964–6,332,232 | 6,275,164–7,127,884 |
+| Input p95 estimates, three runs, ms | 48 / 56 / 48 | 48 / 48 / 56 |
+| Median / range of p95 estimates, ms | 48 / 48–56 | 48 / 48–56 |
+| Maximum observed input estimates, ms | 120 / 104 / 48 | 72 / 72 / 72 |
+| Tasks at the 50 ms Long Tasks API threshold, three runs | 2 / 3 / 0 | 1 / 0 / 0 |
+| Longest reported Long Task per run, ms (0 = none reported) | 108 / 70 / 0 | 58 / 0 / 0 |
+| Post-journey JS heap range, three observations, bytes | 4,241,176–5,293,716 | 5,221,620–5,828,768 |
 
-Complete startup fell 58,652 bytes (41.3%) and now passes 90 KiB. The v4 lazy
+Complete startup fell 58,611 bytes (41.3%) and now passes 90 KiB. The v4 lazy
 workflow remains below 30 KiB. Optional classic compatibility is 42,251 gzip
 bytes and is reported separately; it is not a v4 workflow or a claimed size pass.
 The 100-room Clear regression records 100 → 1 commits and 99 → 0 intermediate
 nonempty preview keys; these are store/key counts, not network-request counts.
-Both builds missed input and task-duration targets. System process observations
-after this run showed substantial unrelated load, but do not establish its
-cause. No timing improvement or current timing pass is claimed. Heap samples
-do not establish retention bounds. Field, mobile, sustained runtime, and
-release acceptance remain open.
+Both builds met the input p95 target in this lab run, but both had tasks over
+50 ms; the candidate had one 58 ms Long Task. One-minute host load ranged from
+15.7 to 17.7 on 10 logical CPUs. Timing variation across runs prevents a causal
+improvement claim. Heap observations are not retention bounds; field, mobile,
+sustained runtime, and release acceptance remain open.
 
 Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 
@@ -85,16 +85,19 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `a48541c5a49ec45c9c83a580678d55d4610ac960` |
-| Candidate production bundle | `79767d67fa1d6a40cf7cc8a308cd3da26e877e0ba66ec5a0183ece636548c21c` |
-| Candidate review-only bundle | `99c21ec8b78342ecfa3293aa65a36513d683fe1c82434be685d3c4c56bc652d9` |
-| Registered frontend assets | `63bf09882b50b7c6823d9c4aeb51ad66302a3dd4aca91ff59144aec11725d28c` |
+| Candidate source commit | `444c373af67b108db5d116c18a543026fe1a0632` |
+| Candidate production bundle | `ce1e3c854b9075b43d950306141843c01c5fc89ecb62225e9c064d4e4493d749` |
+| Candidate review-only bundle | `6a62550e1806c22934599956995451078ef482c7ea630bb87a9757a95a23589d` |
+| Registered frontend assets | `002e8a19e8befe08e9ed2962049eb9a2cccb22cf8c09b6c0514bcad53e045786` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
-## Current diagnostic follow-up
+## Prior failed run and diagnostic follow-up
 
-A trace-enabled AB/BA/AB run ended at 10:08 p.m. PDT on September 27 using
-the same assets and scene. One-minute host load ranged from 17.5 to 75.2 on
+At 10:00 p.m. PDT on September 27, source `a48541c` failed the untraced targets:
+candidate p95 was 168/72/176 ms, with 21/7/34 Long Tasks (peaks 278/136/260 ms);
+control p95 was 120/80/192 ms with 46/7/32 Long Tasks (peaks 147/203/201 ms).
+A trace-enabled run of those prior assets and the same scene ended at 10:08 p.m.
+One-minute host load ranged from 17.5 to 75.2 on
 10 logical CPUs. Each sample's longest renderer task was a compositor commit
 waiting on GPU readback. Candidate peaks were 134/515/636 ms wall time with
 1.29/2.19/1.58 ms renderer CPU; the 636 ms task contained 634.95 ms
@@ -107,7 +110,7 @@ traces and the failed untraced result are retained without selecting a best run.
 
 This is historical evidence for the prior candidate bundle
 `7186581d0ed2bc31247a038a8def77d35380389880b7fcf288d57c40fb623e00`, before
-the latest contrast-token rebuild. At 10:23–10:25 p.m. Pacific on September 25,
+a later contrast-token rebuild. At 10:23–10:25 p.m. Pacific on September 25,
 a trace-enabled probe repeated
 AB/BA/AB in both headless and headed Chromium, using the same synthetic scene
 hash as the paired result above.
