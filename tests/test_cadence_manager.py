@@ -864,6 +864,115 @@ async def test_manual_cadence_editor_state_reads_shared_room_schedule(hass):
     assert state["cadence_reasons"] == ["mop_due"]
 
 
+async def test_unverified_private_cadence_blocks_until_each_mode_is_reset(hass) -> None:
+    manager = _manager(hass)
+    floor = _floor()
+    identity = room_cadence_identity(floor, "room-a")
+    room = CleaningRoom("room-a", "Kitchen", "vacuum", "standard")
+    await manager.async_save_plan(
+        "serial",
+        "quick_clean",
+        {
+            "name": "Quick Clean",
+            "rooms": [
+                {
+                    "room_id": room.room_id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {
+                        "scope": "plan",
+                        "mop_every_n": 3,
+                        "coverage_every_n": 2,
+                        "periodic_coverage_setting": "heavy_duty",
+                    },
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor),
+        room_identities={room.room_id: identity},
+    )
+    record = (
+        manager._robot("serial")["plan_room_cadence"]
+        .setdefault("quick_clean", {})
+        .setdefault(room.room_id, {})
+    )
+    record["progress"] = {"mop": 2, "coverage": 1}
+    record["unverified_modes"] = ["mop", "coverage"]
+    room_map = {room.room_id: room.name}
+    state = manager.cadence_editor_state(
+        "serial",
+        "quick_clean",
+        room,
+        floor_token=plan_floor_token(floor),
+        identity=identity,
+    )
+
+    assert state["cadence_reasons"] == [
+        "mop_progress_unverified",
+        "coverage_progress_unverified",
+    ]
+    with pytest.raises(ValueError, match="progress is unverified"):
+        manager.preview(
+            "serial",
+            room_map,
+            "quick_clean",
+            floor_token=plan_floor_token(floor),
+            room_identities={room.room_id: identity},
+        )
+
+    await manager.async_reset_cadence(
+        "serial", "quick_clean", [room.room_id], modes=("mop",)
+    )
+    assert record["progress"] == {"mop": 0, "coverage": 1}
+    assert record["unverified_modes"] == ["coverage"]
+    state = manager.cadence_editor_state(
+        "serial",
+        "quick_clean",
+        room,
+        floor_token=plan_floor_token(floor),
+        identity=identity,
+    )
+    assert state["cadence_reasons"] == ["coverage_progress_unverified"]
+    with pytest.raises(ValueError, match="coverage before use"):
+        manager.resolve_cadence("serial", "quick_clean", [room])
+
+    await manager.async_reset_cadence(
+        "serial", "quick_clean", [room.room_id], modes=("coverage",)
+    )
+    assert record["progress"] == {"mop": 0, "coverage": 0}
+    assert "unverified_modes" not in record
+    preview = manager.preview(
+        "serial",
+        room_map,
+        "quick_clean",
+        floor_token=plan_floor_token(floor),
+        room_identities={room.room_id: identity},
+    )
+    assert preview["rooms"][0]["cleaning_mode"] == "vacuum"
+
+
+def test_unverified_cadence_storage_normalizes_modes_and_removes_empty_marker() -> None:
+    robot = {
+        "plans": {},
+        "plan_room_cadence": {
+            "quick_clean": {
+                "room-a": {
+                    "progress": {"mop": 1, "coverage": 0},
+                    "unverified_modes": ["coverage", "mop", "coverage", "invalid", {}],
+                }
+            }
+        },
+    }
+
+    assert CleaningPlanManager._normalize_robot(robot) is True
+    record = robot["plan_room_cadence"]["quick_clean"]["room-a"]
+    assert record["unverified_modes"] == ["mop", "coverage"]
+    record["unverified_modes"] = None
+
+    assert CleaningPlanManager._normalize_robot(robot) is True
+    assert "unverified_modes" not in record
+
+
 @pytest.mark.parametrize("shared", [False, True], ids=["private", "shared"])
 async def test_cadence_editor_contains_invalid_persisted_policy(hass, shared) -> None:
     manager = _manager(hass)

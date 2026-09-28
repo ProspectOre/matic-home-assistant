@@ -124,6 +124,32 @@ test("saved-plan parsing preserves a room-limit blocker without inventing a prev
   expect(result).toEqual({ blocker: "plan_room_limit", previewToken: null });
 });
 
+test("saved-plan parsing admits explicit unverified cadence recovery state", async ({ page }) => {
+  await load(page);
+  const result = await page.evaluate(async payload => {
+    const { parsePlansCatalog } = await import("/backend-contracts.js");
+    payload.plans[0].rooms[0].cadence_reasons = [
+      "mop_progress_unverified",
+      "coverage_progress_unverified",
+    ];
+    payload.plans[0].next_run_preview = {
+      rooms: [],
+      mission_boundaries: [],
+      blocker: "cadence_progress_unverified",
+    };
+    const parsed = parsePlansCatalog(payload).plans[0];
+    return {
+      reasons: parsed.rooms[0].cadenceReasons,
+      blocker: parsed.nextRunPreview.blocker,
+    };
+  }, plansPayload());
+
+  expect(result).toEqual({
+    reasons: ["mop_progress_unverified", "coverage_progress_unverified"],
+    blocker: "cadence_progress_unverified",
+  });
+});
+
 test("legacy saved plans remain editable up to the bounded recovery cap", async ({ page }) => {
   await load(page);
   const result = await page.evaluate(async payload => {

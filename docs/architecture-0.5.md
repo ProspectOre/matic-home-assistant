@@ -111,6 +111,14 @@ through execution or pending native reconciliation, and restore reservations dur
 progress to verified robot/floor/room identity, preserve it across room renames, and never transfer it
 across an ambiguous identity change.
 
+The storage minor-10 migration isolates a legacy tracked-room rotation row only
+when its run ID matches the manual run being migrated. Because older private
+cadence aggregates do not retain per-run provenance, active private cadence
+modes on a colliding legacy plan ID keep their stored counts but become
+unverified. Preview and dispatch stay blocked until the owner explicitly resets
+each affected mode. Shared schedules and unrelated plans are left intact; the
+migration never reconstructs cadence from aggregate cleaning history.
+
 Effective mode and coverage are resolved before mixed mission grouping and are persisted, with policy
 identity and cadence snapshot, before dispatch. Manual and saved-plan starts consume the authoritative preview, bound to identity, order, settings, and progress by a fingerprint revalidated after preparation awaits. Stop policy belongs to the frozen run. Only a unique, verified managed room completion advances
 progress. Tracked normal starts bind to the minted field-6 UUID and require the active-session key to match

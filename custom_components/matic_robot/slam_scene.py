@@ -1280,6 +1280,8 @@ class MaticPlansView(HomeAssistantView):
                     if "different map" in message or "identity" in message
                     else "shared_schedule_unavailable"
                     if "shared room cadence" in message and "unavailable" in message
+                    else "cadence_progress_unverified"
+                    if "progress is unverified" in message
                     else "invalid_cadence_policy"
                     if "cadence" in message
                     else "invalid_plan"

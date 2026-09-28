@@ -60,7 +60,7 @@ from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 9
+STORAGE_MINOR_VERSION = 10
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
@@ -310,6 +310,177 @@ def _next_manual_room_sequence_plan_id(
         suffix += 1
 
 
+def _move_legacy_manual_rotation(
+    robot: dict[str, Any], run_id: str, manual_plan_id: str
+) -> None:
+    """Move only rotation rows owned by one legacy manual run."""
+    rotations = robot.get("rotations")
+    if not isinstance(rotations, dict):
+        return
+    legacy = rotations.get("quick_clean")
+    if not isinstance(legacy, dict):
+        return
+    legacy_rooms = legacy.get("rooms")
+    if not isinstance(legacy_rooms, dict):
+        return
+    owned_rooms = [
+        (room_id, record)
+        for room_id, record in legacy_rooms.items()
+        if isinstance(record, dict) and record.get("run_id") == run_id
+    ]
+    if not owned_rooms:
+        return
+    target = rotations.get(manual_plan_id)
+    if not isinstance(target, dict):
+        target = {"rooms": {}}
+        rotations[manual_plan_id] = target
+    target_rooms = target.get("rooms")
+    if not isinstance(target_rooms, dict):
+        target_rooms = {}
+        target["rooms"] = target_rooms
+    for room_id, record in owned_rooms:
+        existing = target_rooms.get(room_id)
+        if not isinstance(existing, dict):
+            target_rooms[room_id] = record
+        else:
+            source_time = _latest_timestamp_value(
+                record.get("last_opportunity"), record.get("last_completed")
+            )
+            target_time = _latest_timestamp_value(
+                existing.get("last_opportunity"), existing.get("last_completed")
+            )
+            source_is_newer = target_time is None or (
+                source_time is not None and source_time[0] > target_time[0]
+            )
+            selected = record if source_is_newer else existing
+            source_completion = _latest_timestamp_value(record.get("last_completed"))
+            target_completion = _latest_timestamp_value(existing.get("last_completed"))
+            newest_completion: tuple[float, str] | None = None
+            completion_duration: int | float | None = None
+            source_duration = _valid_duration_seconds(
+                record.get("last_duration_seconds")
+            )
+            target_duration = _valid_duration_seconds(
+                existing.get("last_duration_seconds")
+            )
+            source_completion_wins = source_completion is not None and (
+                target_completion is None
+                or source_completion[0] > target_completion[0]
+                or (
+                    source_completion[0] == target_completion[0]
+                    and (source_duration is not None or target_duration is None)
+                )
+            )
+            if source_completion_wins:
+                # Equal instants permit either row's duration; prefer source
+                # deterministically when both durations are valid.
+                newest_completion = source_completion
+                completion_duration = source_duration
+            elif target_completion is not None:
+                newest_completion = target_completion
+                completion_duration = target_duration
+            if newest_completion is not None:
+                # Row ownership describes the latest run and must keep its
+                # run_id/result pair. Completion time is an independent
+                # aggregate: a newer failed/manual attempt can own the row
+                # while the other row still has the latest verified completion.
+                # Keep only duration evidence attached to that completion;
+                # do not merge duration history or counts without run provenance.
+                selected["last_completed"] = newest_completion[1]
+                if completion_duration is not None:
+                    selected["last_duration_seconds"] = completion_duration
+                else:
+                    selected.pop("last_duration_seconds", None)
+            target_rooms[room_id] = selected
+        legacy_rooms.pop(room_id, None)
+
+
+def _valid_duration_seconds(value: object) -> int | float | None:
+    """Return positive finite duration evidence in seconds."""
+    if (
+        isinstance(value, int | float)
+        and not isinstance(value, bool)
+        and (isinstance(value, int) or math.isfinite(value))
+        and value > 0
+    ):
+        return value
+    return None
+
+
+def _quarantine_legacy_manual_cadence(robot: dict[str, Any]) -> None:
+    """Preserve, but stop trusting, private progress for the legacy ID collision."""
+    plans = robot.get("plans")
+    quick_clean = plans.get("quick_clean") if isinstance(plans, Mapping) else None
+    plan_rooms = quick_clean.get("rooms") if isinstance(quick_clean, Mapping) else None
+    if not isinstance(plan_rooms, list):
+        return
+    cadence_by_room: dict[str, Mapping[str, Any]] = {}
+    for room in plan_rooms:
+        if not isinstance(room, Mapping) or not isinstance(room.get("room_id"), str):
+            continue
+        policy = room.get("cadence")
+        if not isinstance(policy, Mapping) or policy.get("scope", "plan") == "shared":
+            continue
+        cadence_by_room[room["room_id"]] = policy
+    if not cadence_by_room:
+        return
+    all_progress = robot.get("plan_room_cadence")
+    if not isinstance(all_progress, dict):
+        all_progress = {}
+        robot["plan_room_cadence"] = all_progress
+    progress_by_room = all_progress.get("quick_clean")
+    if not isinstance(progress_by_room, dict):
+        progress_by_room = {}
+        all_progress["quick_clean"] = progress_by_room
+    for room_id, policy in cadence_by_room.items():
+        modes = [
+            mode
+            for mode, field in (
+                ("mop", "mop_every_n"),
+                ("coverage", "coverage_every_n"),
+            )
+            if isinstance(policy.get(field), int)
+            and not isinstance(policy.get(field), bool)
+            and 1 <= policy[field] <= 100
+        ]
+        if not modes:
+            continue
+        record = progress_by_room.get(room_id)
+        if not isinstance(record, dict):
+            record = {}
+            progress_by_room[room_id] = record
+        existing = record.get("unverified_modes")
+        unverified = (
+            {
+                mode
+                for mode in existing
+                if isinstance(mode, str) and mode in ("mop", "coverage")
+            }
+            if isinstance(existing, list)
+            else set()
+        )
+        record["unverified_modes"] = [
+            mode for mode in ("mop", "coverage") if mode in unverified | set(modes)
+        ]
+
+
+def _unverified_cadence_modes(record: object, policy: Mapping[str, Any]) -> list[str]:
+    """Return active cadence modes whose persisted progress needs owner reset."""
+    raw_modes = record.get("unverified_modes") if isinstance(record, Mapping) else None
+    if not isinstance(raw_modes, list):
+        return []
+    stored = {
+        mode
+        for mode in raw_modes
+        if isinstance(mode, str) and mode in ("mop", "coverage")
+    }
+    return [
+        mode
+        for mode, field in (("mop", "mop_every_n"), ("coverage", "coverage_every_n"))
+        if mode in stored and policy.get(field) is not None
+    ]
+
+
 def _migrate_legacy_manual_room_run(robot: dict[str, Any]) -> bool:
     """Isolate a persisted pre-0.5 room run from saved Quick Clean policy."""
     run = robot.get("last_run")
@@ -326,6 +497,7 @@ def _migrate_legacy_manual_room_run(robot: dict[str, Any]) -> bool:
     raw_plans = robot.get("plans")
     plans = raw_plans if isinstance(raw_plans, Mapping) else {}
     plan_id = _next_manual_room_sequence_plan_id(plans)
+    _move_legacy_manual_rotation(robot, run_id, plan_id)
     run["plan_id"] = plan_id
     run["plan_name"] = "Map Studio room clean"
 
@@ -434,6 +606,18 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
                     robot.setdefault("native_completion_dedup", [])
                 if old_minor_version < 9:
                     _migrate_legacy_manual_room_run(robot)
+                if old_minor_version < 10:
+                    _quarantine_legacy_manual_cadence(robot)
+                    run = robot.get("last_run")
+                    if (
+                        isinstance(run, Mapping)
+                        and run.get("service") == "clean_room_sequence"
+                        and _is_manual_room_sequence_plan_id(run.get("plan_id"))
+                        and isinstance(run.get("run_id"), str)
+                    ):
+                        _move_legacy_manual_rotation(
+                            robot, run["run_id"], run["plan_id"]
+                        )
         return old_data
 
 
@@ -2208,6 +2392,13 @@ class CleaningPlanManager:
                     and progress_record.get("identity") not in {None, expected_identity}
                 ):
                     raise ValueError("room cadence progress belongs to a different map")
+                blocked_modes = _unverified_cadence_modes(progress_record, policy)
+                if blocked_modes:
+                    raise ValueError(
+                        "room cadence progress is unverified; reset "
+                        + " and ".join(blocked_modes)
+                        + " before use"
+                    )
                 progress = (
                     progress_record.get("progress")
                     if isinstance(progress_record, Mapping)
@@ -2345,6 +2536,22 @@ class CleaningPlanManager:
                 if stored_policy is not None
                 else None
             )
+            if policy is not None and not shared_selected:
+                records = robot["plan_room_cadence"].get(plan_id, {})
+                record = (
+                    records.get(room.room_id, {})
+                    if isinstance(records, Mapping)
+                    else {}
+                )
+                unverified_modes = _unverified_cadence_modes(record, policy)
+                if unverified_modes:
+                    return {
+                        "cadence": policy,
+                        "cadence_progress": None,
+                        "cadence_reasons": [
+                            f"{mode}_progress_unverified" for mode in unverified_modes
+                        ],
+                    }
             _effective, snapshots = self.resolve_cadence(
                 serial_number,
                 plan_id,
@@ -2360,6 +2567,8 @@ class CleaningPlanManager:
                 if "different map" in message
                 else "shared_schedule_unavailable"
                 if "unavailable" in message
+                else "cadence_progress_unverified"
+                if "progress is unverified" in message
                 else "invalid_cadence_policy"
             )
             return {
@@ -2482,6 +2691,19 @@ class CleaningPlanManager:
                     progress = record["progress"]
                     for mode in reset_modes:
                         progress[mode] = 0
+                    unverified = record.get("unverified_modes")
+                    if isinstance(unverified, list):
+                        remaining = [
+                            mode
+                            for mode in unverified
+                            if isinstance(mode, str)
+                            and mode in ("mop", "coverage")
+                            and mode not in reset_modes
+                        ]
+                        if remaining:
+                            record["unverified_modes"] = remaining
+                        else:
+                            record.pop("unverified_modes", None)
                 policy = raw.get("cadence") if isinstance(raw, Mapping) else None
                 if isinstance(policy, dict):
                     for mode in reset_modes:
@@ -3738,6 +3960,23 @@ class CleaningPlanManager:
                 }
                 if progress != normalized:
                     record["progress"] = normalized
+                    changed = True
+                raw_unverified = record.get("unverified_modes")
+                normalized_unverified = (
+                    [
+                        mode
+                        for mode in ("mop", "coverage")
+                        if isinstance(raw_unverified, list) and mode in raw_unverified
+                    ]
+                    if isinstance(raw_unverified, list)
+                    else []
+                )
+                if normalized_unverified:
+                    if normalized_unverified != raw_unverified:
+                        record["unverified_modes"] = normalized_unverified
+                        changed = True
+                elif "unverified_modes" in record:
+                    record.pop("unverified_modes")
                     changed = True
                 identity = record.get("identity")
                 if identity is not None and (

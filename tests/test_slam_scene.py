@@ -1743,6 +1743,38 @@ async def test_plan_workspace_reports_preview_unavailable() -> None:
     }
 
 
+async def test_plan_workspace_blocks_unverified_private_cadence() -> None:
+    runtime = _runtime()
+    runtime.cleaning_plans.plans.return_value = {
+        "quick_clean": {
+            "name": "Quick Clean",
+            "enabled": True,
+            "run_behavior": "intelligent",
+            "rooms": [
+                {
+                    "room_id": "room-1",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                }
+            ],
+            "room_order": ["room-1"],
+        }
+    }
+    runtime.cleaning_plans.preview.side_effect = ValueError(
+        "room cadence progress is unverified; reset mop before use"
+    )
+    runtime.slam_map.floor_plan_is_current.return_value = True
+
+    response = await MaticPlansView().get(_request(_hass(_entry(runtime))), "entry")
+
+    preview = json.loads(response.body)["plans"][0]["next_run_preview"]
+    assert preview == {
+        "rooms": [],
+        "mission_boundaries": [],
+        "blocker": "cadence_progress_unverified",
+    }
+
+
 async def test_plan_workspace_skips_malformed_rooms_and_uses_safe_defaults() -> None:
     runtime = _runtime()
     runtime.cleaning_plans.plans.return_value = {
