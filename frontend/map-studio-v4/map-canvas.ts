@@ -376,7 +376,6 @@ export class MaticMapCanvasV4 extends LitElement {
     this.#gestures?.observeState(this.state);
     this.#outlineEditor.observeState(this.state);
     this.#renderer?.setState(this.state);
-    if (this.state.draw.tool === "outline") this.requestUpdate();
   }
 
   // Canvas 2D cannot read CSS custom properties, so the renderer is handed a

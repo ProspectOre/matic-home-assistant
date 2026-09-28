@@ -47,6 +47,8 @@ from .endpoints import HERMES_ENDPOINT_MAP, HermesEndpointKind
 from .exceptions import (
     AuthenticationRequiredError,
     CannotConnectError,
+    CoverageGuardError,
+    CoverageGuardReason,
     EndpointUnsupportedError,
     InvalidRobotCertificateError,
     MaticError,
@@ -1245,6 +1247,20 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             payload, command_name=command.name, on_transmitted=on_transmitted
         )
 
+    async def _async_require_idle_native_session(self) -> bytes:
+        """Require stable, observable idle native state before managed coverage."""
+        baseline_identity = await self.async_get_cleaning_session_identity()
+        if baseline_identity is None:
+            raise CoverageGuardError(CoverageGuardReason.IDENTITY_UNAVAILABLE)
+        active = await self.async_get_active_cleaning_session_state()
+        if active is None:
+            raise CoverageGuardError(CoverageGuardReason.ACTIVITY_UNAVAILABLE)
+        if active:
+            raise CoverageGuardError(CoverageGuardReason.NATIVE_SESSION_ACTIVE)
+        if await self.async_get_cleaning_session_identity() != baseline_identity:
+            raise CoverageGuardError(CoverageGuardReason.IDENTITY_CHANGED)
+        return baseline_identity
+
     async def async_start_coverage(
         self,
         floor_plan: FloorPlan,
@@ -1271,16 +1287,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
             session_id=session_id,
         )
         if require_settings_readback:
-            baseline_identity = await self.async_get_cleaning_session_identity()
-            if baseline_identity is None:
-                raise MaticError("Native task identity is unavailable before coverage")
-            active = await self.async_get_active_cleaning_session_state()
-            if active is None:
-                raise MaticError("Native task activity is unavailable before coverage")
-            if active:
-                raise MaticError("Normal coverage requires an idle native session")
-            if await self.async_get_cleaning_session_identity() != baseline_identity:
-                raise MaticError("Native mission changed before coverage")
+            baseline_identity = await self._async_require_idle_native_session()
         else:
             baseline_identity = None
         await self._async_send_user_payload(payload, command_name="START_COVERAGE")
@@ -1327,16 +1334,7 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         )
         expected_goals = Counter(coverage_command_goal_signatures(commands.update))
         require_current()
-        baseline_identity = await self.async_get_cleaning_session_identity()
-        if baseline_identity is None:
-            raise MaticError("Native task identity is unavailable before coverage")
-        active = await self.async_get_active_cleaning_session_state()
-        if active is None:
-            raise MaticError("Native task activity is unavailable before coverage")
-        if active:
-            raise MaticError("Mixed coverage requires an idle native session")
-        if await self.async_get_cleaning_session_identity() != baseline_identity:
-            raise MaticError("Native mission changed before coverage")
+        baseline_identity = await self._async_require_idle_native_session()
         require_current()
         if checkpoint_initial_session is not None:
             await checkpoint_initial_session(

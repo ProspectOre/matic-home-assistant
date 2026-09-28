@@ -193,6 +193,25 @@ const FLICK_VELOCITY = 0.5;
 const FLICK_WINDOW_MS = 100;
 const TAP_SLOP = 6;
 const BODY_SWIPE_DISTANCE = 48;
+const INTERACTIVE_SHEET_SELECTOR = [
+  "a[href]",
+  "button",
+  "input",
+  "label",
+  "select",
+  "textarea",
+  "summary",
+  '[contenteditable]:not([contenteditable="false"])',
+  '[role="button"]',
+  '[role="link"]',
+  '[role="slider"]',
+  '[role="checkbox"]',
+  '[role="radio"]',
+  '[role="switch"]',
+  '[role="tab"]',
+  '[role="menuitem"]',
+  '[tabindex]:not([tabindex="-1"])',
+].join(",");
 
 interface SheetDrag {
   readonly pointerId: number;
@@ -447,6 +466,18 @@ export class MaticMapShellV4 extends LitElement {
           });
         });
       }
+      if (previous && !previous.fullMap && this.state.fullMap) {
+        // Pointer activation does not focus buttons in Safari. Keep keyboard
+        // dismissal inside this shell after the layout changes to full map.
+        void this.updateComplete.then(() => {
+          const launcher = this.#workspaceLauncher;
+          requestAnimationFrame(() => {
+            const target = this.renderRoot.querySelector<HTMLElement>(".workspace-toggle")
+              ?? (launcher?.isConnected ? launcher : null);
+            target?.focus({ preventScroll: true });
+          });
+        });
+      }
       if (!previous?.dialog && this.state.dialog) {
         const active = deepActiveElement(this.shadowRoot || document);
         if (active?.hasAttribute("data-dialog-launcher")) this.#dialogLauncher = active;
@@ -648,9 +679,18 @@ export class MaticMapShellV4 extends LitElement {
     return this.renderRoot.querySelector<HTMLElement>(".mobile-sheet");
   }
 
+  #startsOnInteractiveSheetDescendant(event: PointerEvent): boolean {
+    const currentTarget = event.currentTarget;
+    for (const target of event.composedPath()) {
+      if (target === currentTarget) return false;
+      if (target instanceof Element && target.matches(INTERACTIVE_SHEET_SELECTOR)) return true;
+    }
+    return false;
+  }
+
   #gripDown(event: PointerEvent): void {
     if (event.pointerType === "mouse" && event.button !== 0) return;
-    if ((event.target as HTMLElement | null)?.closest("button, select, input, a")) return;
+    if (this.#startsOnInteractiveSheetDescendant(event)) return;
     const sheet = this.#sheet();
     if (!sheet || this.#drag) return;
     this.#drag = {
@@ -723,6 +763,7 @@ export class MaticMapShellV4 extends LitElement {
 
   #bodyDown(event: PointerEvent): void {
     if (event.pointerType === "mouse") return;
+    if (this.#startsOnInteractiveSheetDescendant(event)) return;
     const body = event.currentTarget as HTMLElement;
     this.#bodySwipe = {
       pointerId: event.pointerId,
@@ -1013,17 +1054,10 @@ export class MaticMapShellV4 extends LitElement {
     }
     if (isReadOnlyWorkspace(state)) {
       return html`
-        ${this.#hostState(
-          t("v4_saved_map_read_only_notice", "Cleaning is unavailable on a saved map"),
-          state.dataMode === "live"
-            ? t("v4_map_recovery_automatic", "Cleaning controls return automatically when the live map is verified.")
-            : t("v4_saved_map_read_only_notice_detail", "Saved maps are view only. Return to the live map below to choose rooms, run a plan, or draw a custom area."),
-        )}
         <h3 class="shelf-heading">${t("v4_more", "Map tools")}</h3>
         <div class="shelf">
           ${historyRow}
           ${diagnosticsRow}
-
         </div>
       `;
     }

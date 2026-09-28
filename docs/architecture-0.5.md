@@ -61,7 +61,7 @@ Locating withholds them and retains only the Full map exit control until verific
 | HA/HTTP/WebSocket adapters | Authorized bounded projections and invalidation | Independent business rules |
 
 Preview, dispatch, operational reads, and explanations consume the same policy and accounting outputs. `MaticGetPlan` projects `CleaningPlanManager.preview`; it cannot reconstruct selection or rotation. Cadence normalization alone validates intervals and one-shot flags; editors pass submitted values through without lossy coercion.
-Existing vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch/recovery; `native_completion.py` owns shared native proof; `cadence_accounting.py` applies verified credit inside the manager’s durable transaction. Service adapters retain authorization and request validation.
+Existing vetted protocol commands remain the command boundary. `managed_executor.py` owns dispatch/recovery; `native_completion.py` owns shared native proof; `cadence_accounting.py` applies verified credit inside the manager’s durable transaction. Service adapters retain authorization and request validation. Coverage preflight owns typed, non-sensitive failure reasons; a known pre-write rejection neither attempts cleanup STOP nor claims completion. HA adapters and UI project those reasons without exposing raw exceptions.
 
 ## Frontend authority
 
@@ -70,7 +70,7 @@ Existing vetted protocol commands remain the command boundary. `managed_executor
 `RendererController` owns the persistent canvas, cameras, buffers, uploads, transferable buffers, quality, and fallback. `GestureController` owns navigation, selection, ordering, and drawing.
 Brush previews stay in rendering; a completed stroke commits once. Brush and outline commits share generation- and baseline-bound admission; permission, context, tool, or draft changes revoke the gesture.
 
-Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs.
+Components render state and emit typed intents; they do not fetch, call services, infer coherence, or own competing IDs. EffectController observes preference changes; PreferenceStore is the sole debounced writer, and account preferences load atomically with their owner.
 One idempotent disposer owns every request, subscription, worker, listener, frame, object URL, and CPU/GPU allocation.
 Coherence, live/history mode, activity, workflow, and command lifecycle remain orthogonal; one selector derives the
 visible surface and primary action. Full map, Areas, floor transitions, browser Back, Escape, and HA Back preserve the

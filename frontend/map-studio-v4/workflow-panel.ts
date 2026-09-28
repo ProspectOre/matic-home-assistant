@@ -1,4 +1,5 @@
 import { LitElement, css, html, nothing } from "lit";
+import type { PropertyValues } from "lit";
 import { repeat } from "lit/directives/repeat.js";
 import { controls } from "./controls";
 import { icon, iconMoveDown, iconMoveUp, iconPlus } from "./icons";
@@ -28,6 +29,7 @@ export class MaticMapWorkflowV4 extends LitElement {
     state: { attribute: false },
     localize: { attribute: false },
     _diagnosticsLoadFailed: { state: true },
+    _historyPreviewPosition: { state: true },
   };
 
   static override styles = [tokens, base, controls, css`
@@ -92,7 +94,19 @@ line-height: var(--ms-lh-snug);
   state: WorkspaceState = initialWorkspaceState();
   localize?: Localize;
   _diagnosticsLoadFailed = false;
+  _historyPreviewPosition: number | null = null;
   #diagnosticsLoad: Promise<void> | null = null;
+  #historySelectionKey = "";
+
+  protected override willUpdate(changed: PropertyValues<this>): void {
+    if (!changed.has("state")) return;
+    const { workflow, selection } = this.state;
+    const key = `${workflow}:${selection.floorId}:${selection.historyId ?? "live"}`;
+    if (key !== this.#historySelectionKey) {
+      this.#historySelectionKey = key;
+      this._historyPreviewPosition = null;
+    }
+  }
 
   override disconnectedCallback(): void {
     super.disconnectedCallback();
@@ -791,7 +805,8 @@ line-height: var(--ms-lh-snug);
     const liveLabel = floor?.active
       ? this.#t("map_timeline_live_action", "Live")
       : this.#t("v4_return_current_floor", "Return to current floor");
-    const selectedSnapshot = snapshots[position];
+    const displayPosition = this._historyPreviewPosition ?? position;
+    const selectedSnapshot = snapshots[displayPosition];
     return this.#resource(resource.status, resource.problem, html`
       <div class="stack">
         ${(catalog?.floors.length || 0) > 1 ? html`
@@ -821,11 +836,15 @@ line-height: var(--ms-lh-snug);
               min="0"
               max=${String(snapshots.length)}
               step="1"
-              .value=${String(position)}
+              .value=${String(displayPosition)}
               aria-valuetext=${selectedSnapshot ? this.#formatTime(selectedSnapshot.createdAt) : liveLabel}
               ?disabled=${!snapshots.length}
               @input=${(event: Event) => {
+                this._historyPreviewPosition = Number(eventValue(event));
+              }}
+              @change=${(event: Event) => {
                 const index = Number(eventValue(event));
+                this._historyPreviewPosition = null;
                 this.#intent({ type: "set-history", historyId: index === snapshots.length ? null : snapshots[index]?.id || null });
               }}
             >

@@ -1002,9 +1002,14 @@ export class RendererController {
 
   #selectedRoomNames(state: WorkspaceState): Set<string> {
     const rooms = state.resources.plans.value?.rooms || state.resources.areas.value?.rooms || [];
-    return new Set(rooms
-      .filter((room) => (state.workflow === "plan" ? state.planDraft.rooms.map((item) => item.roomId) : state.selection.roomIds).includes(room.roomId))
-      .map((room) => room.name.toLocaleLowerCase()));
+    const selectedRoomIds = new Set(state.workflow === "plan"
+      ? state.planDraft.rooms.map((room) => room.roomId)
+      : state.selection.roomIds);
+    const selectedNames = new Set<string>();
+    for (const room of rooms) {
+      if (selectedRoomIds.has(room.roomId)) selectedNames.add(room.name.toLocaleLowerCase());
+    }
+    return selectedNames;
   }
 
   #drawCircle(context: CanvasRenderingContext2D, circle: AreaCircle, paint = true): void {

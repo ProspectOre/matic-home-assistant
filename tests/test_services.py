@@ -2222,6 +2222,104 @@ async def test_tokenized_saved_run_localizes_preview_failure_after_preflight(
     execute.assert_awaited_once()
 
 
+@pytest.mark.parametrize("service", ["intelligent_clean", "clean_entire_plan"])
+@pytest.mark.parametrize("changed_input", ["plan", "map", "cadence"])
+async def test_legacy_saved_run_revalidates_after_stop_settlement(
+    hass, service: str, changed_input: str
+) -> None:
+    """Legacy saved-plan actions reject changed authority before room dispatch."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    floor_plan = _area_floor_plan()
+    await manager.async_save_plan(
+        "serial",
+        "home",
+        {
+            "name": "Home",
+            "run_behavior": "ordered",
+            "rooms": [
+                {
+                    "room_id": "room-office",
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {"scope": "plan", "mop_every_n": 2},
+                }
+            ],
+        },
+    )
+    cadence = manager._robot("serial")["plan_room_cadence"]["home"].setdefault(
+        "room-office",
+        {"identity": None, "progress": {"mop": 0, "coverage": 0}},
+    )
+    coordinator = SimpleNamespace(
+        data=SimpleNamespace(floor_plan=floor_plan),
+        async_request_refresh=AsyncMock(),
+        async_confirm_room_completed=MagicMock(),
+    )
+    client = SimpleNamespace(
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+        async_get_cleaning_session_records=AsyncMock(return_value=()),
+        async_get_cleaning_session_identity=AsyncMock(return_value=b"native-task"),
+        async_send_user_command=AsyncMock(),
+    )
+    entry = SimpleNamespace(
+        entry_id="entry-legacy-revalidation",
+        runtime_data=SimpleNamespace(
+            coordinator=coordinator,
+            client=client,
+            slam_map=SimpleNamespace(
+                floor_plan_is_current=MagicMock(return_value=True)
+            ),
+        ),
+    )
+    context = ("vacuum.test", entry, "serial", {"room-office": "Office"})
+    call = ServiceCall(
+        hass,
+        DOMAIN,
+        service,
+        SAVED_PLAN_SERVICE_SCHEMA({"entity_id": ["vacuum.test"], "plan": "Home"}),
+    )
+    services = await _registered_services(hass, manager)
+    settlement_started = asyncio.Event()
+    finish_settlement = asyncio.Event()
+    room_start = AsyncMock()
+
+    def mutate_authority() -> None:
+        if changed_input == "plan":
+            manager._robot("serial")["plans"]["home"]["return_to_base"] = False
+        elif changed_input == "map":
+            coordinator.data.floor_plan = _area_floor_plan(mission_id=43)
+        else:
+            cadence["progress"]["mop"] = 1
+
+    async def settle_then_dispatch(*_args, **kwargs) -> None:
+        settlement_started.set()
+        await finish_settlement.wait()
+        kwargs["validate_prepared_run"]()
+        await room_start()
+
+    execute = AsyncMock(side_effect=settle_then_dispatch)
+    with (
+        patch(
+            "custom_components.matic_robot.services._saved_plan_context",
+            return_value=context,
+        ),
+        patch("custom_components.matic_robot.services._async_execute_rooms", execute),
+    ):
+        pending = asyncio.create_task(_registered_handler(services, service)(call))
+        await settlement_started.wait()
+        mutate_authority()
+        finish_settlement.set()
+        with pytest.raises(ServiceValidationError) as raised:
+            await pending
+
+    assert raised.value.translation_key == "invalid_plan"
+    assert "resolution changed" in str(raised.value) or changed_input == "map"
+    execute.assert_awaited_once()
+    room_start.assert_not_awaited()
+    client.async_send_user_command.assert_not_awaited()
+
+
 async def test_intelligent_exact_preview_stop_and_reset_actions(hass) -> None:
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())

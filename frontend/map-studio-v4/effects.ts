@@ -53,6 +53,10 @@ const problemCode = (error: unknown, fallback: string): string => {
   return fallback;
 };
 
+const coverageGuardNotice = (error: unknown): string | null => {
+  return error instanceof BackendError ? error.recoveryMessage : null;
+};
+
 const entryFloorKey = (entry: MapEntry): string => [
   entry.selectedFloorOrdinal ?? "none",
   entry.mapFloorOrdinal ?? "none",
@@ -125,6 +129,7 @@ export class EffectController {
   readonly #coherence = new CoherenceMachine();
   readonly #backend: MaticBackend;
   readonly #preferences = new PreferenceStore();
+  #preferenceSnapshot: MapPreferences | null = null;
   readonly #controllers = new Map<string, AbortController>();
   #projection: HassProjection | null = null;
   #panel: PanelLike | undefined;
@@ -147,7 +152,7 @@ export class EffectController {
   #workspaceTransport: WorkspaceTransport | null = null;
   #workspaceTransportEntry: string | null = null;
   #workspaceFence: { entryId: string; epoch: string; sequence: number; coherenceGeneration: number; revisions: Readonly<Record<string, number>> } | null = null;
-  #manualPreviewUnsubscribe: (() => void) | null = null;
+  #storeUnsubscribe: (() => void) | null = null;
   #manualPreviewRequestIdentity = "";
   #manualPreviewPreflight = false;
   readonly #workspaceConnection: WorkspaceConnection | null;
@@ -158,7 +163,28 @@ export class EffectController {
     this.#backend = backend;
     this.#workspaceConnection = workspaceConnection;
     this.#workspaceTransportEnabled = workspaceTransportEnabled;
-    this.#manualPreviewUnsubscribe = store.subscribe(() => this.#reconcileManualRoomPreview());
+    this.#storeUnsubscribe = store.subscribe((state) => {
+      this.#observePreferences(state);
+      this.#reconcileManualRoomPreview();
+    });
+  }
+
+  #observePreferences(state: WorkspaceState): void {
+    if (!state.owner) return;
+    const next: MapPreferences = {
+      version: 4,
+      view: state.view,
+      appearance: state.appearance,
+      labels: state.labelsVisible,
+      quality: state.quality,
+      cameras: state.cameras,
+    };
+    const previous = this.#preferenceSnapshot;
+    this.#preferenceSnapshot = next;
+    if (!previous || (previous.view === next.view && previous.appearance === next.appearance
+      && previous.labels === next.labels && previous.quality === next.quality
+      && previous.cameras === next.cameras)) return;
+    this.#preferences.schedule(next);
   }
 
   #manualPreviewCapture(state: WorkspaceState): ManualPreviewCapture | null {
@@ -287,6 +313,13 @@ export class EffectController {
       && workspaceTransportBeforeSync === this.#workspaceTransport) {
       workspaceTransportBeforeSync.notifyReconnect();
     }
+    const loadedPreferences = projection.userKey !== this.#preferenceUser
+      ? this.#preferences.load(projection.userKey)
+      : null;
+    if (loadedPreferences) {
+      this.#preferenceUser = projection.userKey;
+      this.#preferenceSnapshot = loadedPreferences;
+    }
     this.#store.patch({
       owner: { userKey: projection.userKey, entryKey: projection.entryKey },
       host: projection.host,
@@ -295,18 +328,14 @@ export class EffectController {
       robotLabel: projection.robotLabel,
       robots: projection.robots,
       locale: projection.language,
+      ...(loadedPreferences ? {
+        view: loadedPreferences.view,
+        appearance: loadedPreferences.appearance,
+        labelsVisible: loadedPreferences.labels,
+        quality: loadedPreferences.quality,
+        cameras: loadedPreferences.cameras,
+      } : {}),
     });
-    if (projection.userKey !== this.#preferenceUser) {
-      this.#preferenceUser = projection.userKey;
-      const preferences = this.#preferences.load(projection.userKey);
-      this.#store.patch({
-        view: preferences.view,
-        appearance: preferences.appearance,
-        labelsVisible: preferences.labels,
-        quality: preferences.quality,
-        cameras: preferences.cameras,
-      });
-    }
     if (!projection.host.administrator) {
       this.#stopPolling();
       this.#clearPrivate("access-required");
@@ -598,10 +627,6 @@ export class EffectController {
       // floor and scene changes use the separate coherence boundary above.
       void this.refreshCatalog(true, true, true);
     }
-  }
-
-  schedulePreferences(preferences: MapPreferences): void {
-    this.#preferences.schedule(preferences);
   }
 
   #startPolling(): void {
@@ -2080,17 +2105,18 @@ export class EffectController {
         this.#settleTimer = null;
         if (current() && this.#store.value.command === settlingCommand) this.#store.patch({ command: "idle" });
       }, 15_000);
-    } catch {
+    } catch (error) {
       if (!current()) return;
-      this.#store.patch({ command: "failed", notice: { tone: "error", text: "The action could not be confirmed. Check the robot status before trying again." } });
+      this.#store.patch({ command: "failed", notice: { tone: "error", text: coverageGuardNotice(error)
+        ?? "The action could not be confirmed. Check the robot status before trying again." } });
     }
   }
 
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
-    this.#manualPreviewUnsubscribe?.();
-    this.#manualPreviewUnsubscribe = null;
+    this.#storeUnsubscribe?.();
+    this.#storeUnsubscribe = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null) });
     this.#stopPolling();
     this.#abortResources();

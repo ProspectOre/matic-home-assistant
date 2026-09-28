@@ -36,16 +36,44 @@ const REQUEST_TIMEOUTS = {
 } as const;
 const MAX_OUTSTANDING_ROOM_PREVIEW_WIRES = 2;
 const roomPreviewWireCountByConnection = new WeakMap<object, number>();
+const COVERAGE_GUARD_RECOVERY: Readonly<Record<string, string>> = {
+  coverage_identity_unavailable: "Could not verify the current cleaning task. Check the robot status, then try again.",
+  coverage_activity_unavailable: "Could not verify whether the robot is cleaning. Check the robot status, then try again.",
+  coverage_native_session_active: "The robot already has a cleaning task. Wait for it to finish before starting another cleaning task.",
+  coverage_identity_changed: "The cleaning task changed during setup. Check the robot status, then try again.",
+};
+
+const safeCoverageGuardError = (
+  error: unknown,
+  localize: ((key: string) => string) | undefined,
+): BackendError | null => {
+  if (!error || typeof error !== "object") return null;
+  const translated = error as { translation_domain?: unknown; translation_key?: unknown };
+  if (translated.translation_domain !== "matic_robot"
+    || typeof translated.translation_key !== "string"
+    || !Object.hasOwn(COVERAGE_GUARD_RECOVERY, translated.translation_key)) return null;
+  const key = translated.translation_key;
+  let recovery = COVERAGE_GUARD_RECOVERY[key];
+  try {
+    const localized = localize?.(`component.matic_robot.exceptions.${key}.message`);
+    if (localized && localized !== `component.matic_robot.exceptions.${key}.message`) recovery = localized;
+  } catch {
+    // Fixed English copy remains safe if Home Assistant localization fails.
+  }
+  return new BackendError(key, null, recovery);
+};
 
 export class BackendError extends Error {
   readonly code: string;
   readonly status: number | null;
+  readonly recoveryMessage: string | null;
 
-  constructor(code: string, status: number | null = null) {
-    super(code);
+  constructor(code: string, status: number | null = null, recoveryMessage: string | null = null) {
+    super(recoveryMessage ?? code);
     this.name = "BackendError";
     this.code = code;
     this.status = status;
+    this.recoveryMessage = recoveryMessage;
   }
 }
 
@@ -594,7 +622,11 @@ export class MaticBackend {
   ): Promise<void> {
     const hass = this.#getHass();
     if (typeof hass?.callService !== "function") throw new BackendError("service-unavailable");
-    await hass.callService(domain, service, data, { entity_id: entityId });
+    try {
+      await hass.callService(domain, service, data, { entity_id: entityId });
+    } catch (error) {
+      throw safeCoverageGuardError(error, hass.localize) ?? error;
+    }
   }
 
   dispose(): void {

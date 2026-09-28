@@ -42,7 +42,7 @@ from homeassistant.helpers.event import async_track_state_change_event
 from homeassistant.util import dt as dt_util
 
 from .client.commands import UserCommand
-from .client.exceptions import MaticError
+from .client.exceptions import CoverageGuardError, MaticError
 from .client.models import CleaningSessionRecord
 from .client.wire import uuid_string
 from .const import DOMAIN, EVENT_PLAN_FINISHED
@@ -806,12 +806,14 @@ async def _async_run_room(
         await _async_cleanup_managed_motion(
             managed_user_command,
             motion_token,
-            dispatch_attempted,
+            dispatch_attempted and _coverage_guard_cause(err) is None,
         )
         if isinstance(err, RoomStartTimeoutError):
             failure_reason = "The robot did not begin cleaning before the start timeout"
         elif isinstance(err, TimeoutError):
             failure_reason = "The managed room exceeded its completion timeout"
+        elif isinstance(err, CoverageGuardError):
+            failure_reason = err.safe_message
         elif isinstance(err, MaticError):
             failure_reason = "The robot could not complete the managed room"
         else:
@@ -869,6 +871,8 @@ async def _async_run_room(
                 {"room": room.name},
             ) from err
         if isinstance(err, MaticError):
+            if isinstance(err, CoverageGuardError):
+                raise _validation_error(err.safe_message, err.reason_code) from err
             raise _validation_error(
                 "The robot could not complete the managed room",
                 "robot_command_failed",
@@ -1360,7 +1364,7 @@ async def _async_run_leg(
             await _async_cleanup_managed_motion(
                 managed_user_command,
                 motion_token,
-                dispatch_attempted,
+                dispatch_attempted and _coverage_guard_cause(err) is None,
             )
         if isinstance(err, RoomStartTimeoutError):
             failure_reason = "The robot did not begin cleaning before the start timeout"
@@ -2703,6 +2707,9 @@ class RoomStoppedInPlaceError(RoomInterruptedError):
 
 def _failure_reason_code(error: BaseException) -> str:
     """Map an internal failure to a stable, non-sensitive event code."""
+    guard_error = _coverage_guard_cause(error)
+    if guard_error is not None:
+        return guard_error.reason_code
     if isinstance(error, ServiceValidationError) and error.__cause__ is not None:
         error = error.__cause__
     if isinstance(error, RoomStartTimeoutError):
@@ -2715,6 +2722,17 @@ def _failure_reason_code(error: BaseException) -> str:
     ):
         return "robot_error"
     return "managed_failure"
+
+
+def _coverage_guard_cause(error: BaseException) -> CoverageGuardError | None:
+    """Find a known pre-write guard through the HA service wrapper."""
+    if isinstance(error, CoverageGuardError):
+        return error
+    if isinstance(error, ServiceValidationError) and isinstance(
+        error.__cause__, CoverageGuardError
+    ):
+        return error.__cause__
+    return None
 
 
 def _interruption_reason_code(error: RoomInterruptedError) -> str:
@@ -3392,10 +3410,14 @@ async def _async_execute_rooms_reserved(
                     # with the OEM ten-minute stop countdown, leaving later
                     # settings legs unattempted. Only stop when the robot is
                     # not already on its way home.
-                    if not session_ended and (
-                        current is None
-                        or current.state != "returning"
-                        or current.attributes.get("low_charge") is True
+                    if (
+                        not session_ended
+                        and (
+                            current is None
+                            or current.state != "returning"
+                            or current.attributes.get("low_charge") is True
+                        )
+                        and _coverage_guard_cause(err) is None
                     ):
                         if not _managed_stop_fence_owned_by_run(
                             manager, serial_number, run_id

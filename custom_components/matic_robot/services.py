@@ -505,7 +505,6 @@ async def async_register_services(hass: HomeAssistant) -> None:
             )
 
         initial_preview_token: str | None = None
-        validate_prepared_run: Callable[[], None] | None = None
         try:
             _preview_floor, preview, initial_preview_token = _saved_plan_preview(
                 manager,
@@ -534,34 +533,28 @@ async def async_register_services(hass: HomeAssistant) -> None:
                 str(err), "invalid_plan", {"error": str(err)}
             ) from err
 
-        if preview_token is not None:
-
-            def validate_prepared_run() -> None:
-                """Reject saved-plan changes after executor settlement awaits."""
-                try:
-                    current_floor = _current_floor_plan(entry)
-                    current_room_map = {
-                        room.id: room.name for room in current_floor.rooms
-                    }
-                    _current_floor, _current_preview, current_token = (
-                        _saved_plan_preview(
-                            manager,
-                            serial_number,
-                            entry,
-                            current_room_map,
-                            call.data.get("plan"),
-                            intelligent=intelligent,
-                        )
-                    )
-                except (KeyError, TypeError, ValueError) as err:
-                    raise _validation_error(
-                        str(err), "invalid_plan", {"error": str(err)}
-                    ) from err
-                if current_token != initial_preview_token:
-                    raise _validation_error(
-                        "The saved-plan resolution changed before starting",
-                        "invalid_plan",
-                    )
+        def validate_prepared_run() -> None:
+            """Revalidate authoritative saved-plan inputs after executor waits."""
+            try:
+                current_floor = _current_floor_plan(entry)
+                current_room_map = {room.id: room.name for room in current_floor.rooms}
+                _current_floor, _current_preview, current_token = _saved_plan_preview(
+                    manager,
+                    serial_number,
+                    entry,
+                    current_room_map,
+                    call.data.get("plan"),
+                    intelligent=intelligent,
+                )
+            except (KeyError, TypeError, ValueError) as err:
+                raise _validation_error(
+                    str(err), "invalid_plan", {"error": str(err)}
+                ) from err
+            if current_token != initial_preview_token:
+                raise _validation_error(
+                    "The saved-plan resolution changed before starting",
+                    "invalid_plan",
+                )
 
         data = {
             "plan_id": plan["id"],
