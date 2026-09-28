@@ -344,15 +344,20 @@ jobs:
               ascii_downcase
               | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
               def result_section:
-              if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
+              if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) and (($lines[$start] | raw_security_heading) or (($lines[:$start] | join("\n") | test("(?i)codex-security-review-finding:v1")) | not)) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
               def first_result_section:
               split("\n") as $lines
               | ([range(0; $lines | length) | select($lines[.] | regular_heading)] | .[0]) as $start
               | if $start == null then . else
               ([range($start + 1; $lines | length) | select($lines[.] | regular_heading or raw_security_heading)] | .[0] // ($lines | length)) as $end
-              | $lines[$start:$end] | join("\n")
+              | if ((($lines[:$start] | join("\n") | coordinator_metadata)
+              and (($lines[:$start] | join("\n") | test("(?i)codex-security-review-finding:v1")) | not))
+              or (($lines[:$start] | map(select(test("[^[:space:]]"))) | .[0] // "") | raw_security_heading))
+              then $lines[$start:$end] | join("\n")
+              else . end
               end;
-              def security_heading: result_section | raw_security_heading;
+              def security_heading:
+              split("\n") | .[0] | raw_security_heading;
               def availability_notice:
               result_section as $result
               | ($result | first_result_section) as $first_result
@@ -557,7 +562,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'd8c7abaaf06ff1c087120e6b9d9f9785102ad9ce228ddfe28a7dffff80afd7a9'
+          EXPECTED_SHA256: '0c128b6b85402ad4473a12f844390c2b01eb455af7747dc13fc5a3ee4fba78ca'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'b676b03fd2671c8bc7657fbc06f817002283e338548c9cba71c926b4e9dd407f'
         shell: bash
