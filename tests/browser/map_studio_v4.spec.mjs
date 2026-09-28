@@ -5162,16 +5162,45 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
+    // Give the synthetic input a browser-clock cadence. Sending each event as
+    // a separate Playwright locator call adds WebKit IPC time to event.timeStamp
+    // and can turn this 1.5 px/ms flick into a sub-threshold drag on CI.
+    const fastFlick = async (points) => {
+      const box = await grip.boundingBox();
+      expect(box).not.toBeNull();
+      await grip.evaluate((element, { points, left, top }) => {
+        const pointerId = 11;
+        const start = performance.now();
+        const fire = (type, [x, y], elapsed) => {
+          const event = new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId,
+            pointerType: "touch",
+            isPrimary: true,
+            button: 0,
+            clientX: left + x,
+            clientY: top + y,
+          });
+          Object.defineProperty(event, "timeStamp", { value: start + elapsed });
+          element.dispatchEvent(event);
+        };
+        fire("pointerdown", points[0], 0);
+        for (let index = 1; index < points.length; index += 1) {
+          fire("pointermove", points[index], index * 16);
+        }
+        fire("pointerup", points.at(-1), (points.length - 1) * 16);
+      }, { points, left: box.x, top: box.y });
+    };
+
     // 75px is nowhere near the full detent, but ~1.5 px/ms is a flick.
-    // No spacing between moves: the flick is defined by wall-clock velocity,
-    // and a slow CI runner must not turn it into a drag.
-    await touchDrag(page, grip, [[160, 20], [160, -5], [160, -30], [160, -55]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, -5], [160, -30], [160, -55]]);
     await expect(sheet).toHaveAttribute("data-detent", "full");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
     // A flick down from full is one step, to half, never straight to peek.
-    await touchDrag(page, grip, [[160, 20], [160, 45], [160, 70], [160, 95]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, 45], [160, 70], [160, 95]]);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
