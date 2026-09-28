@@ -53,14 +53,12 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
   refresh only the catalog. Transport stays off until live parity, resource
   budgets, and switchover evidence pass.
 - RC1 `v0.5.0-rc1` at `bec3173` matched 91-file digest `e9639e0788001a5cc532c992f89daa3b8bd7eadd2c0d2137ac22774d2d668c47`; rollback `v0.4.6` at `52166df` matched 79-file digest `0d3102b983f824a6b632e7d181ded05ffbb9bdbbe77a74cb861893caee2c8cd9`.
-  Postrestart coordinator/map ready; terminal add-on stopped. MCP confirms
-  room-started → room-failed → plan-finished as `robot_error` (`cause=unknown`),
-  with no matching native-history record. Readback is docked/native-inactive,
-  runner unlocked, no reconciliation; Activity retention ends before the run.
-  Cleanup suppressed STOP without proven ownership; dispatch and movement remain unknown; schedules were not changed.
-- Owner/changed-flow, accessibility, Android/iOS, live transport budgets, and robot
-  acceptance remain open. Review #138 is blocked on shared policy #48 and authenticated
-  review capture; candidate logs lack provenance. Unsigned listener stays unpublished.
+  Postrestart coordinator/map ready; terminal add-on stopped. MCP confirms room-started → room-failed → plan-finished as `robot_error` (`cause=unknown`) with no matching native-history record.
+  Generic failure text maps to the caught `MaticError` path. Readback: docked/native-inactive, runner unlocked, no reconciliation.
+  Complete retained Activity sequence 1–22 has no observations during the attempt, including no `START_COVERAGE`; this suggests pre-send failure, likely native identity/activity preflight.
+  The exact failed check and any physical movement remain unverified. Cleanup withheld STOP without ownership proof; schedules were unchanged.
+- Owner/changed-flow, accessibility, Android/iOS, live transport budgets, and robot acceptance remain open. Shared policy #48 is merged; Matic #138 remains open at `09ea46c` with regular review held by quota exhaustion and signed capture provenance unverified.
+  The unsigned listener stays unpublished.
 
 | Requirement | Contract disposition | 0.5 evidence status | Evidence required; current gap |
 |---|---|---|
@@ -126,7 +124,7 @@ The roadmap gates are independent and ordered; test counts, screenshots, a merge
 | E4 — Security | Reconciled backlog, clean exact-head review and required CI, privacy/packaging/Hassfest/HACS, hostile-input/resource evidence, and fail-closed behavior. |
 | E5 — Independent product/architecture review | Independent written review of the exact candidate; zero unresolved P0/P1 findings, with each finding dispositioned and any repair re-reviewed on the updated head. |
 | E6 — Owner interaction/language acceptance | Separate owner walkthrough and acceptance of setup, common cleaning, recovery, accessibility, and user-facing language; record remaining limitations. |
-| F — Exact candidate/runtime | HACS RC1, reviewed candidate/rollback fingerprints, restart readback, reconnect, and visible map coherence are recorded. The tracked-manual attempt failed `robot_error` without matching native completion; movement is unverified. Gate remains open for a verified changed flow, guarded failures, STOP/restart, map transition, and owner acceptance. |
+| F — Exact candidate/runtime | HACS RC1, reviewed candidate/rollback fingerprints, restart readback, reconnect, and visible map coherence are recorded. The tracked-manual attempt failed `robot_error` without matching native completion; Activity contains no command observation during the attempt, suggesting pre-send failure, while the exact failed check and movement remain unverified. Gate remains open for a verified changed flow, guarded failures, STOP/restart, map transition, and owner acceptance. |
 
 For physical runs, record explicit owner authorization, pre/post administrator
 MCP/native plan, operations and history evidence, no active automations/scripts,
