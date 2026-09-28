@@ -126,22 +126,3 @@ export class PreferenceStore {
   }
 
 }
-
-export const FRONTEND_PREFERENCE_KEY = "matic-map-studio:preferred-frontend";
-
-export const preferredFrontend = (): "v4" | "v3" => {
-  try {
-    return window.localStorage.getItem(FRONTEND_PREFERENCE_KEY) === "v3" ? "v3" : "v4";
-  } catch {
-    return "v4";
-  }
-};
-
-export const setPreferredFrontend = (value: "v4" | "v3"): boolean => {
-  try {
-    window.localStorage.setItem(FRONTEND_PREFERENCE_KEY, value);
-    return true;
-  } catch {
-    return false;
-  }
-};

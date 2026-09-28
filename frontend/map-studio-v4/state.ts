@@ -448,6 +448,20 @@ export const reduceWorkspace = (
         },
       };
     }
+    case "clear-selection":
+      if (state.workflow !== "rooms"
+        || (state.selection.roomIds.length === 0 && state.selection.roomSettings.length === 0)) {
+        return state;
+      }
+      return {
+        ...state,
+        selection: {
+          ...state.selection,
+          roomIds: [],
+          roomSettings: [],
+        },
+        manualRoomPreview: emptyResource<AdmittedManualRoomPreview>(),
+      };
     case "patch-room-settings":
       return {
         ...state,

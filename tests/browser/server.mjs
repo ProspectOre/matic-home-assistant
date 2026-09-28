@@ -12,11 +12,11 @@ const scripts = new Map([
     join(repositoryRoot, "custom_components", "matic_robot", "matic_icons.js"),
   ],
   [
-    "/matic_map_studio.js",
-    join(repositoryRoot, "custom_components", "matic_robot", "matic_map_studio.js"),
+    "/room-plan-editor-loader.js",
+    join(repositoryRoot, "custom_components", "matic_robot", "room_plan_editor_loader.js"),
   ],
   [
-    "/room_plan_editor.js",
+    "/room-plan-editor.js",
     join(repositoryRoot, "custom_components", "matic_robot", "room_plan_editor.js"),
   ],
 ]);

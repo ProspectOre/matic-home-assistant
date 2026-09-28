@@ -813,23 +813,15 @@ export class MaticMapShellV4 extends LitElement {
     }
   }
 
-  #overflowAction(id: "support" | "classic" | "fullscreen"): void {
+  #overflowAction(id: "support" | "fullscreen"): void {
     this.#closeOverflow(id === "fullscreen");
     if (id === "support") {
       this.#workflow("support");
       return;
     }
-    if (id === "fullscreen") {
-      const app = this.renderRoot.querySelector<HTMLElement>(".app");
-      if (document.fullscreenElement) void document.exitFullscreen();
-      else void app?.requestFullscreen();
-      return;
-    }
-    this.dispatchEvent(new CustomEvent(WORKSPACE_ACTION_EVENT, {
-      detail: { id: "use-classic" },
-      bubbles: true,
-      composed: true,
-    }));
+    const app = this.renderRoot.querySelector<HTMLElement>(".app");
+    if (document.fullscreenElement) void document.exitFullscreen();
+    else void app?.requestFullscreen();
   }
 
   #openBrush(): void {
@@ -1403,7 +1395,6 @@ export class MaticMapShellV4 extends LitElement {
                     </select>
                   </label>
                   <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("support")}>${this.#t("v4_map_diagnostics", "Map diagnostics")}</button>
-                  <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("classic")}>${this.#t("v4_switch_classic", "Open classic map view")}</button>
                   <button class="ms-row ms-row--menu" type="button" @click=${() => this.#overflowAction("fullscreen")}>${this._browserFullscreen ? this.#t("v4_leave_full_screen", "Leave full screen") : this.#t("v4_full_screen", "Full screen")}</button>
                 </div>
               ` : nothing}

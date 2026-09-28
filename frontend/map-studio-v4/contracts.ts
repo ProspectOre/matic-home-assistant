@@ -278,6 +278,7 @@ export type WorkspaceIntent =
     }
   | { readonly type: "redo-draft" }
   | { readonly type: "toggle-room"; readonly roomId: string }
+  | { readonly type: "clear-selection" }
   | {
       readonly type: "patch-room-settings";
       readonly roomId: string;

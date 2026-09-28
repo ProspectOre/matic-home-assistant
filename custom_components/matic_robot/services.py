@@ -334,17 +334,18 @@ def _require_matic_admin[ServiceResult](
     @wraps(handler)
     async def async_authorized(call: ServiceCall) -> ServiceResult:
         user_id = call.context.user_id
-        if user_id is not None:
-            user = await hass.auth.async_get_user(user_id)
-            if user is None:
-                raise UnknownUser(context=call.context)
-            if not user.is_admin:
-                entity_ids = _resolve_loaded_matic_vacuums(hass, call)
-                raise Unauthorized(
-                    context=call.context,
-                    entity_id=entity_ids[0] if entity_ids else None,
-                    permission=POLICY_CONTROL,
-                )
+        if user_id is None:
+            raise Unauthorized(context=call.context, permission=POLICY_CONTROL)
+        user = await hass.auth.async_get_user(user_id)
+        if user is None:
+            raise UnknownUser(context=call.context)
+        if not user.is_admin:
+            entity_ids = _resolve_loaded_matic_vacuums(hass, call)
+            raise Unauthorized(
+                context=call.context,
+                entity_id=entity_ids[0] if entity_ids else None,
+                permission=POLICY_CONTROL,
+            )
         return await handler(call)
 
     return async_authorized

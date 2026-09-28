@@ -3321,7 +3321,7 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(overlaps, `dock ${JSON.stringify(dockBounds)} vs inspector ${JSON.stringify(inspector)}`).toBe(false);
   });
 
-  test("restores classic display controls without compromising the map-first shell", async ({ page }) => {
+  test("uses modern map display controls without compromising the map-first shell", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
 
     await gallery.getByRole("complementary", { name: "Map workspace" })
@@ -3996,6 +3996,36 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(await page.evaluate(() => document.documentElement.scrollWidth <= 320)).toBe(true);
   });
 
+  test("ignores a saved Classic preference and always starts the modern panel", async ({ page }) => {
+    await page.addInitScript(() => {
+      localStorage.setItem("matic-map-studio:preferred-frontend", "v3");
+    });
+    const fixtureInfo = await installPanelFixture(page, { moduleSource: "packaged" });
+    const classicRequests = [];
+    page.on("request", (request) => {
+      if (new URL(request.url()).pathname === "/classic-must-not-load.js") classicRequests.push(request.url());
+    });
+    await page.evaluate(async (panelTag) => {
+      await customElements.whenDefined(panelTag);
+      const panel = window.__panelFixture.createPanel();
+      panel.panel = { config: { classic_module_url: "/classic-must-not-load.js" } };
+      window.__modernPanel = panel;
+      document.body.append(panel);
+      await panel.updateComplete;
+    }, fixtureInfo.panelTag);
+    await expect.poll(() => page.evaluate(() =>
+      window.__modernPanel.getWorkspaceSnapshot().resources.scene.status)).toBe("ready");
+
+    const result = await page.evaluate(() => ({
+      savedPreference: localStorage.getItem("matic-map-studio:preferred-frontend"),
+      modernShell: Boolean(window.__modernPanel.shadowRoot.querySelector("matic-map-shell-v4")),
+      classicPanel: Boolean(window.__modernPanel.shadowRoot.querySelector("matic-map-panel-v0-3-1")),
+    }));
+    expect(result).toEqual({ savedPreference: "v3", modernShell: true, classicPanel: false });
+    expect(classicRequests).toEqual([]);
+    await page.evaluate(() => window.__modernPanel.remove());
+  });
+
   test("keeps native browser fullscreen as an optional secondary control", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate(() => {
@@ -4009,7 +4039,8 @@ test.describe("Map Studio v0.4 foundation", () => {
     const menu = gallery.locator("#map-options");
     await expect(menu).not.toHaveAttribute("role", /menu/);
     await expect(menu.getByRole("menuitem")).toHaveCount(0);
-    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Open classic map view", "Full screen"]);
+    await expect(menu.getByRole("button")).toHaveText(["Map diagnostics", "Full screen"]);
+    await expect(menu.getByRole("button", { name: /classic/i })).toHaveCount(0);
     await menu.getByRole("button", { name: "Full screen", exact: true }).click();
     expect(await page.evaluate(() => window.__v4FullscreenRequested)).toBe(true);
   });

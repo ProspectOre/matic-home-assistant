@@ -742,6 +742,7 @@ test("transient subscription failure retries after the initial snapshot", async 
 
 test("dispose cancels a scheduled snapshot retry", async ({ page }) => {
   await load(page);
+  await page.clock.install();
   await page.evaluate(async value => { const p = window.workspaceHarness.transport.start(); window.workspaceHarness.snapshotResolve(value); await p; }, snapshot(0));
   await page.evaluate(() => {
     const h = window.workspaceHarness;
@@ -750,9 +751,13 @@ test("dispose cancels a scheduled snapshot retry", async ({ page }) => {
       coherence_generation: 1, revisions: { workspace: 2 }, resources: ["state"] });
   });
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
-  await page.waitForTimeout(50);
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.errors.length)).toBe(1);
+  // Finish recovery's catch/finally before advancing the retry clock. Real
+  // sleeps can let the retry fire before disposal on a busy test host.
+  await page.evaluate(() => new Promise(resolve => queueMicrotask(resolve)));
+  await page.clock.runFor(50);
   await page.evaluate(() => window.workspaceHarness.transport.dispose());
-  await page.waitForTimeout(350);
+  await page.clock.fastForward(5_000);
   expect(await page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(2);
   expect(await page.evaluate(() => window.workspaceHarness.unsubscribed)).toBe(1);
 });
