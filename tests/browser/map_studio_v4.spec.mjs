@@ -2444,7 +2444,9 @@ test.describe("Map Studio v0.4 foundation", () => {
     }, GALLERY_TAG);
 
     await expect(gallery.getByRole("heading", { name: "Saved map is read only" })).toBeVisible();
-    await expect(gallery).toContainText("Return to the live map below to choose rooms, run a plan, or draw a custom area.");
+    const recoveryExplanation = gallery.getByText("Return to the live map to choose rooms, run a plan, or draw a custom area.", { exact: true });
+    await expect(recoveryExplanation).toHaveCount(1);
+    await expect(recoveryExplanation).toBeVisible();
     await expect(gallery.getByRole("button", { name: "One-time clean" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Run a plan" })).toHaveCount(0);
     await expect(gallery.getByRole("button", { name: "Clean a custom area" })).toHaveCount(0);
