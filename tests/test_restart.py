@@ -1218,6 +1218,61 @@ async def test_recovery_handoff_terminal_state_uses_history_not_new_start(
     entry.runtime_data.client.async_send_user_command.assert_not_awaited()
 
 
+async def test_restart_does_not_confirm_native_history_after_ownership_changes(
+    hass, recovery_state
+):
+    manager, entry, checkpoint, room = recovery_state
+    second_room = CleaningRoom("office", "Office", "vacuum", "standard")
+    rooms = [room, second_room]
+    await manager.async_begin_run(
+        "serial",
+        "plan",
+        "run",
+        len(rooms),
+        trigger="automation",
+        service="clean_entire_plan",
+    )
+    checkpoint.update(
+        {
+            "phase": "verifying",
+            "verification_deadline": (
+                dt_util.utcnow() + timedelta(minutes=1)
+            ).isoformat(),
+            "rooms": [asdict(value) for value in rooms],
+            "completed_room_ids": [],
+        }
+    )
+    await manager.async_set_recovery_checkpoint("serial", "run", checkpoint)
+    manager.async_mark_completed = AsyncMock(return_value=False)
+    entry.runtime_data.client.async_get_cleaning_session_identity.return_value = b""
+    completed_events = []
+    hass.bus.async_listen("matic_robot_room_completed", completed_events.append)
+
+    evidence = {value.room_id: (dt_util.utcnow().isoformat(), 30) for value in rooms}
+    with (
+        patch("custom_components.matic_robot.restart.RECOVERY_ATTEMPTS", 1),
+        patch(
+            "custom_components.matic_robot.restart._async_verify_leg_completion",
+            AsyncMock(return_value=evidence),
+        ) as verify,
+    ):
+        await async_recover_managed_run(hass, entry, "serial")
+
+    verify.assert_awaited_once()
+    assert manager.async_mark_completed.await_count == len(rooms)
+    assert all(
+        call.kwargs["run_id"] == "run"
+        for call in manager.async_mark_completed.await_args_list
+    )
+    entry.runtime_data.coordinator.async_confirm_room_completed.assert_not_called()
+    await hass.async_block_till_done()
+    assert completed_events == []
+    run = manager.snapshot("serial")["last_run"]
+    assert run["outcome"] == "unverified"
+    assert run["completed_room_count"] == 0
+    entry.runtime_data.client.async_send_user_command.assert_not_awaited()
+
+
 async def test_recovered_paused_start_enters_resume_monitor(hass):
     hass.states.async_set("vacuum.matic", "paused")
     assert (

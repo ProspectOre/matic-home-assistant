@@ -9,7 +9,7 @@ These are the integration's main additions:
 | --- | --- |
 | Intelligent rotation | Give rooms that have waited longest the first cleaning opportunity on your next run. |
 | Per-room plans | Save a room order with individual vacuum/mop modes and coverage settings; preview the next run. |
-| Room schedules (0.5 development) | Add periodic mopping or coverage with private/shared progress and tracked one-time room cleans. [Guide](room-schedules.md). |
+| Room schedules (0.5 development) | Configure private/shared periodic mopping and coverage plus tracked one-time room cleans. Coverage stays due until applied settings can be verified causally. [Guide](room-schedules.md). |
 | Finish-current-room stopping | Stop immediately or finish the active room when its estimated progress reaches your chosen threshold. |
 | Home-driven cleaning | Combine presence, schedules, pet devices, and other Home Assistant triggers with plans or named areas. |
 | Completion events | React to verified room completion and plan outcomes in automations. |
@@ -47,3 +47,11 @@ turn. The other Home Assistant features are listed above.
 
 Use the Matic app to enable pairing during setup. After pairing, the integration
 uses its own local credential. Robot firmware updates remain managed by Matic.
+
+## How this fits with the Matic app
+
+The Matic app already supports multiple schedules for specific rooms and
+frequently messy areas highlighted on its map ([Matic FAQ](https://support.maticrobots.com/frequently-asked-questions)).
+This integration adds Home Assistant room-plan logic, automation actions and
+events, and local visibility. Map Studio also saves reusable named custom areas
+for Home Assistant dashboards and automations.

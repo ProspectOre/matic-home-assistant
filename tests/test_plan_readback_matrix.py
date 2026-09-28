@@ -190,6 +190,7 @@ async def test_actual_client_verifies_each_configuration_and_stops_corruption(
         side_effect=lambda: SimpleNamespace(
             activity=RobotActivity.CLEANING if identity else RobotActivity.READY,
             cleaning=bool(identity),
+            recharge_and_resume=False,
             error_codes=(),
             state_codes=(),
             current_area="First" if identity else None,

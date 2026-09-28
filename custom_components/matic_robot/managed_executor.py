@@ -887,7 +887,12 @@ async def _async_run_room(
         raise
 
     if completion_verified:
-        await manager.async_mark_completed(serial_number, call.data["plan_id"], room)
+        if not await manager.async_mark_completed(
+            serial_number, call.data["plan_id"], room, run_id=run_id
+        ):
+            raise PlanCancelledError(
+                "Run ownership changed before room completion could be credited"
+            )
         if record_room_completed is not None:
             record_room_completed(room)
         if confirm_room_completed is not None:
@@ -1414,13 +1419,18 @@ async def _async_run_leg(
     for room in leg:
         if room.room_id in credited:
             completed_at, duration_seconds = credited[room.room_id]
-            await manager.async_mark_completed(
+            accepted = await manager.async_mark_completed(
                 serial_number,
                 call.data["plan_id"],
                 room,
+                run_id=run_id,
                 completed_at=completed_at,
                 duration_seconds=duration_seconds,
             )
+            if not accepted:
+                raise PlanCancelledError(
+                    "Run ownership changed before room completion could be credited"
+                )
             if confirm_room_completed is not None:
                 confirm_room_completed(room.name)
             if record_room_completed is not None:

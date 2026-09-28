@@ -1777,7 +1777,7 @@ def _operational_state_for_codes(*codes, error_codes=()):
         error_codes=tuple(error_codes),
         charging_idle=106 in codes,
         charging=107 in codes,
-        low_charge=False,
+        low_charge=206 in codes,
         paused=any(code in codes for code in (120, 200, 302)),
         cleaning=119 in codes,
         returning=104 in codes,
@@ -1853,14 +1853,6 @@ async def test_untracked_coverage_rejects_a_managed_session_id():
             CoverageGuardReason.ACTIVITY_UNAVAILABLE,
         ),
         (
-            _operational_state_for_codes(106, 119),
-            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
-        ),
-        (
-            _operational_state_for_codes(106, 999),
-            CoverageGuardReason.ACTIVITY_UNAVAILABLE,
-        ),
-        (
             _operational_state_for_codes(104, error_codes=("synthetic-error",)),
             CoverageGuardReason.ACTIVITY_UNAVAILABLE,
         ),
@@ -1892,6 +1884,71 @@ async def test_tracked_coverage_rejects_active_or_unknown_kabuki_state(state, re
     client._async_send_user_payload.assert_not_awaited()
     client._async_wait_for_coverage_readback.assert_not_awaited()
     assert caught.value.reason is reason
+
+
+@pytest.mark.parametrize(
+    "codes",
+    [
+        (106, 999),
+        (107, 999),
+        (106, 209, 212),
+    ],
+)
+async def test_tracked_coverage_accepts_settled_state_with_supplemental_codes(codes):
+    client = MaticHermesClient("robot.invalid", 16320)
+    session_id = UUID("11111111-1111-4111-8111-111111111111")
+    client.async_get_cleaning_session_identity = AsyncMock(side_effect=[b"", b""])
+    client.async_get_state = AsyncMock(
+        return_value=_operational_state_for_codes(*codes)
+    )
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    await client.async_start_coverage(
+        FloorPlan(
+            1,
+            "00000000-0000-0000-0000-000000000001",
+            b"partition",
+            (),
+        ),
+        ["00000000-0000-0000-0000-000000000002"],
+        cleaning_mode=CleaningMode.VACUUM,
+        coverage_setting=CoverageSetting.QUICK,
+        require_settings_readback=True,
+        session_id=session_id,
+    )
+
+    client._async_send_user_payload.assert_awaited_once()
+    client._async_wait_for_coverage_readback.assert_awaited_once()
+
+
+async def test_tracked_coverage_rejects_recharge_and_resume_state():
+    client = MaticHermesClient("robot.invalid", 16320)
+    client.async_get_cleaning_session_identity = AsyncMock(
+        side_effect=[b"retained-native-session", b"retained-native-session"]
+    )
+    client.async_get_state = AsyncMock(
+        return_value=_operational_state_for_codes(107, 119, 206)
+    )
+    client._async_send_user_payload = AsyncMock()
+    client._async_wait_for_coverage_readback = AsyncMock()
+
+    with pytest.raises(CoverageGuardError) as caught:
+        await client.async_start_coverage(
+            FloorPlan(
+                1,
+                "00000000-0000-0000-0000-000000000001",
+                b"partition",
+                (),
+            ),
+            ["00000000-0000-0000-0000-000000000002"],
+            cleaning_mode=CleaningMode.VACUUM,
+            coverage_setting=CoverageSetting.QUICK,
+            require_settings_readback=True,
+        )
+
+    assert caught.value.reason is CoverageGuardReason.NATIVE_SESSION_ACTIVE
+    client._async_send_user_payload.assert_not_awaited()
 
 
 async def test_tracked_coverage_rejects_unavailable_identity_before_state_read():

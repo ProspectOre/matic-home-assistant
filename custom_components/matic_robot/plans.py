@@ -60,7 +60,7 @@ from .native_completion import match_single_room_completions
 from .native_completion import native_room_key as _native_room_key
 
 STORAGE_VERSION = 1
-STORAGE_MINOR_VERSION = 8
+STORAGE_MINOR_VERSION = 9
 STORAGE_KEY = f"{DOMAIN}.plans"
 PLAN_MOTION_TOKEN = "_matic_plan_run"
 PLAN_FLOOR_TOKEN = "_matic_plan_floor"
@@ -70,6 +70,7 @@ DURATION_HISTORY_MAX_SAMPLES = 7
 DURATION_CONFIDENCE_MIN_SAMPLES = 3
 NATIVE_COMPLETION_DEDUP_MAX_KEYS = 64
 MAX_SAVED_PLANS_PER_ROBOT = 256
+MANUAL_ROOM_SEQUENCE_PLAN_ID = "__matic_manual_room_sequence__"
 ROTATION_FUTURE_TOLERANCE_SECONDS = 24 * 60 * 60
 # Matic's native STOP is graceful: it can keep the current task alive for
 # roughly ten minutes before returning to the dock.  Keep a small safety
@@ -284,6 +285,103 @@ class ManagedMotionReplacedError(HomeAssistantError):
     """A newer command superseded a managed plan command."""
 
 
+def _is_manual_room_sequence_plan_id(plan_id: object) -> bool:
+    """Identify the private namespace used by unsaved Map Studio runs."""
+    return isinstance(plan_id, str) and (
+        plan_id == MANUAL_ROOM_SEQUENCE_PLAN_ID
+        or plan_id.startswith(f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_")
+    )
+
+
+def _next_manual_room_sequence_plan_id(
+    plans: Mapping[str, Any], reserved_ids: Iterable[str] = ()
+) -> str:
+    """Choose an internal ID that cannot shadow a saved plan or live reservation."""
+    unavailable = set(plans) | set(reserved_ids)
+    suffix = 0
+    while True:
+        candidate = (
+            MANUAL_ROOM_SEQUENCE_PLAN_ID
+            if suffix == 0
+            else f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_{suffix}"
+        )
+        if candidate not in unavailable:
+            return candidate
+        suffix += 1
+
+
+def _migrate_legacy_manual_room_run(robot: dict[str, Any]) -> bool:
+    """Isolate a persisted pre-0.5 room run from saved Quick Clean policy."""
+    run = robot.get("last_run")
+    if (
+        not isinstance(run, dict)
+        or run.get("plan_id") != "quick_clean"
+        or run.get("service") != "clean_room_sequence"
+    ):
+        return False
+    run_id = run.get("run_id")
+    if not isinstance(run_id, str) or not run_id:
+        return False
+
+    raw_plans = robot.get("plans")
+    plans = raw_plans if isinstance(raw_plans, Mapping) else {}
+    plan_id = _next_manual_room_sequence_plan_id(plans)
+    run["plan_id"] = plan_id
+    run["plan_name"] = "Map Studio room clean"
+
+    checkpoint = run.get("recovery_checkpoint")
+    if isinstance(checkpoint, dict):
+        checkpoint_data = checkpoint.get("data")
+        if (
+            isinstance(checkpoint_data, dict)
+            and checkpoint_data.get("plan_id") == "quick_clean"
+        ):
+            checkpoint_data["plan_id"] = plan_id
+        snapshots = _validated_cadence_snapshots(checkpoint.get("cadence_by_room"))
+        shared_snapshots = {
+            room_id: snapshot
+            for room_id, snapshot in (snapshots or {}).items()
+            if snapshot.get("scope") == "shared"
+        }
+        if shared_snapshots:
+            checkpoint["cadence_by_room"] = shared_snapshots
+        else:
+            checkpoint.pop("cadence_by_room", None)
+
+    active = robot.get("active_plan")
+    if (
+        isinstance(active, dict)
+        and active.get("run_id") == run_id
+        and active.get("plan_id") == "quick_clean"
+    ):
+        active["plan_id"] = plan_id
+        active["plan_name"] = "Map Studio room clean"
+
+    raw_pending = robot.get("pending_native_reconciliation")
+    pending = _validated_native_reconciliation(raw_pending)
+    if (
+        pending is not None
+        and pending.get("run_id") == run_id
+        and pending.get("plan_id") == "quick_clean"
+    ):
+        old_key = _native_reconciliation_key(pending)
+        pending["plan_id"] = plan_id
+        cadence_state = pending.get("cadence_state")
+        if (
+            not isinstance(cadence_state, Mapping)
+            or cadence_state.get("scope") != "shared"
+        ):
+            pending.pop("cadence_state", None)
+        new_key = _native_reconciliation_key(pending)
+        robot["pending_native_reconciliation"] = pending
+        dedup = robot.get("native_completion_dedup")
+        if isinstance(dedup, list) and old_key in dedup:
+            robot["native_completion_dedup"] = [
+                new_key if key == old_key else key for key in dedup
+            ]
+    return True
+
+
 class _CleaningPlanStore(Store[dict[str, Any]]):
     """Private plan storage with fail-closed schema migrations."""
 
@@ -334,6 +432,8 @@ class _CleaningPlanStore(Store[dict[str, Any]]):
                     robot.setdefault("plan_room_cadence", {})
                 if old_minor_version < 8:
                     robot.setdefault("native_completion_dedup", [])
+                if old_minor_version < 9:
+                    _migrate_legacy_manual_room_run(robot)
         return old_data
 
 
@@ -382,6 +482,7 @@ class CleaningPlanManager:
         self._stop_fences: dict[str, float] = {}
         self._prepared_runs: dict[str, _PreparedRunReservation] = {}
         self._pending_cadence_mutations: dict[str, dict[object, _CadenceMutation]] = {}
+        self._manual_room_sequence_reservations: dict[str, set[str]] = {}
 
     @staticmethod
     def _empty_data() -> dict[str, Any]:
@@ -1211,6 +1312,43 @@ class CleaningPlanManager:
         """Return a copy of all saved plan definitions."""
         return deepcopy(self._robot(serial_number)["plans"])
 
+    def reserve_manual_room_sequence_plan_id(self, serial_number: str) -> str:
+        """Reserve an unsaved identity for a manual Map Studio room run."""
+        robot = self._robot(serial_number)
+        reservations = self._manual_room_sequence_reservations.setdefault(
+            serial_number, set()
+        )
+        unavailable = set(reservations)
+        last_run = robot.get("last_run")
+        if (
+            isinstance(last_run, Mapping)
+            and last_run.get("outcome") == "running"
+            and _is_manual_room_sequence_plan_id(last_run.get("plan_id"))
+        ):
+            unavailable.add(str(last_run["plan_id"]))
+        for owner in (
+            robot.get("active_plan"),
+            robot.get("pending_native_reconciliation"),
+        ):
+            if isinstance(owner, Mapping) and _is_manual_room_sequence_plan_id(
+                owner.get("plan_id")
+            ):
+                unavailable.add(str(owner["plan_id"]))
+        plan_id = _next_manual_room_sequence_plan_id(robot["plans"], unavailable)
+        reservations.add(plan_id)
+        return plan_id
+
+    def release_manual_room_sequence_plan_id(
+        self, serial_number: str, plan_id: str
+    ) -> None:
+        """Release the transient identity after its executor has fully settled."""
+        reservations = self._manual_room_sequence_reservations.get(serial_number)
+        if reservations is None:
+            return
+        reservations.discard(plan_id)
+        if not reservations:
+            self._manual_room_sequence_reservations.pop(serial_number, None)
+
     @callback
     def pending_native_reconciliation(
         self, serial_number: str
@@ -1448,6 +1586,12 @@ class CleaningPlanManager:
         robot = self._robot(serial_number)
         before = deepcopy(robot)
         plans = robot["plans"]
+        if (
+            plan_id not in plans
+            and _is_manual_room_sequence_plan_id(plan_id)
+            and self._manual_room_sequence_plan_id_in_use(serial_number, plan_id)
+        ):
+            raise ValueError("This ID is reserved for an active Map Studio room run")
         if plan_id not in plans and len(plans) >= MAX_SAVED_PLANS_PER_ROBOT:
             raise SavedPlanLimitError(
                 "A Matic robot can have at most "
@@ -1941,7 +2085,7 @@ class CleaningPlanManager:
     def resolve_cadence(
         self,
         serial_number: str,
-        plan_id: str,
+        plan_id: str | None,
         rooms: Sequence[CleaningRoom],
         *,
         floor_token: str | None = None,
@@ -1951,7 +2095,7 @@ class CleaningPlanManager:
     ) -> tuple[list[CleaningRoom], dict[str, dict[str, Any]]]:
         """Resolve per-room effective settings from one durable policy source."""
         robot = self._robot(serial_number)
-        plan = robot["plans"].get(plan_id, {})
+        plan = robot["plans"].get(plan_id, {}) if plan_id is not None else {}
         plan_rooms = {
             str(raw.get("room_id")): raw
             for raw in plan.get("rooms", [])
@@ -2050,7 +2194,7 @@ class CleaningPlanManager:
                         coverage_setting=room.coverage_setting,
                     )
                     progress = schedule.get("progress")
-            elif isinstance(policy_value, Mapping):
+            elif isinstance(policy_value, Mapping) and plan_id is not None:
                 policy = normalize_cadence_policy(
                     policy_value,
                     cleaning_mode=validation_mode,
@@ -3026,9 +3170,10 @@ class CleaningPlanManager:
         plan_id: str,
         room: CleaningRoom,
         *,
+        run_id: str | None = None,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Advance room history only after the room finishes.
 
         Native record evidence (``completed_at``/``duration_seconds``) takes
@@ -3036,10 +3181,11 @@ class CleaningPlanManager:
         credit each verified room with the robot's own per-room timing.
         """
         async with self.plan_write_lock(serial_number):
-            await self._async_mark_completed(
+            return await self._async_mark_completed(
                 serial_number,
                 plan_id,
                 room,
+                run_id=run_id,
                 completed_at=completed_at,
                 duration_seconds=duration_seconds,
             )
@@ -3050,14 +3196,21 @@ class CleaningPlanManager:
         plan_id: str,
         room: CleaningRoom,
         *,
+        run_id: str | None = None,
         completed_at: str | None = None,
         duration_seconds: int | None = None,
-    ) -> None:
+    ) -> bool:
         """Credit verified completion while owning the plan-write transaction."""
         now_value = dt_util.utcnow()
         robot = self._robot(serial_number)
         before = deepcopy(robot)
         run = robot.get("last_run")
+        if run_id is not None and (
+            not isinstance(run, dict)
+            or run.get("run_id") != run_id
+            or run.get("plan_id") != plan_id
+        ):
+            return False
         checkpoint = run.get("recovery_checkpoint") if isinstance(run, dict) else None
         if (
             isinstance(run, dict)
@@ -3069,7 +3222,7 @@ class CleaningPlanManager:
                 # A previous disk write may have failed after updating the
                 # in-memory credit. Retry persistence, never increment twice.
                 await self._async_save_and_notify(serial_number)
-                return
+                return True
             credited.append(room.room_id)
         now = (
             completed_at
@@ -3133,8 +3286,15 @@ class CleaningPlanManager:
                 _stored_count(last_run, "completed_room_count") + 1,
                 _stored_count(last_run, "room_count"),
             )
-        robot["active_plan"] = None
+        active = robot.get("active_plan")
+        if run_id is None or (
+            isinstance(active, Mapping)
+            and active.get("run_id") == run_id
+            and active.get("plan_id") == plan_id
+        ):
+            robot["active_plan"] = None
         await self._async_save_with_rollback(serial_number, before)
+        return True
 
     async def async_mark_ended_unverified(
         self, serial_number: str, plan_id: str, room: CleaningRoom
@@ -3697,7 +3857,31 @@ class CleaningPlanManager:
         if plan_id is None:
             return None
         plan = self._robot(serial_number)["plans"].get(plan_id)
+        if plan is None and _is_manual_room_sequence_plan_id(plan_id):
+            return "Map Studio room clean"
         return str(plan.get("name", plan_id)) if plan else plan_id
+
+    def _manual_room_sequence_plan_id_in_use(
+        self, serial_number: str, plan_id: str
+    ) -> bool:
+        """Protect transient IDs from a saved-plan race and restart recovery."""
+        robot = self._robot(serial_number)
+        if plan_id in self._manual_room_sequence_reservations.get(serial_number, set()):
+            return True
+        last_run = robot.get("last_run")
+        if (
+            isinstance(last_run, Mapping)
+            and last_run.get("plan_id") == plan_id
+            and last_run.get("outcome") == "running"
+        ):
+            return True
+        return any(
+            isinstance(owner, Mapping) and owner.get("plan_id") == plan_id
+            for owner in (
+                robot.get("active_plan"),
+                robot.get("pending_native_reconciliation"),
+            )
+        )
 
     def _area_name(self, serial_number: str, area_id: str | None) -> str | None:
         if area_id is None:

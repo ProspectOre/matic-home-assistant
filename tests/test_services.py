@@ -57,6 +57,7 @@ from custom_components.matic_robot.managed_executor import (
     _schedule_native_reconciliation,
 )
 from custom_components.matic_robot.plans import (
+    MANUAL_ROOM_SEQUENCE_PLAN_ID,
     MAX_SAVED_PLANS_PER_ROBOT,
     CleaningPlanManager,
     CleaningRoom,
@@ -1096,7 +1097,7 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
         CleaningRoom("room-office", "Office", "vacuum", "standard"),
     ]
     assert "intelligent" not in execute.await_args.kwargs
-    assert execute.await_args.args[1].data["plan_id"] == "quick_clean"
+    assert execute.await_args.args[1].data["plan_id"] == MANUAL_ROOM_SEQUENCE_PLAN_ID
     assert execute.await_args.args[1].data["return_to_base"] is True
     assert execute.await_args.kwargs["floor_token"] == plan_floor_token(floor_plan)
     entry.runtime_data.client.async_send_user_command.assert_awaited_once_with(
@@ -1472,6 +1473,33 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
     )[1][room.id]
     await manager.async_save_plan(
         "serial",
+        "quick_clean",
+        {
+            "name": "Quick Clean",
+            "rooms": [
+                {
+                    "room_id": room.id,
+                    "cleaning_mode": "vacuum",
+                    "coverage_setting": "standard",
+                    "cadence": {"scope": "plan", "mop_every_n": 1},
+                }
+            ],
+        },
+        floor_token=plan_floor_token(floor_plan),
+        room_identities={room.id: identity},
+    )
+    private_room_progress = (
+        manager._robot("serial")["plan_room_cadence"]
+        .setdefault("quick_clean", {})
+        .setdefault(
+            room.id,
+            {"identity": identity, "progress": {"mop": 0, "coverage": 0}},
+        )
+    )
+    private_progress = private_room_progress["progress"]
+    private_progress_before = deepcopy(private_progress)
+    await manager.async_save_plan(
+        "serial",
         "home",
         {
             "name": "Home",
@@ -1491,6 +1519,12 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         },
         floor_token=plan_floor_token(floor_plan),
         room_identities={room.id: identity},
+    )
+    await manager.async_save_plan(
+        "serial",
+        MANUAL_ROOM_SEQUENCE_PLAN_ID,
+        {"name": "Legacy saved plan", "rooms": []},
+        select=False,
     )
     manager._robot("serial")["shared_room_cadence"][room.id]["progress"] = {
         "mop": 1,
@@ -1542,17 +1576,18 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             "manual-with-schedule" if use_room_schedule else "manual-without-schedule"
         )
         run_manager = args[2]
+        plan_id = args[1].data["plan_id"]
         run_rooms = args[5]
         await run_manager.async_begin_run(
             "serial",
-            "quick_clean",
+            plan_id,
             run_id,
             len(run_rooms),
             trigger="user",
             service="clean_room_sequence",
         )
         await run_manager.async_mark_started(
-            "serial", "quick_clean", run_rooms[0], run_id=run_id
+            "serial", plan_id, run_rooms[0], run_id=run_id
         )
         cadence_by_room = kwargs["cadence_by_room"]
         await run_manager.async_set_recovery_checkpoint(
@@ -1561,7 +1596,9 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
             {"cadence_by_room": cadence_by_room},
         )
         # This method is the managed executor's verified-completion boundary.
-        await run_manager.async_mark_completed("serial", "quick_clean", run_rooms[0])
+        await run_manager.async_mark_completed(
+            "serial", plan_id, run_rooms[0], run_id=run_id
+        )
 
     execute = AsyncMock(side_effect=execute_sequence)
     with (
@@ -1584,6 +1621,9 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         )
     ]
     snapshot = execute.await_args.kwargs["cadence_by_room"][room.id]
+    assert execute.await_args.args[1].data["plan_id"] == (
+        f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
+    )
     assert snapshot["scope"] == ("shared" if use_room_schedule else "plan")
     assert snapshot["schedule_active"] is use_room_schedule
     assert snapshot["mop_due"] is use_room_schedule
@@ -1597,6 +1637,83 @@ async def test_clean_room_sequence_schedule_selection_controls_shared_accounting
         manager._robot("serial")["shared_room_cadence"][room.id]["progress"]
         == expected_progress
     )
+    assert manager._robot("serial")["plans"]["quick_clean"]["name"] == "Quick Clean"
+    assert (
+        manager._robot("serial")["plans"][MANUAL_ROOM_SEQUENCE_PLAN_ID]["name"]
+        == "Legacy saved plan"
+    )
+    assert (
+        manager._robot("serial")["plan_room_cadence"]["quick_clean"][room.id][
+            "progress"
+        ]
+        == private_progress_before
+    )
+
+
+async def test_manual_room_run_identity_preserves_legacy_saved_plan_ids(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    manager.release_manual_room_sequence_plan_id("serial", "unreserved")
+    await manager.async_save_plan(
+        "serial",
+        MANUAL_ROOM_SEQUENCE_PLAN_ID,
+        {"name": "Existing plan", "rooms": []},
+    )
+    await manager.async_save_plan(
+        "serial",
+        MANUAL_ROOM_SEQUENCE_PLAN_ID,
+        {"name": "Edited plan", "rooms": []},
+    )
+    assert manager.plan("serial", MANUAL_ROOM_SEQUENCE_PLAN_ID)["name"] == (
+        "Edited plan"
+    )
+
+    first = manager.reserve_manual_room_sequence_plan_id("serial")
+    assert first == f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_1"
+    with pytest.raises(ValueError, match="active Map Studio room run"):
+        await manager.async_save_plan("serial", first, {"name": "Collision"})
+    manager.release_manual_room_sequence_plan_id("serial", first)
+    await manager.async_save_plan("serial", first, {"name": "Next plan", "rooms": []})
+    assert manager.plan("serial", first)["name"] == "Next plan"
+
+    second = manager.reserve_manual_room_sequence_plan_id("serial")
+    assert second == f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_2"
+    manager.release_manual_room_sequence_plan_id("serial", second)
+    manager._robot("serial")["last_run"] = {
+        "run_id": "running-manual",
+        "plan_id": second,
+        "outcome": "running",
+    }
+    with pytest.raises(ValueError, match="active Map Studio room run"):
+        await manager.async_save_plan("serial", second, {"name": "Still active"})
+    manager._robot("serial")["last_run"] = None
+    await manager.async_save_plan("serial", second, {"name": "Next plan", "rooms": []})
+
+
+async def test_manual_room_reservation_skips_persisted_run_owners(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    robot = manager._robot("serial")
+    robot["last_run"] = {
+        "run_id": "running-manual",
+        "plan_id": MANUAL_ROOM_SEQUENCE_PLAN_ID,
+        "outcome": "running",
+    }
+    robot["active_plan"] = {
+        "plan_id": f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_1",
+        "room_id": "room-office",
+    }
+    robot["pending_native_reconciliation"] = {
+        "plan_id": f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_2",
+        "room_id": "room-office",
+        "room": "Office",
+        "dispatched_at": "2026-09-28T12:00:00+00:00",
+        "expires_at": "2099-09-28T12:00:00+00:00",
+    }
+
+    reserved = manager.reserve_manual_room_sequence_plan_id("serial")
+
+    assert reserved == f"{MANUAL_ROOM_SEQUENCE_PLAN_ID}_3"
+    manager.release_manual_room_sequence_plan_id("serial", reserved)
 
 
 async def test_reset_room_cadence_service_targets_one_room_and_reports_blockers(

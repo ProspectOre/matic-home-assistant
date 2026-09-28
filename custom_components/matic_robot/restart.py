@@ -529,13 +529,16 @@ async def async_recover_managed_run(
                     and room.room_id not in completed_ids
                 ):
                     completed_at, duration = evidence[room.room_id]
-                    await manager.async_mark_completed(
+                    accepted = await manager.async_mark_completed(
                         serial_number,
                         run["plan_id"],
                         room,
+                        run_id=run.get("run_id"),
                         completed_at=completed_at,
                         duration_seconds=duration,
                     )
+                    if not accepted:
+                        continue
                     completed_ids.add(room.room_id)
                     checkpoint["completed_room_ids"] = list(completed_ids)
                     runtime.coordinator.async_confirm_room_completed(room.name)

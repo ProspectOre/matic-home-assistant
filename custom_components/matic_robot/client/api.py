@@ -734,17 +734,17 @@ class MaticHermesClient(AbstractAsyncContextManager["MaticHermesClient"]):
         The opaque active-session key can remain visible after its native task
         has ended. Keep that identity for ownership checks, and use the
         independently decoded ``kabuki_state`` snapshot to decide whether a
-        task is still active. Unknown state codes and reported errors fail
-        closed.
+        task is still active. The typed activity model owns status precedence;
+        a verified dock/charge state can coexist with supplemental status
+        codes. Unknown activity without a settled or active state fails closed.
         """
         state = await self.async_get_state()
         if state.error_codes:
             return None
-        # The high-level activity model can give a settled flag precedence
-        # over dormant task or unknown status codes. Treat compound snapshots
-        # as ambiguous instead of maintaining a second state-code registry.
-        if len(state.state_codes) > 1:
-            return None
+        # A low-charge task waiting at the dock still owns the native session,
+        # even though the public activity projection correctly reports charging.
+        if state.recharge_and_resume:
+            return True
         activity = state.activity
         if activity in (RobotActivity.CLEANING, RobotActivity.PAUSED):
             return True
