@@ -7,6 +7,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+from homeassistant.components.websocket_api.commands import handle_unsubscribe_events
 from homeassistant.config_entries import ConfigEntryState
 from homeassistant.exceptions import ConfigEntryAuthFailed, Unauthorized
 
@@ -145,10 +146,19 @@ def _connection(*, admin: bool = True) -> Any:
             self.subscriptions = {}
             self.send_event = MagicMock()
             self.send_result = MagicMock()
+            self.send_error = MagicMock()
 
     connection = Connection()
     connection.user = SimpleNamespace(is_admin=admin)
     return connection
+
+
+def _snapshot(
+    manager: WorkspaceSocket, entry_id: str, connection: Any
+) -> dict[str, Any]:
+    request_id = getattr(connection, "next_request_id", 0) + 1
+    connection.next_request_id = request_id
+    return manager.snapshot(entry_id, (connection, request_id))
 
 
 def _emit(manager: WorkspaceSocket, entry_id: str, *, kind: str | None = None) -> None:
@@ -342,7 +352,7 @@ def test_snapshot_and_subscribe_replay_intervening_events_per_entry() -> None:
     hass = _Hass([_entry("entry-a"), _entry("entry-b")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    snapshot = manager.snapshot("entry-a", connection)
+    snapshot = _snapshot(manager, "entry-a", connection)
     assert snapshot["sequence"] == 0
 
     _emit(manager, "entry-a")
@@ -377,7 +387,7 @@ def test_live_invalidation_and_unsubscribe() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     manager.subscribe(connection, "entry-a", 5)
 
     _emit(manager, "entry-a")
@@ -404,7 +414,7 @@ def test_live_invalidation_and_unsubscribe() -> None:
             },
         },
     )
-    connection.subscriptions[(DOMAIN, "workspace", "entry-a")]()
+    connection.subscriptions[5]()
     connection.send_event.reset_mock()
     _emit(manager, "entry-a")
     connection.send_event.assert_not_called()
@@ -414,7 +424,7 @@ def test_status_and_activity_events_do_not_advance_spatial_generation() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     manager.subscribe(connection, "entry-a", 5)
 
     _emit(manager, "entry-a", kind="state")
@@ -491,7 +501,7 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     manager.subscribe(connection, "entry-a", 22)
 
     scene.revision = 2
@@ -667,7 +677,7 @@ def test_bounded_replay_returns_typed_overflow_resync() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     for _ in range(QUEUE_LIMIT + 1):
         _emit(manager, "entry-a")
 
@@ -737,7 +747,7 @@ def test_websocket_subscribe_returns_handshake_and_replays_snapshot_gap() -> Non
     hass.data[DOMAIN] = {"workspace_socket": manager}
     connection = _connection()
 
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     _emit(manager, "entry-a")
     websocket_subscribe(
         hass,
@@ -778,6 +788,79 @@ def test_websocket_subscribe_returns_handshake_and_replays_snapshot_gap() -> Non
     )
 
 
+def test_workspace_callbacks_use_home_assistant_numeric_unsubscribe_ids() -> None:
+    hass = _Hass([_entry("entry-a")])
+    manager = WorkspaceSocket(hass)
+    hass.data[DOMAIN] = {"workspace_socket": manager}
+    connection = _connection()
+
+    websocket_snapshot(
+        hass,
+        connection,
+        {"id": 21, "entry_id": "entry-a", "version": 1},
+    )
+    assert set(connection.subscriptions) == {21}
+    connection.send_result.reset_mock()
+    handle_unsubscribe_events(hass, connection, {"id": 22, "subscription": 21})
+    connection.send_result.assert_called_once_with(22)
+    assert not manager._snapshots
+
+    websocket_snapshot(
+        hass,
+        connection,
+        {"id": 23, "entry_id": "entry-a", "version": 1},
+    )
+    websocket_subscribe(
+        hass,
+        connection,
+        {"id": 24, "entry_id": "entry-a", "version": 1},
+    )
+    assert set(connection.subscriptions) == {24}
+
+    websocket_subscribe(
+        hass,
+        connection,
+        {"id": 26, "entry_id": "entry-a", "version": 1},
+    )
+    assert set(connection.subscriptions) == {26}
+    assert manager._subscriptions == {"entry-a": {connection: 26}}
+    handle_unsubscribe_events(hass, connection, {"id": 27, "subscription": 24})
+    connection.send_error.assert_called_once()
+    assert set(connection.subscriptions) == {26}
+    assert manager._subscriptions == {"entry-a": {connection: 26}}
+    connection.send_error.reset_mock()
+
+    connection.send_result.reset_mock()
+
+    handle_unsubscribe_events(hass, connection, {"id": 28, "subscription": 26})
+
+    connection.send_result.assert_called_once_with(28)
+    connection.send_error.assert_not_called()
+    assert not manager._subscriptions
+    assert not manager._snapshots
+    assert not connection.subscriptions
+
+
+def test_stale_workspace_callbacks_cannot_remove_replacement_registration() -> None:
+    manager = WorkspaceSocket(_Hass([_entry("entry-a")]))
+    connection = _connection()
+
+    manager.snapshot("entry-a", (connection, 31))
+    stale_cursor_cleanup = connection.subscriptions[31]
+    manager.snapshot("entry-a", (connection, 32))
+    stale_cursor_cleanup()
+    assert set(connection.subscriptions) == {32}
+    assert manager._snapshots[connection]["entry-a"].request_id == 32
+
+    manager.subscribe(connection, "entry-a", 41)
+    stale_subscription_cleanup = connection.subscriptions[41]
+    manager.subscribe(connection, "entry-a", 42)
+    stale_subscription_cleanup()
+
+    assert manager._subscriptions == {"entry-a": {connection: 42}}
+    assert set(connection.subscriptions) == {42}
+
+
 def test_malformed_and_closed_events_are_ignored() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
@@ -798,12 +881,12 @@ def test_entry_removal_drops_connection_snapshot_cursors() -> None:
     manager = WorkspaceSocket(hass)
     connection = _connection()
     idle_connection = _connection()
-    manager.snapshot("entry-a", connection)
-    manager.snapshot("entry-a", idle_connection)
+    _snapshot(manager, "entry-a", connection)
+    _snapshot(manager, "entry-a", idle_connection)
     manager.subscribe(connection, "entry-a", 13)
     # An already-active stream buffers updates during reads, so only idle
     # snapshots need retained replay cursors.
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     assert connection not in manager._snapshots
     assert idle_connection in manager._snapshots
 
@@ -816,30 +899,23 @@ def test_entry_removal_drops_connection_snapshot_cursors() -> None:
     assert idle_connection not in manager._snapshots
 
 
-def test_unsubscribe_clears_pending_snapshot_cursor() -> None:
-    hass = _Hass([_entry("entry-a")])
-    manager = WorkspaceSocket(hass)
-    connection = _connection()
-    manager.snapshot("entry-a", connection)
-
-    manager.unsubscribe(connection, "entry-a")
-
-    assert connection not in manager._snapshots
-    assert manager._subscriptions == {}
-
-
 def test_connection_close_clears_abandoned_snapshot_cursor() -> None:
-    manager = WorkspaceSocket(_Hass([_entry("entry-a")]))
+    manager = WorkspaceSocket(
+        _Hass([_entry("entry-a"), _entry("entry-b"), _entry("entry-c")])
+    )
     connection = _connection()
-    manager.snapshot("entry-a", connection)
-    close_cleanup = connection.subscriptions[(DOMAIN, "workspace_snapshot", "entry-a")]
+    _snapshot(manager, "entry-a", connection)
+    _snapshot(manager, "entry-b", connection)
+    manager.subscribe(connection, "entry-c", 50)
 
-    for unsubscribe in tuple(connection.subscriptions.values()):
+    # HA iterates its live values view during connection close; callbacks must
+    # not mutate the registrations map while that loop is running.
+    for unsubscribe in connection.subscriptions.values():
         unsubscribe()
-    close_cleanup()
     connection.subscriptions.clear()
 
     assert connection not in manager._snapshots
+    assert not manager._subscriptions
     assert connection.subscriptions == {}
 
 
@@ -849,10 +925,10 @@ def test_pending_snapshot_cursors_are_bounded_per_connection() -> None:
     connection = _connection()
 
     for entry in entries[:SNAPSHOT_CURSOR_LIMIT]:
-        manager.snapshot(entry.entry_id, connection)
-    manager.snapshot(entries[0].entry_id, connection)
+        _snapshot(manager, entry.entry_id, connection)
+    _snapshot(manager, entries[0].entry_id, connection)
     with pytest.raises(WorkspaceError, match="Too many pending workspace snapshots"):
-        manager.snapshot(entries[-1].entry_id, connection)
+        _snapshot(manager, entries[-1].entry_id, connection)
 
     assert len(manager._snapshots[connection]) == SNAPSHOT_CURSOR_LIMIT
     assert len(connection.subscriptions) == SNAPSHOT_CURSOR_LIMIT
@@ -916,7 +992,7 @@ async def test_stop_sends_restart_resync_and_removes_subscriptions() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     manager.subscribe(connection, "entry-a", 11)
     await manager.async_start()
 
@@ -938,7 +1014,7 @@ async def test_stop_removes_pending_snapshot_cursor_cleanup() -> None:
     hass = _Hass([_entry("entry-a")])
     manager = WorkspaceSocket(hass)
     connection = _connection()
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     await manager.async_start()
 
     await manager.async_stop()
@@ -952,7 +1028,7 @@ def test_idle_entry_unload_resyncs_once_and_unregisters_lifecycle_listener() -> 
     manager = WorkspaceSocket(_Hass([entry]))
     connection = _connection()
     manager.track_entry(entry)
-    manager.snapshot("entry-a", connection)
+    _snapshot(manager, "entry-a", connection)
     manager.subscribe(connection, "entry-a", 14)
 
     entry.set_state(ConfigEntryState.UNLOAD_IN_PROGRESS)
