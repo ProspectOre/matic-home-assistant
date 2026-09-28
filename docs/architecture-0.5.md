@@ -146,5 +146,4 @@ Physical acceptance is separate and requires explicit authorization for a bounde
 stop automations/scripts, use administrator MCP/native preflight and post-run evidence, verify STOP/DOCK settlement,
 and retain cleanup receipts. Never infer motion/completion from screenshots, Activity, transient state, CI, or UI.
 
-Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement;
-reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.
+Out of scope: Bluetooth proxy pairing, guessed commands, cloud services, wholesale redesign, and mutation API replacement; reconsider mutation only if 0.4/0.5 evidence shows HA services cannot solve a stale-write or workflow limitation.
