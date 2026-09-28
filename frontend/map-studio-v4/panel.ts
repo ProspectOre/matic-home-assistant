@@ -128,8 +128,8 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
     this.#unsubscribe = this.#store.subscribe((state) => {
       this._workspace = state;
     });
-    if (preferredFrontend() === "v3") void this.#loadClassic(true);
-    else this.#startControllers();
+    this.#startControllers();
+    this.#maybeRestoreClassic();
   }
 
   override disconnectedCallback(): void {
@@ -142,7 +142,7 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
   }
 
   #startControllers(): void {
-    if (this.#effects) return;
+    if (!this.isConnected || this.#effects) return;
     // A panel can be detached while Home Assistant updates its properties.
     // Recompute from the current values before deciding whether any private
     // request is safe; the last projection may still describe a connected
@@ -214,9 +214,22 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
         this.#effects?.sync(projection, this.panel);
       }
     }
+    if (changed.has("panel")) this.#maybeRestoreClassic();
     if (changed.has("narrow") && this.#store.value.narrowHint !== this.narrow) {
       this.#store.dispatch({ type: "set-narrow-hint", value: this.narrow });
     }
+  }
+
+  #maybeRestoreClassic(): void {
+    const classicUrl = this.panel?.config?.classic_module_url;
+    if (!this.isConnected
+      || this._classic
+      || this._classicLoading
+      || this._classicLoadError
+      || preferredFrontend() !== "v3"
+      || typeof classicUrl !== "string"
+      || !classicUrl.startsWith("/")) return;
+    void this.#loadClassic(true);
   }
 
   #intent(event: CustomEvent<unknown>): void {
@@ -308,6 +321,10 @@ matic-map-panel-v0-3-1 { display: block; block-size: 100%; }
       }
       await this.#classicModulePromise;
       if (!this.isConnected || generation !== this.#classicLoadGeneration) return;
+      // A different open Map Studio panel may have changed the shared choice
+      // while this saved preference was loading. Keep this panel on v4 when
+      // that newer choice is already authoritative.
+      if (restorePreference && preferredFrontend() !== "v3") return;
       if (!restorePreference && !setPreferredFrontend("v3")) {
         throw new Error("Could not save the selected frontend");
       }
