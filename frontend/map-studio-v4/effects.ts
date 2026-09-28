@@ -342,6 +342,11 @@ export class EffectController {
       return;
     }
     if (!projection.host.connected) {
+      if (wasConnected) {
+        // Revoke admission before cancellation: an aborted transport may still
+        // settle, but none of its resources belong to the offline workspace.
+        this.#store.patch({ generation: this.#coherence.invalidate() });
+      }
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
       this.#catalogRefreshQueuedPreserveGeneration = false;
@@ -383,7 +388,7 @@ export class EffectController {
       if (this.#store.value.notice?.text === RECONNECT_NOTICE) {
         this.#store.patch({ notice: null });
       }
-      void this.refreshCatalog(true);
+      void this.refreshCatalog(true, true);
       return;
     }
     if (this.#store.value.resources.catalog.status === "idle"
@@ -861,7 +866,7 @@ export class EffectController {
       this.#entryIdentity = identity;
       this.#beginLiveGeneration(selected, currentEntry);
     } catch (error) {
-      if (isAbort(error)) return;
+      if (isAbort(error) || controller.signal.aborted || this.#disposed) return;
       this.#store.patch({
         coherence: this.#store.value.resources.scene.value ? "degraded" : "unavailable",
         resources: {

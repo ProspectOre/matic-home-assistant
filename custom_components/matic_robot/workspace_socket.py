@@ -79,6 +79,14 @@ class _EntryListeners:
     sources_closed: bool = False
 
 
+@dataclass(frozen=True, slots=True)
+class _SnapshotCursor:
+    """Replay position owned by one HA WebSocket request id."""
+
+    sequence: int
+    request_id: int
+
+
 class WorkspaceSocket:
     """Own workspace cursors and per-entry invalidation history."""
 
@@ -91,7 +99,7 @@ class WorkspaceSocket:
         self._history: dict[str, deque[dict[str, Any]]] = {}
         self._resource_revisions: dict[str, dict[str, int]] = {}
         self._subscriptions: dict[str, dict[ActiveConnection, int]] = {}
-        self._snapshots: dict[ActiveConnection, dict[str, int]] = {}
+        self._snapshots: dict[ActiveConnection, dict[str, _SnapshotCursor]] = {}
         self._unsubscribers: list[Any] = []
         self._tracked_entries: dict[str, _EntryListeners] = {}
         self._closed = False
@@ -116,15 +124,13 @@ class WorkspaceSocket:
         if self._closed:
             return
         self._closed = True
-        for entry_id, entry_subscriptions in self._subscriptions.items():
+        for entry_subscriptions in self._subscriptions.values():
             for connection, msg_id in tuple(entry_subscriptions.items()):
                 connection.send_event(msg_id, _resync_event("restart"))
-                connection.subscriptions.pop((DOMAIN, "workspace", entry_id), None)
+                connection.subscriptions.pop(msg_id, None)
         for connection, cursors in tuple(self._snapshots.items()):
             for entry_id in tuple(cursors):
-                connection.subscriptions.pop(
-                    (DOMAIN, "workspace_snapshot", entry_id), None
-                )
+                self._drop_snapshot_cursor(connection, entry_id)
         for unsubscribe in self._unsubscribers:
             unsubscribe()
         self._unsubscribers.clear()
@@ -166,12 +172,13 @@ class WorkspaceSocket:
         self._history.pop(entry_id, None)
         self._resource_revisions.pop(entry_id, None)
         for connection, cursors in tuple(self._snapshots.items()):
-            cursors.pop(entry_id, None)
-            connection.subscriptions.pop((DOMAIN, "workspace_snapshot", entry_id), None)
+            cursor = cursors.pop(entry_id, None)
+            if cursor is not None:
+                connection.subscriptions.pop(cursor.request_id, None)
             if not cursors:
                 self._snapshots.pop(connection, None)
-        for connection in tuple(self._subscriptions.pop(entry_id, {})):
-            connection.subscriptions.pop((DOMAIN, "workspace", entry_id), None)
+        for connection, msg_id in tuple(self._subscriptions.pop(entry_id, {}).items()):
+            connection.subscriptions.pop(msg_id, None)
 
     def _remove_entry(self, entry_id: str) -> None:
         """Notify listeners once, then discard state for an unloaded entry."""
@@ -470,7 +477,9 @@ class WorkspaceSocket:
         raise WorkspaceError("Matic entry is unavailable")
 
     def snapshot(
-        self, entry_id: str, connection: ActiveConnection | None = None
+        self,
+        entry_id: str,
+        request: tuple[ActiveConnection, int] | None = None,
     ) -> dict[str, Any]:
         """Return a versioned, minimized projection and remember its cursor."""
         entry = self._entry(entry_id)
@@ -616,18 +625,23 @@ class WorkspaceSocket:
             # operational fields, maps, pose and telemetry not needed here.
             "payload": {"available": available, "entry": entry_projection},
         }
-        if connection is not None and connection not in self._subscriptions.get(
-            entry_id, {}
-        ):
+        if request is not None:
+            connection, request_id = request
+            if connection in self._subscriptions.get(entry_id, {}):
+                return result
             # A live subscriber already receives and buffers every event while
             # this read is in flight. Only an unsubscribed startup snapshot
             # needs a replay cursor for the following subscribe handshake.
             cursors = self._snapshots.setdefault(connection, {})
             if entry_id not in cursors and len(cursors) >= SNAPSHOT_CURSOR_LIMIT:
                 raise WorkspaceError("Too many pending workspace snapshots")
-            cursors[entry_id] = sequence
-            connection.subscriptions[(DOMAIN, "workspace_snapshot", entry_id)] = (
-                lambda: self._release_snapshot_cursor(connection, entry_id)
+            old_cursor = cursors.get(entry_id)
+            if old_cursor is not None and old_cursor.request_id != request_id:
+                connection.subscriptions.pop(old_cursor.request_id, None)
+            cursor = _SnapshotCursor(sequence, request_id)
+            cursors[entry_id] = cursor
+            connection.subscriptions[request_id] = lambda: (
+                self._release_snapshot_cursor(connection, entry_id, request_id)
             )
         return result
 
@@ -640,18 +654,19 @@ class WorkspaceSocket:
     ) -> list[dict[str, Any]]:
         """Subscribe and replay every invalidation since this connection's snapshot."""
         self._entry(entry_id)
-        self._remove_subscription(connection, entry_id)
-        cursor = self._snapshots.get(connection, {}).pop(
-            entry_id, self._sequence.get(entry_id, 0)
+        self._remove_subscription(connection, entry_id, unregister=True)
+        cursor_record = self._snapshots.get(connection, {}).get(entry_id)
+        cursor = (
+            cursor_record.sequence
+            if cursor_record is not None
+            else self._sequence.get(entry_id, 0)
         )
-        connection.subscriptions.pop((DOMAIN, "workspace_snapshot", entry_id), None)
-        cursors = self._snapshots.get(connection)
-        if cursors == {}:
-            self._snapshots.pop(connection, None)
+        if cursor_record is not None:
+            self._drop_snapshot_cursor(connection, entry_id)
 
         self._subscriptions.setdefault(entry_id, {})[connection] = msg_id
-        connection.subscriptions[(DOMAIN, "workspace", entry_id)] = lambda: (
-            self.unsubscribe(connection, entry_id)
+        connection.subscriptions[msg_id] = lambda: self._release_subscription(
+            connection, entry_id, msg_id
         )
 
         history = self._history.get(entry_id, ())
@@ -665,35 +680,55 @@ class WorkspaceSocket:
         ]
 
     @callback
-    def unsubscribe(self, connection: ActiveConnection, entry_id: str) -> None:
-        """Remove one entry subscription without affecting another entry."""
+    def _release_subscription(
+        self, connection: ActiveConnection, entry_id: str, msg_id: int
+    ) -> None:
+        """Release HA-owned subscription state without mutating its callback map."""
+        if self._subscriptions.get(entry_id, {}).get(connection) != msg_id:
+            return
         self._remove_subscription(connection, entry_id)
+
+    def _release_snapshot_cursor(
+        self, connection: ActiveConnection, entry_id: str, request_id: int
+    ) -> None:
+        """Forget a snapshot cursor when its WebSocket connection closes."""
+        cursor = self._snapshots.get(connection, {}).get(entry_id)
+        if cursor is None or cursor.request_id != request_id:
+            return
+        self._forget_snapshot_cursor(connection, entry_id)
+
+    def _drop_snapshot_cursor(
+        self, connection: ActiveConnection, entry_id: str
+    ) -> None:
+        cursor = self._snapshots[connection][entry_id]
+        connection.subscriptions.pop(cursor.request_id, None)
+        self._forget_snapshot_cursor(connection, entry_id)
+
+    def _forget_snapshot_cursor(
+        self, connection: ActiveConnection, entry_id: str
+    ) -> None:
         cursors = self._snapshots.get(connection)
         if cursors is not None:
             cursors.pop(entry_id, None)
-            connection.subscriptions.pop((DOMAIN, "workspace_snapshot", entry_id), None)
             if not cursors:
                 self._snapshots.pop(connection, None)
 
-    def _release_snapshot_cursor(
-        self, connection: ActiveConnection, entry_id: str
+    def _remove_subscription(
+        self,
+        connection: ActiveConnection,
+        entry_id: str,
+        *,
+        unregister: bool = False,
     ) -> None:
-        """Forget a snapshot cursor when its WebSocket connection closes."""
-        cursors = self._snapshots.get(connection)
-        if cursors is None:
-            return
-        cursors.pop(entry_id, None)
-        if not cursors:
-            self._snapshots.pop(connection, None)
-
-    def _remove_subscription(self, connection: ActiveConnection, entry_id: str) -> None:
         """Remove a listener while preserving a pending snapshot cursor."""
         subscriptions = self._subscriptions.get(entry_id)
+        msg_id = subscriptions.get(connection) if subscriptions is not None else None
         if subscriptions is not None:
             subscriptions.pop(connection, None)
             if not subscriptions:
                 self._subscriptions.pop(entry_id, None)
-        connection.subscriptions.pop((DOMAIN, "workspace", entry_id), None)
+        if unregister and msg_id is not None:
+            connection.subscriptions.pop(msg_id, None)
 
 
 def _require_admin(connection: ActiveConnection) -> None:
@@ -716,7 +751,9 @@ def websocket_snapshot(
     """Serve a versioned snapshot to administrators."""
     _require_admin(connection)
     manager: WorkspaceSocket = hass.data[DOMAIN]["workspace_socket"]
-    connection.send_result(msg["id"], manager.snapshot(msg["entry_id"], connection))
+    connection.send_result(
+        msg["id"], manager.snapshot(msg["entry_id"], (connection, msg["id"]))
+    )
 
 
 @websocket_command(

@@ -1348,6 +1348,124 @@ test.describe("Map Studio v0.4 foundation", () => {
     });
   }
 
+  for (const outcome of ["success", "error"]) {
+    test(`@safety disconnect fences an in-flight pose ${outcome} before cancellation`, async ({ page }) => {
+      await loadEffectHarness(page);
+      const result = await page.evaluate(async (outcome) => {
+        const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+        const initial = createGalleryState("ready");
+        const store = new WorkspaceStore(initial);
+        let finish;
+        let hold = false;
+        let abortedGeneration;
+        const effects = new EffectController(store, {
+          catalog: async () => [{ ...initial.resources.entry, deltaUrl: null }],
+          history: async () => initial.resources.history.value,
+          scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+          pose: async (_url, signal) => {
+            if (!hold) return initial.resources.pose.value;
+            signal.addEventListener("abort", () => { abortedGeneration = store.value.generation; }, { once: true });
+            // A transport can settle after abort; admission must still reject it.
+            return new Promise((resolve, reject) => {
+              finish = () => outcome === "success"
+                ? resolve(initial.resources.pose.value) : reject(new Error("Late transport failure"));
+            });
+          },
+          dispose() {},
+        });
+        const projection = {
+          host: initial.host, activity: initial.activity, batteryPercent: 92,
+          robotLabel: "Synthetic", robots: initial.robots, language: "en",
+          userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+        };
+        try {
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          const connectedGeneration = store.value.generation;
+          const retainedScene = store.value.resources.scene.value;
+          hold = true;
+          const pending = effects.refreshPose();
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const disconnectedGeneration = store.value.generation;
+          finish();
+          await pending;
+          const disconnected = {
+            pose: store.value.resources.pose, exactPose: store.value.map.exactPose,
+            coherence: store.value.coherence, retainedScene: store.value.resources.scene.value === retainedScene,
+          };
+          effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+          const repeatedDisconnectGeneration = store.value.generation;
+          hold = false;
+          effects.sync(projection);
+          await effects.refreshCatalog(true);
+          await effects.refreshPose();
+          return {
+            connectedGeneration, disconnectedGeneration, abortedGeneration, repeatedDisconnectGeneration,
+            disconnected, recovered: store.value.map.exactPose && store.value.coherence === "current",
+          };
+        } finally { effects.dispose(); }
+      }, outcome);
+      expect(result.disconnectedGeneration).toBeGreaterThan(result.connectedGeneration);
+      expect(result.abortedGeneration).toBe(result.disconnectedGeneration);
+      expect(result.repeatedDisconnectGeneration).toBe(result.disconnectedGeneration);
+      expect(result.disconnected).toEqual({
+        pose: { status: "idle", value: null, problem: null }, exactPose: false,
+        coherence: "degraded", retainedScene: true,
+      });
+      expect(result.recovered).toBe(true);
+    });
+  }
+
+  for (const force of [false, true]) {
+    for (const outcome of ["success", "error"]) {
+      test(`@safety reconnect supersedes a ${force ? "forced" : "polling"} catalog ${outcome} without waiting for polling`, async ({ page }) => {
+        await loadEffectHarness(page);
+        const result = await page.evaluate(async ({ force, outcome }) => {
+          const { EffectController, WorkspaceStore, createGalleryState } = await import("/plan-recovery-test.js");
+          const initial = createGalleryState("ready");
+          const store = new WorkspaceStore(initial);
+          const entry = { ...initial.resources.entry, deltaUrl: null };
+          let reads = 0;
+          let finish;
+          const problems = [];
+          const unsubscribe = store.subscribe((state) => {
+            if (state.resources.catalog.problem) problems.push(state.resources.catalog.problem);
+          });
+          const effects = new EffectController(store, {
+            catalog: async () => {
+              if (++reads !== 2) return [entry];
+              return new Promise((resolve, reject) => {
+                finish = () => outcome === "success"
+                  ? resolve([entry]) : reject(new Error("Obsolete connection failed"));
+              });
+            },
+            history: async () => initial.resources.history.value,
+            scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+            pose: async () => initial.resources.pose.value,
+            dispose() {},
+          });
+          const projection = {
+            host: initial.host, activity: initial.activity, batteryPercent: 92,
+            robotLabel: "Synthetic", robots: initial.robots, language: "en",
+            userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+          };
+          try {
+            effects.sync(projection);
+            await effects.refreshCatalog(true);
+            const pending = effects.refreshCatalog(force);
+            effects.sync({ ...projection, host: { ...projection.host, connected: false } });
+            effects.sync(projection);
+            finish();
+            await pending;
+            return { reads, problems, status: store.value.resources.catalog.status, coherence: store.value.coherence };
+          } finally { unsubscribe(); effects.dispose(); }
+        }, { force, outcome });
+        expect(result).toEqual({ reads: 3, problems: [], status: "ready", coherence: "current" });
+      });
+    }
+  }
+
   test("retries history reads and retains the selected saved floor label", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
@@ -5044,16 +5162,45 @@ test.describe("Map Studio v0.4 on touch @mobile", () => {
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
+    // Give the synthetic input a browser-clock cadence. Sending each event as
+    // a separate Playwright locator call adds WebKit IPC time to event.timeStamp
+    // and can turn this 1.5 px/ms flick into a sub-threshold drag on CI.
+    const fastFlick = async (points) => {
+      const box = await grip.boundingBox();
+      expect(box).not.toBeNull();
+      await grip.evaluate((element, { points, left, top }) => {
+        const pointerId = 11;
+        const start = performance.now();
+        const fire = (type, [x, y], elapsed) => {
+          const event = new PointerEvent(type, {
+            bubbles: true,
+            cancelable: true,
+            pointerId,
+            pointerType: "touch",
+            isPrimary: true,
+            button: 0,
+            clientX: left + x,
+            clientY: top + y,
+          });
+          Object.defineProperty(event, "timeStamp", { value: start + elapsed });
+          element.dispatchEvent(event);
+        };
+        fire("pointerdown", points[0], 0);
+        for (let index = 1; index < points.length; index += 1) {
+          fire("pointermove", points[index], index * 16);
+        }
+        fire("pointerup", points.at(-1), (points.length - 1) * 16);
+      }, { points, left: box.x, top: box.y });
+    };
+
     // 75px is nowhere near the full detent, but ~1.5 px/ms is a flick.
-    // No spacing between moves: the flick is defined by wall-clock velocity,
-    // and a slow CI runner must not turn it into a drag.
-    await touchDrag(page, grip, [[160, 20], [160, -5], [160, -30], [160, -55]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, -5], [160, -30], [160, -55]]);
     await expect(sheet).toHaveAttribute("data-detent", "full");
     await settleSheet(gallery);
     await expect.poll(() => sheetSeam(gallery)).toBeLessThanOrEqual(1);
 
     // A flick down from full is one step, to half, never straight to peek.
-    await touchDrag(page, grip, [[160, 20], [160, 45], [160, 70], [160, 95]], { stepMs: 0 });
+    await fastFlick([[160, 20], [160, 45], [160, 70], [160, 95]]);
     await expect(sheet).toHaveAttribute("data-detent", "half");
     await settleSheet(gallery);
 
