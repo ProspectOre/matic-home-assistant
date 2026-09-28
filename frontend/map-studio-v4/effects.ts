@@ -681,9 +681,10 @@ export class EffectController {
 
   #clearPrivate(problem: string): void {
     this.#invalidateMotion();
-    this.#abortResources();
     this.#coherence.invalidate();
     this.#entryIdentity = "";
+    const generation = this.#coherence.generation;
+    this.#abortResources();
     const state = this.#store.value;
     const empty = initialWorkspaceState();
     this.#store.patch({
@@ -698,7 +699,7 @@ export class EffectController {
       draw: empty.draw,
       planDraft: empty.planDraft,
       areaDraft: empty.areaDraft,
-      generation: this.#coherence.generation,
+      generation,
       coherence: state.host.administrator ? "unavailable" : "blocked",
       fullMap: false,
       precisionOpen: false,
@@ -891,9 +892,34 @@ export class EffectController {
     const sameResourceBoundary = Boolean(previousEntry
       && entryBoundaryKey(previousEntry) === entryBoundaryKey(entry));
     const coherent = entry.mapFloorCoherent && entry.mapSessionVerified;
-    this.#abortResources(sameResourceBoundary
-      ? ["catalog", "plans", "areas", "plan-mutation", "area-mutation"]
-      : ["catalog"]);
+    // Keep the last verified draft owner through an unknown identity gap; only
+    // a positively verified replacement frame resets those drafts.
+    const previousDraftSession = previousState.draftMapSessionKey
+      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
+        ? previousEntry.mapSessionKey : null);
+    const previousDraftFloor = previousState.draftFloorOrdinal
+      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
+        ? previousEntry.mapFloorOrdinal : null);
+    const verifiedFloor = coherent ? entry.mapFloorOrdinal : null;
+    const verifiedSession = coherent ? entry.mapSessionKey : null;
+    const resetDrafts = (previousEntry !== null && previousEntry.entryId !== entry.entryId)
+      || (previousDraftFloor !== null && verifiedFloor !== null
+        && previousDraftFloor !== verifiedFloor)
+      || (previousDraftSession !== null && verifiedSession !== null
+        && previousDraftSession !== verifiedSession);
+    const sameVerifiedFrame = sameResourceBoundary && coherent
+      && previousDraftFloor === entry.mapFloorOrdinal
+      && previousDraftSession === entry.mapSessionKey;
+    const preserve = ["catalog"];
+    if (sameResourceBoundary && !resetDrafts) preserve.push("plans", "areas");
+    if (sameVerifiedFrame) preserve.push("plan-mutation", "area-mutation");
+    const stamp = this.#coherence.begin(
+      entry.entryId,
+      entryFloorKey(entry),
+      entryMissionKey(entry),
+      entry.mapRevision,
+    );
+    this.#abortResources(preserve);
     const retainedScene = previousEntry?.entryId === entry.entryId
       ? previousState.resources.scene.value
       : null;
@@ -908,28 +934,6 @@ export class EffectController {
       && previousPose.mapSessionKey === entry.mapSessionKey
       ? previousPose
       : null;
-    const stamp = this.#coherence.begin(
-      entry.entryId,
-      entryFloorKey(entry),
-      entryMissionKey(entry),
-      entry.mapRevision,
-    );
-    // Missing live map identity means revalidation, not proof of another floor.
-    // Keep the last verified draft owner through that gap and compare it only
-    // with a positively verified replacement coordinate frame.
-    const previousDraftFloor = previousState.draftFloorOrdinal
-      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
-        ? previousEntry.mapFloorOrdinal : null);
-    const previousDraftSession = previousState.draftMapSessionKey
-      ?? (previousEntry?.mapFloorCoherent && previousEntry.mapSessionVerified
-        ? previousEntry.mapSessionKey : null);
-    const verifiedFloor = coherent ? entry.mapFloorOrdinal : null;
-    const verifiedSession = coherent ? entry.mapSessionKey : null;
-    const resetDrafts = (previousEntry !== null && previousEntry.entryId !== entry.entryId)
-      || (previousDraftFloor !== null && verifiedFloor !== null
-        && previousDraftFloor !== verifiedFloor)
-      || (previousDraftSession !== null && verifiedSession !== null
-        && previousDraftSession !== verifiedSession);
     if (resetDrafts) this.#invalidateMotion();
     const empty = initialWorkspaceState();
     const degraded = entry.health === "problem" || entry.health === "limited";
@@ -959,8 +963,8 @@ export class EffectController {
         scene: resource(coherent ? "loading" : "idle", retainedScene),
         pose: resource(coherent ? "loading" : "idle", retainedPose),
         history: resource("loading", state.resources.history.value),
-        plans: sameResourceBoundary ? state.resources.plans : resource("idle", null),
-        areas: sameResourceBoundary ? state.resources.areas : resource("idle", null),
+        plans: sameResourceBoundary && !resetDrafts ? state.resources.plans : resource("idle", null),
+        areas: sameResourceBoundary && !resetDrafts ? state.resources.areas : resource("idle", null),
       },
       map: {
         available: retainedScene !== null,
@@ -1416,13 +1420,13 @@ export class EffectController {
       return;
     }
     const snapshot = floor.snapshots.at(-1);
-    this.#abortResources(["catalog"]);
     const stamp = this.#coherence.begin(
       entry.entryId,
       floor.id,
       snapshot?.id || floor.id,
       snapshot?.revision || 0,
     );
+    this.#abortResources(["catalog"]);
     this.#store.patch({
       generation: stamp.generation,
       coherence: "current",

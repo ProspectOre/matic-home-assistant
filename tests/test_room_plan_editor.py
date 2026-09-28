@@ -27,6 +27,8 @@ from custom_components.matic_robot.room_plan_selector import MaticRoomPlanSelect
 
 _EDITOR_PATH = Path(frontend.__file__).with_name("room_plan_editor.js")
 _JS = _EDITOR_PATH.read_text(encoding="utf-8")
+_EDITOR_LOADER_PATH = Path(frontend.__file__).with_name("room_plan_editor_loader.js")
+_EDITOR_LOADER_JS = _EDITOR_LOADER_PATH.read_text(encoding="utf-8")
 _STUDIO_PATH = Path(frontend.__file__).with_name("matic_map_studio.js")
 _STUDIO_JS = _STUDIO_PATH.read_text(encoding="utf-8")
 _STUDIO_V4_DIRECTORY = Path(frontend.__file__).with_name("map_studio_v4")
@@ -61,17 +63,19 @@ def _studio_v4_tree_hash() -> str:
 
 
 def test_registers_ha_selector_for_python_selector_type() -> None:
-    """The element name must be the one HA derives from the selector type."""
-    match = re.search(r'customElements\.define\(\s*"([^"]+)"', _JS)
+    """The lazy loader registers the names HA derives from Python selectors."""
+    match = re.search(r'customElements\.define\(\s*"([^"]+)"', _EDITOR_LOADER_JS)
     assert match is not None
     expected = f"ha-selector-{MaticRoomPlanSelector.selector_type}"
     assert match.group(1) == expected
     # The guard that avoids redefining the element must use the same name.
-    assert f'customElements.get("{expected}")' in _JS
+    assert f'customElements.get("{expected}")' in _EDITOR_LOADER_JS
 
     area_element = f"ha-selector-{MaticAreaSelector.selector_type}"
-    assert f'customElements.define("{area_element}"' in _JS
-    assert f'customElements.get("{area_element}")' in _JS
+    assert f'customElements.define("{area_element}"' in _EDITOR_LOADER_JS
+    assert f'customElements.get("{area_element}")' in _EDITOR_LOADER_JS
+    assert 'customElements.define("matic-room-plan-editor-impl"' in _JS
+    assert 'customElements.define("matic-area-editor-impl"' in _JS
 
 
 def test_editor_reads_the_selector_config_rooms_shape() -> None:
@@ -444,9 +448,13 @@ def test_room_list_does_not_clip_dropdown_menus() -> None:
 
 def test_editor_cache_buster_tracks_javascript_content() -> None:
     """A frontend-only fix must load even before the next version bump."""
-    expected = sha256(_EDITOR_PATH.read_bytes()).hexdigest()[:12]
-    assert frontend.ROOM_PLAN_EDITOR_VERSION == expected
-    assert expected in frontend.ROOM_PLAN_EDITOR_PATH
+    expected_pair = sha256(
+        _EDITOR_LOADER_PATH.read_bytes() + b"\0" + _EDITOR_PATH.read_bytes()
+    ).hexdigest()[:12]
+    assert frontend.ROOM_PLAN_EDITOR_BUNDLE_VERSION == expected_pair
+    assert expected_pair in frontend.ROOM_PLAN_EDITOR_PATH
+    assert frontend.ROOM_PLAN_EDITOR_LOADER_PATH.endswith("/room-plan-editor-loader.js")
+    assert 'new URL("./room-plan-editor.js", import.meta.url)' in _EDITOR_LOADER_JS
 
     studio_expected = sha256(_STUDIO_PATH.read_bytes()).hexdigest()[:12]
     assert frontend.MATIC_MAP_STUDIO_VERSION == studio_expected

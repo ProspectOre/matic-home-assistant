@@ -309,8 +309,13 @@ class MaticRoomPlanEditor extends HTMLElement {
   }
 }
 
+if (!customElements.get("matic-room-plan-editor-impl")) {
+  customElements.define("matic-room-plan-editor-impl", MaticRoomPlanEditor);
+}
+// Classic Map Studio can still load this catalog-provided module directly.
+// Keep its public selector available without the lazy adapter.
 if (!customElements.get("ha-selector-matic-room-plan")) {
-  customElements.define("ha-selector-matic-room-plan", MaticRoomPlanEditor);
+  customElements.define("ha-selector-matic-room-plan", class MaticRoomPlanEditorPublic extends MaticRoomPlanEditor {});
 }
 
 class MaticAreaEditor extends HTMLElement {
@@ -413,6 +418,7 @@ class MaticAreaEditor extends HTMLElement {
 
   connectedCallback() {
     if (!this.shadowRoot.hasChildNodes()) this._render();
+    else if (!this._photoObjectUrl) this._loadPhotoMap();
     window.addEventListener("keydown", this._onKeyDown);
     window.addEventListener("keyup", this._onKeyUp);
     this._syncFullscreen();
@@ -2025,6 +2031,9 @@ class MaticAreaEditor extends HTMLElement {
   }
 }
 
+if (!customElements.get("matic-area-editor-impl")) {
+  customElements.define("matic-area-editor-impl", MaticAreaEditor);
+}
 if (!customElements.get("ha-selector-matic-area")) {
-  customElements.define("ha-selector-matic-area", MaticAreaEditor);
+  customElements.define("ha-selector-matic-area", class MaticAreaEditorPublic extends MaticAreaEditor {});
 }

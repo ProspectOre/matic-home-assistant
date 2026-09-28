@@ -4,7 +4,7 @@
 // Timing samples do not establish field INP, mobile performance, or GPU FPS.
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { readFile, readdir } from "node:fs/promises";
+import { readFile, readdir, stat } from "node:fs/promises";
 import { createServer } from "node:http";
 import { cpus, platform, arch } from "node:os";
 import { dirname, join } from "node:path";
@@ -35,6 +35,19 @@ async function loadCandidate(directory, files, prefix = "") {
 }
 await loadCandidate(join(root, bundlePath), assets.candidate);
 await loadCandidate(join(root, reviewBundlePath), reviewAssets);
+// Use the actual HA registration, including host-wide extra modules that the
+// isolated panel harness would otherwise omit. This requires the test venv.
+const registration = JSON.parse(execFileSync(join(root, ".venv/bin/python"),
+  [join(root, "scripts/frontend_assets.py")], { cwd: root, encoding: "utf8" }));
+const registeredAssets = new Map();
+for (const [url, path] of Object.entries(registration.staticPaths)) {
+  const local = join(root, path);
+  if ((await stat(local)).isDirectory()) {
+    const files = new Map();
+    await loadCandidate(local, files);
+    for (const [name, contents] of files) registeredAssets.set(`${url}/${name}`, contents);
+  } else registeredAssets.set(url, await readFile(local));
+}
 const fingerprint = (files) => {
   const hash = createHash("sha256");
   for (const [path, content] of [...files].sort(([a], [b]) => a.localeCompare(b))) {
@@ -44,7 +57,14 @@ const fingerprint = (files) => {
 };
 const galleryTag = "matic-map-studio-gallery-v0-4-0";
 const server = createServer((request, response) => {
-  const [, variant, ...segments] = new URL(request.url, "http://localhost").pathname.split("/");
+  const requestPath = new URL(request.url, "http://localhost").pathname;
+  response.setHeader("Cache-Control", "no-store");
+  if (registeredAssets.has(requestPath)) {
+    response.setHeader("Content-Type", "text/javascript");
+    response.end(registeredAssets.get(requestPath));
+    return;
+  }
+  const [, variant, ...segments] = requestPath.split("/");
   const files = variant === "map_studio_v4" ? assets.candidate : variant === "candidate"
     ? new Map([...assets.candidate, ...reviewAssets])
     : Object.hasOwn(assets, variant) ? assets[variant] : null;
@@ -52,7 +72,8 @@ const server = createServer((request, response) => {
   response.setHeader("Cache-Control", "no-store");
   if (files && path === "") {
     response.setHeader("Content-Type", "text/html");
-    response.end(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Synthetic Map Studio benchmark</title><style>html,body{height:100%;margin:0}</style><body><script type="module">import "/${variant === "candidate" ? "map_studio_v4" : variant}/index.js"; ${variant === "candidate" ? 'import "/candidate/review.js";' : ""} await customElements.whenDefined("${galleryTag}"); const gallery=document.createElement("${galleryTag}"); gallery.controls=false; document.body.append(gallery);</script></body></html>`);
+    const hostImports = variant === "candidate" ? registration.extraModuleUrls.map(url => `import ${JSON.stringify(url)};`).join(" ") : "";
+    response.end(`<!doctype html><html lang="en"><meta name="viewport" content="width=device-width, initial-scale=1"><title>Synthetic Map Studio benchmark</title><style>html,body{height:100%;margin:0}</style><body><script type="module">${hostImports} import "/${variant === "candidate" ? "map_studio_v4" : variant}/index.js"; ${variant === "candidate" ? 'import "/candidate/review.js";' : ""} await customElements.whenDefined("${galleryTag}"); const gallery=document.createElement("${galleryTag}"); gallery.controls=false; document.body.append(gallery);</script></body></html>`);
   } else if (files?.has(path)) {
     response.setHeader("Content-Type", "text/javascript");
     response.end(files.get(path));
@@ -106,7 +127,8 @@ try {
         const productionPrefix = `/${variant === "candidate" ? "map_studio_v4" : variant}/`;
         const productionRequest = path => path.startsWith(productionPrefix) && assets[variant].has(path.slice(productionPrefix.length));
         const initialScripts = [...new Set(requests)].filter(productionRequest);
-        const initialReviewScripts = [...new Set(requests)].filter(path => !productionRequest(path));
+        const initialHostScripts = [...new Set(requests)].filter(path => registeredAssets.has(path));
+        const initialReviewScripts = [...new Set(requests)].filter(path => !productionRequest(path) && !registeredAssets.has(path));
         const sceneFingerprint = await gallery.evaluate(async element => {
           const buffer = element.getWorkspaceSnapshot().resources.scene.value.buffer;
           return [...new Uint8Array(await crypto.subtle.digest("SHA-256", buffer))].map(byte => byte.toString(16).padStart(2, "0")).join("");
@@ -144,11 +166,15 @@ try {
         if (measured.interactions.length > 100) throw new Error("unexpected interaction count");
         const metricValues = (await session.send("Performance.getMetrics")).metrics;
         const gzipBytes = paths => paths.reduce((sum, path) => sum + gzipSync(assets[variant].get(path.slice(productionPrefix.length)), { level: 9 }).length, 0);
+        const hostGzipBytes = initialHostScripts.reduce((sum, path) => sum + gzipSync(registeredAssets.get(path), { level: 9 }).length, 0);
         // Impute unreported interactions at the 16 ms reporting threshold.
         // This is an estimate: recorded durations retain browser quantization.
         const estimated = [...measured.interactions, ...Array(100 - measured.interactions.length).fill(16)];
         samples.push({ variant, sceneFingerprint, initialUniqueScripts: initialScripts.length,
           initialScriptEstimatedGzipBytes: gzipBytes(initialScripts), workflowAddedUniqueScripts: warmedScripts.length - initialScripts.length,
+          hostExtraModuleEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes : null,
+          wholeIntegrationInitialEstimatedGzipBytes: variant === "candidate" ? hostGzipBytes + gzipBytes(initialScripts) : null,
+          hostExtraModuleRequests: initialHostScripts,
           reviewOnlyInitialScriptEstimatedGzipBytes: initialReviewScripts.reduce((sum, path) => sum + gzipSync(reviewAssets.get(path.slice(variant.length + 2)), { level: 9 }).length, 0),
           workflowAddedScriptEstimatedGzipBytes: gzipBytes(warmedScripts.filter(path => !initialScripts.includes(path))),
           inputs: 100, recordedInteractions: measured.interactions.length, inputP95EstimateMs: quantile(estimated, 0.95),
@@ -165,9 +191,10 @@ try {
     return [variant, { inputP95EstimateMs: { min: Math.min(...values), median: quantile(values, 0.5), max: Math.max(...values) },
       longTasksOver50MsByRun: runs.map(sample => sample.longTasksOver50Ms) }];
   }));
-  console.log(JSON.stringify({ schema: 2, measuredAt: new Date().toISOString(), baseline,
+  console.log(JSON.stringify({ schema: 3, measuredAt: new Date().toISOString(), baseline,
     bundles: Object.fromEntries(Object.entries(assets).map(([name, files]) => [name, fingerprint(files)])),
     reviewOnlyBundle: fingerprint(reviewAssets),
+    registeredFrontendAssets: fingerprint(registeredAssets),
     conditions: { browser: browser.version(), platform: platform(), arch: arch(), cpuModel: cpus()[0]?.model,
       viewport: "1280x900", dpr: 1, headless, network: "loopback, unthrottled", cpuThrottle: 1,
       cache: "new browser context per sample; no-store assets", order: "AB BA AB",
@@ -176,6 +203,7 @@ try {
       "Event Timing threshold 16 ms; unreported interactions imputed at 16 ms; browser quantization retained",
       "Gzip bytes are offline size estimates; the loopback server sends uncompressed JavaScript",
       "Candidate review-only assets are reported separately; shared compiled production chunks serve the synthetic journey",
+      "Candidate includes actual registered HA extra modules; historical baseline is panel-only and has no host-wide byte total",
       "Heap is one observation after each journey, not a leak bound; no GPU FPS or transport latency measurement"],
     summary, samples }, null, 2));
 } finally {

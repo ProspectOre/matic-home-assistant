@@ -33,11 +33,19 @@ MATIC_ICONS_VERSION = sha256(
     Path(__file__).with_name("matic_icons.js").read_bytes()
 ).hexdigest()[:12]
 MATIC_ICONS_PATH = f"/matic_robot/{MANIFEST_VERSION}-{MATIC_ICONS_VERSION}/icons.js"
-ROOM_PLAN_EDITOR_VERSION = sha256(
-    Path(__file__).with_name("room_plan_editor.js").read_bytes()
+# Loader and implementation are one cache boundary: the loader's relative
+# import must never combine files from different releases.
+ROOM_PLAN_EDITOR_BUNDLE_VERSION = sha256(
+    Path(__file__).with_name("room_plan_editor_loader.js").read_bytes()
+    + b"\0"
+    + Path(__file__).with_name("room_plan_editor.js").read_bytes()
 ).hexdigest()[:12]
-ROOM_PLAN_EDITOR_PATH = (
-    f"/matic_robot/{MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_VERSION}/room-plan-editor.js"
+ROOM_PLAN_EDITOR_ROOT_PATH = (
+    f"/matic_robot/{MANIFEST_VERSION}-{ROOM_PLAN_EDITOR_BUNDLE_VERSION}"
+)
+ROOM_PLAN_EDITOR_PATH = f"{ROOM_PLAN_EDITOR_ROOT_PATH}/room-plan-editor.js"
+ROOM_PLAN_EDITOR_LOADER_PATH = (
+    f"{ROOM_PLAN_EDITOR_ROOT_PATH}/room-plan-editor-loader.js"
 )
 MATIC_MAP_STUDIO_VERSION = sha256(
     Path(__file__).with_name("matic_map_studio.js").read_bytes()
@@ -62,8 +70,8 @@ def _tree_version(path: Path) -> str:
 
 # Map Studio 0.4 is a strict TypeScript/Lit module tree. Its entry and lazy
 # workflow chunks share one content-bound URL root so an upgrade cannot mix
-# generations. The classic v0.3 module remains loaded as a user-selectable,
-# local rollback surface.
+# generations. The classic v0.3 module is served separately and loaded only
+# when the administrator selects the local rollback surface.
 MATIC_MAP_STUDIO_V4_DIRECTORY = Path(__file__).with_name("map_studio_v4")
 MATIC_MAP_STUDIO_V4_VERSION = _tree_version(MATIC_MAP_STUDIO_V4_DIRECTORY)
 MATIC_MAP_STUDIO_V4_ROOT_PATH = (
@@ -94,6 +102,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     if frontend.DATA_EXTRA_MODULE_URL not in hass.data:
         return
     path = Path(__file__).with_name("room_plan_editor.js")
+    loader_path = Path(__file__).with_name("room_plan_editor_loader.js")
     studio_path = Path(__file__).with_name("matic_map_studio.js")
     await hass.http.async_register_static_paths(
         [
@@ -103,6 +112,11 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
                 cache_headers=True,
             ),
             StaticPathConfig(ROOM_PLAN_EDITOR_PATH, str(path), cache_headers=True),
+            StaticPathConfig(
+                ROOM_PLAN_EDITOR_LOADER_PATH,
+                str(loader_path),
+                cache_headers=True,
+            ),
             StaticPathConfig(
                 MATIC_MAP_STUDIO_PATH, str(studio_path), cache_headers=True
             ),
@@ -125,11 +139,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
     hass.http.register_view(MaticSlamCatalogView(ROOM_PLAN_EDITOR_PATH, scene_view))
     hass.http.register_view(MaticAreasView)
     hass.http.register_view(MaticPlansView)
-    frontend.add_extra_js_url(
-        hass,
-        ROOM_PLAN_EDITOR_PATH,
-    )
-    frontend.add_extra_js_url(hass, MATIC_MAP_STUDIO_PATH)
+    frontend.add_extra_js_url(hass, ROOM_PLAN_EDITOR_LOADER_PATH)
     frontend.add_extra_js_url(hass, MATIC_ICONS_PATH)
     # Keep panel_custom optional for config flows and headless installations.
     from homeassistant.components.panel_custom import async_register_panel
@@ -142,6 +152,7 @@ async def async_register_room_plan_editor(hass: HomeAssistant) -> None:
             sidebar_title="Matic Map",
             sidebar_icon="matic:robot",
             module_url=MATIC_MAP_STUDIO_V4_PATH,
+            config={"classic_module_url": MATIC_MAP_STUDIO_PATH},
             require_admin=True,
             handle_safe_area=True,
         )

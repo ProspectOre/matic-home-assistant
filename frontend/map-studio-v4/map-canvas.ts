@@ -462,10 +462,7 @@ export class MaticMapCanvasV4 extends LitElement {
   }
 
   #clearSelection(): void {
-    // The store has no clear-selection intent; every room is toggled off.
-    for (const roomId of this.state.selection.roomIds) {
-      this.#intent({ type: "toggle-room", roomId });
-    }
+    this.#intent({ type: "clear-selection" });
   }
 
   #orbit(horizontal: number, vertical: number): void {

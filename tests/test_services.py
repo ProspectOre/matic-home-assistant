@@ -1109,6 +1109,10 @@ async def test_clean_room_sequence_preserves_order_and_per_room_settings(hass) -
 async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
     hass,
 ) -> None:
+    hass.auth = SimpleNamespace(
+        async_get_user=AsyncMock(return_value=SimpleNamespace(is_admin=True))
+    )
+    admin_context = Context(user_id="preview-admin")
     manager = CleaningPlanManager(hass)
     manager._store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
@@ -1193,6 +1197,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
         DOMAIN,
         "preview_room_sequence",
         PREVIEW_ROOM_SEQUENCE_SCHEMA(input_data),
+        context=admin_context,
     )
     context = (
         "vacuum.test",
@@ -1275,6 +1280,7 @@ async def test_preview_room_sequence_matches_dispatch_and_rejects_stale_token(
             DOMAIN,
             "preview_room_sequence",
             PREVIEW_ROOM_SEQUENCE_SCHEMA(duplicate_data),
+            context=admin_context,
         )
         with (
             patch(
@@ -1422,6 +1428,22 @@ async def test_preview_room_sequence_requires_administrator(hass) -> None:
     hass.auth.async_get_user.return_value = None
     with pytest.raises(UnknownUser):
         await _registered_handler(services, "preview_room_sequence")(call)
+
+    anonymous_call = ServiceCall(
+        hass,
+        DOMAIN,
+        "preview_room_sequence",
+        call.data,
+        context=Context(),
+    )
+    with (
+        patch(
+            "custom_components.matic_robot.services._resolve_loaded_matic_vacuums",
+            return_value=["vacuum.test"],
+        ),
+        pytest.raises(Unauthorized),
+    ):
+        await _registered_handler(services, "preview_room_sequence")(anonymous_call)
 
 
 @pytest.mark.parametrize(
