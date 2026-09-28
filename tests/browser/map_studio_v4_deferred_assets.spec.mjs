@@ -63,74 +63,6 @@ test("configuration selectors defer implementation and preserve HA properties an
     valid: window.__deferredRoomSelector.reportValidity(),
   }))).toEqual({ disabled: true, required: true, valid: true });
 
-  expect(await page.evaluate(async () => {
-    const area = document.createElement("ha-selector-matic-area");
-    const requests = window.__areaPhotoRequests = [];
-    area.hass = {
-      locale: { language: "en" },
-      localize: (key) => key,
-      fetchWithAuth: (_url, { signal }) => new Promise((resolve) => requests.push({ signal, resolve })),
-    };
-    area.selector = { scene_url: "/api/matic_robot/slam_scene/synthetic", rooms: [] };
-    area.value = [];
-    area.disabled = true;
-    area.required = true;
-    document.body.append(area);
-    await new Promise((resolve) => setTimeout(resolve, 0));
-    const implementation = area.shadowRoot.querySelector("matic-area-editor-impl");
-    window.__areaImplementation = implementation;
-    return {
-      disabled: implementation._disabled,
-      required: implementation._required,
-      valid: area.reportValidity(),
-      photoFetches: requests.length,
-    };
-  })).toEqual({ disabled: true, required: true, valid: false, photoFetches: 1 });
-
-  await page.evaluate(() => {
-    const area = document.querySelector("ha-selector-matic-area");
-    const implementation = area.shadowRoot.querySelector("matic-area-editor-impl");
-    implementation._viewBox = { x: 3, y: 4, width: 5, height: 6 };
-    implementation.value = [{ x: 1, y: 2, radius: 0.3 }];
-    area.remove();
-    document.body.append(area);
-  });
-  await expect.poll(() => page.evaluate(() => window.__areaPhotoRequests.length)).toBe(2);
-  expect(await page.evaluate(() => window.__areaPhotoRequests[0].signal.aborted)).toBe(true);
-  await page.evaluate(() => window.__areaPhotoRequests[1].resolve({
-    ok: true,
-    arrayBuffer: async () => new ArrayBuffer(0),
-  }));
-  await expect.poll(() => page.evaluate(() =>
-    document.querySelector("ha-selector-matic-area").shadowRoot
-      .querySelector("matic-area-editor-impl").shadowRoot
-      .querySelector(".photo-status").dataset.state,
-  )).toBe("unavailable");
-  await page.evaluate(async () => {
-    window.__areaPhotoRequests[0].resolve({
-      ok: true,
-      arrayBuffer: async () => new ArrayBuffer(0),
-    });
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  });
-  expect(await page.evaluate(() => {
-    const area = document.querySelector("ha-selector-matic-area");
-    const implementation = area.shadowRoot.querySelector("matic-area-editor-impl");
-    return {
-      requestCount: window.__areaPhotoRequests.length,
-      sameImplementation: implementation === window.__areaImplementation,
-      viewBox: implementation._viewBox,
-      radius: implementation.value[0].radius,
-      photoStatus: implementation.shadowRoot.querySelector(".photo-status").dataset.state,
-    };
-  })).toMatchObject({
-    requestCount: 2,
-    sameImplementation: true,
-    viewBox: { x: 3, y: 4, width: 5, height: 6 },
-    radius: 0.3,
-    photoStatus: "unavailable",
-  });
-
   const forwardedEvents = await page.evaluate(() => {
     const wrapper = window.__deferredRoomSelector;
     let count = 0;
@@ -160,6 +92,80 @@ test("configuration selectors defer implementation and preserve HA properties an
   expect(originalChild).toBe(true);
   expect(await page.evaluate(() => window.__deferredRoomSelector.value[0].room_id)).toBe("office");
   expect(requests).toHaveLength(1);
+});
+
+test("area selector cold load and reconnect own one authenticated photo request", async ({ page }) => {
+  await page.goto("/");
+  await page.evaluate(() => { window.__areaPhotoRequests = []; });
+  await page.evaluate(async () => {
+    const area = document.createElement("ha-selector-matic-area");
+    area.hass = {
+      locale: { language: "en" },
+      localize: (key) => key,
+      fetchWithAuth: (_url, { signal }) => new Promise((resolve) =>
+        window.__areaPhotoRequests.push({ signal, resolve })),
+    };
+    area.selector = { scene_url: "/api/matic_robot/slam_scene/synthetic", rooms: [] };
+    area.value = [];
+    area.disabled = true;
+    area.required = true;
+    window.__coldAreaSelector = area;
+    await import("/room-plan-editor-loader.js");
+  });
+  expect(await page.evaluate(() => window.__areaPhotoRequests.length)).toBe(0);
+  await page.evaluate(() => document.body.append(window.__coldAreaSelector));
+  await expect.poll(() => page.evaluate(() => window.__areaPhotoRequests.length)).toBe(1);
+  expect(await page.evaluate(() => ({
+    disabled: window.__coldAreaSelector.shadowRoot.querySelector("matic-area-editor-impl")._disabled,
+    required: window.__coldAreaSelector.shadowRoot.querySelector("matic-area-editor-impl")._required,
+    valid: window.__coldAreaSelector.reportValidity(),
+    firstRequestAborted: window.__areaPhotoRequests[0].signal.aborted,
+  }))).toEqual({ disabled: true, required: true, valid: false, firstRequestAborted: false });
+
+  await page.evaluate(() => {
+    const area = window.__coldAreaSelector;
+    const implementation = area.shadowRoot.querySelector("matic-area-editor-impl");
+    window.__coldAreaImplementation = implementation;
+    implementation._viewBox = { x: 3, y: 4, width: 5, height: 6 };
+    implementation.value = [{ x: 1, y: 2, radius: 0.3 }];
+    area.remove();
+    document.body.append(area);
+  });
+  await expect.poll(() => page.evaluate(() => window.__areaPhotoRequests.length)).toBe(2);
+  expect(await page.evaluate(() => window.__areaPhotoRequests.map(({ signal }) => signal.aborted)))
+    .toEqual([true, false]);
+  await page.evaluate(() => window.__areaPhotoRequests[1].resolve({
+    ok: true,
+    arrayBuffer: async () => new ArrayBuffer(0),
+  }));
+  await expect.poll(() => page.evaluate(() =>
+    window.__coldAreaSelector.shadowRoot.querySelector("matic-area-editor-impl").shadowRoot
+      .querySelector(".photo-status").dataset.state,
+  )).toBe("unavailable");
+  await page.evaluate(async () => {
+    window.__areaPhotoRequests[0].resolve({
+      ok: true,
+      arrayBuffer: async () => new ArrayBuffer(0),
+    });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+  expect(await page.evaluate(() => {
+    const area = window.__coldAreaSelector;
+    const implementation = area.shadowRoot.querySelector("matic-area-editor-impl");
+    return {
+      requestCount: window.__areaPhotoRequests.length,
+      sameImplementation: implementation === window.__coldAreaImplementation,
+      viewBox: implementation._viewBox,
+      radius: implementation.value[0].radius,
+      photoStatus: implementation.shadowRoot.querySelector(".photo-status").dataset.state,
+    };
+  })).toMatchObject({
+    requestCount: 2,
+    sameImplementation: true,
+    viewBox: { x: 3, y: 4, width: 5, height: 6 },
+    radius: 0.3,
+    photoStatus: "unavailable",
+  });
 });
 
 test("selector retries share one import after a shared failure", async ({ page }) => {
