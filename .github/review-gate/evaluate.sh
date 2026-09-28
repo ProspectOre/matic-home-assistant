@@ -134,20 +134,72 @@ body_targets_review_head() {
     end' >/dev/null
 }
 
-event_targets_review_head() {
-  local target_head="$1"
-  [[ -f "$event_path" && "$target_head" =~ ^[0-9a-f]{40}$ ]] || return 1
-  jq -e --arg head "$target_head" --arg prefix "${target_head:0:10}" '
+# Native receipts authenticate delivery, not the reviewed commit. Require an
+# in-band current/prior body binding before recording permanent head history.
+native_issue_comment_event_bound() {
+  [[ "$event_name" == issue_comment && -f "$event_path" ]] || return 1
+  [[ "${REVIEW_NATIVE_EVENT_ID:-}" =~ ^[1-9][0-9]*$ ]] || return 1
+  [[ "$event_head_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  jq -e --argjson number "$pr_number" '
+    (.action == "created" or .action == "edited" or .action == "deleted")
+    and (.issue.number | type == "number" and . == $number)
+    and .issue.pull_request != null
+    and (.comment.id | type == "number" and . > 0 and floor == .)
+    and .comment.user.id == 199175422
+    and .comment.user.login == "chatgpt-codex-connector[bot]"
+    and .comment.user.type == "Bot"
+  ' "$event_path" >/dev/null || return 1
+  jq -e --arg head "$event_head_sha" --arg prefix "${event_head_sha:0:10}" --arg clean_security_report_pattern "$security_clean_report_pattern" '
     def coordinator_prelude:
       test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-    def body_targets_head:
+    def body_refs:
       . as $body
-      | if ($body | coordinator_prelude) then
-          ($body | capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head) == $head
-        else
-          ($body | test("(?im)reviewed commit:[*]*[ \\t]*`(" + $head + "|" + $prefix + ")`"))
-        end;
-    [(.comment.body // ""), (.changes.body.from // "")] | any(body_targets_head)' "$event_path" >/dev/null
+      | ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$") | .[0] | ascii_downcase]
+         + [if ($body | coordinator_prelude) then
+              ($body | capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head)
+            else empty end]
+         | unique);
+def clean_security_footer($summary; $findings_sentence):
+  "\n\n" + ([
+    "_only the user who started this review can view the report in codex._",
+    "",
+    "<details> <summary>" + $summary + "</summary>",
+    "<br/>",
+    "",
+    "this is an experimental codex feature. reviews are triggered when:",
+    "- you comment \"@codex security review\"",
+    "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review",
+    "",
+    $findings_sentence,
+    "",
+    "",
+    "</details>"
+  ] | join("\n"));
+     def clean_security_envelope:
+  if test($clean_security_report_pattern) then
+    (sub($clean_security_report_pattern; "")
+      | gsub("this is an experimental codex feature\\. security reviews are triggered when:"; "this is an experimental codex feature. reviews are triggered when:")
+      | gsub("\r"; "")
+      | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $tail
+    | ($tail == ""
+       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
+       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
+       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
+       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
+  else false end;
+          def has_security_report_link:
+            (ascii_downcase) as $lower
+            | ($lower | contains("[view security finding report]("))
+              and ((($lower | clean_security_envelope) | not)
+                   or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
+
+    [.comment.body // "", (if .action == "edited" then .changes.body.from // "" else empty end)] as $bodies
+    | any($bodies[]; body_refs | any(.[]; . == $head or . == $prefix))
+      and all($bodies[];
+        if test("(?i)codex-security-review-finding:v1") or
+           has_security_report_link
+        then (body_refs | any(.[]; . == $head or . == $prefix)) else true end)
+  ' "$event_path" >/dev/null
 }
 gh_path="${REVIEW_GATE_GH:-$(command -v gh || true)}"
 [[ -n "$gh_path" ]] || { echo "GitHub CLI (gh) is required." >&2; exit 1; }
@@ -214,6 +266,7 @@ if [[ -n "$event_head_sha" && ! "$event_head_sha" =~ ^[0-9a-f]{40}$ ]]; then
   echo "The review event did not provide a valid pull request head SHA."
   exit 1
 fi
+native_event_head_bound=false
 
 capture_receipt_is_authenticated() {
   local receipt="$1" context capture_id scoped_pr description target_url expected_url run_id workflow_file workflow_id run
@@ -358,21 +411,19 @@ if [[ ! "$pr_node_id" =~ ^PR_ || ! "$is_draft" =~ ^(true|false)$ || ! "$auto_mer
   echo "Could not resolve the pull request state for PR #$pr_number."
   exit 1
 fi
+if native_issue_comment_event_bound; then
+  native_event_head_bound=true
+elif [[ "$event_name" == issue_comment && "${REVIEW_NATIVE_EVENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "Native issue-comment receipt has no authenticated reviewed-head binding; leaving it pending."
+  exit 1
+fi
 if [[ "$pr_state" != "OPEN" ]]; then
   echo "PR #$pr_number is no longer open; it will not publish review-gate."
   gate_pending
 fi
 if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
-  if [[ "${REVIEW_NATIVE_EVENT_ID:-}" =~ ^[1-9][0-9]*$ && "$event_name" == issue_comment && -f "$event_path" ]] &&
-     jq -e --argjson number "$pr_number" '
-       (.action == "created" or .action == "edited" or .action == "deleted")
-       and (.issue.number | tostring) == ($number | tostring)
-       and .issue.pull_request != null
-       and .comment.user.id == 199175422
-       and .comment.user.login == "chatgpt-codex-connector[bot]"
-       and .comment.user.type == "Bot"
-     ' "$event_path" >/dev/null && event_targets_review_head "$event_head_sha"; then
-    echo "Recording the authenticated issue-comment event on historical PR head $event_head_sha."
+  if [[ "$native_event_head_bound" == true ]]; then
+    echo "Recording the authenticated issue-comment event on captured PR head $event_head_sha."
     head_sha="$event_head_sha"
     historical_event_head=true
   elif [[ "${RECORD_EVENT_ONLY:-false}" == true && -f "$event_path" ]] &&
@@ -788,7 +839,11 @@ regular_evidence() {
           def result_section:
             if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
           def security_heading: result_section | raw_security_heading;
-          def availability_notice: result_section | raw_availability_notice;
+          def availability_notice:
+            result_section as $result
+            | ($result | raw_availability_notice)
+              and (($result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
+              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
             or (coordinator_prelude and
@@ -912,7 +967,11 @@ regular_evidence() {
           def result_section:
             if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
           def security_heading: result_section | raw_security_heading;
-          def availability_notice: result_section | raw_availability_notice;
+          def availability_notice:
+            result_section as $result
+            | ($result | raw_availability_notice)
+              and (($result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
+              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
             or (coordinator_prelude and
@@ -1789,8 +1848,25 @@ fi
 if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; PR #$pr_number; withdrawn delivery" >/dev/null
 fi
+native_regular_candidate=false
+if [[ "$native_event_head_bound" == true ]] && jq -e \
+    '.action == "created" and (.comment.id | type == "number" and . > 0 and floor == .)' \
+    "$event_path" >/dev/null 2>&1; then
+  native_candidate_id="$(jq -r '.comment.id' "$event_path")"
+  native_candidate_body="$(jq -r '.comment.body // empty' "$event_path")"
+  native_candidate_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
+  native_candidate_base64="$(jq -r '.comment.body // "" | @base64' "$event_path")"
+  # Do not put this call in a conditional: that disables inherited ERR handling
+  # inside regular_evidence and could acknowledge an unclassified event.
+  native_candidate_evidence="$(regular_evidence "$native_candidate_body" "$native_candidate_id" issue_comment "$native_candidate_at" "$native_candidate_base64")"
+  if jq -e --arg id "issue-comment-$native_candidate_id" \
+      'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true)' \
+      <<< "$native_candidate_evidence" >/dev/null; then
+    native_regular_candidate=true
+  fi
+fi
   if [[ "$event_name" == issue_comment && -f "$event_path" ]] &&
-   jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
+   jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg native_regular_candidate "$native_regular_candidate" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
      def contains_security_heading:
        split("\n") | any(.[]; test($security_heading_pattern));
 def clean_security_footer($summary; $findings_sentence):
@@ -1821,6 +1897,8 @@ def clean_security_envelope:
        or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
        or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
   else false end;
+     def coordinator_prelude:
+       test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
      def coordinator_result_for_head:
        . as $body
        | if ($body | test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)")) then
@@ -1831,18 +1909,33 @@ def clean_security_envelope:
        | ($lower | contains("[view security finding report]("))
          and ((($lower | clean_security_envelope) | not)
               or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
-     (.action == "deleted" or .action == "edited") and
+     def contains_security_marker:
+       test("(?im)(?:\\A|\\n)[[:blank:]]*\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
+       test("(?is)\\A[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*(?:\\r?\\n|\\z)") or
+       (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
+     def native_security_candidate:
+       (contains_security_marker or (contains_security_heading and has_security_report_link));
+     def body_has_conflicting_head:
+       ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$") | .[0]]
+        + (if coordinator_prelude then
+             [capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head]
+           else [] end))
+       | map(ascii_downcase) | any(. != $head and . != $prefix);
+     (.action == "deleted" or .action == "edited" or
+      ($native_head_bound == "true" and .action == "created" and
+       (.comment.body // "" | ((native_security_candidate and (body_has_conflicting_head | not)) or $native_regular_candidate == "true")))) and
      ([.comment.body // "", .changes.body.from // ""] | all(test("(?is)^[[:space:]]*<!--[[:space:]]*codex-pull-request-review-summary[[:space:]]*-->") | not)) and
      .comment.user.id == 199175422 and .comment.user.type == "Bot" and
      .comment.user.login == "chatgpt-codex-connector[bot]" and
      ([.comment.body // "", .changes.body.from // ""] | any(
+       (($native_head_bound == "true") and ((native_security_candidate and (body_has_conflicting_head | not)) or $native_regular_candidate == "true")) or
        (coordinator_result_for_head) or
        ((contains("`" + $head + "`") or contains("`" + $prefix + "`")) and
         ((contains_security_heading and has_security_report_link) or test("(?im)(?:\\A|\\n)[[:blank:]]*(?:\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+)?<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
          test("(?i)\\A[[:space:]]*(?:<!--[^>]*-->[[:space:]]*)?(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)")))))' "$event_path" >/dev/null; then
   edited_clean=false
   security_event=false
-  security_event_states="$(jq -c --arg head "$head_sha" --arg prefix "$head_prefix" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
+  security_event_states="$(jq -c --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
     def contains_security_heading:
       split("\n") | any(.[]; test($security_heading_pattern));
     def contains_security_marker:
@@ -1855,6 +1948,12 @@ def clean_security_envelope:
       if coordinator_prelude then
         (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
       else false end;
+    def body_has_conflicting_head:
+      ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$")[]]
+       + (if coordinator_prelude then
+            [capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head]
+          else [] end))
+      | map(ascii_downcase) | any(. != $head and . != $prefix);
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
     def security_result_section:
@@ -1904,7 +2003,7 @@ def clean_security_envelope:
        (has_security_report_link or ((ascii_downcase) | clean_security_envelope)));
     [.comment.body // "", .changes.body.from // .comment.body // ""] | map(
       . as $body
-      | ((contains("`" + $head + "`") or contains("`" + $prefix + "`"))
+      | (((($native_head_bound == "true") and (body_has_conflicting_head | not)) or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
          or ($body | coordinator_result_for_head))
         and ($body | security_result_section | is_security_event))
   ' "$event_path")"
@@ -1917,8 +2016,46 @@ def clean_security_envelope:
       edited_clean=true
     fi
   fi
+  # Only actual regular evidence may revoke a regular verdict. Classify each
+  # immutable body independently: a quota response is neutral, but replacing
+  # a prior clean result or finding still withdraws that prior evidence.
+  if [[ "$security_event" != true ]] && jq -e \
+      '.comment.id | type == "number" and . > 0 and floor == .' "$event_path" >/dev/null; then
+    event_regular_evidence=false
+    event_regular_finding=false
+    event_comment_id="$(jq -r '.comment.id // empty' "$event_path")"
+    event_comment_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
+    while IFS= read -r event_body_base64; do
+      event_body="$(jq -nr --arg body "$event_body_base64" '$body | @base64d')"
+      event_body_evidence="$(regular_evidence "$event_body" "$event_comment_id" issue_comment "$event_comment_at" "$event_body_base64")"
+      if jq -e --arg id "issue-comment-$event_comment_id" \
+          'any(.deliveries[]; .source == "issue_comment" and .id == $id)' \
+          <<< "$event_body_evidence" >/dev/null; then
+        event_regular_evidence=true
+        if jq -e --arg id "issue-comment-$event_comment_id" \
+            'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true)' \
+            <<< "$event_body_evidence" >/dev/null; then
+          event_regular_finding=true
+        fi
+        break
+      fi
+    done < <(jq -r '[.comment.body // "", .changes.body.from // ""] | unique[] | select(length > 0) | @base64' "$event_path")
+    if [[ "$(jq -r '.action' "$event_path")" == created && "$native_event_head_bound" == true ]]; then
+      # A native creation can be observed after the mutable comment has
+      # already disappeared from the API. Preserve an adverse regular body
+      # before the clean verdict scan; clean/quota creations remain neutral.
+      edited_clean=true
+      if [[ "$event_regular_finding" == true ]]; then
+        stamp_status "review-finding-history" pending \
+          "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$event_comment_id; event:captured" >/dev/null
+        edited_finding=true
+      fi
+    elif [[ "$event_regular_evidence" != true ]]; then
+      edited_clean=true
+    fi
+  fi
   security_finding=false
-  if [[ "$security_event" == true ]] && jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
+  if [[ "$security_event" == true ]] && jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
     def contains_security_heading:
       split("\n") | any(.[]; test($security_heading_pattern));
     def contains_security_marker:
@@ -1931,6 +2068,12 @@ def clean_security_envelope:
       if coordinator_prelude then
         (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
       else false end;
+    def body_has_conflicting_head:
+      ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$")[]]
+       + (if coordinator_prelude then
+            [capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head]
+          else [] end))
+      | map(ascii_downcase) | any(. != $head and . != $prefix);
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
     def security_result_section:
@@ -1976,7 +2119,7 @@ def clean_security_envelope:
              or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
     ([.comment.body // "", .changes.body.from // ""] | any(
       . as $body
-      | ((contains("`" + $head + "`") or contains("`" + $prefix + "`"))
+      | (((($native_head_bound == "true") and (body_has_conflicting_head | not)) or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
          or ($body | coordinator_result_for_head))
         and ($body | security_result_section | . as $result | (ascii_downcase) as $lower
        | ($result | contains_security_marker) or
@@ -1986,21 +2129,35 @@ def clean_security_envelope:
     security_finding=true
   fi
   if [[ "$security_finding" == true ]]; then
-    withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
-    withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    event_action="$(jq -r '.action' "$event_path")"
     comment_id="$(jq -r '.comment.id // empty' "$event_path")"
-    security_marker="withdrawn delivery"
-    if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
-      security_marker="withdrawn issue-comment:$comment_id"
+    if [[ "$event_action" == created ]]; then
+      # Creation is an authenticated observation, not a withdrawal.  Preserve
+      # it before the mutable comment can disappear from the live API scan.
+      security_marker="issue-comment"
+      if [[ "$comment_id" =~ ^[1-9][0-9]*$ ]]; then
+        security_marker="issue-comment:$comment_id"
+        record_security_event_origin "$security_marker"
+      fi
+      stamp_status "review-security-history" pending \
+        "Security findings observed for PR #$pr_number on head $head_sha; $security_marker; event:captured" >/dev/null
+      edited_clean=true
+    else
+      withdrawal_at="$(jq -r '.comment.updated_at // empty' "$event_path")"
+      withdrawal_at="${withdrawal_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+      security_marker="withdrawn delivery"
+      if [[ "$comment_id" =~ ^[0-9]+$ ]]; then
+        security_marker="withdrawn issue-comment:$comment_id"
+      fi
+      # A deleted mutable comment cannot clear an authenticated security
+      # finding, even when its numeric origin can be persisted by a consumer.
+      security_withdrawal_unresolved=true
+      stamp_status "review-security-history" pending "Security invalidated; $security_marker for PR #$pr_number on head $head_sha" >/dev/null
+      if [[ "$comment_id" =~ ^[1-9][0-9]*$ ]]; then
+        record_security_event_origin "issue-comment:$comment_id"
+      fi
+      edited_clean=true
     fi
-    # A deleted mutable comment cannot clear an authenticated security
-    # finding, even when its numeric origin can be persisted by a consumer.
-    security_withdrawal_unresolved=true
-    stamp_status "review-security-history" pending "Security invalidated; $security_marker for PR #$pr_number on head $head_sha" >/dev/null
-    if [[ "$comment_id" =~ ^[1-9][0-9]*$ ]]; then
-      record_security_event_origin "issue-comment:$comment_id"
-    fi
-    edited_clean=true
   fi
   if [[ "$security_event" != true && "$(jq -r '.action' "$event_path")" == deleted ]]; then
     prior_body="$(jq -r '.comment.body // empty' "$event_path")"

@@ -71,9 +71,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '042634d14526d2561a129422c8bac1c45d83ca23188d83fa06b2c7e7e427a8f7'
+          EXPECTED_SHA256: '078e2207287542d1487f2ea95eb1c168df2091e8ccb0486a92b3953a896f12da'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: ''
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '20cfa5ee56db1552eff823e304974a35fa7086c63733568263a454652d87365c'
         shell: bash
         run: |
           set -euo pipefail
@@ -98,10 +98,13 @@ jobs:
           # ambiguous/invalid refs fail rather than preserving stale success.
           if [[ "${AUDIT_MODE:-false}" != true && -f "${GITHUB_EVENT_PATH:-}" ]]; then
             comment_heads="$(jq -r --arg pr "$PR_NUMBER" '
+              def coordinator_head:
+                select(test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)"))
+                | capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head;
               select(.issue.pull_request != null and (.issue.number | tostring) == $pr)
               | select(.comment.user.login == "chatgpt-codex-connector[bot]" and .comment.user.id == 199175422 and .comment.user.type == "Bot")
               | [.comment.body // "", .changes.body.from // ""]
-              | [.[] | scan("(?i)reviewed commit:[*]*[ \t]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0] | ascii_downcase] | unique[]' "$GITHUB_EVENT_PATH")"
+              | [.[] | ((scan("(?i)reviewed commit:[*]*[ \t]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0] | ascii_downcase), coordinator_head)] | unique[]' "$GITHUB_EVENT_PATH")"
             while IFS= read -r comment_head; do
               [[ -n "$comment_head" ]] || continue
               gh api "repos/$REPO/statuses/$comment_head" --silent -f state=pending \
@@ -155,6 +158,11 @@ jobs:
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
           AUDIT_MODE: true
           CANONICAL_REVIEW_GATE: ${{ steps.canonical.outputs.path }}
+          ISSUE_COMMENT_RECEIPTS_SCRIPT: ${{ steps.canonical.outputs.receipt_path }}
+          REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT: "true"
+          REVIEW_GATE_WORKFLOW_FILE: review-gate.yml
+          REVIEW_EVENT_SENSOR_WORKFLOW_FILE: review-gate.yml
+          REVIEW_EVENT_RECEIVER_WORKFLOW_FILE: review-gate-capture-completion.yml
           SECURITY_REVIEW_BOT_LOGIN: chatgpt-codex-connector
           SECURITY_REVIEW_BOT_EVENT_LOGIN: chatgpt-codex-connector[bot]
           EVENT_PR_NUMBER: ${{ matrix.pr_number }}
@@ -166,6 +174,8 @@ jobs:
         if: always()
         env:
           POLICY_PATH: ${{ steps.canonical.outputs.path }}
+          RECEIPT_PATH: ${{ steps.canonical.outputs.receipt_path }}
         shell: bash
         run: |
           if [[ -n "$POLICY_PATH" ]]; then rm -f -- "$POLICY_PATH" "$POLICY_PATH.dependencies.py"; fi
+          if [[ -n "$RECEIPT_PATH" ]]; then rm -f -- "$RECEIPT_PATH"; fi
