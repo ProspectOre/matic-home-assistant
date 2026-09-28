@@ -148,15 +148,27 @@ jobs:
             }
             # A result-shaped regular comment with no bound reviewed commit
             # cannot be treated as neutral; keep the live gate pending.
-            if [[ -z "$current_review_refs" && -z "$prior_review_refs" ]] && jq -e '
+            if jq -e \
+              --argjson current_refs "$(jq -c '.current' <<<"$event_body_refs")" \
+              --argjson prior_refs "$(jq -c '.prior' <<<"$event_body_refs")" '
               def regular_heading:
                 ascii_downcase | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+              def explicit_finding:
+                test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\](?:[[:space:]]|$)");
               def availability_notice:
                 test("(?i)you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[[:space:]]try again later");
               def known_clean:
                 test("(?i)(?:no issues found|didn.t find any (?:major )?issues|no findings were found)");
-              [.comment.body // "", (if .action == "edited" then (.changes.body.from // "") else "" end)]
-              | any((regular_heading and (availability_notice | not) and (known_clean | not)))
+              def adverse_regular_result:
+                regular_heading and
+                (explicit_finding or ((availability_notice | not) and (known_clean | not)));
+              [
+                {body: (.comment.body // ""), refs: $current_refs},
+                (if .action == "edited" then
+                  {body: (.changes.body.from // ""), refs: $prior_refs}
+                 else empty end)
+              ]
+              | any(.[]; (.refs | length) == 0 and (.body | adverse_regular_result))
             ' "$GITHUB_EVENT_PATH" >/dev/null; then
               pending_regular_uncertainty
             fi
@@ -523,9 +535,9 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'bd869d7e3cffd51f26de34a6c4bd01f1f7054fb0a410bf9630fd60c1bc207979'
+          EXPECTED_SHA256: 'aa70f7b41289276c682d9430fcc15b741cd1250d3c51947f85b1bf4834778cc7'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '534fa573f2b5c9c9211e184a05d8c91e661e8c633a159cf9462a0d3c614200ee'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'b676b03fd2671c8bc7657fbc06f817002283e338548c9cba71c926b4e9dd407f'
         shell: bash
         run: |
           set -euo pipefail

@@ -8,7 +8,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from functools import lru_cache
 
 CONTEXT = re.compile(
@@ -312,7 +312,7 @@ def has_legacy_manual_review_log(repo, run_id, attempt):
             check=False,
             timeout=60,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):  # fmt: skip
         return False
     if result.returncode != 0:
         return False
@@ -354,7 +354,7 @@ def has_native_capture_log(repo, run_id, attempt, number):
             check=False,
             timeout=60,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):  # fmt: skip
         return False
     if result.returncode != 0:
         return False
@@ -397,7 +397,7 @@ def clean_comment_capture_records(repo, run_id, attempt):
             check=False,
             timeout=60,
         )
-    except OSError, subprocess.TimeoutExpired:
+    except (OSError, subprocess.TimeoutExpired):  # fmt: skip
         return frozenset()
     if result.returncode != 0:
         return frozenset()
@@ -464,7 +464,7 @@ def current_clean_comment_event_matches(
     try:
         with open(event_path, encoding="utf-8") as event_file:
             event = json.load(event_file)
-    except OSError, ValueError, json.JSONDecodeError:
+    except (OSError, ValueError, json.JSONDecodeError):  # fmt: skip
         return False
     comment = event.get("comment") if isinstance(event, dict) else None
     actor = comment.get("user") if isinstance(comment, dict) else None
@@ -768,7 +768,8 @@ def completed_gate_runs(repo, workflow, number, start, through, workflow_file=No
         return int(datetime.fromisoformat(value.replace("Z", "+00:00")).timestamp())
 
     def stamp(value):
-        return datetime.fromtimestamp(value, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+        timestamp = datetime.fromtimestamp(value, timezone.utc)  # noqa: UP017
+        return timestamp.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     first, last = instant(start), instant(through)
     if first > last:

@@ -2042,8 +2042,7 @@ def clean_security_envelope:
     done < <(jq -r '[.comment.body // "", .changes.body.from // ""] | unique[] | select(length > 0) | @base64' "$event_path")
     # Both immutable bodies matter: API visibility and lexical body ordering
     # must not hide a finding added by an edit or withdrawn from its prior body.
-    if [[ "$native_event_head_bound" == true && "$event_regular_finding" == true ]] &&
-       jq -e '.action == "created" or .action == "edited"' "$event_path" >/dev/null; then
+    if [[ "$native_event_head_bound" == true && "$event_regular_finding" == true ]]; then
       stamp_status "review-finding-history" pending \
         "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$event_comment_id; event:captured" >/dev/null
       edited_finding=true
