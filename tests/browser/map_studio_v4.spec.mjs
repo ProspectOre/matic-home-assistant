@@ -222,6 +222,46 @@ test.describe("Map Studio v0.4 foundation", () => {
     expect(action).toEqual({ id: "reset-room-cadence", planId: "daily", roomId: "room-a", mode: "mop" });
   });
 
+  test("explains unverified schedule progress and keeps each reset available", async ({ page }) => {
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    await page.evaluate((tag) => {
+      const element = document.querySelector(tag);
+      const state = element.getWorkspaceSnapshot();
+      const plans = state.resources.plans.value;
+      const plan = plans.plans[0];
+      const rooms = plan.rooms.map((room) => room.roomId === "room-a"
+        ? {
+          ...room,
+          cadence: {
+            scope: "plan",
+            mopEveryN: 3,
+            coverageEveryN: 4,
+            periodicCoverageSetting: "heavy_duty",
+            doMopNext: false,
+            doCoverageNext: false,
+          },
+          cadenceProgress: undefined,
+          cadenceReasons: ["mop_progress_unverified", "coverage_progress_unverified"],
+        }
+        : room);
+      element.replaceWorkspaceState({
+        ...state,
+        resources: {
+          ...state.resources,
+          plans: { ...state.resources.plans, value: { ...plans, plans: [{ ...plan, rooms }] } },
+        },
+      });
+    }, GALLERY_TAG);
+    await gallery.getByRole("button", { name: /^Run a plan/ }).click();
+    await gallery.getByRole("button", { name: /Daily clean.*Edit plan/ }).click();
+    const inspector = gallery.locator(".inspector");
+    await inspector.locator("details").first().locator("summary").click();
+    await expect(inspector).toContainText("Mopping progress must be reset before this schedule can run.");
+    await expect(inspector).toContainText("Coverage progress must be reset before this schedule can run.");
+    await expect(inspector.getByRole("button", { name: "Reset mopping progress for Kitchen" })).toBeVisible();
+    await expect(inspector.getByRole("button", { name: "Reset coverage progress for Kitchen" })).toBeVisible();
+  });
+
   test("previews next-run order, effective settings, cadence reasons, and mission boundaries", async ({ page }) => {
     const gallery = await loadGallery(page, { scenario: "ready" });
     await page.evaluate((tag) => {

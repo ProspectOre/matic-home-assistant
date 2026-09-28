@@ -156,6 +156,8 @@ export type CadenceReason =
   | "room_not_on_current_map"
   | "identity_changed"
   | "shared_schedule_unavailable"
+  | "mop_progress_unverified"
+  | "coverage_progress_unverified"
   | "invalid_cadence_policy";
 
 export interface NextRunPreviewRoom {
@@ -174,6 +176,7 @@ export type NextRunPreviewBlocker =
   | "plan_room_limit"
   | "cadence_identity_changed"
   | "shared_schedule_unavailable"
+  | "cadence_progress_unverified"
   | "invalid_cadence_policy"
   | "invalid_plan";
 
@@ -517,6 +520,8 @@ const parseCadenceReasons = (value: unknown): readonly CadenceReason[] => {
     "room_not_on_current_map",
     "identity_changed",
     "shared_schedule_unavailable",
+    "mop_progress_unverified",
+    "coverage_progress_unverified",
     "invalid_cadence_policy",
   ];
   if (!Array.isArray(value) || value.length > validReasons.length
@@ -610,6 +615,7 @@ const parseNextRunPreview = (value: unknown): NextRunPreview | undefined => {
     "plan_room_limit",
     "cadence_identity_changed",
     "shared_schedule_unavailable",
+    "cadence_progress_unverified",
     "invalid_cadence_policy",
     "invalid_plan",
   ];

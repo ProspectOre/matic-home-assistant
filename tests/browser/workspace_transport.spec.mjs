@@ -68,7 +68,7 @@ function snapshot(sequence = 0, entry_id = "synthetic", epoch = "epoch-a") {
 function invalidate(sequence, resources = ["state"], epoch = "epoch-a") { return { type: "invalidate", ...versioned(sequence, epoch), resources }; }
 
 async function exhaustSnapshotRetries(page) {
-  await page.clock.install();
+  await page.clock.pauseAt(new Date());
   await page.evaluate(() => {
     const h = window.workspaceHarness;
     h.setRecoverySnapshot(Promise.reject(new Error("coordinator unavailable")));
@@ -683,8 +683,11 @@ test("overflow cannot bypass the bounded retry interval, while reconnect starts 
     for (let attempt = 0; attempt < 5; attempt++) h.transport.notifyReconnect();
   }, snapshot(65));
   await page.clock.fastForward(0);
-  // One snapshot restores the cursor; the overflow flag schedules one more
-  // snapshot to close the gap caused by the discarded invalidation buffer.
+  // One snapshot restores the cursor; once that read settles, the overflow
+  // flag schedules a zero-delay follow-up to close the discarded-buffer gap.
+  await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(6);
+  // Nested zero-delay timers run on the next fake-clock millisecond.
+  await page.clock.fastForward(1);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.snapshotCalls)).toBe(7);
   await expect.poll(() => page.evaluate(() => window.workspaceHarness.events.filter(event => event.type === "snapshot").map(event => event.snapshot.sequence))).toContain(65);
   await page.evaluate(() => window.workspaceHarness.transport.dispose());

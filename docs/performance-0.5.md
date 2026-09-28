@@ -5,7 +5,7 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
-Measured frontend source is `b8ee8fd6a059b3241e194da610319b9795cdf850`; later backend and test changes retain these compiled assets.
+Measured assets are the RC7 migration candidate based on RC6 `c70afaa`; the production bundle fingerprint below identifies the measured bytes.
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
@@ -28,10 +28,10 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The untraced comparison ran at `2026-09-28T08:24:30.094Z`
-(1:24 a.m. PDT on September 28) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
-1280×900, DPR 1, no throttling, and no-store assets. Other task-owned checks
-were paused. Three fresh contexts per build ran in AB/BA/AB order; scene and
+The untraced comparison ran at `2026-09-28T23:03:18.038Z`
+(4:03 p.m. PDT on September 28) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+1280×900, DPR 1, no throttling, and no-store assets. Other automated suites
+were stopped; a temporary background HA tab was briefly opened and closed during the run. Three fresh contexts per build ran in AB/BA/AB order; scene and
 bundle fingerprints matched across all six samples. The script records
 conditions and fingerprints.
 The candidate uses one multi-entry compilation and the actual HA registration:
@@ -49,29 +49,29 @@ JavaScript. Heap is one post-journey observation, not a retention bound.
 
 ## Latest paired result
 
-Measured against compiled assets for source `b8ee8fd6a059b3241e194da610319b9795cdf850`.
+Measured against the RC7 candidate production bundle `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0`.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
 |---|---:|---:|
-| Initial v4 JS, estimated gzip bytes | 79,821 | 80,246 |
+| Initial v4 JS, estimated gzip bytes | 79,821 | 80,368 |
 | Initial distinct v4 JS resources | 1 | 4 |
 | Registered global modules, estimated gzip bytes | Unmeasured | 2,043 |
-| Complete initial integration JS, estimated gzip bytes | Unmeasured | 82,289 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,704 |
+| Complete initial integration JS, estimated gzip bytes | Unmeasured | 82,411 |
+| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,857 |
 | Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
-| Input p95 estimates, three runs, ms | 48 / 40 / 48 | 40 / 40 / 48 |
-| Median / range of p95 estimates, ms | 48 / 40–48 | 40 / 40–48 |
-| Maximum observed input estimates, ms | 48 / 64 / 56 | 56 / 48 / 48 |
+| Input p95 estimates, three runs, ms | 40 / 48 / 48 | 48 / 48 / 40 |
+| Median / range of p95 estimates, ms | 48 / 40–48 | 48 / 40–48 |
+| Maximum observed input estimates, ms | 56 / 56 / 56 | 48 / 48 / 48 |
 | Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
 | Longest reported Long Task per run | None reported | None reported |
-| Post-journey JS heap range, three observations, bytes | 5,224,716–6,454,004 | 6,009,040–6,062,964 |
+| Post-journey JS heap range, three observations, bytes | 4,402,184–6,170,656 | 4,749,600–6,045,148 |
 
-Complete startup fell 59,692 bytes (42.0%) from the eager 141,981-byte graph
+Complete startup fell 59,570 bytes (42.0%) from the eager 141,981-byte graph
 and passes 90 KiB; the v4 lazy workflow remains below 30 KiB. Classic is no longer
 shipped. The 100-room Clear regression records 100 → 1 commits and 99 → 0
 intermediate nonempty preview keys, not network-request counts.
 The candidate met input p95 and reported no Long Tasks during this lab journey;
-the control also reported none. One-minute host load ranged from 6.4 to 7.4 on
+the control also reported none. One-minute host load ranged from 5.8 to 6.5 on
 10 logical CPUs; concurrent host workloads were not controlled. These observations do not prove
 that the code change caused the timing difference or exclude stalls in other
 conditions. Earlier failed runs remain below. Heap observations are not retention
@@ -83,13 +83,15 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source commit | `b8ee8fd6a059b3241e194da610319b9795cdf850` |
-| Candidate production bundle | `e581cfbe719905fb7a5f72b71a44326b1f804debbce09510943a8c88474a8002` |
-| Candidate review-only bundle | `7e83eac65a060095243fce97ab30c2c583244236224360bf2814f5aeaaa371ae` |
-| Registered frontend assets | `e78511a4b9ae7c5a60af2927bf216b5e1bdbab890ea9aff0cac31879b78c283d` |
+| Candidate source | RC7 follow-up on `c70afaa`; measured compiled bytes identified below |
+| Candidate production bundle | `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0` |
+| Candidate review-only bundle | `6baab2e6da9a1971fe562ef297ee19f23e235d17210f648fcc58e60cf0a80f10` |
+| Registered frontend assets | `9309332eb390a09f56ecd29912f2b7df073221e8ad38dd0b317b862aac1380b9` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
 
 ## Prior runs and diagnostic follow-up
+
+Earlier source `b8ee8fd` measured 82,289 initial and 11,704 lazy gzip bytes, input p95 40/40/48 ms, and zero Long Tasks at 1:24 a.m. PDT on September 28; it does not identify the current candidate.
 
 RC4 source `92e1605` at 06:42 UTC on September 28 measured 82,279 initial gzip bytes, p95 48/40/40 ms and no Long Tasks; those earlier observations remain retained separately from this repair.
 Prior runs remain evidence: `0c1923d` at 11:04 p.m. reported candidate p95 72/80/64 ms and task peaks 89/80/54 ms; `444c373` at 10:49 p.m. reported p95 48/48/56 ms and one 58 ms Long Task.

@@ -1926,7 +1926,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
 ) -> None:
     manager = CleaningPlanManager(hass)
     assert manager._store.version == 1
-    assert manager._store.minor_version == 9
+    assert manager._store.minor_version == 10
     assert manager._store._private is True
     stored = {
         "robots": {
@@ -1995,7 +1995,7 @@ async def test_plan_store_migrates_legacy_areas_without_fabricating_map_binding(
     with pytest.raises(ValueError, match="storage version"):
         await manager._store._async_migrate_func(2, 1, stored)
     with pytest.raises(ValueError, match="minor version"):
-        await manager._store._async_migrate_func(1, 10, stored)
+        await manager._store._async_migrate_func(1, 11, stored)
 
 
 async def test_plan_store_migrates_interrupted_manual_run_without_private_credit(
@@ -2038,6 +2038,14 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
     private_progress = {"mop": 2, "coverage": 1}
     robot = {
         "plans": plans,
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    room_id: {"run_id": "manual-run-1", "last_result": "completed"},
+                    "room-kitchen": {"run_id": "saved-run", "last_result": "completed"},
+                }
+            }
+        },
         "plan_room_cadence": {
             "quick_clean": {
                 room_id: {"identity": identity, "progress": private_progress}
@@ -2120,6 +2128,13 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
         "unrelated-key",
     ]
     assert migrated_robot["plans"] == plans
+    assert migrated_robot["rotations"]["quick_clean"]["rooms"] == {
+        "room-kitchen": {"run_id": "saved-run", "last_result": "completed"}
+    }
+    assert migrated_robot["rotations"][target]["rooms"][room_id] == {
+        "run_id": "manual-run-1",
+        "last_result": "completed",
+    }
     assert (
         migrated_robot["plan_room_cadence"]["quick_clean"][room_id]["progress"]
         == private_progress
@@ -2138,6 +2153,209 @@ async def test_plan_store_migrates_interrupted_manual_run_without_private_credit
 
     await manager._store._async_migrate_func(1, 8, migrated)
     assert migrated_robot["last_run"]["plan_id"] == target
+
+
+async def test_plan_store_quarantines_legacy_private_cadence_and_moves_owned_rotation(
+    hass,
+) -> None:
+    manager = CleaningPlanManager(hass)
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    room_policy = {
+        "scope": "plan",
+        "mop_every_n": 3,
+        "coverage_every_n": 4,
+        "periodic_coverage_setting": "heavy_duty",
+    }
+    saved_plan = {
+        "name": "Quick Clean",
+        "rooms": [
+            {"room_id": "room-office", "cadence": room_policy},
+            {
+                "room_id": "room-study",
+                "cadence": {"scope": "plan", "coverage_every_n": 2},
+            },
+            {
+                "room_id": "room-initialize",
+                "cadence": {"scope": "plan", "mop_every_n": 2},
+            },
+            {"room_id": "room-no-cadence", "cadence": {"scope": "plan"}},
+            {
+                "room_id": "room-repair",
+                "cadence": {"scope": "plan", "coverage_every_n": 3},
+            },
+            {
+                "room_id": "room-shared",
+                "cadence": {"scope": "shared", "mop_every_n": 2},
+            },
+        ],
+    }
+    office_progress = {"mop": 2, "coverage": 3}
+    study_progress = {"mop": 0, "coverage": 1}
+    shared_progress = {"mop": 1, "coverage": 0}
+    robot = {
+        "plans": {"quick_clean": saved_plan},
+        "plan_room_cadence": {
+            "quick_clean": {
+                "room-office": {"progress": office_progress},
+                "room-study": {"progress": study_progress},
+                "room-shared": {"progress": shared_progress},
+                "room-no-cadence": {"progress": {"mop": 1, "coverage": 0}},
+                "room-repair": "corrupt",
+            },
+            "unrelated": {"room-office": {"progress": {"mop": 1}}},
+        },
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-office": {
+                        "run_id": "legacy-manual",
+                        "last_result": "completed",
+                    },
+                    "room-study": {"run_id": "saved-run", "last_result": "completed"},
+                }
+            },
+            manual_id: {"rooms": {"room-other": {"run_id": "new-manual"}}},
+        },
+        "last_run": {
+            "run_id": "legacy-manual",
+            "plan_id": manual_id,
+            "service": "clean_room_sequence",
+            "outcome": "complete",
+        },
+    }
+    stored = {"robots": {"serial": robot}}
+
+    migrated = await manager._store._async_migrate_func(1, 9, stored)
+    migrated_robot = migrated["robots"]["serial"]
+
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"] == {
+        "progress": office_progress,
+        "unverified_modes": ["mop", "coverage"],
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-study"] == {
+        "progress": study_progress,
+        "unverified_modes": ["coverage"],
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-shared"] == {
+        "progress": shared_progress,
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-initialize"] == {
+        "unverified_modes": ["mop"]
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-no-cadence"] == {
+        "progress": {"mop": 1, "coverage": 0}
+    }
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-repair"] == {
+        "unverified_modes": ["coverage"]
+    }
+    assert migrated_robot["plan_room_cadence"]["unrelated"] == {
+        "room-office": {"progress": {"mop": 1}}
+    }
+    assert migrated_robot["rotations"]["quick_clean"]["rooms"] == {
+        "room-study": {"run_id": "saved-run", "last_result": "completed"}
+    }
+    assert migrated_robot["rotations"][manual_id]["rooms"] == {
+        "room-other": {"run_id": "new-manual"},
+        "room-office": {"run_id": "legacy-manual", "last_result": "completed"},
+    }
+
+    await manager._store._async_migrate_func(1, 9, migrated)
+    assert migrated_robot["plan_room_cadence"]["quick_clean"]["room-office"][
+        "unverified_modes"
+    ] == ["mop", "coverage"]
+    assert (
+        migrated_robot["rotations"][manual_id]["rooms"]["room-office"]["run_id"]
+        == "legacy-manual"
+    )
+
+
+def test_legacy_manual_rotation_preserves_newest_room_authority() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    robot = {
+        "rotations": {
+            "quick_clean": {
+                "rooms": {
+                    "room-target-newer": {
+                        "run_id": "manual-run",
+                        "last_completed": "2000-01-01T00:00:00+00:00",
+                    },
+                    "room-source-newer": {
+                        "run_id": "manual-run",
+                        "last_completed": "2002-01-01T00:00:00+00:00",
+                    },
+                }
+            },
+            manual_id: {
+                "rooms": {
+                    "room-target-newer": {
+                        "run_id": "newer-private-run",
+                        "last_completed": "2001-01-01T00:00:00+00:00",
+                    },
+                    "room-source-newer": {
+                        "run_id": "older-private-run",
+                        "last_completed": "2001-01-01T00:00:00+00:00",
+                    },
+                }
+            },
+        }
+    }
+
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    moved_rooms = robot["rotations"][manual_id]["rooms"]
+    assert moved_rooms["room-target-newer"]["run_id"] == "newer-private-run"
+    assert moved_rooms["room-source-newer"]["run_id"] == "manual-run"
+    assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_rotation_repairs_malformed_namespaces() -> None:
+    manual_id = plans_module.MANUAL_ROOM_SEQUENCE_PLAN_ID
+    for robot in (
+        {"rotations": {"quick_clean": None}},
+        {"rotations": {"quick_clean": {"rooms": None}}},
+    ):
+        plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    robot = {
+        "rotations": {
+            "quick_clean": {"rooms": {"room-a": {"run_id": "manual-run"}}},
+            manual_id: {"rooms": "corrupt"},
+        }
+    }
+    plans_module._move_legacy_manual_rotation(robot, "manual-run", manual_id)
+
+    assert robot["rotations"][manual_id]["rooms"] == {
+        "room-a": {"run_id": "manual-run"}
+    }
+    assert robot["rotations"]["quick_clean"]["rooms"] == {}
+
+
+def test_legacy_manual_cadence_quarantine_repairs_malformed_namespaces() -> None:
+    plan = {
+        "quick_clean": {
+            "rooms": [
+                None,
+                {"room_id": "room-a", "cadence": {"scope": "plan", "mop_every_n": 2}},
+            ]
+        }
+    }
+    robot = {"plans": plan, "plan_room_cadence": None}
+
+    plans_module._quarantine_legacy_manual_cadence(robot)
+
+    assert robot["plan_room_cadence"]["quick_clean"]["room-a"] == {
+        "unverified_modes": ["mop"]
+    }
+
+    robot = {
+        "plans": plan,
+        "plan_room_cadence": {"quick_clean": None},
+    }
+    plans_module._quarantine_legacy_manual_cadence(robot)
+
+    assert robot["plan_room_cadence"]["quick_clean"]["room-a"] == {
+        "unverified_modes": ["mop"]
+    }
 
 
 async def test_intelligent_order_avoids_restarting_with_the_same_room(hass) -> None:

@@ -131,12 +131,15 @@ line-height: var(--ms-lh-snug);
   #cadenceReason(reason: string): string {
     if (reason === "mop_due") return this.#t("v4_cadence_mop_due_reason", "Vacuum and mop are due");
     if (reason === "coverage_due") return this.#t("v4_cadence_coverage_due_reason", "Periodic coverage is due");
+    if (reason === "mop_progress_unverified") return this.#t("v4_cadence_mop_progress_unverified", "Mopping progress must be reset before this schedule can run.");
+    if (reason === "coverage_progress_unverified") return this.#t("v4_cadence_coverage_progress_unverified", "Coverage progress must be reset before this schedule can run.");
     return this.#t("v4_cadence_due_unknown_reason", "Schedule setting due");
   }
 
   #previewBlocker(blocker: string): string {
     if (blocker === "plan_disabled") return this.#t("v4_preview_plan_disabled", "This plan is paused. Enable it to preview and run.");
     if (blocker === "shared_schedule_unavailable") return this.#t("v4_preview_shared_unavailable", "The shared room schedule cannot be verified on this map.");
+    if (blocker === "cadence_progress_unverified") return this.#t("v4_preview_cadence_progress_unverified", "A room schedule has progress that cannot be verified. Reset the affected interval in its room schedule before running this plan.");
     if (blocker === "cadence_identity_changed" || blocker === "cadence_identity_unavailable") return this.#t("v4_preview_identity_unavailable", "Room identity could not be verified. Check the current map before running.");
     if (blocker === "plan_has_no_rooms") return this.#t("v4_preview_no_rooms", "Add at least one room to this plan.");
     if (blocker === "plan_room_limit") return this.#t("v4_preview_room_limit", "This saved plan exceeds the 100-room limit. Remove rooms and save it before running.");
@@ -355,6 +358,16 @@ line-height: var(--ms-lh-snug);
     if (reasons.includes("shared_schedule_unavailable")) {
       return this.#t("v4_cadence_shared_unavailable", "The shared room schedule is unavailable. Review its settings before cleaning.");
     }
+    if (reasons.includes("mop_progress_unverified") || reasons.includes("coverage_progress_unverified")) {
+      const unverified: string[] = [];
+      if (reasons.includes("mop_progress_unverified")) {
+        unverified.push(this.#t("v4_cadence_mop_progress_unverified", "Mopping progress must be reset before this schedule can run."));
+      }
+      if (reasons.includes("coverage_progress_unverified")) {
+        unverified.push(this.#t("v4_cadence_coverage_progress_unverified", "Coverage progress must be reset before this schedule can run."));
+      }
+      return unverified.join(" ");
+    }
     if (reasons.includes("invalid_cadence_policy")) {
       return this.#t("v4_cadence_policy_invalid", "The room schedule needs review before it can be applied.");
     }
@@ -437,8 +450,10 @@ line-height: var(--ms-lh-snug);
     );
     const hasSharedSchedule = Boolean(sharedRoom?.sharedCadence || sharedRoom?.sharedCadenceProgress);
     const hasCadence = Boolean(policy.mopEveryN || policy.coverageEveryN);
-    const hasMopProgress = Boolean(progress?.mopProgress || policy.doMopNext);
-    const hasCoverageProgress = Boolean(progress?.coverageProgress || policy.doCoverageNext);
+    const hasMopProgress = Boolean(progress?.mopProgress || policy.doMopNext
+      || room.cadenceReasons?.includes("mop_progress_unverified"));
+    const hasCoverageProgress = Boolean(progress?.coverageProgress || policy.doCoverageNext
+      || room.cadenceReasons?.includes("coverage_progress_unverified"));
     const resetDisabled = draft.dirty || this.state.command !== "idle" || this.state.managedLock
       || (this.state.activity !== "idle" && this.state.activity !== "docked")
       || this.state.dataMode !== "live";

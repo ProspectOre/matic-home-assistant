@@ -47,11 +47,3 @@ turn. The other Home Assistant features are listed above.
 
 Use the Matic app to enable pairing during setup. After pairing, the integration
 uses its own local credential. Robot firmware updates remain managed by Matic.
-
-## How this fits with the Matic app
-
-The Matic app already supports multiple schedules for specific rooms and
-frequently messy areas highlighted on its map ([Matic FAQ](https://support.maticrobots.com/frequently-asked-questions)).
-This integration adds Home Assistant room-plan logic, automation actions and
-events, and local visibility. Map Studio also saves reusable named custom areas
-for Home Assistant dashboards and automations.
