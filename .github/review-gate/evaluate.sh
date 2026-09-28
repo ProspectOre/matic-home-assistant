@@ -42,7 +42,7 @@ expected_base_sha="${EXPECTED_BASE_SHA:-}"
 # provider variables, but they cannot broaden the accepted reviewer identity.
 REVIEW_BOT_LOGIN="chatgpt-codex-connector"
 REVIEW_BOT_EVENT_LOGIN="chatgpt-codex-connector[bot]"
-security_heading_pattern='(?i)\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\r\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]|$)'
+security_heading_pattern='(?i)\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\r\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]*[^[:alnum:][:space:]][^\r\n]*|[[:space:]]*$)'
 security_clean_report_pattern='(?is)\A[[:space:]]*(?:#{1,6}[[:space:]]+)?(?:[^[:alnum:]\r\n]+[[:space:]]+)?(?:codex[[:space:]-]+)?security[[:space:]-]+review(?:[ \t]+·[ \t]+_automatically triggered_|:)?[ \t]*\r?\n(?:[ \t]*\r?\n)*(?:[ \t]*security review completed[.!]?[ \t]*(?:\r?\n[ \t]*)?)?(?:no (?:security )?issues (?:were )?found(?: in this pull request)?|didn.t find any (?:major )?issues(?: in this pull request)?)[.!]?[ \t]*\r?\n(?:[ \t]*\r?\n)*(?:\*\*reviewed commit:\*\*[ \t]*\x60[0-9a-f]{7,40}\x60[ \t]*\r?\n(?:[ \t]*\r?\n)*)?\[view security finding report\]\([^\r\n)]+\)'
 timestamp_re='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?Z$'
 for watermark_name in REVIEW_FINDING_AFTER REVIEW_HEAD_OBSERVED_AT; do
@@ -648,25 +648,33 @@ def clean_security_footer($summary; $findings_sentence):
           def coordinator_request: coordinator_prelude;
           def coordinator_metadata:
             test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
-          def security_result_section:
+          def security_result_sections:
             . as $body
             | if coordinator_request then
                 capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
                 | split("\n") as $lines
-                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+[^[:alnum:]\\r\\n]+)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $start
-                | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end
-              else $body end;
+                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
+                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
+                | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
+                    [range(0; $lines | length) as $start
+                     | select($lines[$start] | test($security_heading_pattern))
+                     | ([range($start + 1; $lines | length)
+                        | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
+                       | .[0] // ($lines | length)) as $end
+                     | $lines[$start:$end] | join("\n")]
+                  else [$body] end
+              else [$body] end;
           [.[]
            | .data.repository.pullRequest.reviews.nodes[]?
            | select((.author.login // "") == $bot and .author.id == "BOT_kgDOC98s_g")
            | select((.state // "") != "DISMISSED")
            | select((.commit.oid // "") == $head)
            | (.body // "") as $body
-           | ($body | security_result_section) as $result
-           | ($result | ascii_downcase) as $lower
-           | select(($result | contains_security_marker) or
-                   (($result | contains_security_heading) and
-                    ($result | has_security_report_link)))
+           | ($body | security_result_sections) as $results
+           | select(any($results[]; (. as $result
+             | ($result | contains_security_marker) or
+               (($result | contains_security_heading) and
+                ($result | has_security_report_link)))))
            | {source: "review", id: (.databaseId // 0 | tostring)}]'
   )"
   # Inline security deliveries may omit a textual head marker. Bind them to
@@ -778,22 +786,30 @@ def clean_security_envelope:
             else false end;
           def coordinator_metadata:
             test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
-          def security_result_section:
+          def security_result_sections:
             . as $body
             | if coordinator_prelude then
                 capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
                 | split("\n") as $lines
-                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $start
-                | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $body end
-              else $body end;
+                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
+                | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
+                | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
+                    [range(0; $lines | length) as $start
+                     | select($lines[$start] | test($security_heading_pattern))
+                     | ([range($start + 1; $lines | length)
+                        | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
+                       | .[0] // ($lines | length)) as $end
+                     | $lines[$start:$end] | join("\n")]
+                  else [$body] end
+              else [$body] end;
           [.[][]
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
            | (.body // "") as $body
-           | ($body | security_result_section) as $result
-           | ($result | ascii_downcase) as $lower
-           | select(($result | contains_security_marker) or
-                   (($result | contains_security_heading) and
-                    ($result | has_security_report_link)))
+           | ($body | security_result_sections) as $results
+           | select(any($results[]; (. as $result
+             | ($result | contains_security_marker) or
+               (($result | contains_security_heading) and
+                ($result | has_security_report_link)))))
            | select((($body | contains("`" + $head + "`")) or ($body | contains("`" + $prefix + "`")))
                     or ($body | coordinator_result_for_head))
            | {source: "issue-comment", id: (.id // 0 | tostring), body: $body}]'
@@ -839,18 +855,26 @@ regular_evidence() {
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
           def result_section:
             if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
+          def first_result_section:
+            split("\n") as $lines
+            | ([range(0; $lines | length) | select($lines[.] | regular_heading)] | .[0]) as $start
+            | if $start == null then . else
+                ([range($start + 1; $lines | length) | select($lines[.] | regular_heading or raw_security_heading)] | .[0] // ($lines | length)) as $end
+                | $lines[$start:$end] | join("\n")
+              end;
           def security_heading: result_section | raw_security_heading;
           def availability_notice:
             result_section as $result
-            | ($result | raw_availability_notice)
-              and (($result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
-              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
+            | ($result | first_result_section) as $first_result
+            | ($first_result | raw_availability_notice)
+              and (($first_result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
+              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
             or (coordinator_prelude and
                 (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head));
           def multiple_result_sections:
-            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
+            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           # A "no major/blocking issues" claim must carry the
           # known connector footer; a body-only claim is not a
           # clean verdict.
@@ -885,7 +909,7 @@ regular_evidence() {
            | select((.commit.oid // "") == $head)
            | (.body // "") as $body
            | select(if .state == "CHANGES_REQUESTED" then true else ($body | regular_heading) end)
-           | select(if .state == "CHANGES_REQUESTED" then true else (($body | security_heading) | not) end)
+           | select(if .state == "CHANGES_REQUESTED" then true else (($body | first_result_section | security_heading) | not) end)
            | select(if .state == "CHANGES_REQUESTED" then true else (($body | availability_notice) | not) end)
            | select(if .state == "CHANGES_REQUESTED" then true else ($body | exact_head) end)
            | {at: (if .state == "DISMISSED" then .submittedAt else (.updatedAt // .submittedAt) end),
@@ -894,7 +918,7 @@ regular_evidence() {
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and (($body | multiple_result_sections) | not) and ($body | strict_stock_clean_envelope))}]}'
+              clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and (($body | multiple_result_sections) | not) and ($body | first_result_section | strict_stock_clean_envelope))}]}'
   )"
   issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"
   if [[ "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" == true ]]; then
@@ -967,18 +991,26 @@ regular_evidence() {
             | test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+)?(?:review|review[[:space:]]+result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:you have reached[^\\r\\n]*(?:usage[[:space:]]+limits?|quota)|(?:codex[[:space:]]+)?(?:review[[:space:]]+)?(?:is[[:space:]]+)?(?:currently[[:space:]]+)?(?:unavailable|at[[:space:]]+capacity|rate[[:space:]-]*limited)|(?:could not|unable to)[[:space:]]+(?:start|complete|perform)[[:space:]]+(?:the[[:space:]]+)?(?:codex[[:space:]]+)?review|[^\\r\\n]*try again later)");
           def result_section:
             if coordinator_request then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body | split("\n") as $lines | ($lines[:80] | to_entries | map(select(.value | (regular_heading or raw_security_heading or raw_availability_notice))) | .[0].key) as $start | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end else . end;
+          def first_result_section:
+            split("\n") as $lines
+            | ([range(0; $lines | length) | select($lines[.] | regular_heading)] | .[0]) as $start
+            | if $start == null then . else
+                ([range($start + 1; $lines | length) | select($lines[.] | regular_heading or raw_security_heading)] | .[0] // ($lines | length)) as $end
+                | $lines[$start:$end] | join("\n")
+              end;
           def security_heading: result_section | raw_security_heading;
           def availability_notice:
             result_section as $result
-            | ($result | raw_availability_notice)
-              and (($result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
-              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
+            | ($result | first_result_section) as $first_result
+            | ($first_result | raw_availability_notice)
+              and (($first_result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
+              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
           def exact_head:
             test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
             or (coordinator_prelude and
                 (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head));
           def multiple_result_sections:
-            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex(?: Security)? Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
+            (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           def known_codex_footer:
             test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
           def stock_clean_issue_comment_body:
@@ -987,11 +1019,11 @@ regular_evidence() {
           def stock_clean_issue_comment_envelope:
             if coordinator_request then
               (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
-              and (result_section | stock_clean_issue_comment_body)
+              and (result_section | first_result_section | stock_clean_issue_comment_body)
             else stock_clean_issue_comment_body end;
           def strict_stock_clean_issue_comment_envelope:
             stock_clean_issue_comment_envelope
-            and (result_section | if test("(?is)<details>") then
+            and (result_section | first_result_section | if test("(?is)<details>") then
               capture("(?is)\\A.*?(?<footer><details>.*)$").footer | known_codex_footer
               else true end);
           ([.[][]] as $records
@@ -1010,7 +1042,7 @@ regular_evidence() {
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
            | (.body // "") as $body
            | select($body | regular_heading)
-           | select(($body | security_heading) | not)
+           | select(($body | first_result_section | security_heading) | not)
            | select(($body | availability_notice) | not)
            | select($body | exact_head)
            | ((($body | multiple_result_sections) | not)
@@ -1274,7 +1306,8 @@ reconcile_clean_security_history() {
           capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
           | split("\n") as $lines
           | ([range(0; $lines | length) | select($lines[.] | test($heading))] | .[0]) as $start
-          | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end
+          | ([range(0; $lines | length) | select($lines[.] | test($heading) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
+          | if $start != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $lines | join("\n") end
         else . end;
       def reconciled_security_footer($summary; $findings_sentence):
         "\n\n" + (["_only the user who started this review can view the report in codex._", "", "<details> <summary>" + $summary + "</summary>", "<br/>", "", "this is an experimental codex feature. reviews are triggered when:", "- you comment \"@codex security review\"", "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review", "", $findings_sentence, "", "", "</details>"] | join("\n"));
@@ -1914,8 +1947,17 @@ def clean_security_envelope:
        test("(?im)(?:\\A|\\n)[[:blank:]]*\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
        test("(?is)\\A[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*(?:\\r?\\n|\\z)") or
        (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
+     def native_security_result:
+       if coordinator_prelude then
+         capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
+         | split("\n") as $lines
+         | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $start
+         | if $start == null then $lines | join("\n") else $lines[$start:] | join("\n") end
+       else . end;
      def native_security_candidate:
-       (contains_security_marker or (contains_security_heading and has_security_report_link));
+       native_security_result as $result
+       | ($result | contains_security_marker) or
+         (($result | contains_security_heading) and ($result | has_security_report_link));
      def body_has_conflicting_head:
        ([scan("(?i)(?:^|\\n)[ \\t]*\\*{0,2}reviewed commit:\\*{0,2}[ \\t]*`([0-9a-f]{40}|[0-9a-f]{10})`(?:(?:\\r?\\n[ \\t]*)+\\[view security finding report\\]\\([^\\r\\n)]+\\)(?:[ \\t]*(?:\\r?\\n[ \\t]*)+_only the user who started this review can view the report in codex\\._)?(?:[ \\t]*(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?about codex security reviews in github</summary>[\\s\\S]*?</details>)?|(?:\\r?\\n[ \\t]*)+<details>[ \\t]*<summary>(?:ℹ️ )?About Codex(?: reviews)? in GitHub</summary>[\\s\\S]*?</details>)?[ \\t]*(?:\\r?\\n[ \\t]*)*$") | .[0]]
         + (if coordinator_prelude then
@@ -1957,14 +1999,22 @@ def clean_security_envelope:
       | map(ascii_downcase) | any(. != $head and . != $prefix);
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
-    def security_result_section:
+    def security_result_sections:
       . as $body
       | if coordinator_prelude then
           capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
           | split("\n") as $lines
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $start
-          | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $body end
-        else $body end;
+          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
+          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
+          | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
+              [range(0; $lines | length) as $start
+               | select($lines[$start] | test($security_heading_pattern))
+               | ([range($start + 1; $lines | length)
+                  | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
+                 | .[0] // ($lines | length)) as $end
+               | $lines[$start:$end] | join("\n")]
+            else [$body] end
+        else [$body] end;
 def clean_security_footer($summary; $findings_sentence):
   "\n\n" + ([
     "_only the user who started this review can view the report in codex._",
@@ -2006,7 +2056,7 @@ def clean_security_envelope:
       . as $body
       | (((($native_head_bound == "true") and (body_has_conflicting_head | not)) or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
          or ($body | coordinator_result_for_head))
-        and ($body | security_result_section | is_security_event))
+        and ($body | security_result_sections | any(.[]; is_security_event)))
   ' "$event_path")"
   if jq -e 'any' <<< "$security_event_states" >/dev/null; then
     security_event=true
@@ -2076,14 +2126,22 @@ def clean_security_envelope:
       | map(ascii_downcase) | any(. != $head and . != $prefix);
     def coordinator_metadata:
       test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z"));
-    def security_result_section:
+    def security_result_sections:
       . as $body
       | if coordinator_prelude then
           capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
           | split("\n") as $lines
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $start
-          | if $start != null and ($lines[:$start] | join("\n") | coordinator_metadata) then $lines[$start:] | join("\n") else $body end
-        else $body end;
+          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
+          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
+          | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
+              [range(0; $lines | length) as $start
+               | select($lines[$start] | test($security_heading_pattern))
+               | ([range($start + 1; $lines | length)
+                  | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
+                 | .[0] // ($lines | length)) as $end
+               | $lines[$start:$end] | join("\n")]
+            else [$body] end
+        else [$body] end;
 def clean_security_footer($summary; $findings_sentence):
   "\n\n" + ([
     "_only the user who started this review can view the report in codex._",
@@ -2121,10 +2179,10 @@ def clean_security_envelope:
       . as $body
       | (((($native_head_bound == "true") and (body_has_conflicting_head | not)) or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
          or ($body | coordinator_result_for_head))
-        and ($body | security_result_section | . as $result | (ascii_downcase) as $lower
-       | ($result | contains_security_marker) or
-         (($result | contains_security_heading) and
-          ($result | has_security_report_link)))))
+        and ($body | security_result_sections | any(.[]; . as $result
+          | ($result | contains_security_marker) or
+            (($result | contains_security_heading) and
+             ($result | has_security_report_link))))))
   ' "$event_path" >/dev/null; then
     security_finding=true
   fi
