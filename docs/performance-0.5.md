@@ -48,7 +48,6 @@ Gzip sizes use level 9 offline estimates; the local server sends uncompressed
 JavaScript. Heap is one post-journey observation, not a retention bound.
 
 ## Latest paired result
-
 Measured against the RC7 candidate production bundle `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0`.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
