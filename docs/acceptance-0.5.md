@@ -95,9 +95,9 @@ Local evidence is not RC, owner, or release proof. Refreshed on 2026-09-27:
 
 ## Inherited scenario coverage
 
-The broad requirements above are dispositions, not blanket proof. Each family
-closes only with its own evidence; all 0.5 candidate results are unknown. Rows
-refer to the full independent review’s edge-case matrix and quality plan.
+The broad requirements above are dispositions, not blanket proof. RC1
+fingerprint/restart readback are recorded, but tracked-manual acceptance failed;
+scenario families remain open. Rows refer to the review matrix and quality plan.
 
 | Scenario family | Contract disposition | 0.5 evidence status | Required evidence and source rows |
 |---|---|---|
