@@ -113,7 +113,7 @@ class WorkspaceSocket:
                 self.hass.bus.async_listen(event_type, self._async_event)
             )
         self._unsubscribers.append(
-            self.hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, self._async_stop)
+            self.hass.bus.async_listen(EVENT_HOMEASSISTANT_STOP, self._async_stop)
         )
 
     async def _async_stop(self, _event: Any) -> None:
