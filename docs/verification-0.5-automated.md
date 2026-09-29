@@ -39,8 +39,10 @@ adds two tests against those same packaged production bytes:
 - Real WebGL loss paints a Canvas2D fallback, retains one canvas, nonempty room
   selection and camera, then restores WebGL; no service is dispatched. The
   pixel check isolates a magenta scene point with pose/scene rooms omitted.
-  Temporarily suppressing fallback image compositing makes that assertion fail;
-  the mutation is removed from the committed test.
+  Scene-canvas screenshots also prove visible WebGL pixels before loss and
+  after restoration. Temporarily suppressing fallback compositing or restored
+  WebGL drawing makes the corresponding pixel assertion fail; both mutations
+  are removed from the committed test.
 - Working native deflate support is confirmed before malformed compressed
   bytes enter the packaged delta path. Recovery receipts and unchanged scene
   revision/current coherence prove containment; no service is dispatched.

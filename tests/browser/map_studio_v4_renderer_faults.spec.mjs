@@ -44,6 +44,27 @@ async function readRendererState(page) {
   });
 }
 
+async function magentaPixelsInScreenshot(page, screenshot) {
+  const imageUrl = `data:image/png;base64,${screenshot.toString("base64")}`;
+  return page.evaluate(async (url) => {
+    const image = new Image();
+    image.src = url;
+    await image.decode();
+    const canvas = document.createElement("canvas");
+    canvas.width = image.naturalWidth;
+    canvas.height = image.naturalHeight;
+    const context = canvas.getContext("2d", { willReadFrequently: true });
+    if (!context) return 0;
+    context.drawImage(image, 0, 0);
+    const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
+    let scenePixels = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] > 200 && pixels[index + 1] < 40 && pixels[index + 2] > 200) scenePixels += 1;
+    }
+    return scenePixels;
+  }, imageUrl);
+}
+
 test("packaged Map Studio keeps a live frame across WebGL loss and restoration @safety", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 1180, height: 760 });
   // Center a distinctive scene point and omit pose; no room geometry or other annotation can satisfy the pixel check.
@@ -118,6 +139,7 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   });
   const before = await readRendererState(page);
   expect(before.canvasCount).toBe(1);
+  expect(await magentaPixelsInScreenshot(page, await sceneCanvas.screenshot())).toBeGreaterThan(0);
 
   await page.evaluate(() => window.__rendererFault.extension.loseContext());
   await expect.poll(() => page.evaluate(() => window.__rendererFault.lost)).toBe(1);
@@ -155,6 +177,8 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.contextGeneration))
     .toBe(before.generation + 1);
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.renderedPoints)).toBeGreaterThan(0);
+  await expect.poll(async () => magentaPixelsInScreenshot(page, await sceneCanvas.screenshot()))
+    .toBeGreaterThan(0);
 
   const restored = await readRendererState(page);
   expect(restored).toMatchObject({
