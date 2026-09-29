@@ -370,6 +370,7 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     manager,
                     entry.runtime_data.coordinator.data.info.serial_number,
                     entity_id,
+                    entry.runtime_data.client.async_has_active_cleaning_session,
                 )
         rooms = call.data.get("rooms")
         params: dict[str, Any] = {"ordered": call.data["ordered"]}
@@ -416,7 +417,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
                     "robot_command_failed",
                 )
 
-        await _ensure_stop_settled(hass, manager, serial_number, entity_id)
+        await _ensure_stop_settled(
+            hass,
+            manager,
+            serial_number,
+            entity_id,
+            entry.runtime_data.client.async_has_active_cleaning_session,
+        )
         try:
             area = manager.area(serial_number, call.data["area"])
         except KeyError as err:
@@ -434,7 +441,13 @@ async def async_register_services(hass: HomeAssistant) -> None:
 
         async with manager.command_lock(serial_number):
             require_generation(request_generation)
-            await _ensure_stop_settled(hass, manager, serial_number, entity_id)
+            await _ensure_stop_settled(
+                hass,
+                manager,
+                serial_number,
+                entity_id,
+                entry.runtime_data.client.async_has_active_cleaning_session,
+            )
             try:
                 current_area = manager.area(serial_number, call.data["area"])
             except KeyError as err:

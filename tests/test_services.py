@@ -50,7 +50,6 @@ from custom_components.matic_robot.managed_executor import (
     _async_reconcile_native_stop,
     _async_run_room,
     _async_wait_for_vacuum_state,
-    _clear_stop_pending_if_stable,
     _native_completion_match,
     _NativeReconciliation,
     _run_provenance,
@@ -192,15 +191,25 @@ async def test_run_provenance_and_docked_bridge_are_bounded(hass) -> None:
     assert _run_provenance(unknown) == "external_unknown"
 
     manager = SimpleNamespace(async_mark_run_docked=AsyncMock())
+    stop_fence_token = 19
     await _async_mark_run_docked(
         manager, "serial", None, "vacuum.matic", automation.context
     )
     manager.async_mark_run_docked.assert_not_awaited()
     await _async_mark_run_docked(
-        manager, "serial", "run-1", "vacuum.matic", automation.context
+        manager,
+        "serial",
+        "run-1",
+        "vacuum.matic",
+        automation.context,
+        stop_fence_token,
     )
     manager.async_mark_run_docked.assert_awaited_once_with(
-        "serial", "run-1", entity_id="vacuum.matic", context=automation.context
+        "serial",
+        "run-1",
+        entity_id="vacuum.matic",
+        context=automation.context,
+        stop_fence_token=stop_fence_token,
     )
 
 
@@ -405,7 +414,8 @@ async def test_clean_action_checks_oem_stop_fence() -> None:
         runtime_data=SimpleNamespace(
             coordinator=SimpleNamespace(
                 data=SimpleNamespace(info=SimpleNamespace(serial_number="serial"))
-            )
+            ),
+            client=SimpleNamespace(async_has_active_cleaning_session=AsyncMock()),
         )
     )
     with (
@@ -441,7 +451,10 @@ async def test_clean_area_uses_only_private_saved_geometry(hass) -> None:
         },
     )
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
@@ -495,7 +508,10 @@ async def test_custom_area_native_completion_does_not_advance_shared_cadence(
     manager._store = SimpleNamespace(async_save=AsyncMock())
     floor_plan = _area_floor_plan()
     room = floor_plan.rooms[0]
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
@@ -640,7 +656,10 @@ async def test_clean_area_reports_unknown_invalid_and_missing_map(hass) -> None:
     )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
-            client=SimpleNamespace(async_start_custom_coverage=AsyncMock()),
+            client=SimpleNamespace(
+                async_start_custom_coverage=AsyncMock(),
+                async_has_active_cleaning_session=AsyncMock(return_value=False),
+            ),
             coordinator=coordinator,
         )
     )
@@ -724,7 +743,10 @@ async def test_clean_area_blocks_every_stale_map_binding_before_robot_command(
     await manager.async_save_area("serial", "litter_box", area)
     managed_token = manager.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=live_floor_plan),
         async_request_refresh=AsyncMock(),
@@ -779,7 +801,10 @@ async def test_clean_area_rechecks_floor_plan_after_motion_lock_wait(hass) -> No
     )
     managed_token = manager.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
@@ -904,7 +929,10 @@ async def test_clean_area_rechecks_stop_fence_after_motion_lock_wait(hass) -> No
     )
     managed_token = manager.begin_managed_motion("serial")
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
         async_request_refresh=AsyncMock(),
@@ -962,9 +990,10 @@ async def test_clean_area_translates_client_failure_without_protocol_details(
         },
     )
     client = SimpleNamespace(
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
         async_start_custom_coverage=AsyncMock(
             side_effect=MaticError("synthetic protocol detail")
-        )
+        ),
     )
     coordinator = SimpleNamespace(
         data=SimpleNamespace(floor_plan=floor_plan),
@@ -4869,22 +4898,25 @@ async def test_native_reconciliation_schedule_and_stop_fence_guards(hass) -> Non
     assert len(created) == 2
 
     hass.states.async_set("vacuum.test", "cleaning")
-    await _clear_stop_pending_if_stable(manager, "serial", hass, "vacuum.test")
     manager_with_fence = CleaningPlanManager(hass)
     manager_with_fence._store = SimpleNamespace(async_save=AsyncMock())
     manager_with_fence.mark_stop_pending("serial")
+    native_active = AsyncMock(return_value=False)
     with pytest.raises(ServiceValidationError) as blocked:
-        await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+        await _ensure_stop_settled(
+            hass, manager_with_fence, "serial", "vacuum.test", native_active
+        )
     assert blocked.value.translation_key == "robot_stop_pending"
     hass.states.async_set("vacuum.test", "docked")
-    await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
+    await _ensure_stop_settled(
+        hass, manager_with_fence, "serial", "vacuum.test", native_active
+    )
     assert manager_with_fence.stop_pending("serial") is False
 
     manager_with_fence.mark_stop_pending("serial")
-    await _clear_stop_pending_if_stable(
-        manager_with_fence, "serial", hass, "vacuum.test"
+    await _ensure_stop_settled(
+        hass, manager_with_fence, "serial", "vacuum.test", native_active
     )
-    await _ensure_stop_settled(hass, manager_with_fence, "serial", "vacuum.test")
     assert manager_with_fence.stop_pending("serial") is False
 
 
@@ -5129,7 +5161,10 @@ async def test_stop_fences_a_pending_custom_area(hass, waiting_stage: str) -> No
         },
     )
     services = await _registered_services(hass, manager)
-    client = SimpleNamespace(async_start_custom_coverage=AsyncMock())
+    client = SimpleNamespace(
+        async_start_custom_coverage=AsyncMock(),
+        async_has_active_cleaning_session=AsyncMock(return_value=False),
+    )
     entry = SimpleNamespace(
         runtime_data=SimpleNamespace(
             client=client,

@@ -118,10 +118,11 @@ class _ScenePublisher(_Publisher):
         super().__init__()
         self.revision = 1
         self.current = True
+        self.live_session_verified = True
         self.mission_identity = None
 
     def floor_plan_is_current(self, floor_plan: Any) -> bool:
-        return self.current and floor_plan is not None
+        return self.current and self.live_session_verified and floor_plan is not None
 
 
 class _CoordinatorPublisher(_Publisher):
@@ -282,6 +283,40 @@ def test_snapshot_omits_invalid_projected_scene_revision() -> None:
     assert snapshot["identity"]["floor_verified"] is True
     assert snapshot["identity"]["floor_mission_id"] == 47
     assert "scene" not in snapshot["revisions"]
+
+
+def test_snapshot_scene_fence_uses_current_revision_while_payload_is_cached() -> None:
+    entry = _entry("entry-a")
+    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(mission_id=47)
+    entry.runtime_data.slam_map = SimpleNamespace(revision=8)
+    entry.runtime_data.cleaning_plans = object()
+    entry.runtime_data.slam_history = SimpleNamespace(catalog=lambda: ())
+    hass = _Hass([entry])
+    scene_view = SimpleNamespace(current_revision=MagicMock(return_value=8))
+    hass.data[DATA_SLAM_SCENE_VIEW] = scene_view
+    projection = {
+        "map_floor_coherent": True,
+        "map_session_verified": True,
+        "map_revision": 4,
+    }
+    manager = WorkspaceSocket(hass)
+
+    with patch(
+        "custom_components.matic_robot.slam_scene.catalog_entry_projection",
+        return_value=projection,
+    ):
+        first = manager.snapshot("entry-a")
+        scene_view.current_revision.return_value = 9
+        second = manager.snapshot("entry-a")
+        scene_view.current_revision.return_value = None
+        third = manager.snapshot("entry-a")
+
+    assert first["payload"]["entry"]["map_revision"] == 4
+    assert first["revisions"]["scene"] == 8
+    assert second["payload"]["entry"]["map_revision"] == 4
+    assert second["revisions"]["scene"] == 9
+    assert third["payload"]["entry"]["map_revision"] == 4
+    assert "scene" not in third["revisions"]
 
 
 def test_snapshot_marks_stale_coordinator_data_without_reusing_floor_identity() -> None:
@@ -509,13 +544,18 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     scene.publish()
     scene_event = connection.send_event.call_args.args[1]["invalidation"]
     assert scene_event["resources"] == ["scene"]
-    assert scene_event["coherence_generation"] == 2
+    assert scene_event["coherence_generation"] == 1
     assert scene_event["revisions"]["scene"] == 2
 
     scene.publish()
     assert connection.send_event.call_count == 1
     scene.revision = None
     scene.publish()
+    assert connection.send_event.call_count == 2
+    assert (
+        connection.send_event.call_args.args[1]["invalidation"]["coherence_generation"]
+        == 1
+    )
     assert (
         "scene"
         not in connection.send_event.call_args.args[1]["invalidation"]["revisions"]
@@ -527,7 +567,7 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     assert history_event["resources"] == ["history"]
     assert history_event["revisions"]["history"] == 1
     assert history_event["sequence"] == 3
-    assert history_event["coherence_generation"] == 3
+    assert history_event["coherence_generation"] == 1
     history.publish()
     assert connection.send_event.call_count == 3
 
@@ -535,6 +575,111 @@ def test_scene_and_history_publish_from_their_authoritative_stores() -> None:
     assert not scene.listeners
     assert not history.listeners
     assert not entry.runtime_data.coordinator.listeners
+
+
+def test_scene_boundary_tracks_session_loss_and_restore_at_fixed_revision() -> None:
+    entry = _LifecycleEntry("entry-a")
+    entry.runtime_data.coordinator = _CoordinatorPublisher(
+        SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+            floor_plan=SimpleNamespace(mission_id=47),
+        )
+    )
+    scene = _ScenePublisher()
+    entry.runtime_data.slam_map = scene
+    manager = WorkspaceSocket(_Hass([entry]))
+    connection = _connection()
+    manager.track_entry(entry)
+    manager.subscribe(connection, "entry-a", 26)
+
+    scene.live_session_verified = False
+    scene.publish()
+    lost = connection.send_event.call_args.args[1]["invalidation"]
+    assert lost["resources"] == ["scene"]
+    assert lost["sequence"] == 1
+    assert lost["coherence_generation"] == 2
+    assert lost["revisions"]["scene"] == 1
+
+    scene.publish()
+    assert connection.send_event.call_count == 1
+
+    scene.live_session_verified = True
+    scene.publish()
+    restored = connection.send_event.call_args.args[1]["invalidation"]
+    assert connection.send_event.call_count == 2
+    assert restored["sequence"] == 2
+    assert restored["coherence_generation"] == 3
+    assert restored["revisions"]["scene"] == 1
+
+
+def test_scene_content_burst_does_not_advance_coherence_generation() -> None:
+    entry = _LifecycleEntry("entry-a")
+    entry.runtime_data.coordinator = _CoordinatorPublisher(
+        SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+            floor_plan=SimpleNamespace(mission_id=47),
+        )
+    )
+    scene = _ScenePublisher()
+    entry.runtime_data.slam_map = scene
+    manager = WorkspaceSocket(_Hass([entry]))
+    connection = _connection()
+    manager.track_entry(entry)
+    manager.subscribe(connection, "entry-a", 27)
+
+    for revision in range(2, 202):
+        scene.revision = revision
+        scene.publish()
+
+    assert connection.send_event.call_count == 200
+    invalidation = connection.send_event.call_args.args[1]["invalidation"]
+    assert invalidation["sequence"] == 200
+    assert invalidation["coherence_generation"] == 1
+    assert invalidation["revisions"]["scene"] == 201
+
+
+def test_scene_boundary_tracks_identity_and_floor_geometry_changes() -> None:
+    entry = _LifecycleEntry("entry-a")
+    entry.runtime_data.coordinator = _CoordinatorPublisher(
+        SimpleNamespace(
+            info=SimpleNamespace(serial_number="private-serial"),
+            operational=SimpleNamespace(cleaning=False),
+            floor_plan=SimpleNamespace(
+                mission_id=47,
+                partition_protocol_id="partition-a",
+                rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0),)),),
+            ),
+        )
+    )
+    scene = _ScenePublisher()
+    entry.runtime_data.slam_map = scene
+    manager = WorkspaceSocket(_Hass([entry]))
+    connection = _connection()
+    manager.track_entry(entry)
+    manager.subscribe(connection, "entry-a", 28)
+
+    scene.mission_identity = SimpleNamespace(mission_token="mission-a", mission_id=47)
+    scene.publish()
+    identity_change = connection.send_event.call_args.args[1]["invalidation"]
+    assert identity_change["coherence_generation"] == 2
+
+    entry.runtime_data.coordinator.data.floor_plan = SimpleNamespace(
+        mission_id=47,
+        partition_protocol_id="partition-b",
+        rooms=(SimpleNamespace(name="Kitchen", boundary=((0, 0), (1, 0))),),
+    )
+    scene.publish()
+    geometry_change = connection.send_event.call_args.args[1]["invalidation"]
+    assert connection.send_event.call_count == 2
+    assert geometry_change["coherence_generation"] == 3
+
+    entry.runtime_data.coordinator.data.info.serial_number = "another-private-serial"
+    scene.publish()
+    robot_change = connection.send_event.call_args.args[1]["invalidation"]
+    assert connection.send_event.call_count == 3
+    assert robot_change["coherence_generation"] == 4
 
 
 def test_scene_invalidation_tracks_floor_geometry_at_fixed_mission_and_revision() -> (

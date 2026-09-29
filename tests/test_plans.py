@@ -595,6 +595,125 @@ async def test_docked_stop_can_win_race_with_run_finalizer(hass) -> None:
     assert last_run["terminal_activity"] == "docked"
 
 
+async def test_correlated_dock_clears_its_owned_stop_fence(hass) -> None:
+    """A confirmed dock closes the run and its matching stop fence together."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    await manager.async_finish_run(
+        "serial",
+        "run-1",
+        "cancelled",
+        "managed_stop",
+        0,
+        terminal_activity="cleaning",
+    )
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    stop_fence_token = manager.stop_fence_token("serial")
+
+    assert stop_fence_token is not None
+    assert await manager.async_mark_run_docked(
+        "serial", "run-1", stop_fence_token=stop_fence_token
+    )
+
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "stopped_docked"
+    assert not manager.stop_pending("serial")
+    assert "stop_fence_expires_at" not in manager._robot("serial")
+
+
+async def test_stale_dock_confirmation_preserves_newer_stop_fence(hass) -> None:
+    """A prior dock watcher cannot clear a later STOP for the same run."""
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_begin_run(
+        "serial",
+        "away",
+        "run-1",
+        1,
+        trigger="user",
+        service="clean_room_sequence",
+        provenance="user",
+    )
+    await manager.async_finish_run(
+        "serial",
+        "run-1",
+        "cancelled",
+        "managed_stop",
+        0,
+        terminal_activity="cleaning",
+    )
+    with patch(
+        "custom_components.matic_robot.plans.monotonic", return_value=10_000_000_000.0
+    ):
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        stale_token = manager.stop_fence_token("serial")
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        current_token = manager.stop_fence_token("serial")
+
+    assert stale_token is not None
+    assert current_token is not None
+    assert current_token != stale_token
+    assert not await manager.async_mark_run_docked(
+        "serial", "run-1", stop_fence_token=stale_token
+    )
+
+    assert manager.snapshot("serial")["last_run"]["outcome"] == "cancelled"
+    assert manager.stop_fence_token("serial") == current_token
+    assert manager._robot("serial")["stop_fence_run_id"] == "run-1"
+
+
+async def test_stop_fence_clear_requires_current_token_and_owner(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    manager._store = SimpleNamespace(async_save=AsyncMock())
+    await manager.async_mark_stop_pending("serial", run_id="run-1")
+    first_token = manager.stop_fence_token("serial")
+    assert first_token is not None
+
+    assert not await manager.async_clear_stop_pending_if_token(
+        "serial", first_token, run_id=None
+    )
+    assert manager.stop_pending("serial")
+
+    with patch(
+        "custom_components.matic_robot.plans.monotonic", return_value=10_000_000_000.0
+    ):
+        await manager.async_mark_stop_pending("serial", run_id="run-1")
+        current_token = manager.stop_fence_token("serial")
+    assert current_token is not None and current_token != first_token
+    assert not await manager.async_clear_stop_pending_if_token(
+        "serial", first_token, run_id="run-1"
+    )
+    assert manager.stop_fence_token("serial") == current_token
+    assert await manager.async_clear_stop_pending_if_token(
+        "serial", current_token, run_id="run-1"
+    )
+    assert not manager.stop_pending("serial")
+
+
+def test_stop_fence_restore_extends_deadline_without_changing_identity(hass) -> None:
+    manager = CleaningPlanManager(hass)
+    with patch(
+        "custom_components.matic_robot.plans.monotonic",
+        side_effect=[100.0, 105.0, 105.0, 105.0, 105.0],
+    ):
+        manager._arm_stop_pending("serial", 10)
+        token = manager.stop_fence_token("serial")
+        manager._arm_stop_pending("serial", 2)
+        manager._arm_stop_pending("serial", 10)
+        restored_token = manager.stop_fence_token("serial")
+
+    assert manager._stop_fences["serial"].deadline == 115.0
+    assert restored_token == token
+
+
 async def test_immediate_stop_records_managed_stop_reason(hass) -> None:
     """The default stop policy is distinguishable from motion replacement."""
     manager = CleaningPlanManager(hass)
@@ -3980,10 +4099,10 @@ async def test_plan_load_restores_pending_stop_and_removes_bad_marker(hass) -> N
     ):
         await manager.async_load()
         assert manager.stop_pending("serial") is True
-        assert manager._stop_fences["serial"] == 130.0
+        assert manager._stop_fences["serial"].deadline == 130.0
         assert manager._robot("serial")["stop_fence_expires_at"] == valid["expires_at"]
         assert manager.stop_pending("generic") is True
-        assert manager._stop_fences["generic"] == 145.0
+        assert manager._stop_fences["generic"].deadline == 145.0
         assert "stop_fence_expires_at" not in manager._robot("bad-fence")
         assert "stop_fence_expires_at" not in manager._robot("stale-fence")
         assert "pending_native_reconciliation" not in manager._robot("other")

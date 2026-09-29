@@ -75,10 +75,14 @@ const entryBoundaryKey = (entry: MapEntry): string => [
   entry.mapFloorOrdinal ?? "none",
 ].join("|");
 
-const entryIdentity = (entry: MapEntry): string => [
+const entryCoherenceIdentity = (entry: MapEntry): string => [
   entry.entryId,
   entryFloorKey(entry),
   entryMissionKey(entry),
+].join("|");
+
+const entryIdentity = (entry: MapEntry): string => [
+  entryCoherenceIdentity(entry),
   entry.mapRevision,
 ].join("|");
 
@@ -126,7 +130,7 @@ const safeFloorName = (floor: HistoryFloor, fallbackOrdinal: number): string => 
 
 export class EffectController {
   readonly #store: WorkspaceStore;
-  readonly #coherence = new CoherenceMachine();
+  readonly #coherence: CoherenceMachine;
   readonly #backend: MaticBackend;
   readonly #preferences = new PreferenceStore();
   #preferenceSnapshot: MapPreferences | null = null;
@@ -146,6 +150,7 @@ export class EffectController {
   #poseQueued = false;
   #entryIdentity = "";
   #deltaGeneration = 0;
+  #activeDeltaOwner: { generation: number; stamp: ResourceStamp; entryId: string; coherenceIdentity: string; deltaUrl: string } | null = null;
   #preferenceUser = "";
   #disposed = false;
   #hostConnected = true;
@@ -160,6 +165,9 @@ export class EffectController {
 
   constructor(store: WorkspaceStore, backend: MaticBackend, workspaceConnection: WorkspaceConnection | null = null, workspaceTransportEnabled = WORKSPACE_TRANSPORT_ENABLED) {
     this.#store = store;
+    // A remounted controller continues the store's existing public generation
+    // sequence while keeping the coherence machine as the sole authority.
+    this.#coherence = new CoherenceMachine(store.value.generation);
     this.#backend = backend;
     this.#workspaceConnection = workspaceConnection;
     this.#workspaceTransportEnabled = workspaceTransportEnabled;
@@ -290,6 +298,7 @@ export class EffectController {
   sync(projection: HassProjection, panel: PanelLike | undefined): void {
     if (this.#disposed) return;
     const workspaceTransportBeforeSync = this.#workspaceTransport;
+    const robotWasConnected = this.#projection?.host.robotConnected ?? null;
     const robotReconnected = this.#projection !== null
       && !this.#projection.host.robotConnected && projection.host.robotConnected;
     const owner = this.#store.value.owner;
@@ -346,6 +355,8 @@ export class EffectController {
         // Revoke admission before cancellation: an aborted transport may still
         // settle, but none of its resources belong to the offline workspace.
         this.#store.patch({ generation: this.#coherence.invalidate() });
+        this.#stopDeltaStream();
+        this.#entryIdentity = "";
       }
       this.#stopPolling();
       this.#catalogRefreshQueued = false;
@@ -383,8 +394,39 @@ export class EffectController {
       this.#clearPrivate("map-unavailable");
       return;
     }
+    if (!projection.host.robotConnected) {
+      if (robotWasConnected !== false) {
+        // Robot availability is part of the authority boundary. Retain the
+        // last frame for context, but invalidate its generation before any
+        // pending read can settle into actionable state.
+        this.#invalidateSpatialFence();
+        this.#abortResources();
+        this.#catalogRefreshQueued = false;
+        this.#catalogRefreshQueuedPreserveGeneration = false;
+        this.#poseQueued = false;
+      }
+      this.#stopPolling();
+      const state = this.#store.value;
+      const retainedScene = state.resources.scene.value;
+      this.#store.patch({
+        coherence: retainedScene ? "degraded" : "unavailable",
+        resources: {
+          ...state.resources,
+          catalog: state.resources.catalog.status === "loading"
+            ? resource("idle", state.resources.catalog.value) : state.resources.catalog,
+          scene: state.resources.scene.status === "loading"
+            ? resource("idle", retainedScene) : state.resources.scene,
+          pose: resource("idle", null),
+        },
+        map: { ...state.map, available: retainedScene !== null, exactPose: false },
+      });
+      return;
+    }
     this.#startPolling();
-    if (!wasConnected) {
+    if (!wasConnected || robotReconnected) {
+      // Host or robot reconnection only restores access after a new catalog
+      // proof. Clear the host-offline notice regardless of which transition
+      // happened first, then use one shared recovery read.
       if (this.#store.value.notice?.text === RECONNECT_NOTICE) {
         this.#store.patch({ notice: null });
       }
@@ -467,7 +509,8 @@ export class EffectController {
             && (previous.epoch !== snapshot.epoch
               || previous.coherenceGeneration !== snapshot.coherence_generation);
           const projectionIdentityChanged = Boolean(entry && projectedEntry
-            && entry.entryId === entryId && entryIdentity(entry) !== entryIdentity(projectedEntry));
+            && entry.entryId === entryId
+            && entryCoherenceIdentity(entry) !== entryCoherenceIdentity(projectedEntry));
           this.#workspaceFence = { entryId: snapshot.entry_id, epoch: snapshot.epoch,
             sequence: snapshot.sequence, coherenceGeneration: snapshot.coherence_generation,
             revisions: snapshot.revisions };
@@ -544,45 +587,59 @@ export class EffectController {
     this.#workspaceFence = { ...fence, sequence: invalidation.sequence,
       coherenceGeneration: invalidation.coherence_generation, revisions: invalidation.revisions };
     if (!changed && !generationChanged) return;
-    if (generationChanged || resources.has("scene")) {
+    if (generationChanged) {
       this.#refreshSpatialBoundary(entryId, invalidation.resources);
       return;
+    }
+    if (resources.has("scene")) {
+      // A same-generation scene invalidation is a content hint, not a new
+      // floor/session proof. An active delta stream already owns incremental
+      // admission; without one, the ordinary five-second catalog poll is the
+      // bounded fallback. Never turn each content hint into a forced catalog.
+      resources.delete("scene");
     }
     const entry = this.#store.value.resources.entry;
     const stamp = this.#coherence.current();
     if (!entry || entry.entryId !== entryId || !stamp) return;
     // Each REST loader validates its own entry/generation boundary and owns
     // the typed visible resource. These invalidations never touch the canvas.
-    this.#loadWorkspaceResources(entry, stamp, resources, !catalogProjectionFresh);
+    if (resources.size) this.#loadWorkspaceResources(entry, stamp, resources, !catalogProjectionFresh);
   }
 
   #applyCatalogProjection(projectedEntry: MapEntry): boolean {
     const state = this.#store.value;
     const currentEntry = state.resources.entry;
-    if (!currentEntry || entryIdentity(currentEntry) !== entryIdentity(projectedEntry)) return false;
+    if (!currentEntry
+      || entryCoherenceIdentity(currentEntry) !== entryCoherenceIdentity(projectedEntry)) return false;
+    // Snapshot projection can carry a newer pixel revision than the scene
+    // currently admitted by the delta stream. Keep the visible entry aligned
+    // with its admitted scene until sceneDelta validates and advances it.
+    const admittedEntry = projectedEntry.mapRevision === currentEntry.mapRevision
+      ? projectedEntry
+      : { ...projectedEntry, mapRevision: currentEntry.mapRevision };
     const catalog = state.resources.catalog;
     const rows = catalog.value?.map((entry) =>
-      entry.entryId === projectedEntry.entryId ? projectedEntry : entry);
-    const coherent = projectedEntry.mapFloorCoherent && projectedEntry.mapSessionVerified;
-    const degraded = projectedEntry.health === "problem" || projectedEntry.health === "limited";
+      entry.entryId === admittedEntry.entryId ? admittedEntry : entry);
+    const coherent = admittedEntry.mapFloorCoherent && admittedEntry.mapSessionVerified;
+    const degraded = admittedEntry.health === "problem" || admittedEntry.health === "limited";
     this.#store.patch({
-      managedLock: entryManagedLock(projectedEntry),
+      managedLock: entryManagedLock(admittedEntry),
       coherence: coherent ? (degraded ? "degraded" : "current") : "verifying",
       map: {
         ...state.map,
         available: state.resources.scene.value !== null,
-        complete: projectedEntry.mapComplete && !projectedEntry.mapTruncated,
-        floorCoherent: projectedEntry.mapFloorCoherent,
-        sessionVerified: projectedEntry.mapSessionVerified,
+        complete: admittedEntry.mapComplete && !admittedEntry.mapTruncated,
+        floorCoherent: admittedEntry.mapFloorCoherent,
+        sessionVerified: admittedEntry.mapSessionVerified,
         exactPose: coherent ? state.map.exactPose : false,
       },
       floor: {
         ...state.floor,
-        classifiedCount: Math.max(1, projectedEntry.historyFloorCount),
+        classifiedCount: Math.max(1, admittedEntry.historyFloorCount),
       },
       resources: {
         ...state.resources,
-        entry: projectedEntry,
+        entry: admittedEntry,
         ...(rows ? { catalog: { ...catalog, value: rows } } : {}),
       },
     });
@@ -591,6 +648,7 @@ export class EffectController {
 
   #invalidateSpatialFence(): void {
     const generation = this.#coherence.invalidate();
+    this.#stopDeltaStream();
     const state = this.#store.value;
     this.#store.patch({ generation, coherence: state.resources.scene.value ? "verifying" : "unavailable",
       map: { ...state.map, exactPose: false } });
@@ -614,6 +672,30 @@ export class EffectController {
       // The catalog read above already refreshed runner and coordinator state.
       this.#loadWorkspaceResources(entry, stamp, resources, false);
     });
+  }
+
+  #stopDeltaStream(): void {
+    this.#deltaGeneration += 1;
+    this.#activeDeltaOwner = null;
+  }
+
+  #ownsLiveDelta(entry: MapEntry): boolean {
+    const owner = this.#activeDeltaOwner;
+    const stamp = this.#coherence.current();
+    return Boolean(owner && stamp
+      && owner.generation === this.#deltaGeneration
+      && owner.stamp.generation === stamp.generation
+      && owner.entryId === entry.entryId
+      && owner.coherenceIdentity === entryCoherenceIdentity(entry)
+      && owner.deltaUrl === entry.deltaUrl
+      && stamp.entryKey === entry.entryId
+      && stamp.floorKey === entryFloorKey(entry)
+      && stamp.missionKey === entryMissionKey(entry)
+      && entry.mapFloorCoherent && entry.mapSessionVerified
+      && this.#store.value.dataMode === "live"
+      && this.#store.value.selection.floorId === "current"
+      && this.#projection?.host.connected && this.#projection.host.robotConnected
+      && this.#projection.host.administrator);
   }
 
   #loadWorkspaceResources(
@@ -687,6 +769,7 @@ export class EffectController {
   #clearPrivate(problem: string): void {
     this.#invalidateMotion();
     this.#coherence.invalidate();
+    this.#stopDeltaStream();
     this.#entryIdentity = "";
     const generation = this.#coherence.generation;
     this.#abortResources();
@@ -789,20 +872,21 @@ export class EffectController {
         || entries[0]
         || null;
       const currentEntry = this.#store.value.resources.entry;
+      const deltaOwnsContent = Boolean(selected && currentEntry
+        && entryCoherenceIdentity(selected) === entryCoherenceIdentity(currentEntry)
+        && this.#ownsLiveDelta(currentEntry));
       if (selected
         && currentEntry
         && entryBoundaryKey(selected) === entryBoundaryKey(currentEntry)
         && entryFloorKey(selected) === entryFloorKey(currentEntry)
         && entryMissionKey(selected) === entryMissionKey(currentEntry)
-        && (selected.mapRevision < currentEntry.mapRevision
+        && (deltaOwnsContent
+          || selected.mapRevision < currentEntry.mapRevision
           || (!force && this.#controllers.has("scene")))) {
-        // A catalog request can capture the retained scene revision while the
-        // delta request beside it finishes a newer verified scene. Never let
-        // that older response roll the live workspace backward and hide the
-        // precise pose; the next catalog poll will observe the new cache.
-        // Likewise, a same-session pixel revision must not cancel a full scene
-        // still downloading. Let that coherent snapshot arrive before loading
-        // the newer revision; floor/session changes still invalidate it above.
+        // The catalog can lead an active delta owner: its pixel revision is a
+        // content hint, while the delta loop admits pixels into this scene.
+        // Also preserve the admitted revision if an older catalog races a
+        // completed delta, or while the initial full scene is downloading.
         selected = { ...selected, mapRevision: currentEntry.mapRevision };
       }
       this.#store.patch({
@@ -924,6 +1008,7 @@ export class EffectController {
       entryMissionKey(entry),
       entry.mapRevision,
     );
+    this.#stopDeltaStream();
     this.#abortResources(preserve);
     const retainedScene = previousEntry?.entryId === entry.entryId
       ? previousState.resources.scene.value
@@ -1123,6 +1208,15 @@ export class EffectController {
   ): Promise<void> {
     if (!initialEntry.deltaUrl || typeof DecompressionStream !== "function") return;
     const deltaUrl = initialEntry.deltaUrl;
+    const owner = {
+      generation,
+      stamp: initialStamp,
+      entryId: initialEntry.entryId,
+      coherenceIdentity: entryCoherenceIdentity(initialEntry),
+      deltaUrl,
+    };
+    if (generation !== this.#deltaGeneration || !this.#coherence.accepts(initialStamp)) return;
+    this.#activeDeltaOwner = owner;
     let entry = initialEntry;
     let stamp = initialStamp;
     let scene = initialScene;
@@ -1172,6 +1266,7 @@ export class EffectController {
           const advanced = this.#coherence.advance(stamp, response.revision);
           if (!advanced) return;
           stamp = advanced;
+          owner.stamp = advanced;
           scene = response.scene;
           entry = { ...entry, mapRevision: response.revision };
           this.#entryIdentity = entryIdentity(entry);
@@ -1207,6 +1302,8 @@ export class EffectController {
       });
       this.#entryIdentity = "";
       void this.refreshCatalog(true);
+    } finally {
+      if (this.#activeDeltaOwner === owner) this.#activeDeltaOwner = null;
     }
   }
 
@@ -2124,6 +2221,10 @@ export class EffectController {
   dispose(): void {
     if (this.#disposed) return;
     this.#disposed = true;
+    // The store survives a detached panel. Revoke its public action admission
+    // before aborting requests so neither stale controls nor late results can
+    // reuse the prior controller's proof during the remount gap.
+    this.#invalidateSpatialFence();
     this.#storeUnsubscribe?.();
     this.#storeUnsubscribe = null;
     this.#store.patch({ manualRoomPreview: resource("idle", null) });
@@ -2136,6 +2237,5 @@ export class EffectController {
     this.#workspaceTransport = null;
     this.#workspaceTransportEntry = null;
     this.#backend.dispose();
-    this.#coherence.invalidate();
   }
 }

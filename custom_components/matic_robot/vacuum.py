@@ -29,7 +29,10 @@ from .plans import (
     plan_floor_token,
     resolve_room_reference,
 )
-from .stop_return import schedule_dock_after_stop
+from .stop_return import (
+    async_clear_ownerless_stop_if_settled,
+    schedule_dock_after_stop,
+)
 
 PARALLEL_UPDATES = 1
 
@@ -169,8 +172,13 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         pending = getattr(self._plans, "stop_pending", None)
         if not callable(pending) or not pending(serial_number):
             return
-        if self.activity in {VacuumActivity.DOCKED, VacuumActivity.IDLE}:
-            await self._plans.async_clear_stop_pending(serial_number)
+        if self.entity_id is not None and await async_clear_ownerless_stop_if_settled(
+            self.hass,
+            native_active=self.coordinator.client.async_has_active_cleaning_session,
+            manager=self._plans,
+            serial_number=serial_number,
+            entity_id=self.entity_id,
+        ):
             return
         raise ServiceValidationError(
             "Matic is completing its OEM stop countdown; wait until it docks",
@@ -410,14 +418,21 @@ class MaticVacuum(MaticEntity, StateVacuumEntity):
         """Dock the robot as soon as its accepted stop settles."""
         if self.entity_id is None:
             return
-        on_docked: Callable[[], Awaitable[None]] | None = None
+        on_docked: Callable[[], Awaitable[bool | None]] | None = None
         if run_id is not None:
+            stop_fence_token_reader = getattr(self._plans, "stop_fence_token", None)
+            stop_fence_token = (
+                stop_fence_token_reader(serial_number)
+                if callable(stop_fence_token_reader)
+                else None
+            )
 
-            async def mark_docked() -> None:
-                await self._plans.async_mark_run_docked(
+            async def mark_docked() -> bool:
+                return await self._plans.async_mark_run_docked(
                     serial_number,
                     run_id,
                     entity_id=self.entity_id,
+                    stop_fence_token=stop_fence_token,
                 )
 
             on_docked = mark_docked

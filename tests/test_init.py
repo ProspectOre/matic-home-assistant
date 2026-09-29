@@ -813,7 +813,7 @@ async def test_restart_recovery_expires_marker_after_transport_error(hass) -> No
         "expires_at": (now + timedelta(seconds=1)).isoformat(),
     }
     robot[STOP_FENCE_EXPIRES_AT] = (now + timedelta(seconds=1)).isoformat()
-    manager._stop_fences["synthetic-serial"] = 0
+    manager._arm_stop_pending("synthetic-serial", -1)
     pending = manager.pending_native_reconciliation("synthetic-serial")
     assert pending is not None
     client = SimpleNamespace(

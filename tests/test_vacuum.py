@@ -414,6 +414,12 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
     manager._store = SimpleNamespace(async_save=AsyncMock())
     entry.runtime_data.cleaning_plans = manager
     entity = vacuum.MaticVacuum(entry)
+    entity.entity_id = "vacuum.test"
+    entity.hass = hass
+    native_active = AsyncMock(return_value=False)
+    entry.runtime_data.coordinator.client.async_has_active_cleaning_session = (
+        native_active
+    )
 
     await entity.async_stop()
     assert manager.stop_pending("synthetic-serial") is True
@@ -429,6 +435,7 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
             returning=False,
         ),
     )
+    hass.states.async_set("vacuum.test", "cleaning")
     with pytest.raises(ServiceValidationError) as blocked:
         await entity._async_ensure_stop_settled("synthetic-serial")
     assert blocked.value.translation_key == "robot_stop_pending"
@@ -443,6 +450,14 @@ async def test_stop_marks_oem_fence_and_blocks_new_motion_until_docked(hass) -> 
             returning=False,
         ),
     )
+    hass.states.async_set("vacuum.test", "charging")
+    native_active.return_value = True
+    with pytest.raises(ServiceValidationError) as native_blocked:
+        await entity._async_ensure_stop_settled("synthetic-serial")
+    assert native_blocked.value.translation_key == "robot_stop_pending"
+    assert manager.stop_pending("synthetic-serial") is True
+
+    native_active.return_value = False
     await entity._async_ensure_stop_settled("synthetic-serial")
     assert manager.stop_pending("synthetic-serial") is False
     assert "stop_fence_expires_at" not in manager._robot("synthetic-serial")
