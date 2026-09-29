@@ -49,9 +49,11 @@ adds two tests against those same packaged production bytes:
   revision/current coherence prove containment; no service is dispatched.
 
 Final serial targeted runs passed both cases in Chromium, WebKit and Firefox
-safety (six cases), plus the existing Chromium 20-lifecycle case. An earlier
-concurrent engine run timed out during Firefox fixture setup; that failed run
-is retained and not counted as a pass. The fixture's delta option is opt-in;
+safety (six cases). The unchanged 20-lifecycle case passed prior-head CI. A later
+local run timed out at its configured 30 s limit; a 90 s diagnostic passed in
+47.2 s, which does not qualify the configured limit or establish the cause.
+An earlier concurrent engine run timed out during Firefox fixture setup; both
+failures are retained and not counted as passes. The fixture's delta option is opt-in;
 existing defaults remain unchanged. No production defect or code change was
 needed. This follow-up is qualified for merge only by its own exact-head review and CI.
 
