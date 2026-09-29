@@ -71,23 +71,64 @@ jobs:
           EVENT_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA:
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: 'f406a99a4d9b59b0faa13f80804af489065548a9ba53dacef42d9dc18e478812'
+          EXPECTED_SHA256: 'fb81b436baa2c87ba970362be56504be28efe57c473284c066ceabfc6de9ecb8'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
-          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'b676b03fd2671c8bc7657fbc06f817002283e338548c9cba71c926b4e9dd407f'
+          EXPECTED_REVIEW_SECTIONS_SHA256: '2ee16db3b7eee1745e12733d0a05c99367624092c0f6d45105890beb729bed32'
+          EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: '71c098e01308ac354dd3a87f82d42ff47e847a358ec4c4449e9cbdaa77237382'
         shell: bash
         run: |
           set -euo pipefail
           export PATH="/opt/homebrew/bin:/usr/local/bin:$PATH"
           [[ "$GITHUB_WORKFLOW_REF" == "$REPO/.github/workflows/"*"@refs/heads/$DEFAULT_BRANCH" ]] || exit 1
           [[ "$POLICY_REF" =~ ^[0-9a-f]{40}$ && "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || exit 1
-          # Revoke prior success before a download failure can strand it green.
-          if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
+          # Revoke the authenticated event head before the first fallible PR
+          # lookup. The event payload (or signed relay output) binds this SHA
+          # to PR_NUMBER; membership is checked after the safety barrier.
+          if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" \
+                && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]]; then
             gh api "repos/$REPO/statuses/$EVENT_HEAD_SHA" --silent -f state=pending \
               -f context=review-gate -f description='Loading canonical review policy' \
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
           fi
+          pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
+          pr_head="$(jq -er '.head.sha' <<< "$pr")"
+          [[ "$pr_head" =~ ^[0-9a-f]{40}$ ]] || exit 1
+          # Revoke the live PR head before any secondary membership reads.
+          if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open \
+                && ( "${EVENT_PR_NUMBER:-}" != "$PR_NUMBER" || "$pr_head" != "${EVENT_HEAD_SHA:-}" ) ]]; then
+            gh api "repos/$REPO/statuses/$pr_head" --silent -f state=pending \
+              -f context=review-gate -f description='Loading canonical review policy' \
+              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
+          fi
+          commit_associated_with_pr() {
+            local target_sha="$1" associated
+            [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+            [[ "$target_sha" == "$pr_head" ]] && return 0
+            associated="$(gh api "repos/$REPO/commits/$target_sha/pulls?per_page=100" --paginate --slurp \
+              | jq -ce --arg repo "$REPO" --argjson pr "$PR_NUMBER" '
+                  if type != "array" or any(.[]; type != "array") then
+                    error("Invalid commit-associated PR pages")
+                  else any(.[][]; .number == $pr and .base.repo.full_name == $repo)
+                  end')" || return 1
+            [[ "$associated" == true ]]
+          }
+          if [[ "${AUDIT_MODE:-false}" != true && "${EVENT_PR_NUMBER:-}" == "$PR_NUMBER" \
+                && "${EVENT_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ ]] \
+                && ! commit_associated_with_pr "$EVENT_HEAD_SHA"; then
+            echo "Authenticated event head is not associated with PR #$PR_NUMBER." >&2
+            exit 1
+          fi
+          resolve_associated_commit_ref() {
+            local target_ref="$1" resolved
+            [[ "$target_ref" =~ ^[0-9a-f]{10}([0-9a-f]{30})?$ ]] || return 1
+            resolved="$(gh api "repos/$REPO/commits/$target_ref" --jq '.sha')" || return 1
+            [[ "$resolved" =~ ^[0-9a-f]{40}$ && "$resolved" == "$target_ref"* ]] || return 1
+            commit_associated_with_pr "$resolved" || return 1
+            printf '%s\n' "$resolved"
+          }
           if [[ "${AUDIT_MODE:-false}" != true && "${HISTORY_HEAD_SHA:-}" =~ ^[0-9a-f]{40}$ \
-                && "$HISTORY_HEAD_SHA" != "${EVENT_HEAD_SHA:-}" ]]; then
+                && "$HISTORY_HEAD_SHA" != "${EVENT_HEAD_SHA:-}" ]] \
+                && commit_associated_with_pr "$HISTORY_HEAD_SHA"; then
             gh api "repos/$REPO/statuses/$HISTORY_HEAD_SHA" --silent -f state=pending \
               -f context=review-gate -f description='Relayed review event pending history reconciliation' \
               -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
@@ -107,29 +148,28 @@ jobs:
               | [.[] | ((scan("(?i)reviewed commit:[*]*[ \t]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0] | ascii_downcase), coordinator_head)] | unique[]' "$GITHUB_EVENT_PATH")"
             while IFS= read -r comment_head; do
               [[ -n "$comment_head" ]] || continue
-              gh api "repos/$REPO/statuses/$comment_head" --silent -f state=pending \
+              resolved_comment_head="$(resolve_associated_commit_ref "$comment_head")" || continue
+              gh api "repos/$REPO/statuses/$resolved_comment_head" --silent -f state=pending \
                 -f context=review-gate -f description='Review comment changed; loading canonical policy' \
                 -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
             done <<< "$comment_heads"
           fi
-          pr="$(gh api "repos/$REPO/pulls/$PR_NUMBER")"
-          if [[ "${AUDIT_MODE:-false}" != true && "$(jq -r '.state' <<< "$pr")" == open ]]; then
-            head="$(jq -er '.head.sha' <<< "$pr")"
-            [[ "$head" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            gh api "repos/$REPO/statuses/$head" --silent -f state=pending \
-              -f context=review-gate -f description='Loading canonical review policy' \
-              -f target_url="$GITHUB_SERVER_URL/$REPO/actions/runs/$GITHUB_RUN_ID"
-          fi
           policy="$(mktemp "$RUNNER_TEMP/review-policy.XXXXXX")"
-          trap 'rm -f "$policy" "$policy.dependencies.py" "$policy.issue-comment-receipts.py"' EXIT
+          trap 'rm -f "$policy" "$policy.dependencies.py" "$policy.review-sections.py" "$policy.issue-comment-receipts.py"' EXIT
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/$REPO/contents/.github/review-gate/evaluate.sh?ref=$POLICY_REF" > "$policy"
           gh api -H 'Accept: application/vnd.github.raw+json' \
             "repos/$REPO/contents/.github/review-gate/classify_dependencies.py?ref=$POLICY_REF" > "$policy.dependencies.py"
+          sections_path="$policy.review-sections.py"
+          gh api -H 'Accept: application/vnd.github.raw+json' \
+            "repos/$REPO/contents/.github/review-gate/review_sections.py?ref=$POLICY_REF" > "$sections_path"
           actual="$(shasum -a 256 "$policy")"
           [[ "${actual%% *}" == "$EXPECTED_SHA256" ]] || exit 1
           actual="$(shasum -a 256 "$policy.dependencies.py")"
           [[ "${actual%% *}" == "$EXPECTED_DEPENDENCY_SHA256" ]] || exit 1
+          actual="$(shasum -a 256 "$sections_path")"
+          [[ "${actual%% *}" == "$EXPECTED_REVIEW_SECTIONS_SHA256" ]] || exit 1
+          chmod 400 "$sections_path"
           receipt_path=""
           if [[ -n "$EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256" ]]; then
             receipt_path="$policy.issue-comment-receipts.py"
@@ -140,8 +180,11 @@ jobs:
             chmod 400 "$receipt_path"
           fi
           chmod 400 "$policy" "$policy.dependencies.py"
-          echo "path=$policy" >> "$GITHUB_OUTPUT"
-          echo "receipt_path=$receipt_path" >> "$GITHUB_OUTPUT"
+          {
+            echo "path=$policy"
+            echo "sections_path=$sections_path"
+            echo "receipt_path=$receipt_path"
+          } >> "$GITHUB_OUTPUT"
           trap - EXIT
       - name: Reconcile canonical review policy
         env:
@@ -156,6 +199,7 @@ jobs:
           REVIEW_BASE_CONTEXT: review-gate-base-change
           REVIEW_COMMENT_CONTEXT: review-gate-regular-comment
           REVIEW_REVIEW_CONTEXT: review-gate-regular-review
+          REVIEW_SECTIONS_SCRIPT: ${{ steps.canonical.outputs.sections_path }}
           AUDIT_MODE: true
           CANONICAL_REVIEW_GATE: ${{ steps.canonical.outputs.path }}
           ISSUE_COMMENT_RECEIPTS_SCRIPT: ${{ steps.canonical.outputs.receipt_path }}
@@ -177,5 +221,5 @@ jobs:
           RECEIPT_PATH: ${{ steps.canonical.outputs.receipt_path }}
         shell: bash
         run: |
-          if [[ -n "$POLICY_PATH" ]]; then rm -f -- "$POLICY_PATH" "$POLICY_PATH.dependencies.py"; fi
+          if [[ -n "$POLICY_PATH" ]]; then rm -f -- "$POLICY_PATH" "$POLICY_PATH.dependencies.py" "$POLICY_PATH.review-sections.py"; fi
           if [[ -n "$RECEIPT_PATH" ]]; then rm -f -- "$RECEIPT_PATH"; fi

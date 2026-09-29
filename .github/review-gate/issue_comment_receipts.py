@@ -3,6 +3,7 @@
 import argparse
 import base64
 import hashlib
+import importlib.util
 import json
 import os
 import re
@@ -20,13 +21,6 @@ DIGEST = re.compile(
     r"(?:; action:(created|edited))?\Z"
 )
 SHA = re.compile(r"[0-9a-f]{40}\Z")
-CLEAN_REVIEW_MARKERS = (
-    "didn't find any major issues",
-    "didn\u2019t find any major issues",
-    "didn't find any issues",
-    "didn\u2019t find any issues",
-    "no issues found",
-)
 HUMAN_REVIEW_RUN_TITLE = re.compile(
     r"Review gate PR #([1-9][0-9]*) \| review-origin=authorized-human-review-v1"
     r" \| policy-workflow-sha=([0-9a-f]{40})\Z"
@@ -485,14 +479,22 @@ def current_clean_comment_event_matches(
     )
 
 
+@lru_cache(maxsize=4)
+def clean_summary_pattern(path):
+    """Load the same trusted, hash-verified parser used by the evaluator."""
+    spec = importlib.util.spec_from_file_location("receipt_review_sections", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return re.compile(module.CLEAN_SUMMARY, re.I)
+
+
 def may_be_clean_review_comment(body):
-    """Cheap conservative gate: only clean-shaped bodies need Actions-log proof."""
+    """Conservative prefilter; trusted receipt checks establish proof afterward."""
     if not isinstance(body, str):
         return False
-    normalized = body.casefold()
-    return "reviewed commit:" in normalized and any(
-        marker in normalized for marker in CLEAN_REVIEW_MARKERS
-    )
+    path = os.environ.get("REVIEW_SECTIONS_SCRIPT") or os.path.join(
+        os.path.dirname(__file__), "review_sections.py")
+    return "reviewed commit:" in body.casefold() and bool(clean_summary_pattern(path).search(body))
 
 
 def authenticated_clean_comment_statuses(

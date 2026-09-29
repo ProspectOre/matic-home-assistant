@@ -122,19 +122,6 @@ event_path="${FORWARDED_EVENT_PATH:-${GITHUB_EVENT_PATH:-}}"
 historical_event_head=false
 native_security_finding_observed=false
 
-body_targets_review_head() {
-  local body="$1" target_head="$2"
-  [[ "$target_head" =~ ^[0-9a-f]{40}$ ]] || return 1
-  jq -en --arg body "$body" --arg head "$target_head" --arg prefix "${target_head:0:10}" '
-    def coordinator_prelude:
-      test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-    if ($body | coordinator_prelude) then
-      ($body | capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head) == $head
-    else
-      ($body | test("(?im)reviewed commit:[*]*[ \\t]*`(" + $head + "|" + $prefix + ")`"))
-    end' >/dev/null
-}
-
 # Native receipts authenticate delivery, not the reviewed commit. Require an
 # in-band current/prior body binding before recording permanent head history.
 native_issue_comment_event_bound() {
@@ -195,11 +182,12 @@ def clean_security_footer($summary; $findings_sentence):
                    or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
 
     [.comment.body // "", (if .action == "edited" then .changes.body.from // "" else empty end)] as $bodies
+    # The native adapter authenticates every section reference independently.
+    # This predicate only proves that the event has an authenticated receipt
+    # owner; requiring security sections to share that head incorrectly
+    # rejects a legitimate current regular result plus historical security
+    # result in one comment.
     | any($bodies[]; body_refs | any(.[]; . == $head or . == $prefix))
-      and all($bodies[];
-        if test("(?i)codex-security-review-finding:v1") or
-           has_security_report_link
-        then (body_refs | any(.[]; . == $head or . == $prefix)) else true end)
   ' "$event_path" >/dev/null
 }
 gh_path="${REVIEW_GATE_GH:-$(command -v gh || true)}"
@@ -365,10 +353,27 @@ stamp_status_for_sha() {
     -f target_url="${GITHUB_SERVER_URL:-https://github.com}/$REPO/actions/runs/${GITHUB_RUN_ID:-}"
 }
 
+# Historical commits require positive PR association. Current PR head comes
+# from the live snapshot; old commits are accepted only when GitHub still
+# associates the immutable SHA with this PR.
+commit_is_associated_with_pr() {
+  local target_sha="$1" associated
+  [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]] || return 1
+  [[ "$target_sha" == "${pr_current_head_sha:-}" ]] && return 0
+  associated="$(gh api "repos/$REPO/commits/$target_sha/pulls?per_page=100" --paginate --slurp \
+    | jq -ce --arg repo "$REPO" --argjson pr "$pr_number" '
+        if type != "array" or any(.[]; type != "array") then
+          error("Invalid commit-associated PR pages")
+        else any(.[][]; .number == $pr and .base.repo.full_name == $repo)
+        end')" || return 1
+  [[ "$associated" == true ]]
+}
+
 # PR-state event payloads carry the exact head. Revoke its prior
-# success before the first fallible lookup; dedicated routers have
-# already classified review and issue-comment events.
-if [[ -n "$event_head_sha" ]]; then
+# success before the first fallible lookup; adapter-derived issue-comment
+# and relay heads must first be checked against the PR before any status write.
+if [[ -n "$event_head_sha" && "$event_name" != issue_comment \
+      && "${RECORD_EVENT_ONLY:-false}" != true ]]; then
   stamp_status_for_sha "$event_head_sha" "$REVIEW_GATE_CONTEXT" pending \
     "Review state changed; evaluating the regular review"
 fi
@@ -414,18 +419,31 @@ if [[ ! "$pr_node_id" =~ ^PR_ || ! "$is_draft" =~ ^(true|false)$ || ! "$auto_mer
   echo "Could not resolve the pull request state for PR #$pr_number."
   exit 1
 fi
+if [[ "$pr_state" != "OPEN" ]]; then
+  echo "PR #$pr_number is no longer open; it will not publish review-gate."
+  gate_pending
+fi
+if (( ! evidence_only_mode )) && [[ "${AUDIT_MODE:-false}" != true \
+      && ( "$event_name" == issue_comment || "${RECORD_EVENT_ONLY:-false}" == true ) ]]; then
+  # Preserve the live PR's fail-closed marker before authenticating candidate
+  # event refs. No event-derived commit is written until PR association passes.
+  stamp_status_for_sha "$pr_current_head_sha" "$REVIEW_GATE_CONTEXT" pending \
+    "Review state changed; evaluating the regular review"
+fi
 if native_issue_comment_event_bound; then
   native_event_head_bound=true
 elif [[ "$event_name" == issue_comment && "${REVIEW_NATIVE_EVENT_ID:-}" =~ ^[1-9][0-9]*$ ]]; then
   echo "Native issue-comment receipt has no authenticated reviewed-head binding; leaving it pending."
   exit 1
 fi
-if [[ "$pr_state" != "OPEN" ]]; then
-  echo "PR #$pr_number is no longer open; it will not publish review-gate."
-  gate_pending
-fi
 if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
   if [[ "$native_event_head_bound" == true ]]; then
+    if ! commit_is_associated_with_pr "$event_head_sha"; then
+      echo "The authenticated issue-comment head is not associated with PR #$pr_number; receipt remains pending." >&2
+      stamp_status_for_sha "$pr_current_head_sha" "$REVIEW_GATE_CONTEXT" pending \
+        "Unverified historical review event; verify the reviewed PR head" >/dev/null
+      exit 1
+    fi
     echo "Recording the authenticated issue-comment event on captured PR head $event_head_sha."
     head_sha="$event_head_sha"
     historical_event_head=true
@@ -436,6 +454,12 @@ if [[ -n "$event_head_sha" && "$event_head_sha" != "$head_sha" ]]; then
        and (if .review? != null then .review.commit_id == $head
             else .comment.original_commit_id == $head end)
      ' "$event_path" >/dev/null; then
+    if ! commit_is_associated_with_pr "$event_head_sha"; then
+      echo "The signed relay head is not associated with PR #$pr_number; receipt remains pending." >&2
+      stamp_status_for_sha "$pr_current_head_sha" "$REVIEW_GATE_CONTEXT" pending \
+        "Unverified relayed review event; verify the reviewed PR head" >/dev/null
+      exit 1
+    fi
     # A delayed relay records mutable review history against its immutable
     # commit, even if the webhook's PR head advanced before delivery. The
     # capture is reconcile-only and cannot publish a verdict for that head.
@@ -830,7 +854,12 @@ regular_evidence() {
   local review_records issue_comment_records issue_comment_pages issue_comment_receipt_data
   local prior_creation_receipt=false prior_body_receipt=false prior_body_hash_receipt=false
   local prior_has_creation_receipt=false
-  local eligible_comment_run_id="" eligible_comment_id="" eligible_comment_run_attempt="" prior_body_base64=""
+  local eligible_comment_run_id="" eligible_comment_id="" eligible_comment_run_attempt=""
+  local section_classifier="${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}"
+  local prior_record prior_sections prior_prefix_known
+  prior_record="$(jq -cn --arg body "${1:-}" '{body:$body}' | python3 "$section_classifier" --records)"
+  prior_sections="$(jq -c '.review_gate_sections' <<< "$prior_record")"
+  prior_prefix_known="$(jq -c '.review_gate_prefix_known' <<< "$prior_record")"
   review_records="$(
     # shellcheck disable=SC2016 # GraphQL expands these variables, not the shell.
     gh api graphql --paginate \
@@ -838,11 +867,14 @@ regular_evidence() {
       -F owner="$review_owner" \
       -F name="$review_repo" \
       -F number="$pr_number" \
-      | jq -cs --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
+      | python3 "$section_classifier" --records \
+      | jq -cs --argjson prior_sections "$prior_sections" --argjson prior_prefix_known "$prior_prefix_known" --arg bot "$REVIEW_BOT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
         --arg prior_body "${1:-}" --arg prior_id "${2:-}" --arg prior_source "${3:-issue_comment}" --arg prior_at "${4:-}" '
           def regular_heading:
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+          def explicit_finding:
+            test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\](?:[[:space:]]|$)");
           # Only the coordinator exact generated prelude may be removed.
           # In particular, an authenticated-looking result may quote a request
           # marker; that quoted marker must remain part of the evidence unless
@@ -878,11 +910,18 @@ regular_evidence() {
             | ($result | first_result_section) as $first_result
             | ($first_result | raw_availability_notice)
               and (($first_result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
-              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
+              # A clean security section is evaluated independently below. It
+              # must not turn a coordinator quota response into a regular
+              # review result merely because it has its own heading.
+              and (($result | split("\n") | map(select(regular_heading)) | length) < 2);
           def exact_head:
-            test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
-            or (coordinator_prelude and
-                (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head));
+            (result_section | first_result_section) as $result
+            | ([$result | scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60([0-9a-f]{40}|[0-9a-f]{10})\\x60") | .[0] | ascii_downcase]) as $refs
+            | if ($refs | length) > 0 then
+                any($refs[]; . == ($head | ascii_downcase) or . == ($prefix | ascii_downcase))
+              else coordinator_prelude and
+                (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
+              end;
           def multiple_result_sections:
             (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           # A "no major/blocking issues" claim must carry the
@@ -893,7 +932,7 @@ regular_evidence() {
           def stock_clean_envelope:
             test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?codex[[:space:]]+review[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*here are some automated review suggestions for this pull request\\.[[:space:]]*\\r?\\n[[:space:]]*\\r?\\n[[:space:]]*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*\\r?\\n[[:space:]]*<details>(?:(?!</details>).)*</details>[[:space:]]*$")
             or test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           def strict_stock_clean_envelope:
             stock_clean_envelope
             and (if test("(?is)<details>") then
@@ -910,25 +949,28 @@ regular_evidence() {
           | (if $prior_source == "review" then
                ($records | map(select((.databaseId | tostring) != $prior_id))) +
                [{databaseId: ($prior_id | tonumber), body: $prior_body,
-                 state: "COMMENTED", submittedAt: $prior_at, updatedAt: $prior_at,
+                 state: "COMMENTED", submittedAt: $prior_at, updatedAt: $prior_at, review_gate_sections: $prior_sections, review_gate_prefix_known: $prior_prefix_known,
                  author: {login: $bot, id: "BOT_kgDOC98s_g"}, commit: {oid: $head}}]
              else $records end) as $records_with_prior
           | {all_reviews: $all_reviews,
              deliveries: [$records_with_prior[]
            | select((.author.login // "") == $bot and .author.id == "BOT_kgDOC98s_g")
            | select((.commit.oid // "") == $head)
-           | (.body // "") as $body
-           | select(if .state == "CHANGES_REQUESTED" then true else ($body | regular_heading) end)
-           | select(if .state == "CHANGES_REQUESTED" then true else (($body | result_section | first_result_section | security_heading) | not) end)
-           | select(if .state == "CHANGES_REQUESTED" then true else (($body | availability_notice) | not) end)
-           | select(if .state == "CHANGES_REQUESTED" then true else ($body | exact_head) end)
-           | {at: (if .state == "DISMISSED" then .submittedAt else (.updatedAt // .submittedAt) end),
+           | . as $record
+           | (if .state == "CHANGES_REQUESTED" then [{body: .body}] else .review_gate_sections end)[] as $section
+           | ($section.body // "") as $body
+           | select(.state == "CHANGES_REQUESTED" or .review_gate_prefix_known != false or $section.regular_adverse)
+           | select(.state == "CHANGES_REQUESTED" or $section.kind == "regular" or $section.regular_adverse)
+           | select(.state == "CHANGES_REQUESTED" or $section.availability != true)
+           | select(.state == "CHANGES_REQUESTED" or $section.target_ref == $head or $section.target_ref == $prefix or ($section.regular_adverse and $section.target_ref == "__unbound__"))
+           | {at: (.updatedAt // .submittedAt),
               updated_at: (.updatedAt // .submittedAt),
               created_at: .submittedAt,
               id: (.databaseId | tostring),
               source: "review",
               dismissed: (.state == "DISMISSED"),
-              clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and (($body | multiple_result_sections) | not) and ($body | first_result_section | strict_stock_clean_envelope))}]}'
+              unverified: (.state != "CHANGES_REQUESTED" and $section.regular_adverse == true and $section.target_ref == "__unbound__"),
+              clean: (.state != "CHANGES_REQUESTED" and (.state == "COMMENTED" or .state == "APPROVED") and ($section.regular_clean == true or ($body | strict_stock_clean_envelope)))}]}'
   )"
   issue_comment_pages="$(gh api "repos/$REPO/issues/$pr_number/comments?per_page=100" --paginate --slurp)"
   if [[ "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" == true ]]; then
@@ -976,14 +1018,17 @@ regular_evidence() {
     issue_comment_pages="$(jq -c '.comments' <<< "$issue_comment_receipt_data")"
   fi
   issue_comment_records="$(printf '%s' "$issue_comment_pages" \
-      | jq -c --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
+      | python3 "$section_classifier" --records \
+      | jq -c --argjson prior_sections "$prior_sections" --argjson prior_prefix_known "$prior_prefix_known" --arg bot "$REVIEW_BOT_EVENT_LOGIN" --arg head "$head_sha" --arg prefix "$head_prefix" \
           --argjson require_creation_receipt "${REQUIRE_CLEAN_ISSUE_COMMENT_RECEIPT:-false}" \
           --argjson prior_creation_receipt "$prior_creation_receipt" \
           --argjson prior_has_creation_receipt "$prior_has_creation_receipt" \
-          --arg prior_body "${1:-}" --arg prior_id "${2:-}" --arg prior_at "${4:-}" '
+          --arg prior_body "${1:-}" --arg prior_id "${2:-}" --arg prior_source "${3:-issue_comment}" --arg prior_at "${4:-}" '
           def regular_heading:
             ascii_downcase
             | test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
+          def explicit_finding:
+            test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\](?:[[:space:]]|$)");
           # Only the coordinator exact generated prelude may be removed.
           # In particular, an authenticated-looking result may quote a request
           # marker; that quoted marker must remain part of the evidence unless
@@ -1019,18 +1064,24 @@ regular_evidence() {
             | ($result | first_result_section) as $first_result
             | ($first_result | raw_availability_notice)
               and (($first_result | test("(?i)\\bP[0-3]\\b|codex-security-review-finding:v1")) | not)
-              and (($result | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) < 2);
+              # Keep security evidence independent from regular-review quota
+              # classification; a second regular section remains adverse.
+              and (($result | split("\n") | map(select(regular_heading)) | length) < 2);
           def exact_head:
-            test("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60")
-            or (coordinator_prelude and
-                (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head));
+            (result_section | first_result_section) as $result
+            | ([$result | scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*\\x60([0-9a-f]{40}|[0-9a-f]{10})\\x60") | .[0] | ascii_downcase]) as $refs
+            | if ($refs | length) > 0 then
+                any($refs[]; . == ($head | ascii_downcase) or . == ($prefix | ascii_downcase))
+              else coordinator_prelude and
+                (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
+              end;
           def multiple_result_sections:
             (result_section | [scan("(?im)^[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:Codex Review|Review result)(?:[[:space:]]*:|[[:space:]]|$)")] | length) > 1;
           def known_codex_footer:
             test("(?is)\\A<details>[[:space:]]*<summary>[[:space:]]*(?:ℹ️[[:space:]]*)?about[[:space:]]+codex[[:space:]]+in[[:space:]]+github[[:space:]]*</summary>[[:space:]]*<br[[:space:]]*/?>[[:space:]]*\\[your team has set up codex to review pull requests in this repo\\]\\(https://chatgpt\\.com/codex/cloud/settings/general\\)\\.[[:space:]]*reviews are triggered when you[[:space:]]*-[[:space:]]*open a pull request for review[[:space:]]*-[[:space:]]*mark a draft as ready[[:space:]]*-[[:space:]]*comment \\\"@codex review\\\"\\.[[:space:]]*if codex has suggestions, it will comment; otherwise it will react with (?:👍|:\\+1:)\\.[[:space:]]*codex can also answer questions or update the pr\\.[[:space:]]*try commenting \\\"@codex address that feedback\\\"\\.[[:space:]]*</details>[[:space:]]*$");
           def stock_clean_issue_comment_body:
             test("(?is)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex review:[[:space:]]*didn.t find any major issues\\.[ \t]*(?:What shall we delve into next\\?|You[[:punct:]]re on a roll\\.|Delightful!|Nice work!|Already looking forward to the next diff\\.|Another round soon, please!|More of your lovely PRs please\\.|Hooray!|Swish!|Bravo\\.|Can[\\x27\\x{2019}]t wait for the next one!|Keep it up!|Keep them coming!|Breezy!|Chef.s kiss[.!]?|:tada:)?[ \t]*(?::\\+1:|👍|:rocket:|:rocket!|🚀)?[ \t]*(?:\\r?\\n[[:space:]]*)+\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*(?:\\r?\\n[[:space:]]*)+<details>[[:space:]]*<summary>[^\\r\\n]*codex[[:space:]]+in[[:space:]]+github(?:(?!</details>).)*</details>[[:space:]]*$")
-            or test("(?is)\\A[[:space:]]*#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?(?:codex[[:space:]]+review|review result):[[:space:]]*(?:didn.t find any issues|no issues found)\\.[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
+            or test("(?is)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)[[:space:]]*(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)[.!]?[[:space:]]*(?:\\r?\\n[[:space:]]*)*\\*\\*reviewed commit:\\*\\*[[:space:]]*\\x60(" + $head + "|" + $prefix + ")\\x60[[:space:]]*$");
           def stock_clean_issue_comment_envelope:
             if coordinator_request then
               (capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
@@ -1042,41 +1093,44 @@ regular_evidence() {
               capture("(?is)\\A.*?(?<footer><details>.*)$").footer | known_codex_footer
               else true end);
           ([.[][]] as $records
-           | (if $prior_id != "" and all($records[]; (.id | tostring) != $prior_id) then
+           | (if $prior_source == "issue_comment" and $prior_id != "" and all($records[]; (.id | tostring) != $prior_id) then
                 $records + [{id: ($prior_id | tonumber), body: $prior_body, created_at: $prior_at,
-                             updated_at: $prior_at, review_gate_creation_receipt: $prior_creation_receipt,
+                             updated_at: $prior_at, review_gate_sections: $prior_sections, review_gate_prefix_known: $prior_prefix_known, review_gate_creation_receipt: $prior_creation_receipt,
                              review_gate_has_creation_receipt: $prior_has_creation_receipt,
                              user: {login: $bot, id: 199175422, type: "Bot"}}]
-              else [$records[] | if (.id | tostring) == $prior_id then
+              else [$records[] | if $prior_source == "issue_comment" and (.id | tostring) == $prior_id then
                        .body = $prior_body
+                       | .review_gate_sections = $prior_sections
+                       | .review_gate_prefix_known = $prior_prefix_known
                        | .review_gate_creation_receipt = $prior_creation_receipt
                        | .review_gate_has_creation_receipt = $prior_has_creation_receipt
                        | if $prior_creation_receipt then .updated_at = .created_at else . end
                     else . end] end)
            | [.[]
            | select((.user.login // "") == $bot and .user.id == 199175422 and .user.type == "Bot")
-           | (.body // "") as $body
-           | select($body | regular_heading)
-           | select(($body | result_section | first_result_section | security_heading) | not)
-           | select(($body | availability_notice) | not)
-           | select($body | exact_head)
-           | ((($body | multiple_result_sections) | not)
-              and ($body | strict_stock_clean_issue_comment_envelope)) as $clean_envelope
+           | . as $record
+           | .review_gate_sections[] as $section
+           | ($section.body // "") as $body
+           | select(.review_gate_prefix_known != false or $section.regular_adverse)
+           | select($section.kind == "regular" or $section.regular_adverse)
+           | select($section.availability != true)
+           | select($section.target_ref == $head or $section.target_ref == $prefix or ($section.regular_adverse and $section.target_ref == "__unbound__"))
+           | ($section.regular_clean == true or ($body | strict_stock_clean_issue_comment_envelope)) as $clean_envelope
+           | ($clean_envelope and ($body | test("(?is)<details>"))) as $footer_clean
+           | (.review_gate_creation_receipt == true or (($require_creation_receipt | not) and $footer_clean)) as $clean_proof
            | {at: (.updated_at // .created_at),
               created_at: .created_at,
               id: ("issue-comment-" + (.id | tostring)),
               source: "issue_comment",
-              body: $body,
+              body: $record.body,
               # An unreceipted clean body may be a finding edited before its
               # Actions event starts. GitHub timestamps have second precision,
               # so even created_at == updated_at cannot prove it was never
               # edited. Do not let it preserve an older clean verdict: wait
               # for the authenticated, body-bound native creation receipt.
               neutral: false,
-              unverified: ($require_creation_receipt and $clean_envelope
-                and .review_gate_creation_receipt != true),
-              clean: ((($require_creation_receipt | not) or .review_gate_creation_receipt == true)
-                and $clean_envelope)}])'
+              unverified: (($section.regular_adverse == true and $section.target_ref == "__unbound__") or ($clean_envelope and ($clean_proof | not))),
+              clean: ($clean_proof and $clean_envelope)}])'
     )"
   jq -cn --argjson review_data "$review_records" --argjson issue_comments "$issue_comment_records" '
     {deliveries: ($review_data.deliveries + $issue_comments),
@@ -1157,25 +1211,27 @@ load_pr_commit_sha_cache() {
 }
 
 resolve_pr_commit_sha() {
-  local target_ref matches match_count
+  local target_ref resolved_ref matches match_count
   target_ref="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
   if [[ "$target_ref" =~ ^[0-9a-f]{40}$ ]]; then
-    if [[ "$target_ref" == "$pr_current_head_sha" || "$target_ref" == "$event_head_sha" ]]; then
-      printf '%s\n' "$target_ref"
-      return 0
-    fi
+    resolved_ref="$target_ref"
+  elif [[ "$target_ref" =~ ^[0-9a-f]{10}$ ]]; then
     load_pr_commit_sha_cache || return 1
-    grep -Fxq "$target_ref" <<< "$pr_commit_sha_cache" || return 1
-    printf '%s\n' "$target_ref"
-    return 0
+    matches="$(grep -E "^${target_ref}" <<< "$pr_commit_sha_cache" || true)"
+    match_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$matches")"
+    if [[ "$match_count" == 1 ]]; then
+      resolved_ref="$(head -n 1 <<< "$matches")"
+    elif [[ "$match_count" == 0 ]]; then
+      resolved_ref="$(gh api "repos/$REPO/commits/$target_ref" --jq '.sha')" || return 1
+    else
+      return 1
+    fi
+    [[ "$resolved_ref" =~ ^[0-9a-f]{40}$ && "$resolved_ref" == "$target_ref"* ]] || return 1
+  else
+    return 1
   fi
-  [[ "$target_ref" =~ ^[0-9a-f]{10}$ ]] || return 1
-  load_pr_commit_sha_cache || return 1
-  matches="$(grep -E "^${target_ref}" <<< "$pr_commit_sha_cache" || true)"
-  match_count="$(awk 'NF { count++ } END { print count + 0 }' <<< "$matches")"
-  [[ "$match_count" == 1 ]] || return 1
-  match="$(head -n 1 <<< "$matches")"
-  printf '%s\n' "$match"
+  commit_is_associated_with_pr "$resolved_ref" || return 1
+  printf '%s\n' "$resolved_ref"
 }
 
 receipted_history_marker_ids() {
@@ -1454,7 +1510,7 @@ withdrawn_evidence_at() {
   # clock value when a newer clean verdict is already available.
   local delivery_at
   delivery_at="$(jq -r --arg key "$key" '
-    [.[] | select((.clean | not) and .neutral != true)
+    [.[] | select((.clean | not) and .neutral != true and .unverified != true)
       | select((if .source == "review" then "review:" + .id else (.id | sub("^issue-comment-"; "issue-comment:")) end) == $key)
       | .at] | sort | last // ""' <<< "$deliveries")"
   if [[ -n "$delivery_at" ]]; then
@@ -1506,7 +1562,7 @@ read_gate_snapshot() (
     withdrawal_at="$(withdrawn_evidence_at "$deliveries")"
     jq -cn --argjson deliveries "$deliveries" --argjson reviews "$reviews" --argjson thread_summary "$thread_summary" --arg issue_comment_at "$issue_comment_at" --arg review_invalidation_at "$review_invalidation_at" --arg finding_history_at "$finding_history_at" --arg withdrawal_at "$withdrawal_at" '
       ($thread_summary | map(select(.total_count > 0) | .id)) as $finding_ids
-      | (([$deliveries[] | select((.clean | not) and .neutral != true) | .at]
+      | (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true) | .at]
           + [$reviews[]
              | select(.id as $id | ($finding_ids | index($id)) != null)
              | .at]
@@ -1515,7 +1571,7 @@ read_gate_snapshot() (
           + (if $finding_history_at == "" then [] else [$finding_history_at] end)
           + (if $withdrawal_at == "" then [] else [$withdrawal_at] end))
          | max // "") as $latest_finding_at
-      | (([$deliveries[] | select((.clean | not) and .neutral != true) | .at]
+      | (([$deliveries[] | select((.clean | not) and .neutral != true and .unverified != true) | .at]
           + [$reviews[]
              | select(.id as $id | ($finding_ids | index($id)) != null)
              | .at]
@@ -1890,7 +1946,7 @@ def clean_security_envelope:
     while IFS= read -r encoded_body; do
       relayed_body="$(jq -r '.' <<< "$encoded_body")"
       relayed_evidence="$(regular_evidence "$relayed_body" "$relayed_review_id" review "$relayed_review_at")"
-      if jq -e --arg id "$relayed_review_id" 'any(.deliveries[]; .source == "review" and .id == $id and (.clean | not) and .neutral != true)' <<< "$relayed_evidence" >/dev/null; then
+      if jq -e --arg id "$relayed_review_id" 'any(.deliveries[]; .source == "review" and .id == $id and (.clean | not) and .neutral != true and .unverified != true)' <<< "$relayed_evidence" >/dev/null; then
         stamp_status "review-finding-history" pending \
           "Regular findings observed for PR #$pr_number on head $head_sha; review:$relayed_review_id; event:captured" >/dev/null
         edited_finding=true
@@ -1941,6 +1997,15 @@ fi
 if [[ -n "$finding_after" ]]; then
   stamp_status "$REVIEW_REVIEW_CONTEXT" pending "Regular review invalidated at $finding_after; PR #$pr_number; withdrawn delivery" >/dev/null
 fi
+issue_comment_facts=""
+if [[ "$event_name" == issue_comment && -f "$event_path" ]]; then
+  section_classifier="${REVIEW_SECTIONS_SCRIPT:-$(dirname "${BASH_SOURCE[0]}")/review_sections.py}"
+  [[ -f "$section_classifier" ]] || {
+    echo "The canonical review-section classifier is unavailable; event remains pending." >&2
+    exit 1
+  }
+  issue_comment_facts="$(python3 "$section_classifier" "$event_path")"
+fi
 native_regular_candidate=false
 if [[ "$native_event_head_bound" == true ]] && jq -e \
     '.action == "created" and (.comment.id | type == "number" and . > 0 and floor == .)' \
@@ -1953,8 +2018,16 @@ if [[ "$native_event_head_bound" == true ]] && jq -e \
   # inside regular_evidence and could acknowledge an unclassified event.
   native_candidate_evidence="$(regular_evidence "$native_candidate_body" "$native_candidate_id" issue_comment "$native_candidate_at" "$native_candidate_base64")"
   if jq -e --arg id "issue-comment-$native_candidate_id" \
-      'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true)' \
+      'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true and .unverified != true)' \
       <<< "$native_candidate_evidence" >/dev/null; then
+    native_regular_candidate=true
+  fi
+  if [[ "$native_regular_candidate" != true ]] && jq -e \
+      '.action == "created" and (.comment.id | type == "number" and . > 0 and floor == .)' \
+      "$event_path" >/dev/null 2>&1 && jq -e \
+      'any(.current.sections[]; .regular_adverse)' <<< "$issue_comment_facts" >/dev/null; then
+    # A current event may carry a section explicitly bound to an earlier PR
+    # commit. Let the section-level resolver below validate and persist it.
     native_regular_candidate=true
   fi
 fi
@@ -2028,80 +2101,9 @@ def clean_security_envelope:
          test("(?i)\\A[[:space:]]*(?:<!--[^>]*-->[[:space:]]*)?(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)")))))' "$event_path" >/dev/null; then
   edited_clean=false
   security_event=false
-  security_event_states="$(jq -c --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
-    def contains_security_heading:
-      split("\n") | any(.[]; test($security_heading_pattern));
-    def contains_security_marker:
-      test("(?im)(?:\\A|\\n)[[:blank:]]*\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
-      test("(?is)\\A[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*(?:\\r?\\n|\\z)") or
-      (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
-    def coordinator_prelude:
-      test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-    def coordinator_result_for_head:
-      if coordinator_prelude then
-        (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
-      else false end;
-    def coordinator_metadata:
-      test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z")) and ((gsub("`[^`]*`"; "") | test("(?is)<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->")) | not);
-    def security_result_sections:
-      . as $body
-      | if coordinator_prelude then
-          capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
-          | split("\n") as $lines
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
-          | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
-              [range(0; $lines | length) as $start
-               | select($lines[$start] | test($security_heading_pattern))
-               | ([range($start + 1; $lines | length)
-                  | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
-                 | .[0] // ($lines | length)) as $end
-               | $lines[$start:$end] | join("\n")]
-            else [$body] end
-        else [$body] end;
-def clean_security_footer($summary; $findings_sentence):
-  "\n\n" + ([
-    "_only the user who started this review can view the report in codex._",
-    "",
-    "<details> <summary>" + $summary + "</summary>",
-    "<br/>",
-    "",
-    "this is an experimental codex feature. reviews are triggered when:",
-    "- you comment \"@codex security review\"",
-    "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review",
-    "",
-    $findings_sentence,
-    "",
-    "",
-    "</details>"
-  ] | join("\n"));
-def clean_security_envelope:
-  if test($clean_security_report_pattern) then
-    (sub($clean_security_report_pattern; "")
-  | gsub("this is an experimental codex feature\\. security reviews are triggered when:"; "this is an experimental codex feature. reviews are triggered when:")
-  | gsub("\r"; "")
-  | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $tail
-    | ($tail == ""
-       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
-  else false end;
-    def has_security_report_link:
-      (ascii_downcase) as $lower
-      | ($lower | contains("[view security finding report]("))
-        and ((($lower | clean_security_envelope) | not)
-             or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
-    def is_security_event:
-      contains_security_marker or
-      (contains_security_heading and
-       (has_security_report_link or ((ascii_downcase) | clean_security_envelope)));
-    [.comment.body // "", .changes.body.from // .comment.body // ""] | map(
-      . as $body
-      | ((($native_head_bound == "true") or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
-         or ($body | coordinator_result_for_head))
-        and ($body | security_result_sections | any(.[]; is_security_event)))
-  ' "$event_path")"
+  security_event_states="$(jq -cn --argjson facts "$issue_comment_facts" '
+    [($facts.current.sections | any(.[]; .security_event)),
+     ($facts.previous.sections | any(.[]; .security_event))]')"
   if jq -e 'any' <<< "$security_event_states" >/dev/null; then
     security_event=true
     # Suppress regular withdrawal only when the edited comment was a security
@@ -2119,54 +2121,43 @@ def clean_security_envelope:
     event_regular_evidence=false
     event_comment_id="$(jq -r '.comment.id // empty' "$event_path")"
     event_comment_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
-    while IFS= read -r event_body_base64; do
+    event_action="$(jq -r '.action // empty' "$event_path")"
+    if [[ "$event_action" == edited ]]; then
+      prior_body="$(jq -r '.changes.body.from // empty' "$event_path")"
+      prior_body_base64="$(jq -r '.changes.body.from // "" | @base64' "$event_path")"
+    elif [[ "$event_action" == deleted ]]; then
+      prior_body="$(jq -r '.comment.body // empty' "$event_path")"
+      prior_body_base64="$(jq -r '.comment.body // "" | @base64' "$event_path")"
+    else
+      prior_body=""
+      prior_body_base64=""
+    fi
+    if [[ -n "$prior_body" ]]; then
+      event_body_base64="$prior_body_base64"
       event_body="$(jq -nr --arg body "$event_body_base64" '$body | @base64d')"
       event_body_evidence="$(regular_evidence "$event_body" "$event_comment_id" issue_comment "$event_comment_at" "$event_body_base64")"
       if jq -e --arg id "issue-comment-$event_comment_id" \
-          'any(.deliveries[]; .source == "issue_comment" and .id == $id)' \
+          'any(.deliveries[]; .source == "issue_comment" and .id == $id and .unverified != true)' \
           <<< "$event_body_evidence" >/dev/null; then
         event_regular_evidence=true
       fi
-    done < <(jq -r '[.comment.body // "", .changes.body.from // ""] | unique[] | select(length > 0) | @base64' "$event_path")
+    fi
+    if [[ "$native_event_head_bound" == true && "$event_regular_evidence" == true ]] && \
+       jq -en --arg head "$head_sha" --arg prefix "$head_prefix" --argjson facts "$issue_comment_facts" '
+         [$facts.previous.sections[] | select(.has_result)] as $previous
+         | ($previous | length) > 0
+           and all($previous[]; .target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__")
+       ' >/dev/null; then
+      # The prior body is explicitly about older PR commits. Its replacement
+      # must not withdraw a verdict for the current head.
+      event_regular_evidence=false
+    fi
     # Both immutable bodies matter: API visibility and lexical body ordering
     # must not hide a finding added by an edit or withdrawn from its prior body.
     if [[ "$native_event_head_bound" == true ]]; then
-      event_regular_finding_heads="$(jq -r --arg current_head "$head_sha" --arg event_head "$event_head_sha" '
-        def coordinator_prelude:
-          test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-        def request_head:
-          if coordinator_prelude then capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head else "" end;
-        def security_heading:
-          test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]*[^[:alnum:][:space:]][^\\r\\n]*|[[:space:]]*$)");
-        def regular_heading:
-          test("(?i)\\A[[:space:]]*(?:@|#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?codex[[:space:]]+review(?:[[:space:]]*:|[[:space:]]|$)|\\A[[:space:]]*(?:#{1,6}[[:space:]]+)?review result(?:[[:space:]]*:|[[:space:]]|$)");
-        def result_heading: security_heading or regular_heading;
-        def availability_section:
-          test("(?i)\\b(?:currently unavailable|usage quota|usage limits?|rate[- ]limited|at capacity)\\b");
-        def known_clean_result:
-          test("(?i)\\b(?:no (?:issues?|findings?|bugs?|vulnerabilities?) found|no major issues|no blocking issues|didn.t find any (?:major )?issues|did not find any (?:major )?issues)\\b");
-        def explicit_adverse_result:
-          test("(?i)\\bP[0-3]\\b|\\bfinding(?:s)?[[:space:]]+(?:observed|remain(?:s|ing)?|reported|persist(?:s|ing)?|unresolved)\\b|\\b(?:vulnerab\\w*|unsafe|exploitable|defect|bug|regression|security risk|issue remains)[^\\r\\n]*\\b(?:remain(?:s|ing)?|persist(?:s|ing)?|unresolved|exploitable|exposed)\\b|codex-security-review-finding:v1");
-        def adverse_regular_section:
-          regular_heading and (security_heading | not) and
-          (explicit_adverse_result or
-            ((availability_section | not) and
-             ((known_clean_result | not) or explicit_adverse_result)));
-        def sections($body):
-          ($body | if coordinator_prelude then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body else . end)
-          | split("\n") as $lines
-          | [range(0; $lines | length) | select($lines[.] | result_heading)] as $starts
-          | if ($starts | length) == 0 then [] else
-              [$starts | to_entries[] | .value as $start | ($starts[.key + 1] // ($lines | length)) as $end | $lines[$start:$end] | join("\n")]
-            end;
-        [[.comment.body // "", .changes.body.from // ""][] as $body
-        | ($body | request_head) as $request
-        | ($body | sections($body) | to_entries[])
-        | select(.value | adverse_regular_section)
-        | (.value | [scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0]] | .[-1] // $request)
-        | ascii_downcase as $ref
-        | if ($ref | test("^([0-9a-f]{40}|[0-9a-f]{10})$")) then $ref else "__unbound__" end] | unique[]
-      ' "$event_path")"
+      event_regular_finding_heads="$(jq -nr --argjson facts "$issue_comment_facts" '
+        [$facts.current.sections[], $facts.previous.sections[]]
+        | map(select(.regular_adverse) | .target_ref) | unique[]')"
       while IFS= read -r finding_ref; do
         [[ -n "$finding_ref" ]] || continue
         if [[ "$finding_ref" == "__unbound__" ]]; then
@@ -2181,155 +2172,37 @@ def clean_security_envelope:
         }
         stamp_status_for_sha "$finding_target_head" "review-finding-history" pending \
           "Regular findings observed for PR #$pr_number on head $finding_target_head; issue-comment:$event_comment_id; event:captured" >/dev/null
-        edited_finding=true
+        [[ "$finding_target_head" == "$head_sha" ]] && edited_finding=true
       done <<< "$event_regular_finding_heads"
     fi
     if [[ "$(jq -r '.action' "$event_path")" == created && "$native_event_head_bound" == true ]]; then
       # Creation is not a withdrawal; only actual adverse evidence blocks it.
+      edited_clean=true
+    elif [[ "$event_action" == edited && "$event_regular_evidence" == true ]] && \
+         jq -en --arg head "$head_sha" --arg prefix "$head_prefix" --argjson facts "$issue_comment_facts" '
+           [$facts.current.sections[] | select(.kind == "regular" and .has_result)] as $current
+           | ($current | length) > 0
+             and all($current[]; .target_ref != $head and .target_ref != $prefix and .target_ref != "__unbound__")
+         ' >/dev/null; then
+      # The edited body now attributes every regular result to older PR
+      # commits. Its old adverse history is preserved per commit below; it
+      # cannot create a transient blocker on the current head.
       edited_clean=true
     elif [[ "$event_regular_evidence" != true ]]; then
       edited_clean=true
     fi
   fi
   security_finding=false
-  if [[ "$security_event" == true ]] && jq -e --arg head "$head_sha" --arg prefix "$head_prefix" --arg native_head_bound "$native_event_head_bound" --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" '
-    def contains_security_heading:
-      split("\n") | any(.[]; test($security_heading_pattern));
-    def contains_security_marker:
-      test("(?im)(?:\\A|\\n)[[:blank:]]*\\[P[0-3]\\][^\\r\\n]*[[:blank:]]+<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$") or
-      test("(?is)\\A[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*(?:\\r?\\n|\\z)") or
-      (contains_security_heading and test("(?im)(?:\\A|\\n)[[:blank:]]*<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->[[:blank:]]*\\r?$"));
-    def coordinator_prelude:
-      test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-    def coordinator_result_for_head:
-      if coordinator_prelude then
-        (capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head == $head)
-      else false end;
-    def coordinator_metadata:
-      test("(?s)\\A[[:space:]]*(?:(?:Retry reason:[^\\r\\n]*|Root-cause diagnosis: private evidence SHA-256 [0-9a-f]{64}|Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*)[[:space:]]*)*\\z") and (test("(?i)\\bP[0-3]\\b") | not) and ((test("(?i)codex-security-review-finding:v1") | not) or test("(?s)\\A[[:space:]]*(?:Retry reason:[^\\r\\n]*\\r?\\n[[:space:]]*)*Root-cause diagnosis:[ \\t]*\\r?\\n[ \\t]*- rootCause:[^\\r\\n]*(?i:codex-security-review-finding:v1)[^\\r\\n]*\\r?\\n[ \\t]*- changes:[^\\r\\n]*\\r?\\n[ \\t]*- validation:[^\\r\\n]*[[:space:]]*\\z")) and ((gsub("`[^`]*`"; "") | test("(?is)<!--[[:blank:]]*codex-security-review-finding:v1[[:blank:]]*-->")) | not);
-    def security_result_sections:
-      . as $body
-      | if coordinator_prelude then
-          capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body
-          | split("\n") as $lines
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern))] | .[0]) as $first_security
-          | ([range(0; $lines | length) | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))] | .[0]) as $first_result
-          | if $first_security != null and $first_result != null and ($lines[:$first_result] | join("\n") | coordinator_metadata) then
-              [range(0; $lines | length) as $start
-               | select($lines[$start] | test($security_heading_pattern))
-               | ([range($start + 1; $lines | length)
-                  | select($lines[.] | test($security_heading_pattern) or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex review|review result)(?:[[:space:]]*:|[[:space:]]|$)"))]
-                 | .[0] // ($lines | length)) as $end
-               | $lines[$start:$end] | join("\n")]
-            else [$body] end
-        else [$body] end;
-def clean_security_footer($summary; $findings_sentence):
-  "\n\n" + ([
-    "_only the user who started this review can view the report in codex._",
-    "",
-    "<details> <summary>" + $summary + "</summary>",
-    "<br/>",
-    "",
-    "this is an experimental codex feature. reviews are triggered when:",
-    "- you comment \"@codex security review\"",
-    "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review",
-    "",
-    $findings_sentence,
-    "",
-    "",
-    "</details>"
-  ] | join("\n"));
-def clean_security_envelope:
-  if test($clean_security_report_pattern) then
-    (sub($clean_security_report_pattern; "")
-  | gsub("this is an experimental codex feature\\. security reviews are triggered when:"; "this is an experimental codex feature. reviews are triggered when:")
-  | gsub("\r"; "")
-  | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $tail
-    | ($tail == ""
-       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-       or $tail == (clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings are found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
-  else false end;
-    def has_security_report_link:
-      (ascii_downcase) as $lower
-      | ($lower | contains("[view security finding report]("))
-        and ((($lower | clean_security_envelope) | not)
-             or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
-    ([.comment.body // "", .changes.body.from // ""] | any(
-      . as $body
-      | ((($native_head_bound == "true") or contains("`" + $head + "`") or contains("`" + $prefix + "`"))
-         or ($body | coordinator_result_for_head))
-        and ($body | security_result_sections | any(.[]; . as $result
-          | ($result | contains_security_marker) or
-            (($result | contains_security_heading) and
-             ($result | has_security_report_link))))))
-  ' "$event_path" >/dev/null; then
+  if [[ "$security_event" == true ]] && jq -en --argjson facts "$issue_comment_facts" '
+      any([$facts.current.sections[], $facts.previous.sections[]][]; .security_finding)
+    ' >/dev/null; then
     security_finding=true
   fi
   security_finding_heads=""
   if [[ "$security_finding" == true ]]; then
-    security_finding_heads="$(jq -r --arg security_heading_pattern "$security_heading_pattern" --arg clean_security_report_pattern "$security_clean_report_pattern" --arg current_head "$head_sha" --arg event_head "$event_head_sha" '
-      def coordinator_prelude:
-        test("(?is)\\A[[:space:]]*@codex review[ \\t]*\\r?\\n[[:space:]]*(?:Review current head \\x60[0-9a-f]{40}\\x60\\.(?: Report concrete correctness, security, and regression defects with their triggering conditions\\. Assess related cases together; omit style-only preferences\\.)?[ \\t]*\\r?\\n[[:space:]]*)?<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?:\\r?\\n|$)");
-      def request_head:
-        if coordinator_prelude then capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head else "" end;
-      def security_heading:
-        test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]-]+)?security(?:[[:space:]-]+)review(?:[[:space:]]*:|[[:space:]]*[^[:alnum:][:space:]][^\\r\\n]*|[[:space:]]*$)");
-      def result_heading:
-        security_heading or test("(?i)\\A[[:space:]]*(?:#{1,6}[[:space:]]+(?:[^[:alnum:]\\r\\n]+[[:space:]]+)?)?(?:codex[[:space:]]+review|review result)(?:[[:space:]]*:|[[:space:]]|$)");
-      def sections:
-        . as $body
-        | (if coordinator_prelude then capture("(?s)<!--[[:space:]]*review-request:v2[[:space:]]+head=[0-9a-f]{40}[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->[[:space:]]*(?<body>.*)$").body else $body end)
-        | split("\n") as $lines
-        | [range(0; $lines | length) | select($lines[.] | result_heading)] as $starts
-        | if ($starts | length) == 0 then [$body] else
-            [$starts | to_entries[] | .value as $start | ($starts[.key + 1] // ($lines | length)) as $end | $lines[$start:$end] | join("\n")]
-          end;
-      def section_clean_security_footer($summary; $findings_sentence):
-        "\n\n" + ([
-          "_only the user who started this review can view the report in codex._",
-          "",
-          "<details> <summary>" + $summary + "</summary>",
-          "<br/>",
-          "",
-          "this is an experimental codex feature. reviews are triggered when:",
-          "- you comment \"@codex security review\"",
-          "- a regular code review gets triggered (for example, \"@codex review\" or when a pr is opened), and you\u2019re opted in so security review runs alongside code review",
-          "",
-          $findings_sentence,
-          "",
-          "",
-          "</details>"
-        ] | join("\n"));
-      def section_clean_security_envelope:
-        if test($clean_security_report_pattern) then
-          (sub($clean_security_report_pattern; "")
-            | gsub("this is an experimental codex feature\\. security reviews are triggered when:"; "this is an experimental codex feature. reviews are triggered when:")
-            | gsub("\r"; "")
-            | gsub("^[[:space:]]+|[[:space:]]+$"; "")) as $tail
-          | ($tail == ""
-             or $tail == (section_clean_security_footer("about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; ""))
-             or $tail == (section_clean_security_footer("ℹ️ about codex security reviews in github"; "once complete, codex will leave suggestions, or a comment if no findings were found.") | gsub("^[[:space:]]+|[[:space:]]+$"; "")))
-        else false end;
-      def has_security_report_link:
-        (ascii_downcase) as $lower
-        | ($lower | contains("[view security finding report]("))
-          and ((($lower | section_clean_security_envelope) | not)
-               or ($lower | test("(?im)(?:\\A|\\n)[[:space:]]*\\[P[0-3]\\]")));
-      def finding_section:
-        test("(?i)codex-security-review-finding:v1") or
-        (security_heading and
-         (test("(?im)^[[:blank:]]*\\[P[0-3]\\]") or has_security_report_link));
-      [[.comment.body // "", .changes.body.from // ""][] as $body
-       | ($body | request_head) as $request_head
-       | ($body | sections | to_entries[])
-       | select(.value | finding_section)
-       | .value as $section
-       | ([$section | scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0]] | .[-1] // $request_head)
-       | ascii_downcase as $ref
-       | if ($ref | test("^([0-9a-f]{40}|[0-9a-f]{10})$")) then $ref else "__unbound__" end] | unique[]
-    ' "$event_path")"
+    security_finding_heads="$(jq -nr --argjson facts "$issue_comment_facts" '
+      [$facts.current.sections[], $facts.previous.sections[]]
+      | map(select(.security_finding) | .target_ref) | unique[]')"
     if [[ -z "$security_finding_heads" ]]; then
       security_finding_heads="__unbound__"
     fi
@@ -2371,7 +2244,6 @@ def clean_security_envelope:
       fi
       # A deleted mutable comment cannot clear an authenticated security
       # finding, even when its numeric origin can be persisted by a consumer.
-      security_withdrawal_unresolved=true
       while IFS= read -r security_target_ref; do
         [[ -n "$security_target_ref" ]] || continue
         if [[ "$security_target_ref" == "__unbound__" ]]; then
@@ -2386,6 +2258,7 @@ def clean_security_envelope:
         }
         stamp_status_for_sha "$security_target_head" "review-security-history" pending \
           "Security invalidated; $security_marker for PR #$pr_number on head $security_target_head" >/dev/null
+        [[ "$security_target_head" == "$head_sha" ]] && security_withdrawal_unresolved=true
       done <<< "$security_finding_heads"
       if [[ "$comment_id" =~ ^[1-9][0-9]*$ ]]; then
         record_security_event_origin "issue-comment:$comment_id"
@@ -2393,52 +2266,47 @@ def clean_security_envelope:
       edited_clean=true
     fi
   fi
-  if [[ "$security_event" != true && "$(jq -r '.action' "$event_path")" == deleted ]]; then
-    prior_body="$(jq -r '.comment.body // empty' "$event_path")"
-    prior_body_base64="$(jq -r '.comment.body // "" | @base64' "$event_path")"
-    prior_id="$(jq -r '.comment.id // empty' "$event_path")"
-    prior_at="$(jq -r '.comment.updated_at // .comment.created_at // empty' "$event_path")"
-    prior_at="${prior_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
-    if [[ -n "$prior_body" && "$prior_id" =~ ^[1-9][0-9]*$ ]] && jq -e '
-      .comment.user.login == "chatgpt-codex-connector[bot]" and
-      .comment.user.id == 199175422 and .comment.user.type == "Bot"' \
-      "$event_path" >/dev/null && body_targets_review_head "$prior_body" "$head_sha"; then
-      prior_evidence="$(regular_evidence "$prior_body" "$prior_id" issue_comment "$prior_at" "$prior_body_base64")"
-      if jq -e --arg id "issue-comment-$prior_id" 'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true)' <<< "$prior_evidence" >/dev/null; then
-        # Deleting a findings-bearing issue comment is not a dismissal.
-        # Retain the origin on this head so a later clean result cannot erase it.
-        stamp_status "review-finding-history" pending \
-          "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$prior_id; event:captured" >/dev/null
-        edited_finding=true
-      fi
+  # Legacy issue-comment deliveries without a native capture still need
+  # current-head withdrawal history. The authenticated event path above stores
+  # each historical result on its own validated PR commit. Use section-aware
+  # regular evidence here so a coordinator marker cannot retarget an old result.
+  if [[ "$event_name" == issue_comment && "$native_event_head_bound" != true ]]; then
+    event_action="$(jq -r '.action // empty' "$event_path")"
+    if [[ "$event_action" == edited ]]; then
+      prior_body="$(jq -r '.changes.body.from // empty' "$event_path")"
+      prior_body_base64="$(jq -r '.changes.body.from // "" | @base64' "$event_path")"
+    elif [[ "$event_action" == deleted ]]; then
+      prior_body="$(jq -r '.comment.body // empty' "$event_path")"
+      prior_body_base64="$(jq -r '.comment.body // "" | @base64' "$event_path")"
+    else
+      prior_body=""
+      prior_body_base64=""
     fi
-  fi
-  # The prior body must be classified independently. A replacement security
-  # heading (or prose that merely resembles one) cannot erase a prior regular
-  # finding before its creation event was recorded.
-  if [[ "$(jq -r '.action' "$event_path")" == edited ]]; then
-    prior_body="$(jq -r '.changes.body.from // empty' "$event_path")"
-    prior_body_base64="$(jq -r '.changes.body.from // "" | @base64' "$event_path")"
     prior_id="$(jq -r '.comment.id // empty' "$event_path")"
     prior_at="$(jq -r '.comment.created_at // .comment.updated_at // empty' "$event_path")"
-    if [[ -n "$prior_body" ]] && body_targets_review_head "$prior_body" "$head_sha"; then
+    prior_at="${prior_at:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
+    if [[ -n "$prior_body" && "$prior_id" =~ ^[1-9][0-9]*$ ]]; then
       prior_evidence="$(regular_evidence "$prior_body" "$prior_id" issue_comment "$prior_at" "$prior_body_base64")"
-      if jq -e --arg id "issue-comment-$prior_id" 'any(.deliveries[]; .id == $id and (.clean | not) and .neutral != true)' <<< "$prior_evidence" >/dev/null; then
+      if jq -e --arg id "issue-comment-$prior_id" \
+          'any(.deliveries[]; .source == "issue_comment" and .id == $id and (.clean | not) and .neutral != true and .unverified != true)' \
+          <<< "$prior_evidence" >/dev/null; then
         stamp_status "review-finding-history" pending \
           "Regular findings observed for PR #$pr_number on head $head_sha; issue-comment:$prior_id; event:captured" >/dev/null
-        # A status read immediately after writing can lag. Carry this fact
-        # into both branches in memory as well as the durable history.
         edited_finding=true
-        finding_after="$(normalize_timestamp "$(jq -r '.comment.updated_at' "$event_path")")"
-        evidence_after="$finding_after"
+        if [[ "$event_action" == edited ]]; then
+          finding_after="$(normalize_timestamp "$(jq -r '.comment.updated_at' "$event_path")")"
+          evidence_after="$finding_after"
+        fi
       fi
     fi
-    edited_evidence="$(regular_evidence)"
-    if jq -e --slurpfile event "$event_path" '
-      any(.deliveries[]; .source == "issue_comment" and .clean and
-          .id == ("issue-comment-" + ($event[0].comment.id | tostring)) and .body == $event[0].comment.body)
-    ' <<< "$edited_evidence" >/dev/null; then
-      edited_clean=true
+    if [[ "$event_action" == edited ]]; then
+      edited_evidence="$(regular_evidence)"
+      if jq -e --slurpfile event "$event_path" '
+        any(.deliveries[]; .source == "issue_comment" and .clean and
+            .id == ("issue-comment-" + ($event[0].comment.id | tostring)) and .body == $event[0].comment.body)
+      ' <<< "$edited_evidence" >/dev/null; then
+        edited_clean=true
+      fi
     fi
   fi
   if [[ "$edited_clean" != true ]]; then
