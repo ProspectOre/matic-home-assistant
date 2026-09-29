@@ -25,6 +25,7 @@ const emptyPlans = { rooms: [], plans: [], selected_plan: null };
 export async function installPanelFixture(page, {
   initialPlanCatalog = emptyPlans,
   moduleSource = "typescript",
+  sceneDeltaPayload = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -81,7 +82,7 @@ export async function installPanelFixture(page, {
     }));
   }
   await page.goto("/");
-  await page.evaluate(async ({ module, scenes, plans }) => {
+  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -89,6 +90,7 @@ export async function installPanelFixture(page, {
     const catalog = { entries: [{
       entry_id: "synthetic-entry",
       scene_url: "/api/matic_robot/slam_scene/synthetic",
+      delta_url: sceneDeltaPayload ? "/api/matic_robot/slam_delta/synthetic" : null,
       pose_url: "/api/matic_robot/slam_pose/synthetic",
       history_url: "/api/matic_robot/slam_history/synthetic",
       areas_url: "/api/matic_robot/areas/synthetic",
@@ -127,6 +129,9 @@ export async function installPanelFixture(page, {
     const pendingHistoryScenes = [];
     const serviceCalls = [];
     let planReads = 0;
+    let deltaReads = 0;
+    let deltaPayloadResponses = 0;
+    let deltaNoChangeResponses = 0;
     const planCatalog = structuredClone(plans || { rooms: [], plans: [], selected_plan: null });
     const applySavedPlan = (data) => {
       const plan = planCatalog.plans.find((candidate) => candidate.id === data.plan_id);
@@ -170,6 +175,22 @@ export async function installPanelFixture(page, {
           headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "6" },
         }))));
       }
+      if (sceneDeltaPayload && path.includes("slam_delta/synthetic")) {
+        deltaReads += 1;
+        if (deltaReads > 1) {
+          deltaNoChangeResponses += 1;
+          return new Response(null, { status: 204 });
+        }
+        deltaPayloadResponses += 1;
+        return new Response(new Uint8Array(sceneDeltaPayload), {
+          headers: {
+            "Content-Type": "application/vnd.matic.slam-delta",
+            "X-Matic-Revision": "8",
+            "X-Matic-Base-Revision": "7",
+            "X-Matic-Floor-Coherent": "1",
+          },
+        });
+      }
       if (path.endsWith("slam_scene/synthetic")) return new Response(new Uint8Array(scenes), {
         headers: { "Content-Type": "application/vnd.matic.slam-scene", "X-Matic-Revision": "7" },
       });
@@ -203,10 +224,11 @@ export async function installPanelFixture(page, {
         activePopstateListeners: window.__panelFixturePopstateCount(),
         pendingHistoryScenes: pendingHistoryScenes.length,
         planReads,
+        ...(sceneDeltaPayload ? { deltaReads, deltaPayloadResponses, deltaNoChangeResponses } : {}),
         serviceCalls: serviceCalls.length,
       }),
     };
-  }, { module: modulePath, scenes: sceneBytes(), plans: initialPlanCatalog });
+  }, { module: modulePath, scenes: sceneBytes(), plans: initialPlanCatalog, sceneDeltaPayload });
   return {
     panelTag: await page.evaluate(() => window.__panelFixture.panelTag),
     modulePath,

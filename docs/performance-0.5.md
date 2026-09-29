@@ -5,7 +5,7 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
-The latest measurement is the untraced RC9 candidate; the production bundle fingerprint below identifies the measured bytes. Earlier RC7 measurements are retained as historical receipts.
+RC9 has separate untraced headed and headless receipts; the production bundle fingerprint below identifies both. [Controlled diagnostics](performance-0.5-diagnostics.md) retain their differing results and the unexplained input outlier. Earlier RC7 measurements remain historical.
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
@@ -28,7 +28,7 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The latest untraced comparison ran at `2026-09-29T04:52:14.698Z`
+The untraced headless comparison ran at `2026-09-29T04:52:14.698Z`
 (9:52 p.m. PDT on September 28) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no throttling, and no-store assets. Other automated suites
 were stopped; no background HA tab was opened during this measurement. Three fresh contexts per build ran in AB/BA/AB order; scene and
@@ -47,7 +47,7 @@ estimates are a lab proxy, not field INP. See the official
 Gzip sizes use level 9 offline estimates; the local server sends uncompressed
 JavaScript. Heap is one post-journey observation, not a retention bound.
 
-## Latest untraced result
+## Untraced headless result
 RC9 production bundle `fea378f99e6dbc3c046e69392b877a345c0ad281904ea1d91f222198c0918480`, measured against baseline bundle `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752`; all six samples used the same scene fingerprint.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
@@ -60,7 +60,7 @@ RC9 production bundle `fea378f99e6dbc3c046e69392b877a345c0ad281904ea1d91f222198c
 | Post-journey JS heap range, three observations, bytes | 5,107,856–6,490,224 | 5,961,564–6,110,444 |
 | Input maximum estimates, three runs, ms | 144 / 104 / 88 | 128 / 64 / 56 |
 
-Candidate input p95 remains within the 100 ms lab threshold, but the Long Tasks gate is open: candidate runs reported 2/0/0 tasks (longest 111 ms), while baseline reported 1/1/1 (longest 125 ms). Separate trace diagnosis remains pending; no all-performance pass is claimed. The 100-room Clear regression records 100 → 1 commits and 99 → 0 intermediate nonempty preview keys, not network-request counts. Heap observations are not retention bounds; field, mobile, sustained runtime, and release acceptance remain open.
+Candidate input p95 remains within the 100 ms lab threshold, but this headless receipt reported 2/0/0 Long Tasks (longest 111 ms), while baseline reported 1/1/1 (longest 125 ms). The later headed comparison reported p95 56/56/56 ms and zero Long Tasks; one input maximum was 552 ms. Controlled diagnosis is linked above; neither receipt is discarded and no all-performance pass is claimed. The 100-room Clear regression records 100 → 1 commits and 99 → 0 intermediate nonempty preview keys, not network-request counts. Heap observations are not retention bounds; field, mobile, sustained runtime, and release acceptance remain open.
 
 Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 
