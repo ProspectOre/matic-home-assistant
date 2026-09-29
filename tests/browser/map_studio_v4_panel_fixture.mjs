@@ -2,7 +2,7 @@ import { build } from "esbuild";
 
 const PANEL_MODULE = "/panel-fixture-test.js";
 
-function sceneBytes() {
+function sceneBytes(scenePoint) {
   const metadata = Buffer.from(JSON.stringify({
     meters_per_cell: 0.015,
     span_cells: [100, 80],
@@ -17,6 +17,14 @@ function sceneBytes() {
   bytes.writeUInt32LE(metadata.length, 12);
   bytes.writeUInt32LE(1, 16);
   metadata.copy(bytes, 24);
+  if (scenePoint) {
+    const pointOffset = 24 + metadata.length;
+    bytes.writeUInt16LE(scenePoint.x, pointOffset);
+    bytes.writeUInt16LE(scenePoint.y, pointOffset + 2);
+    bytes[pointOffset + 5] = scenePoint.color[0];
+    bytes[pointOffset + 6] = scenePoint.color[1];
+    bytes[pointOffset + 7] = scenePoint.color[2];
+  }
   return [...bytes];
 }
 
@@ -26,6 +34,8 @@ export async function installPanelFixture(page, {
   initialPlanCatalog = emptyPlans,
   moduleSource = "typescript",
   sceneDeltaPayload = null,
+  posePosition = [1, 1],
+  scenePoint = null,
 } = {}) {
   const modulePath = moduleSource === "packaged" ? "/map_studio_v4/index.js" : PANEL_MODULE;
   const bundle = moduleSource === "typescript" ? await build({
@@ -82,7 +92,7 @@ export async function installPanelFixture(page, {
     }));
   }
   await page.goto("/");
-  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload }) => {
+  await page.evaluate(async ({ module, scenes, plans, sceneDeltaPayload, posePosition }) => {
     const { MATIC_MAP_PANEL_TAG } = await import(module);
     const json = (body, headers = {}) => new Response(JSON.stringify(body), {
       headers: { "Content-Type": "application/json", ...headers },
@@ -123,7 +133,7 @@ export async function installPanelFixture(page, {
         snapshots: [{ id: "saved-shot", created_at: "2026-09-25T12:00:00Z", revision: 6, point_count: 1,
           scene_url: "/api/matic_robot/slam_scene/history" }] },
     ] };
-    const pose = { position: [1, 1], source: "latest_pose", revision: 7, pose_revision: 1,
+    const pose = { position: posePosition, source: "latest_pose", revision: 7, pose_revision: 1,
       map_floor_coherent: true, map_session_key: "a".repeat(64), pose_freshness: "live" };
     const areas = { scene_url: catalog.entries[0].scene_url, rooms: [], areas: [] };
     const pendingHistoryScenes = [];
@@ -228,7 +238,7 @@ export async function installPanelFixture(page, {
         serviceCalls: serviceCalls.length,
       }),
     };
-  }, { module: modulePath, scenes: sceneBytes(), plans: initialPlanCatalog, sceneDeltaPayload });
+  }, { module: modulePath, scenes: sceneBytes(scenePoint), plans: initialPlanCatalog, sceneDeltaPayload, posePosition });
   return {
     panelTag: await page.evaluate(() => window.__panelFixture.panelTag),
     modulePath,

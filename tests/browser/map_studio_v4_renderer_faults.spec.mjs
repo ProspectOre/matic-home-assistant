@@ -46,7 +46,13 @@ async function readRendererState(page) {
 
 test("packaged Map Studio keeps a live frame across WebGL loss and restoration @safety", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 1180, height: 760 });
-  const fixture = await installPanelFixture(page, { moduleSource: "packaged", initialPlanCatalog: ROOM_CATALOG });
+  // Center a distinctive scene point and omit pose; no room geometry or other annotation can satisfy the pixel check.
+  const fixture = await installPanelFixture(page, {
+    moduleSource: "packaged",
+    initialPlanCatalog: ROOM_CATALOG,
+    posePosition: null,
+    scenePoint: { x: 50, y: 40, color: [255, 0, 255] },
+  });
   await page.evaluate((panelTag) => {
     document.body.style.margin = "0";
     const panel = window.__panelFixture.createPanel();
@@ -121,9 +127,13 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
     const context = canvas.getContext("2d");
     if (!context || canvas.width === 0 || canvas.height === 0) return 0;
     const pixels = context.getImageData(0, 0, canvas.width, canvas.height).data;
-    let painted = 0;
-    for (let index = 3; index < pixels.length; index += 4) painted += pixels[index] > 0 ? 1 : 0;
-    return painted;
+    let scenePixels = 0;
+    for (let index = 0; index < pixels.length; index += 4) {
+      if (pixels[index] > 200 && pixels[index + 1] < 40 && pixels[index + 2] > 200 && pixels[index + 3] > 0) {
+        scenePixels += 1;
+      }
+    }
+    return scenePixels;
   })).toBeGreaterThan(0);
 
   const lost = await readRendererState(page);

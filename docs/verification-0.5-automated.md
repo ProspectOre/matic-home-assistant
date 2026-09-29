@@ -37,7 +37,10 @@ delta journeys in RC9's suite. [map_studio_v4_renderer_faults.spec.mjs](../tests
 adds two tests against those same packaged production bytes:
 
 - Real WebGL loss paints a Canvas2D fallback, retains one canvas, nonempty room
-  selection and camera, then restores WebGL; no service is dispatched.
+  selection and camera, then restores WebGL; no service is dispatched. The
+  pixel check isolates a magenta scene point with pose/scene rooms omitted.
+  Temporarily suppressing fallback image compositing makes that assertion fail;
+  the mutation is removed from the committed test.
 - Working native deflate support is confirmed before malformed compressed
   bytes enter the packaged delta path. Recovery receipts and unchanged scene
   revision/current coherence prove containment; no service is dispatched.
