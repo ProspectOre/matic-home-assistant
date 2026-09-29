@@ -73,7 +73,7 @@ async function loadGallery(page, { scenario = "ready", narrow = false } = {}) {
 async function loadEffectHarness(page) {
   const bundle = await build({
     stdin: {
-    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { BackendError } from "./frontend/map-studio-v4/backend"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
+    contents: 'export { EffectController } from "./frontend/map-studio-v4/effects"; export { BackendError } from "./frontend/map-studio-v4/backend"; export { LayerHistoryController } from "./frontend/map-studio-v4/layer-history"; export { WorkspaceStore, captureCoordinateEdit, canEditCoordinates, canReadFloorResources } from "./frontend/map-studio-v4/state"; export { createGalleryState, withGalleryRoomPreview } from "./frontend/map-studio-v4/gallery-state";',
     resolveDir: process.cwd(),
     },
     bundle: true, format: "esm", write: false,
@@ -1506,6 +1506,270 @@ test.describe("Map Studio v0.4 foundation", () => {
     }
   }
 
+  test("robot reconnect rejects pending catalog proof until a fresh read completes", async ({ page }) => {
+    await loadEffectHarness(page);
+    await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const store = new m.WorkspaceStore(initial);
+      const pending = [];
+      const recovery = window.__robotReconnectProof = { store, reads: 0, pending: null, releaseStale: null, releaseFresh: null, module: m };
+      const effects = recovery.effects = new m.EffectController(store, {
+        catalog: async (signal) => {
+          recovery.reads += 1;
+          if (recovery.reads === 1) return [entry];
+          return new Promise((resolve) => {
+            const release = () => resolve([entry]);
+            pending.push({ signal, release });
+            if (recovery.reads === 2) recovery.releaseStale = release;
+            if (recovery.reads === 3) recovery.releaseFresh = release;
+          });
+        },
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      recovery.projection = projection;
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      recovery.pending = effects.refreshCatalog(true);
+      effects.sync({ ...projection, host: { ...projection.host, robotConnected: false } });
+      recovery.disconnected = {
+        generation: store.value.generation,
+        coherence: store.value.coherence,
+        canEdit: m.canEditCoordinates(store.value),
+        canRead: m.canReadFloorResources(store.value),
+        staleAborted: pending[0].signal.aborted,
+      };
+      effects.sync(projection);
+      recovery.reconnectedBeforeProof = {
+        generation: store.value.generation,
+        coherence: store.value.coherence,
+        canEdit: m.canEditCoordinates(store.value),
+        canRead: m.canReadFloorResources(store.value),
+      };
+      recovery.releaseStale();
+    });
+    await expect.poll(() => page.evaluate(() => window.__robotReconnectProof.reads)).toBe(3);
+    const beforeFreshProof = await page.evaluate(() => {
+      const r = window.__robotReconnectProof;
+      return {
+        state: r.reconnectedBeforeProof,
+        reads: r.reads,
+        staleAborted: r.disconnected.staleAborted,
+        freshPending: typeof r.releaseFresh === "function",
+        coherence: r.store.value.coherence,
+        canEdit: r.module.canEditCoordinates(r.store.value),
+      };
+    });
+    expect(beforeFreshProof).toMatchObject({
+      state: { coherence: "degraded", canEdit: false, canRead: false },
+      reads: 3, staleAborted: true, freshPending: true,
+      coherence: "degraded", canEdit: false,
+    });
+    await page.evaluate(() => window.__robotReconnectProof.releaseFresh());
+    await expect.poll(() => page.evaluate(() => {
+      const r = window.__robotReconnectProof;
+      return { coherence: r.store.value.coherence, canEdit: r.store.value.coherence === "current" };
+    })).toEqual({ coherence: "current", canEdit: true });
+    await page.evaluate(async () => {
+      const r = window.__robotReconnectProof;
+      await r.pending;
+      r.effects.dispose();
+    });
+  });
+
+  test("combined HA and robot reconnect clears the offline notice while re-proving", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const entry = { ...initial.resources.entry, deltaUrl: null };
+      const store = new m.WorkspaceStore(initial);
+      let reads = 0;
+      const effects = new m.EffectController(store, {
+        catalog: async () => { reads += 1; return [entry]; },
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => ({ scene: initial.resources.scene.value, revision, floorCoherent: true }),
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      effects.sync({ ...projection, host: { ...projection.host, connected: false, robotConnected: false } });
+      effects.sync(projection);
+      const pending = { notice: store.value.notice?.text ?? null, reads };
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const recovered = { notice: store.value.notice?.text ?? null, reads, coherence: store.value.coherence };
+      effects.dispose();
+      return { pending, recovered };
+    });
+    expect(result.pending.notice).toBeNull();
+    expect(result.recovered).toMatchObject({ notice: null, coherence: "current" });
+    expect(result.recovered.reads).toBeGreaterThanOrEqual(2);
+  });
+
+  test("active delta loop owns pixel admission across 204 gaps and catalog revisions", async ({ page }) => {
+    await loadEffectHarness(page);
+    await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const state = window.__deltaCatalogRace = {
+        entry: { ...initial.resources.entry, deltaUrl: "/delta" },
+        sceneCalls: 0,
+        deltaCalls: 0,
+        release204: null,
+        releaseDelta: null,
+      };
+      const store = state.store = new m.WorkspaceStore(initial);
+      const effects = state.effects = new m.EffectController(store, {
+        catalog: async () => [state.entry],
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => {
+          state.sceneCalls += 1;
+          return { scene: initial.resources.scene.value, revision, floorCoherent: true };
+        },
+        sceneDelta: async (_url, _scene, _floorCoherent, signal) => {
+          const call = ++state.deltaCalls;
+          if (call === 1) return new Promise((resolve) => {
+            state.release204 = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: null, notModified: true });
+          });
+          if (call === 2) return new Promise((resolve) => {
+            state.releaseDelta = () => resolve({ revision: state.entry.mapRevision, floorCoherent: true, scene: initial.resources.scene.value });
+          });
+          return new Promise((_resolve, reject) => {
+            const abort = () => reject(new DOMException("Aborted", "AbortError"));
+            if (signal.aborted) abort();
+            else signal.addEventListener("abort", abort, { once: true });
+          });
+        },
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+    });
+    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(1);
+    await page.evaluate(() => window.__deltaCatalogRace.release204());
+    await expect.poll(() => page.evaluate(() => window.__deltaCatalogRace.deltaCalls)).toBe(2);
+
+    const catalogDuringDelta = await page.evaluate(async () => {
+      const s = window.__deltaCatalogRace;
+      const revision = s.store.value.resources.entry.mapRevision;
+      const generation = s.store.value.generation;
+      s.entry = { ...s.entry, mapRevision: revision + 1 };
+      await s.effects.refreshCatalog();
+      return {
+        generationBefore: generation,
+        generationAfter: s.store.value.generation,
+        revisionBefore: revision,
+        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
+        sceneCalls: s.sceneCalls,
+      };
+    });
+    expect(catalogDuringDelta.generationAfter).toBe(catalogDuringDelta.generationBefore);
+    expect(catalogDuringDelta.revisionAfterCatalog).toBe(catalogDuringDelta.revisionBefore);
+    expect(catalogDuringDelta.sceneCalls).toBe(1);
+
+    const advanced = await page.evaluate(async () => {
+      const s = window.__deltaCatalogRace;
+      s.releaseDelta();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const revision = s.store.value.resources.entry.mapRevision;
+      const generation = s.store.value.generation;
+      s.entry = { ...s.entry, mapRevision: revision + 1 };
+      await s.effects.refreshCatalog();
+      const ownerPreserved = {
+        generationBefore: generation,
+        generationAfter: s.store.value.generation,
+        revisionBefore: revision,
+        revisionAfterCatalog: s.store.value.resources.entry.mapRevision,
+        sceneCalls: s.sceneCalls,
+        deltaCalls: s.deltaCalls,
+      };
+      const boundaryGeneration = s.store.value.generation;
+      s.entry = { ...s.entry, selectedFloorOrdinal: 2, mapFloorOrdinal: 2 };
+      await s.effects.refreshCatalog(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const proofBoundary = {
+        generationBefore: boundaryGeneration,
+        generationAfter: s.store.value.generation,
+        sceneCalls: s.sceneCalls,
+      };
+      s.effects.dispose();
+      return { ownerPreserved, proofBoundary };
+    });
+    expect(advanced.ownerPreserved.generationAfter).toBe(advanced.ownerPreserved.generationBefore);
+    expect(advanced.ownerPreserved.revisionAfterCatalog).toBe(advanced.ownerPreserved.revisionBefore);
+    expect(advanced.ownerPreserved.sceneCalls).toBe(1);
+    expect(advanced.ownerPreserved.deltaCalls).toBeGreaterThanOrEqual(3);
+    expect(advanced.proofBoundary.generationAfter).toBeGreaterThan(advanced.proofBoundary.generationBefore);
+    expect(advanced.proofBoundary.sceneCalls).toBe(2);
+  });
+
+  test("catalog pixel revision falls back to a new scene when no delta owner exists", async ({ page }) => {
+    await loadEffectHarness(page);
+    const result = await page.evaluate(async () => {
+      const m = await import("/plan-recovery-test.js");
+      const initial = m.createGalleryState("ready");
+      const state = { entry: { ...initial.resources.entry, deltaUrl: null }, sceneCalls: 0 };
+      const store = new m.WorkspaceStore(initial);
+      const effects = new m.EffectController(store, {
+        catalog: async () => [state.entry],
+        history: async () => initial.resources.history.value,
+        scene: async (_url, revision) => {
+          state.sceneCalls += 1;
+          return { scene: initial.resources.scene.value, revision, floorCoherent: true };
+        },
+        pose: async () => initial.resources.pose.value,
+        plans: async () => initial.resources.plans.value,
+        dispose() {},
+      });
+      const projection = {
+        host: initial.host, activity: initial.activity, batteryPercent: 92,
+        robotLabel: "Synthetic", robots: initial.robots, language: "en",
+        userKey: "test", entryKey: initial.selection.entryId, vacuumEntityId: "vacuum.synthetic",
+      };
+      effects.sync(projection);
+      await effects.refreshCatalog(true);
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const generation = store.value.generation;
+      state.entry = { ...state.entry, mapRevision: state.entry.mapRevision + 1 };
+      await effects.refreshCatalog();
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const result = {
+        generationBefore: generation,
+        generationAfter: store.value.generation,
+        revision: store.value.resources.entry.mapRevision,
+        sceneCalls: state.sceneCalls,
+      };
+      effects.dispose();
+      return result;
+    });
+    expect(result.generationAfter).toBeGreaterThan(result.generationBefore);
+    expect(result.sceneCalls).toBe(2);
+  });
+
   test("retries history reads and retains the selected saved floor label", async ({ page }) => {
     await loadEffectHarness(page);
     const result = await page.evaluate(async () => {
@@ -1938,6 +2202,231 @@ test.describe("Map Studio v0.4 foundation", () => {
     await page.waitForTimeout(1_200);
     expect({ catalogRequests, sceneRequests, poseRequests }).toEqual(beforeOfflineReattach);
     await page.evaluate(() => window.__lifecyclePanel.remove());
+  });
+
+  test("does not revoke a verified map for same-entry HA telemetry updates", async ({ page }) => {
+    await installPanelFixture(page);
+    await page.evaluate(async () => {
+      window.__galleryModule = await import("/map_studio_v4-review/review.js");
+      await customElements.whenDefined("matic-map-panel-v0-4-0");
+      const panel = window.__panelFixture.createPanel();
+      document.body.append(panel);
+      window.__telemetryPanel = panel;
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const module = window.__galleryModule;
+      const panel = window.__telemetryPanel;
+      const state = panel.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canReadFloorResources: module.canReadFloorResources(state),
+      };
+    })).toEqual({ coherence: "current", canEdit: true, canReadFloorResources: true });
+
+    const updates = await page.evaluate(async () => {
+      const panel = window.__telemetryPanel;
+      const module = window.__galleryModule;
+      const originalFetchWithAuth = panel.hass.fetchWithAuth;
+      window.__telemetryCatalogRequests = 0;
+      panel.hass = {
+        ...panel.hass,
+        fetchWithAuth: async (path, ...args) => {
+          if (String(path).endsWith("slam_entries")) window.__telemetryCatalogRequests += 1;
+          return originalFetchWithAuth(path, ...args);
+        },
+      };
+      await panel.updateComplete;
+      const generation = panel.getWorkspaceSnapshot().generation;
+      const update = async (patch) => {
+        const vacuum = panel.hass.states["vacuum.synthetic"];
+        panel.hass = {
+          ...panel.hass,
+          states: { ...panel.hass.states, "vacuum.synthetic": { ...vacuum, ...patch } },
+        };
+        await panel.updateComplete;
+        const state = panel.getWorkspaceSnapshot();
+        return {
+          coherence: state.coherence,
+          canEdit: module.canEditCoordinates(state),
+          canReadFloorResources: module.canReadFloorResources(state),
+          generation: state.generation,
+          catalogRequests: window.__telemetryCatalogRequests,
+        };
+      };
+      const battery = await update({ attributes: { ...panel.hass.states["vacuum.synthetic"].attributes, battery_level: 90 } });
+      const activity = await update({ state: "cleaning" });
+      return { battery, activity, generation };
+    });
+
+    for (const update of [updates.battery, updates.activity]) {
+      expect(update).toMatchObject({
+        coherence: "current", canEdit: true, canReadFloorResources: true,
+        generation: updates.generation, catalogRequests: 0,
+      });
+    }
+
+    const offline = await page.evaluate(async () => {
+      const panel = window.__telemetryPanel;
+      const module = window.__galleryModule;
+      panel.hass = { ...panel.hass, connected: false };
+      await panel.updateComplete;
+      const disconnected = panel.getWorkspaceSnapshot();
+      const vacuum = panel.hass.states["vacuum.synthetic"];
+      panel.hass = {
+        ...panel.hass,
+        states: {
+          ...panel.hass.states,
+          "vacuum.synthetic": {
+            ...vacuum,
+            attributes: { ...vacuum.attributes, battery_level: 89 },
+          },
+        },
+      };
+      await panel.updateComplete;
+      const afterTelemetry = panel.getWorkspaceSnapshot();
+      return [disconnected, afterTelemetry].map((state) => ({
+        connected: state.host.connected,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canReadFloorResources: module.canReadFloorResources(state),
+      }));
+    });
+    expect(offline).toEqual([
+      { connected: false, coherence: "degraded", canEdit: false, canReadFloorResources: false },
+      { connected: false, coherence: "degraded", canEdit: false, canReadFloorResources: false },
+    ]);
+    await page.evaluate(() => window.__telemetryPanel.remove());
+  });
+
+  test("revokes action authority across detach until fresh catalog proof completes", async ({ page }) => {
+    await page.clock.install();
+    await installPanelFixture(page);
+    await page.evaluate(async () => {
+      window.__remountModule = await import("/map_studio_v4-review/review.js");
+      const panel = window.__panelFixture.createPanel();
+      document.body.append(panel);
+      window.__remountPanel = panel;
+    });
+    await expect.poll(() => page.evaluate(() => {
+      const module = window.__remountModule;
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      return {
+        coherence: state.coherence,
+        scene: state.resources.scene.status,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    })).toEqual({ coherence: "current", scene: "ready", canEdit: true, canStart: true });
+
+    await page.evaluate(() => {
+      const panel = window.__remountPanel;
+      const original = panel.hass.fetchWithAuth;
+      const gates = [{ release: null, signal: null }, { release: null, signal: null }];
+      const harness = window.__remountGap = { panel, calls: 0, gates };
+      panel.hass = {
+        ...panel.hass,
+        fetchWithAuth: (path, init) => {
+          if (String(path).endsWith("slam_entries")) {
+            const gate = gates[harness.calls++];
+            if (gate) {
+              gate.signal = init?.signal ?? null;
+              return new Promise((resolve, reject) => {
+                gate.release = () => { void original(path, init).then(resolve, reject); };
+              });
+            }
+          }
+          return original(path, init);
+        },
+      };
+    });
+    // The live controller's five-second catalog poll is held across detach.
+    await page.clock.fastForward(5_000);
+    await expect.poll(() => page.evaluate(() => window.__remountGap.calls)).toBe(1);
+    const beforeDetach = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(beforeDetach).toMatchObject({ canEdit: true, canStart: true });
+
+    await page.evaluate(() => window.__remountPanel.remove());
+    const detached = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        exactPose: state.map.exactPose,
+        retainedScene: state.resources.scene.value !== null,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+        staleRequestAborted: window.__remountGap.gates[0].signal?.aborted ?? false,
+      };
+    });
+    expect(detached).toEqual({
+      generation: beforeDetach.generation + 1,
+      coherence: "verifying",
+      exactPose: false,
+      retainedScene: true,
+      canEdit: false,
+      canStart: false,
+      staleRequestAborted: true,
+    });
+
+    await page.evaluate(() => document.body.append(window.__remountPanel));
+    await expect.poll(() => page.evaluate(() => window.__remountGap.calls)).toBe(2);
+    const reattachedPending = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(reattachedPending).toEqual({
+      generation: detached.generation,
+      coherence: "verifying",
+      canEdit: false,
+      canStart: false,
+    });
+
+    // Resolve the disposed controller's response while the new controller's
+    // authoritative catalog is still held; the old result must not re-admit it.
+    await page.evaluate(() => window.__remountGap.gates[0].release());
+    await page.evaluate(() => new Promise((resolve) => window.setTimeout(resolve, 0)));
+    const afterStaleResult = await page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        generation: state.generation,
+        coherence: state.coherence,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    });
+    expect(afterStaleResult).toEqual(reattachedPending);
+
+    await page.evaluate(() => window.__remountGap.gates[1].release());
+    await expect.poll(() => page.evaluate(() => {
+      const state = window.__remountPanel.getWorkspaceSnapshot();
+      const module = window.__remountModule;
+      return {
+        coherence: state.coherence,
+        scene: state.resources.scene.status,
+        canEdit: module.canEditCoordinates(state),
+        canStart: module.canStartMotion(state),
+      };
+    })).toEqual({ coherence: "current", scene: "ready", canEdit: true, canStart: true });
+    expect(await page.evaluate(() => window.__remountPanel.getWorkspaceSnapshot().generation))
+      .toBeGreaterThan(detached.generation);
+    await page.evaluate(() => window.__remountPanel.remove());
   });
 
   test("projects the meter-space robot pose onto the scene center", async ({ page }) => {
@@ -2490,6 +2979,113 @@ test.describe("Map Studio v0.4 foundation", () => {
       degraded: { show: true, pose: true, edit: false, motion: false },
       transition: { show: false, pose: false, edit: false, motion: false },
     });
+  });
+
+  test("explains pending stop recovery in room and plan actions without mislabeling the map", async ({ page }) => {
+    const sourceBundle = await build({
+      entryPoints: ["frontend/map-studio-v4/review.ts"],
+      bundle: true,
+      format: "esm",
+      target: "es2022",
+      write: false,
+    });
+    await page.route("**/map_studio_v4-review/review.js", (route) => route.fulfill({
+      contentType: "text/javascript",
+      body: sourceBundle.outputFiles[0].text,
+    }));
+    const gallery = await loadGallery(page, { scenario: "ready" });
+    const result = await page.evaluate((tag) => {
+      const module = window.__galleryModule;
+      const buildState = (workflow, { stopPending = true, mapVerified = true, otherLock = false } = {}) => {
+        const base = module.createGalleryState(workflow === "rooms" ? "rooms" : "ready");
+        const roomId = base.resources.plans.value.rooms[0].roomId;
+        const state = {
+          ...base,
+          workflow,
+          managedLock: stopPending || otherLock,
+          resources: {
+            ...base.resources,
+            entry: { ...base.resources.entry, stopSettlePending: stopPending },
+          },
+          map: mapVerified ? base.map : { ...base.map, complete: false },
+          selection: {
+            ...base.selection,
+            roomIds: workflow === "rooms" ? [roomId] : base.selection.roomIds,
+            roomSettings: workflow === "rooms"
+              ? [{ roomId, cleaningMode: "vacuum", coverageSetting: "standard" }]
+              : base.selection.roomSettings,
+          },
+        };
+        return workflow === "rooms" ? module.withGalleryRoomPreview(state) : state;
+      };
+      const inspect = (state) => {
+        const action = module.selectPrimaryAction(state);
+        return {
+          action: action.id,
+          enabled: action.enabled,
+          reason: action.reason,
+          reasonKey: action.reasonKey,
+          stopOffered: module.selectStopSecondaryAction(state) !== null,
+        };
+      };
+      const roomState = buildState("rooms");
+      const planState = buildState("plan");
+      const lockedState = buildState("rooms", { stopPending: false, otherLock: true });
+      const mapBlockedState = buildState("rooms", { mapVerified: false });
+      document.querySelector(tag).replaceWorkspaceState(roomState);
+      return {
+        rooms: inspect(roomState),
+        plan: inspect(planState),
+        otherManagedLock: inspect(lockedState),
+        mapBlocked: inspect(mapBlockedState),
+      };
+    }, GALLERY_TAG);
+
+    const stopReason = "The previous stop is still being confirmed. Cleaning will be available when it finishes.";
+    expect(result.rooms).toEqual({
+      action: "clean-rooms", enabled: false, reason: stopReason,
+      reasonKey: "v4_reason_stop_settle_pending", stopOffered: false,
+    });
+    expect(result.plan).toEqual({
+      action: "run-plan", enabled: false, reason: stopReason,
+      reasonKey: "v4_reason_stop_settle_pending", stopOffered: false,
+    });
+    expect(result.otherManagedLock).toMatchObject({
+      action: "clean-rooms", enabled: false,
+      reason: "Waiting for the current robot operation to finish.",
+      reasonKey: "v4_reason_robot_operation_waiting", stopOffered: false,
+    });
+    expect(result.mapBlocked).toMatchObject({
+      action: "clean-rooms", enabled: false,
+      reason: "Waiting for the current map to be verified.",
+      reasonKey: "v4_reason_clean_rooms_verification", stopOffered: false,
+    });
+
+    const cleanButton = gallery.getByRole("button", { name: "Clean 1 room" });
+    await expect(cleanButton).toHaveAttribute("aria-disabled", "true");
+    await expect(gallery.locator(".map-message")).toHaveCount(0);
+    const reasonId = await cleanButton.getAttribute("aria-describedby");
+    expect(reasonId).toBeTruthy();
+    await expect(gallery.locator("#" + reasonId)).toHaveText(stopReason);
+
+    await page.evaluate((tag) => {
+      const module = window.__galleryModule;
+      const base = module.createGalleryState("ready");
+      document.querySelector(tag).replaceWorkspaceState({
+        ...base,
+        workflow: "plan",
+        managedLock: true,
+        resources: {
+          ...base.resources,
+          entry: { ...base.resources.entry, stopSettlePending: true },
+        },
+      });
+    }, GALLERY_TAG);
+    const runButton = gallery.getByRole("button", { name: "Run this plan" });
+    await expect(runButton).toHaveAttribute("aria-disabled", "true");
+    const runReasonId = await runButton.getAttribute("aria-describedby");
+    expect(runReasonId).toBeTruthy();
+    await expect(gallery.locator("#" + runReasonId)).toHaveText(stopReason);
   });
 
   test("dismisses dialog, precision, expanded map, and workflow one layer at a time", async ({ page }) => {
@@ -4626,6 +5222,10 @@ test.describe("Map Studio v0.4 foundation", () => {
     })).toEqual({ exactPose: true, position: [11, 13] });
     holdNextFullScene = true;
     catalogRevision = 3;
+    // End the live delta owner after publishing the new catalog revision.
+    // With no healthy delta stream, the catalog becomes the bounded full-scene
+    // fallback and this test can assert the retained-pose loading behavior.
+    failNextDelta = true;
     await expect.poll(() => fullSceneRequests, { timeout: 7_000 }).toBe(3);
     expect(await page.evaluate(() => {
       const state = window.__deltaPanel.getWorkspaceSnapshot();

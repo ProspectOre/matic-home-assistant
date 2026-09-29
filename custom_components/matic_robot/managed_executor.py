@@ -64,10 +64,11 @@ from .plans import (
 )
 from .room_coherence import current_room_cadence_identity
 from .stop_return import (
-    schedule_dock_after_stop as schedule_dock_after_stop,
+    async_clear_ownerless_stop_if_settled,
+    schedule_dock_confirmation,
 )
 from .stop_return import (
-    schedule_dock_confirmation,
+    schedule_dock_after_stop as schedule_dock_after_stop,
 )
 
 ROOM_STATUS_REFRESH_SECONDS = 5
@@ -210,6 +211,12 @@ def _schedule_managed_dock_after_stop(
     """Bind fresh or restored settlement to the same run and native guards."""
     runtime = entry.runtime_data
     journal = getattr(runtime.client, "activity_journal", None)
+    stop_fence_token_reader = getattr(manager, "stop_fence_token", None)
+    stop_fence_token = (
+        stop_fence_token_reader(serial_number)
+        if callable(stop_fence_token_reader)
+        else None
+    )
     schedule_dock_after_stop(
         hass,
         client=runtime.client,
@@ -221,7 +228,13 @@ def _schedule_managed_dock_after_stop(
         set_run_id=getattr(journal, "set_run_id", None),
         get_run_id=getattr(journal, "current_run_id", None),
         on_docked=partial(
-            _async_mark_run_docked, manager, serial_number, run_id, entity_id, context
+            _async_mark_run_docked,
+            manager,
+            serial_number,
+            run_id,
+            entity_id,
+            context,
+            stop_fence_token,
         ),
     )
 
@@ -2124,19 +2137,6 @@ def _managed_reconciliation_is_current(
     )
 
 
-async def _clear_stop_pending_if_stable(
-    manager: CleaningPlanManager,
-    serial_number: str,
-    hass: HomeAssistant,
-    entity_id: str,
-) -> None:
-    """Release the fence only once the entity reports a stable terminal state."""
-    state = hass.states.get(entity_id)
-    if state is None or state.state not in {"docked", "charging", "idle"}:
-        return
-    await manager.async_clear_stop_pending(serial_number)
-
-
 def _build_native_reconciliation(
     plan_id: str,
     room: CleaningRoom,
@@ -2306,17 +2306,14 @@ async def _async_reconcile_native_stop(
                     context=context,
                 )
                 _LOGGER.debug("Native Matic completion reconciled after OEM STOP")
-            await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
             return
         await asyncio.sleep(OEM_STOP_RECONCILIATION_POLL_SECONDS)
-    cleared = await manager.async_clear_native_reconciliation(
+    await manager.async_clear_native_reconciliation(
         serial_number,
         reconciliation.plan_id,
         room.room_id,
         reconciliation.dispatched_at,
     )
-    if cleared:
-        await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
     _LOGGER.debug("Native Matic completion was not observed after OEM STOP settle")
 
 
@@ -2330,14 +2327,12 @@ async def _async_expire_native_reconciliation(
 ) -> None:
     """Expire a durable marker when no safe history baseline exists."""
     await asyncio.sleep(OEM_STOP_RECONCILIATION_SECONDS)
-    cleared = await manager.async_clear_native_reconciliation(
+    await manager.async_clear_native_reconciliation(
         serial_number,
         reconciliation.plan_id,
         room.room_id,
         reconciliation.dispatched_at,
     )
-    if cleared:
-        await _clear_stop_pending_if_stable(manager, serial_number, hass, entity_id)
     _LOGGER.debug("Native Matic reconciliation expired without a history baseline")
 
 
@@ -2792,10 +2787,11 @@ async def _async_mark_run_docked(
     run_id: str | None,
     entity_id: str,
     context: Context | None,
-) -> None:
+    stop_fence_token: int | None = None,
+) -> bool:
     """Bridge the stop watcher to durable run closure for service calls."""
     if run_id is None:
-        return
+        return False
     snapshot_reader = getattr(manager, "snapshot", None)
     if callable(snapshot_reader):
         snapshot = snapshot_reader(serial_number)
@@ -2810,12 +2806,13 @@ async def _async_mark_run_docked(
                 else None
             )
             if cancellation_reason != "managed_stop":
-                return
-    await manager.async_mark_run_docked(
+                return False
+    return await manager.async_mark_run_docked(
         serial_number,
         run_id,
         entity_id=entity_id,
         context=context,
+        stop_fence_token=stop_fence_token,
     )
 
 
@@ -2928,7 +2925,13 @@ async def _async_execute_rooms_reserved(
             # Publish ownership before the first suspending check. Otherwise
             # Stop can observe no run while this start waits for an old stop
             # fence to clear, and prepare_run would erase its cancellation.
-            await _ensure_stop_settled(hass, manager, serial_number, entity_id)
+            await _ensure_stop_settled(
+                hass,
+                manager,
+                serial_number,
+                entity_id,
+                active_session,
+            )
             if recovery is None and validate_prepared_run is not None:
                 validate_prepared_run()
             if recovery is not None and not (
@@ -3661,13 +3664,18 @@ async def _ensure_stop_settled(
     manager: CleaningPlanManager,
     serial_number: str,
     entity_id: str,
+    native_active: Callable[[], Awaitable[bool | None]] | None = None,
 ) -> None:
     """Reject replacement plans while the OEM stop countdown is still active."""
     if not manager.stop_pending(serial_number):
         return
-    state = hass.states.get(entity_id)
-    if state is not None and state.state in {"docked", "charging", "idle"}:
-        await manager.async_clear_stop_pending(serial_number)
+    if native_active is not None and await async_clear_ownerless_stop_if_settled(
+        hass,
+        native_active=native_active,
+        manager=manager,
+        serial_number=serial_number,
+        entity_id=entity_id,
+    ):
         return
     raise _validation_error(
         "Matic is completing its OEM stop countdown; wait until it docks",

@@ -5,7 +5,7 @@ candidate, not RC runtime, field, mobile, transport, or physical acceptance.
 The release ledger is [acceptance-0.5.md](acceptance-0.5.md).
 
 The authority baseline is stable v0.4.6; the paired control remains v0.4.5.
-Measured assets are the RC7 migration candidate based on RC6 `c70afaa`; the production bundle fingerprint below identifies the measured bytes.
+The latest measurement is the untraced RC9 candidate; the production bundle fingerprint below identifies the measured bytes. Earlier RC7 measurements are retained as historical receipts.
 The audit corrected startup accounting: the earlier 80,712-byte estimate
 counted only v4 and omitted 61,269 bytes of globally registered editor,
 classic-panel, and icon modules. That 141,981-byte total exceeded 90 KiB.
@@ -28,10 +28,10 @@ It opens fresh contexts in AB, BA, AB order. Each journey warms the plan
 workflow, then performs 100 inputs: 60 2D/3D toggles, five plan preview/edit/back
 loops (20 inputs), and ten room-list/back loops (20 inputs).
 
-The untraced comparison ran at `2026-09-28T23:03:18.038Z`
-(4:03 p.m. PDT on September 28) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
+The latest untraced comparison ran at `2026-09-29T04:52:14.698Z`
+(9:52 p.m. PDT on September 28) on headless Chromium 151.0.7922.34, macOS arm64, Apple M4,
 1280×900, DPR 1, no throttling, and no-store assets. Other automated suites
-were stopped; a temporary background HA tab was briefly opened and closed during the run. Three fresh contexts per build ran in AB/BA/AB order; scene and
+were stopped; no background HA tab was opened during this measurement. Three fresh contexts per build ran in AB/BA/AB order; scene and
 bundle fingerprints matched across all six samples. The script records
 conditions and fingerprints.
 The candidate uses one multi-entry compilation and the actual HA registration:
@@ -47,34 +47,20 @@ estimates are a lab proxy, not field INP. See the official
 Gzip sizes use level 9 offline estimates; the local server sends uncompressed
 JavaScript. Heap is one post-journey observation, not a retention bound.
 
-## Latest paired result
-Measured against the RC7 candidate production bundle `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0`.
+## Latest untraced result
+RC9 production bundle `fea378f99e6dbc3c046e69392b877a345c0ad281904ea1d91f222198c0918480`, measured against baseline bundle `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752`; all six samples used the same scene fingerprint.
 
 | Measure | Stable v0.4.5 | 0.5 candidate |
 |---|---:|---:|
-| Initial v4 JS, estimated gzip bytes | 79,821 | 80,368 |
-| Initial distinct v4 JS resources | 1 | 4 |
-| Registered global modules, estimated gzip bytes | Unmeasured | 2,043 |
-| Complete initial integration JS, estimated gzip bytes | Unmeasured | 82,411 |
-| Added workflow JS, estimated gzip bytes | 0 (eager) | 11,857 |
-| Review-only initial JS, estimated gzip bytes | Included above | 4,567 (not shipped) |
-| Input p95 estimates, three runs, ms | 40 / 48 / 48 | 48 / 48 / 40 |
-| Median / range of p95 estimates, ms | 48 / 40–48 | 48 / 40–48 |
-| Maximum observed input estimates, ms | 56 / 56 / 56 | 48 / 48 / 48 |
-| Tasks at the 50 ms Long Tasks API threshold, three runs | 0 / 0 / 0 | 0 / 0 / 0 |
-| Longest reported Long Task per run | None reported | None reported |
-| Post-journey JS heap range, three observations, bytes | 4,402,184–6,170,656 | 4,749,600–6,045,148 |
+| Initial v4 JS / complete integration JS, estimated gzip bytes | 79,821 / Unmeasured | 80,693 / 82,736 |
+| Registered modules / added lazy workflow, estimated gzip bytes | Unmeasured / 0 | 2,043 / 11,854 |
+| Input p95 estimates, three runs, ms | 40 / 48 / 32 | 48 / 48 / 40 |
+| Long Tasks over 50 ms, three runs | 1 / 1 / 1 | 2 / 0 / 0 |
+| Longest reported Long Task | 125 ms | 111 ms |
+| Post-journey JS heap range, three observations, bytes | 5,107,856–6,490,224 | 5,961,564–6,110,444 |
+| Input maximum estimates, three runs, ms | 144 / 104 / 88 | 128 / 64 / 56 |
 
-Complete startup fell 59,570 bytes (42.0%) from the eager 141,981-byte graph
-and passes 90 KiB; the v4 lazy workflow remains below 30 KiB. Classic is no longer
-shipped. The 100-room Clear regression records 100 → 1 commits and 99 → 0
-intermediate nonempty preview keys, not network-request counts.
-The candidate met input p95 and reported no Long Tasks during this lab journey;
-the control also reported none. One-minute host load ranged from 5.8 to 6.5 on
-10 logical CPUs; concurrent host workloads were not controlled. These observations do not prove
-that the code change caused the timing difference or exclude stalls in other
-conditions. Earlier failed runs remain below. Heap observations are not retention
-bounds; field, mobile, sustained runtime, and release acceptance remain open.
+Candidate input p95 remains within the 100 ms lab threshold, but the Long Tasks gate is open: candidate runs reported 2/0/0 tasks (longest 111 ms), while baseline reported 1/1/1 (longest 125 ms). Separate trace diagnosis remains pending; no all-performance pass is claimed. The 100-room Clear regression records 100 → 1 commits and 99 → 0 intermediate nonempty preview keys, not network-request counts. Heap observations are not retention bounds; field, mobile, sustained runtime, and release acceptance remain open.
 
 Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 
@@ -82,11 +68,13 @@ Fingerprints (path-sorted compiled JS names and bytes, SHA-256):
 |---|---|
 | Baseline commit | `f15dfa25d373fe2b4a448595ad0fc40c1d5ed191` |
 | Baseline bundle | `55fdd0680408a32fcf72a1478bb88445505185a6047317312ebf0e67d7c52752` |
-| Candidate source | RC7 follow-up on `c70afaa`; measured compiled bytes identified below |
-| Candidate production bundle | `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0` |
-| Candidate review-only bundle | `6baab2e6da9a1971fe562ef297ee19f23e235d17210f648fcc58e60cf0a80f10` |
-| Registered frontend assets | `9309332eb390a09f56ecd29912f2b7df073221e8ad38dd0b317b862aac1380b9` |
+| Candidate source | RC9 follow-up; source revision not included in measurement receipt |
+| Candidate production bundle | `fea378f99e6dbc3c046e69392b877a345c0ad281904ea1d91f222198c0918480` |
+| Candidate review-only bundle | `c3cef28abdf74b28802fc6dc554ac1682dc4d6dbfb004996ddc13a22e11d8a46` |
+| Registered frontend assets | `1077ff78f92cbd3191e9f3ac551d00a6101f0cb377cc43ca0cd534df1777887d` |
 | Common synthetic scene | `a0349b25e755d0cc8fc55dba8f35982535b91c708654e7cbf87799850ca922a4` |
+
+Historical RC7 paired receipt (`2026-09-28T23:03:18Z`): candidate bundle `7682ac4a0176262c97993b8328aa1086e5c482de1519e6cb26f0592287f4b6a0`, 82,411 complete initial gzip bytes, 11,857 lazy workflow bytes, p95 48/48/40 ms, and 0/0/0 Long Tasks. Its baseline result was 79,821 initial v4 bytes, p95 40/48/48 ms, and 0/0/0 Long Tasks. Other automated suites were stopped; a temporary background HA tab was briefly opened and closed during that historical run. These counts remain historical and do not replace the RC9 comparison above.
 
 ## Prior runs and diagnostic follow-up
 
@@ -127,23 +115,25 @@ Exploratory probes with incomplete traces/input counts are excluded; raw evidenc
 
 ## Retention diagnostic
 
-Source `444c373` used five warm-up and 20 measured packaged-panel lifecycles.
-After removing settled test callbacks and forcing GC each cycle, JS heap rose
-from 2,182,628 to 2,446,652 bytes, non-linearly; DOM nodes rose from 677 to 697.
-All 25 instrumented workers terminated, all 25 URLs were revoked, and active
-popstate listeners returned to zero. A narrow heap snapshot found no named
-panel instance; shell/canvas matches belonged to cached Lit template markup.
-This does not identify every retained object or establish a leak, memory bound,
-GPU behavior, or production stability. The fixture uses instrumented workers;
-raw results and the earlier callback-retaining comparison remain private.
+Source `444c373`: five warm-up and 20 measured packaged-panel lifecycles, with settled test callbacks removed and GC forced each cycle. JS heap rose non-linearly from 2,182,628 to 2,446,652 bytes; DOM nodes rose 677→697. All 25 workers terminated, all 25 URLs were revoked, and active popstate listeners returned to zero. A narrow heap snapshot found no named panel instance; shell/canvas matches were cached Lit markup. This is counted cleanup evidence, not a heap/GPU bound or production-stability claim. The fixture instruments workers; raw results and the prior callback-retaining comparison remain private.
+
+## Scene-content transport correction
+
+RC8 live observation delivered 1,142 contiguous invalidations in 56.376 s; a delayed subscription correctly requested overflow recovery, then delivered 588 contiguous updates. Protocol delivery does not establish frontend efficiency. A source-level paired Chromium test used the same paused clock, settled startup, and 200 content revisions over 10 synthetic seconds; each revision resolved the single held delta request. Compare RC8 effects with the correction using that identical fixture. Counts include startup; no private scenes were used.
+
+| Path | Catalog reads | Full-scene reads | Delta reads |
+|---|---:|---:|---:|
+| Polling control, both versions | 3 | 2 | 201 |
+| Enabled workspace, before correction | 203 | 202 | 1 |
+| Enabled workspace, corrected | 3 | 2 | 201 |
+| No decompression support, before → corrected | 203 → 3 | 202 → 4 | 0 |
+
+The corrected stream retained one delta owner and admitted the final scene revision. A held startup catalog remained one request rather than forcing another after release. The correction separates content revision from coherence identity; snapshots cannot move the admitted scene revision ahead of its delta. These are synthetic request counts, not installed-runtime latency, bandwidth, or a 70% total-traffic claim. Production transport remains off.
+
+## Current trace diagnosis
+
+A separate six-sample trace captured compositor/readback waits in every renderer task over 50 ms. Main-thread CPU medians were 1.34–2.62 ms; nested JavaScript peaked at 0.57 ms and layout/paint at 0.40 ms. GPU work overlapped the longest candidate waits. This supports synchronization waiting rather than long application execution, but does not establish the cause of slow GPU completion. Traced counts and timings do not replace the untraced receipt or close the Long Tasks gate; no speculative execution-strategy change was made.
 
 ## Remaining measurements
 
-Reference desktop ≥55 fps and supported mobile ≥30 fps, real tablet/touch
-input, slow-device stalls, sustained heap/GPU bounds, and live HA update
-traffic remain open. The 20-cycle browser lifecycle regression proves counted
-listener/worker/URL disposal and stale-result rejection; it does not measure
-heap or GPU retention. Transport baseline, numerical latency/resync/request
-gates, and exact-candidate parity must precede default switchover. The proposed
-one-second status p95, three-second resync p95, and 70% request reduction remain
-hypotheses. Evidence must stay local and omit private maps and identifiers.
+Reference desktop ≥55 fps, supported mobile ≥30 fps, actual touch input, slow-device stalls, sustained heap/GPU bounds, and live frontend traffic remain open. Counted lifecycle cleanup does not establish retention bounds. Final numerical latency/resync/request gates and exact-candidate parity must precede switchover; proposed one-second status p95, three-second resync p95, and 70% request reduction remain hypotheses. Raw evidence stays private.

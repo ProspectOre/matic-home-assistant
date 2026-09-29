@@ -136,6 +136,14 @@ class CadenceBindingError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class _StopFence:
+    """One live native STOP fence and the identity of its accepted command."""
+
+    deadline: float
+    token: int
+
+
+@dataclass(frozen=True, slots=True)
 class _PreparedRunReservation:
     """Freeze every policy that governs one queued managed run."""
 
@@ -663,7 +671,8 @@ class CleaningPlanManager:
         self._removed_robots: set[str] = set()
         self._robot_generations: dict[str, int] = {}
         self._cancellation_reasons: dict[str, str] = {}
-        self._stop_fences: dict[str, float] = {}
+        self._stop_fences: dict[str, _StopFence] = {}
+        self._stop_fence_sequence = 0
         self._prepared_runs: dict[str, _PreparedRunReservation] = {}
         self._pending_cadence_mutations: dict[str, dict[object, _CadenceMutation]] = {}
         self._manual_room_sequence_reservations: dict[str, set[str]] = {}
@@ -1007,7 +1016,7 @@ class CleaningPlanManager:
         run_id: str | None = None,
     ) -> None:
         """Fence replacement motion while Matic's native STOP settles."""
-        self._arm_stop_pending(serial_number, duration_seconds)
+        self._arm_stop_pending(serial_number, duration_seconds, renew=True)
         self._robot(serial_number)[STOP_FENCE_EXPIRES_AT] = (
             dt_util.utcnow() + timedelta(seconds=duration_seconds)
         ).isoformat()
@@ -1030,10 +1039,10 @@ class CleaningPlanManager:
     @callback
     def stop_pending(self, serial_number: str) -> bool:
         """Return whether an OEM stop countdown is still in its settle window."""
-        deadline = self._stop_fences.get(serial_number)
-        if deadline is None:
+        fence = self._stop_fences.get(serial_number)
+        if fence is None:
             return False
-        if monotonic() >= deadline:
+        if monotonic() >= fence.deadline:
             self._stop_fences.pop(serial_number, None)
             self._robot(serial_number).pop(STOP_FENCE_EXPIRES_AT, None)
             self._robot(serial_number).pop(STOP_FENCE_RUN_ID, None)
@@ -1052,6 +1061,13 @@ class CleaningPlanManager:
             or removed
             or owner_removed
         )
+
+    def stop_fence_token(self, serial_number: str) -> int | None:
+        """Return the identity of the current live STOP fence, if any."""
+        if not self.stop_pending(serial_number):
+            return None
+        fence = self._stop_fences.get(serial_number)
+        return fence.token if fence is not None else None
 
     def pending_stop_run_id(self, serial_number: str) -> str | None:
         """Restore only a live stop fence still belonging to the last managed run."""
@@ -1084,13 +1100,38 @@ class CleaningPlanManager:
         if self.clear_stop_pending(serial_number):
             await self._async_save_and_notify(serial_number)
 
+    async def async_clear_stop_pending_if_token(
+        self, serial_number: str, stop_fence_token: int, *, run_id: str | None
+    ) -> bool:
+        """Clear an observed stop only if its original fence still owns it."""
+        if (
+            self.stop_fence_token(serial_number) != stop_fence_token
+            or self._robot(serial_number).get(STOP_FENCE_RUN_ID) != run_id
+        ):
+            return False
+        self.clear_stop_pending(serial_number)
+        await self._async_save_and_notify(serial_number)
+        return True
+
     @callback
-    def _arm_stop_pending(self, serial_number: str, duration_seconds: float) -> None:
+    def _arm_stop_pending(
+        self, serial_number: str, duration_seconds: float, *, renew: bool = False
+    ) -> None:
         """Restore one monotonic fence without changing its wall-clock expiry."""
         deadline = monotonic() + duration_seconds
         current = self._stop_fences.get(serial_number)
-        if current is None or deadline > current:
-            self._stop_fences[serial_number] = deadline
+        if current is not None:
+            deadline = max(deadline, current.deadline)
+            if not renew:
+                if deadline != current.deadline:
+                    self._stop_fences[serial_number] = _StopFence(
+                        deadline=deadline, token=current.token
+                    )
+                return
+        self._stop_fence_sequence += 1
+        self._stop_fences[serial_number] = _StopFence(
+            deadline=deadline, token=self._stop_fence_sequence
+        )
 
     @callback
     def motion_generation(self, serial_number: str) -> int:
@@ -3251,6 +3292,7 @@ class CleaningPlanManager:
         *,
         entity_id: str | None = None,
         context: Context | None = None,
+        stop_fence_token: int | None = None,
     ) -> bool:
         """Close a stopped run only after a correlated final DOCK settles."""
         robot = self._robot(serial_number)
@@ -3258,6 +3300,11 @@ class CleaningPlanManager:
         if not isinstance(last_run, dict) or last_run.get("run_id") != run_id:
             return False
         if last_run.get("outcome") not in {"running", "cancelled", "unverified"}:
+            return False
+        if stop_fence_token is not None and (
+            self.stop_fence_token(serial_number) != stop_fence_token
+            or robot.get(STOP_FENCE_RUN_ID) != run_id
+        ):
             return False
         now = dt_util.utcnow().isoformat()
         provenance = normalize_run_provenance(
@@ -3274,6 +3321,8 @@ class CleaningPlanManager:
                 "provenance": provenance,
             }
         )
+        if stop_fence_token is not None:
+            self.clear_stop_pending(serial_number)
         await self._async_save_and_notify(serial_number)
         self.hass.bus.async_fire(
             EVENT_PLAN_DOCKED,

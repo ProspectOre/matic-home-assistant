@@ -616,7 +616,13 @@ export class WorkspaceStore {
 
 export class CoherenceMachine {
   #stamp: ResourceStamp | null = null;
-  #generation = 0;
+  #generation: number;
+
+  constructor(initialGeneration = 0) {
+    this.#generation = Number.isSafeInteger(initialGeneration) && initialGeneration >= 0
+      ? initialGeneration
+      : 0;
+  }
 
   get generation(): number {
     return this.#generation;
@@ -747,6 +753,27 @@ export const canStartMotion = (state: WorkspaceState): boolean =>
   && !state.managedLock
   && state.command === "idle"
   && (state.activity === "idle" || state.activity === "docked");
+
+const motionBlockReason = (
+  state: WorkspaceState,
+): { readonly reason: string; readonly reasonKey: string } => {
+  if (!canEditCoordinates(state)) {
+    return {
+      reason: "Waiting for the current map to be verified.",
+      reasonKey: "v4_reason_clean_rooms_verification",
+    };
+  }
+  if (state.resources.entry?.stopSettlePending === true) {
+    return {
+      reason: "The previous stop is still being confirmed. Cleaning will be available when it finishes.",
+      reasonKey: "v4_reason_stop_settle_pending",
+    };
+  }
+  return {
+    reason: "Waiting for the current robot operation to finish.",
+    reasonKey: "v4_reason_robot_operation_waiting",
+  };
+};
 
 export const canResumeMotion = (state: WorkspaceState): boolean =>
   canEditCoordinates(state)
@@ -939,7 +966,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
         : !count
           ? { reason: "Select at least one room to clean.", reasonKey: "v4_reason_clean_rooms_empty" }
           : !canStartMotion(state)
-            ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_clean_rooms_verification" }
+            ? motionBlockReason(state)
             : state.manualRoomPreview.status === "error"
               ? { reason: "The room settings preview could not be verified.", reasonKey: "v4_reason_room_preview_unavailable" }
               : previewCurrent && admitted.preview.blocker
@@ -979,7 +1006,7 @@ export const selectPrimaryAction = (state: WorkspaceState): PrimaryAction => {
       kind: "primary",
       enabled: canStartMotion(state) && state.planDraft.enabled && previewReady,
       ...(!canStartMotion(state)
-        ? { reason: "Waiting for the current map to be verified.", reasonKey: "v4_reason_run_plan" }
+        ? motionBlockReason(state)
         : !state.planDraft.enabled
           ? { reason: "This plan is paused. Enable it to run.", reasonKey: "v4_reason_run_plan_paused" }
           : !previewReady

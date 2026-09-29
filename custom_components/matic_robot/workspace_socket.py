@@ -27,9 +27,6 @@ COMMAND_SNAPSHOT = f"{DOMAIN}/workspace_snapshot"
 COMMAND_SUBSCRIBE = f"{DOMAIN}/workspace_subscribe"
 QUEUE_LIMIT = 32
 SNAPSHOT_CURSOR_LIMIT = 32
-# Only scene identity/content changes invalidate spatial coherence. Operational
-# status and activity have their own revisions and cannot force a map reload.
-COHERENCE_RESOURCES = frozenset({"scene"})
 MAX_RESOURCE_REVISION = 2**53 - 1
 CAPABILITIES = {
     "snapshot": 1,
@@ -258,6 +255,7 @@ class WorkspaceSocket:
         slam_map = getattr(runtime, "slam_map", None)
         if slam_map is not None:
             tracked.source_state["scene"] = self._scene_state(runtime)
+            tracked.source_state["scene_boundary"] = self._scene_boundary_state(runtime)
             add_listener = getattr(slam_map, "async_add_listener", None)
             if callable(add_listener):
                 tracked.source_unsubscribers.append(
@@ -344,7 +342,7 @@ class WorkspaceSocket:
         self._async_scene_changed(entry_id)
 
     def _async_scene_changed(self, entry_id: str) -> None:
-        """Publish scene content or verified floor-identity changes."""
+        """Publish content revisions and verified spatial-boundary changes."""
         tracked = self._tracked_entries.get(entry_id)
         if tracked is None or tracked.sources_closed:
             return
@@ -352,16 +350,25 @@ class WorkspaceSocket:
             return
         runtime = getattr(tracked.entry, "runtime_data", None)
         current = self._scene_state(runtime)
-        if tracked.source_state.get("scene") == current:
+        current_boundary = self._scene_boundary_state(runtime)
+        previous = tracked.source_state.get("scene")
+        previous_boundary = tracked.source_state.get("scene_boundary")
+        if previous == current and previous_boundary == current_boundary:
             return
         tracked.source_state["scene"] = current
+        tracked.source_state["scene_boundary"] = current_boundary
         revision = self._scene_revision(entry_id, runtime)
         resource_revisions = self._resource_revisions.setdefault(entry_id, {})
         if revision is not None:
             resource_revisions["scene"] = revision
         else:
             resource_revisions.pop("scene", None)
-        self._invalidate(entry_id, ["scene"], bump_resources=[])
+        self._invalidate(
+            entry_id,
+            ["scene"],
+            bump_resources=[],
+            bump_coherence=previous_boundary != current_boundary,
+        )
 
     def _async_history_changed(self, entry_id: str) -> None:
         """Publish history only after the private history catalog changes."""
@@ -386,8 +393,9 @@ class WorkspaceSocket:
         resources: list[str],
         *,
         bump_resources: list[str] | None = None,
+        bump_coherence: bool = False,
     ) -> None:
-        """Advance bounded per-entry revisions and fan out one invalidation."""
+        """Advance bounded revisions and optionally fence spatial coherence."""
         if self._closed or not resources:
             return
         self._removed_entries.discard(entry_id)
@@ -397,7 +405,7 @@ class WorkspaceSocket:
                 resource_revisions.get(resource, 0)
             )
         generation = self._coherence_generation.setdefault(entry_id, 1)
-        if COHERENCE_RESOURCES.intersection(resources):
+        if bump_coherence:
             generation += 1
             self._coherence_generation[entry_id] = generation
         sequence = self._sequence.get(entry_id, 0) + 1
@@ -438,6 +446,25 @@ class WorkspaceSocket:
         from .slam_scene import _scene_snapshot_key
 
         return _scene_snapshot_key(runtime)
+
+    def _scene_boundary_state(self, runtime: Any) -> tuple[Any, ...]:
+        """Return private authorities that require spatial revalidation."""
+        coordinator = getattr(runtime, "coordinator", None)
+        floor_plan = getattr(getattr(coordinator, "data", None), "floor_plan", None)
+        slam_map = getattr(runtime, "slam_map", None)
+        identity = getattr(slam_map, "mission_identity", None)
+        current_check = getattr(slam_map, "floor_plan_is_current", None)
+        floor_current = (
+            current_check(floor_plan) is True if callable(current_check) else False
+        )
+        session_verified = getattr(slam_map, "live_session_verified", False)
+        return (
+            self._serial_number(coordinator),
+            identity,
+            floor_plan,
+            session_verified is True,
+            floor_current,
+        )
 
     def _scene_revision(self, entry_id: str, runtime: Any) -> int | None:
         """Project the scene view's canonical transport revision when present."""
@@ -585,7 +612,18 @@ class WorkspaceSocket:
                 identity["floor_mission_id"] = mission_id
                 identity["floor_verified"] = True
             if isinstance(map_revision, int) and not isinstance(map_revision, bool):
-                revisions["scene"] = min(MAX_RESOURCE_REVISION, max(0, map_revision))
+                # The payload may be an older cached encoding while a newer
+                # scene revision is being built. Keep its usable revision in
+                # the payload, but use the same current-revision authority as
+                # scene invalidations for the transport fence.
+                current_revision = self._scene_revision(entry_id, runtime)
+                if current_revision is not None:
+                    resource_revisions["scene"] = max(
+                        resource_revisions.get("scene", 0), current_revision
+                    )
+                    revisions["scene"] = resource_revisions["scene"]
+                else:
+                    revisions.pop("scene", None)
             else:
                 revisions.pop("scene", None)
         elif available:

@@ -122,26 +122,6 @@ export class MaticMapPanelV4 extends LitElement {
       const projectionChanged = projection !== this.#projection;
       if (projectionChanged) {
         this.#projection = projection;
-        const coherence = !projection.host.connected
-          ? "degraded"
-          : projection.host.robotCount === 0
-            ? "unavailable"
-            : projection.host.administrator
-              ? "verifying"
-              : "blocked";
-        this.#store.replace({
-          ...this.#store.value,
-          coherence,
-          activity: projection.activity,
-          batteryPercent: projection.batteryPercent,
-          host: projection.host,
-          fullMap: projection.host.administrator
-            && projection.host.robotCount > 0
-            && this.#store.value.fullMap,
-          robotLabel: projection.robotLabel,
-          robots: projection.robots,
-          locale: projection.language,
-        });
       }
       if (connectionChanged) {
         this.#stopControllers();

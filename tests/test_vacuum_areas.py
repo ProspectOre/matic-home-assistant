@@ -631,6 +631,7 @@ async def test_dock_after_stop_callback_closes_the_correlated_run() -> None:
     entity = _vacuum()
     entity.entity_id = "vacuum.test"
     entity._plans.async_mark_run_docked = AsyncMock()
+    entity._plans.stop_fence_token = MagicMock(return_value=23)
     entity.coordinator.client = MagicMock()
     entity.coordinator.async_request_refresh = AsyncMock()
     with patch(
@@ -640,5 +641,5 @@ async def test_dock_after_stop_callback_closes_the_correlated_run() -> None:
 
     await schedule.call_args.kwargs["on_docked"]()
     entity._plans.async_mark_run_docked.assert_awaited_once_with(
-        "serial", "run-1", entity_id="vacuum.test"
+        "serial", "run-1", entity_id="vacuum.test", stop_fence_token=23
     )
