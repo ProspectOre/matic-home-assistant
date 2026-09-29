@@ -385,13 +385,35 @@ jobs:
               and (result_section | first_result_section | if test("(?is)<details>") then
               capture("(?is)\\A.*?(?<footer><details>.*)$").footer | known_codex_footer
               else true end);
+              def native_result_sections:
+                result_section as $result
+                | ($result | split("\n")) as $lines
+                | [range(0; $lines | length)
+                   | select($lines[.] | regular_heading or raw_security_heading)] as $starts
+                | if ($starts | length) == 0 then [$result] else
+                    [$starts | to_entries[] | .value as $start
+                     | ($starts[.key + 1] // ($lines | length)) as $end
+                     | $lines[$start:$end] | join("\n")]
+                  end;
+              def coordinator_head:
+                if coordinator_prelude then
+                  capture("<!--[[:space:]]*review-request:v2[[:space:]]+head=(?<head>[0-9a-f]{40})[[:space:]]+base=[0-9a-f]{40}[[:space:]]*-->").head | ascii_downcase
+                else "" end;
+              def section_review_head:
+                [scan("(?im)\\*{0,2}reviewed commit:\\*{0,2}[[:space:]]*`([0-9a-f]{40}|[0-9a-f]{10})`") | .[0] | ascii_downcase]
+                | .[-1] // "";
+              def section_bound_to_current_head($body):
+                ($body | native_result_sections) as $sections
+                | ($body | coordinator_head) as $request_head
+                | any($sections[]; . as $section
+                    | ($section | regular_heading)
+                      and (($section | section_review_head) as $section_head
+                           | if $section_head == "" then $request_head == $head
+                             else $section_head == $head or $section_head == $prefix end)
+                      and (($section | availability_notice) | not)
+                      and (($section | strict_stock_clean_issue_comment_envelope) | not));
               (.comment.body // "") as $body
-              | ($body | regular_heading)
-                and (($body | security_heading) | not)
-                and (($body | availability_notice) | not)
-                and ($body | exact_head)
-                and (((($body | multiple_result_sections) | not)
-                      and ($body | strict_stock_clean_issue_comment_envelope)) | not)
+              | $body | section_bound_to_current_head($body)
             ' "$GITHUB_EVENT_PATH" >/dev/null; then
               gh api "repos/$REPO/statuses/$current_event_head" --silent \
                 -f state=pending -f context=review-finding-history \
@@ -562,7 +584,7 @@ jobs:
           EVENT_HEAD_SHA: ${{ steps.signal-relay-event.outputs.head || steps.begin-native-event.outputs.head || github.event.pull_request.head.sha }}
           HISTORY_HEAD_SHA: ${{ steps.signal-relay-event.outputs.history_head || steps.begin-native-event.outputs.head }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
-          EXPECTED_SHA256: '03b0790398492e2ca4047b6ef2e8af8b9197134a3815f6fa8de01485370ad6b9'
+          EXPECTED_SHA256: 'f406a99a4d9b59b0faa13f80804af489065548a9ba53dacef42d9dc18e478812'
           EXPECTED_DEPENDENCY_SHA256: '3dfc642b88404487cd5a7cb91c60ab054067f617b867813a5bacb0c80a701455'
           EXPECTED_ISSUE_COMMENT_RECEIPTS_SHA256: 'b676b03fd2671c8bc7657fbc06f817002283e338548c9cba71c926b4e9dd407f'
         shell: bash
