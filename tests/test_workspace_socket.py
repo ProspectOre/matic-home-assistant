@@ -9,6 +9,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 from homeassistant.components.websocket_api.commands import handle_unsubscribe_events
 from homeassistant.config_entries import ConfigEntryState
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP
 from homeassistant.exceptions import ConfigEntryAuthFailed, Unauthorized
 
 from custom_components.matic_robot.const import DOMAIN
@@ -941,16 +942,16 @@ async def test_start_and_stop_are_idempotent_and_stop_callback_closes_manager() 
 
     await manager.async_start()
     await manager.async_start()
-    assert hass.bus.async_listen.call_count == 2
-    assert hass.bus.async_listen_once.call_count == 1
+    assert hass.bus.async_listen.call_count == 3
+    assert hass.bus.async_listen_once.call_count == 0
 
-    stop_callback = hass.bus.async_listen_once.call_args.args[1]
+    stop_callback = hass.bus.async_listen.call_args_list[2].args[1]
     await stop_callback(None)
     await manager.async_stop()
 
     assert manager._closed
     assert not manager._unsubscribers
-    assert hass.bus.async_listen.call_count == 2
+    assert hass.bus.async_listen.call_count == 3
 
 
 @pytest.mark.asyncio
@@ -1005,8 +1006,41 @@ async def test_stop_sends_restart_resync_and_removes_subscriptions() -> None:
     assert not manager._subscriptions
     assert not manager._history
     assert not manager._unsubscribers
-    assert hass.bus.async_listen.call_count == 2
-    assert hass.bus.async_listen_once.call_count == 1
+    assert hass.bus.async_listen.call_count == 3
+    assert hass.bus.async_listen_once.call_count == 0
+
+
+@pytest.mark.asyncio
+async def test_stop_event_removes_listener_and_cleans_subscriptions(
+    hass: Any, caplog: pytest.LogCaptureFixture
+) -> None:
+    entry = _entry("entry-a")
+    with patch.object(hass.config_entries, "async_entries", return_value=[entry]):
+        manager = WorkspaceSocket(hass)
+        connection = _connection()
+        manager.subscribe(connection, "entry-a", 11)
+        stop_listener_count = hass.bus.async_listeners().get(
+            EVENT_HOMEASSISTANT_STOP, 0
+        )
+        await manager.async_start()
+        assert (
+            hass.bus.async_listeners()[EVENT_HOMEASSISTANT_STOP]
+            == stop_listener_count + 1
+        )
+
+        hass.bus.async_fire(EVENT_HOMEASSISTANT_STOP)
+        await hass.async_block_till_done()
+
+        assert manager._closed
+        assert connection.subscriptions == {}
+        connection.send_event.assert_called_once_with(
+            11, {"type": "resync", "reason": "restart"}
+        )
+        assert hass.bus.async_listeners().get(EVENT_HOMEASSISTANT_STOP, 0) == 0
+
+        await manager.async_stop()
+
+    assert "Unable to remove unknown job listener" not in caplog.text
 
 
 @pytest.mark.asyncio
