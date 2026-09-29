@@ -65,6 +65,19 @@ async function magentaPixelsInScreenshot(page, screenshot) {
   }, imageUrl);
 }
 
+async function screenshotSceneCanvasWithoutOverlay(sceneCanvas, overlayCanvas) {
+  const originalStyle = await overlayCanvas.getAttribute("style");
+  await overlayCanvas.evaluate((canvas) => { canvas.style.visibility = "hidden"; });
+  try {
+    return await sceneCanvas.screenshot();
+  } finally {
+    await overlayCanvas.evaluate((canvas, style) => {
+      if (style === null) canvas.removeAttribute("style");
+      else canvas.setAttribute("style", style);
+    }, originalStyle);
+  }
+}
+
 test("packaged Map Studio keeps a live frame across WebGL loss and restoration @safety", async ({ page, browserName }) => {
   await page.setViewportSize({ width: 1180, height: 760 });
   // Center a distinctive scene point and omit pose; no room geometry or other annotation can satisfy the pixel check.
@@ -139,7 +152,9 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   });
   const before = await readRendererState(page);
   expect(before.canvasCount).toBe(1);
-  expect(await magentaPixelsInScreenshot(page, await sceneCanvas.screenshot())).toBeGreaterThan(0);
+  const overlayCanvas = map.locator("canvas.overlay-canvas");
+  expect(await magentaPixelsInScreenshot(page,
+    await screenshotSceneCanvasWithoutOverlay(sceneCanvas, overlayCanvas))).toBeGreaterThan(0);
 
   await page.evaluate(() => window.__rendererFault.extension.loseContext());
   await expect.poll(() => page.evaluate(() => window.__rendererFault.lost)).toBe(1);
@@ -177,7 +192,8 @@ test("packaged Map Studio keeps a live frame across WebGL loss and restoration @
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.contextGeneration))
     .toBe(before.generation + 1);
   await expect.poll(() => map.evaluate((element) => element.rendererDiagnostics()?.renderedPoints)).toBeGreaterThan(0);
-  await expect.poll(async () => magentaPixelsInScreenshot(page, await sceneCanvas.screenshot()))
+  await expect.poll(async () => magentaPixelsInScreenshot(page,
+    await screenshotSceneCanvasWithoutOverlay(sceneCanvas, overlayCanvas)))
     .toBeGreaterThan(0);
 
   const restored = await readRendererState(page);
