@@ -31,6 +31,7 @@ RESULT_HEADING = re.compile(
 REVIEWED_COMMIT = re.compile(
     r"(?im)^[ \t]*\*{0,2}reviewed commit:\*{0,2}[ \t]*`([0-9a-f]{10}|[0-9a-f]{40})`"
 )
+FENCE_LINE = re.compile(r"^[ \t]{0,3}(?P<char>`|~)(?P<count>(?:`{2,}|~{2,}))[^\r\n]*$")
 AVAILABILITY = re.compile(
     r"\A[ \t\r\n]*(?:@|#{1,6}[ \t]+(?:[^A-Za-z0-9\r\n]+[ \t]+)?)?"
     r"(?:codex[ \t]+review|review(?:[ \t]+result)?)(?:[ \t]*:|[ \t]|\r?\n|$)[ \t\r\n]*"
@@ -156,6 +157,34 @@ SECURITY_MARKER_COMMENT = re.compile(
 )
 
 
+def _actual_metadata(text: str) -> str:
+    """Ignore copied examples in fenced code blocks, retaining inline metadata."""
+    masked: list[str] = []
+    fence_char: str | None = None
+    fence_length = 0
+    for line in text.splitlines(keepends=True):
+        match = FENCE_LINE.match(line.rstrip("\r\n"))
+        if fence_char is None and match:
+            fence_char, fence_length = match.group("char"), len(match.group("count"))
+            masked.append("\n" if line.endswith("\n") else "")
+        elif fence_char is not None:
+            masked.append("\n" if line.endswith("\n") else "")
+            if match and match.group("char") == fence_char and len(match.group("count")) >= fence_length:
+                fence_char = None
+                fence_length = 0
+        else:
+            masked.append(line)
+    return "".join(masked)
+
+
+def _has_reviewed_commit(text: str) -> bool:
+    return REVIEWED_COMMIT.search(_actual_metadata(text)) is not None
+
+
+def _reviewed_commits(text: str) -> list[str]:
+    return [match.group(1).lower() for match in REVIEWED_COMMIT.finditer(_actual_metadata(text))]
+
+
 def _valid_coordinator_metadata(metadata: str) -> bool:
     lines = metadata.split("\n")
     index = 0
@@ -274,12 +303,12 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                     inline_security
                     and (
                         not starts
-                        or REVIEWED_COMMIT.search(previous)
+                        or _has_reviewed_commit(previous)
                         or _standalone_regular_clean(previous)
                     )
                 )
                 or not starts
-                or REVIEWED_COMMIT.search(previous)
+                or _has_reviewed_commit(previous)
                 or _standalone_regular_clean(previous)
                 or (coordinator_bound and _standalone_security_clean(previous))
                 or marker_only
@@ -303,7 +332,7 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
                         )
                         and (
                             not coordinator_bound
-                            or REVIEWED_COMMIT.search(previous)
+                            or _has_reviewed_commit(previous)
                             or not _standalone_security_clean(previous)
                         )
                     )
@@ -355,7 +384,7 @@ def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str,
 
 
 def _target_ref(section: str, request_head: str | None) -> str:
-    refs = [match.group(1).lower() for match in REVIEWED_COMMIT.finditer(section)]
+    refs = _reviewed_commits(section)
     if len(set(refs)) > 1:
         # Multiple different reviewed commits in one result section do not
         # identify a single safe destination for status history.
@@ -363,6 +392,20 @@ def _target_ref(section: str, request_head: str | None) -> str:
     if refs:
         return refs[-1]
     return request_head or "__unbound__"
+
+
+def _shared_footer_ref(raw_sections: list[tuple[str, str]]) -> str | None:
+    """A single trailing commit footer can bind adjacent split result sections."""
+    if len(raw_sections) < 2 or raw_sections[0][0] != "security":
+        return None
+    if any(kind in ("regular", "security") for kind, _ in raw_sections[1:]):
+        return None
+    if any(_reviewed_commits(text) for _, text in raw_sections[1:-1]):
+        return None
+    refs = _reviewed_commits(raw_sections[-1][1])
+    if len(set(refs)) == 1:
+        return refs[0]
+    return None
 
 
 def _without_heading(kind: str, section: str) -> str:
@@ -467,13 +510,20 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
 
 
 def classify_body(body: str) -> dict[str, Any]:
-    parsed_body, request_head = _coordinator_body(body)
+    # Mask fenced examples before coordinator parsing and section partitioning.
+    parsed_body, request_head = _coordinator_body(_actual_metadata(body))
     raw_sections = _raw_sections(
         parsed_body, coordinator_bound=request_head is not None
     )
+    # Coordinator request metadata already supplies an authenticated fallback;
+    # a trailing footer is shared only for ordinary comments split by markers.
+    shared_footer_ref = (
+        _shared_footer_ref(raw_sections) if request_head is None else None
+    )
 
     sections: list[dict[str, Any]] = []
-    for kind, text in raw_sections:
+    for section_index, (kind, text) in enumerate(raw_sections):
+        raw_kind = kind
         regular_heading = kind == "regular"
         security_heading = kind == "security"
         availability = bool(
@@ -524,7 +574,15 @@ def classify_body(body: str) -> dict[str, Any]:
                 "regular_adverse": adverse_regular,
                 "security_event": security_event,
                 "security_finding": security_finding,
-                "target_ref": _target_ref(text, request_head),
+                "target_ref": _target_ref(
+                    text,
+                    (
+                        request_head
+                        if raw_kind != "unheaded" or section_index > 0 or len(raw_sections) == 1
+                        else None
+                    )
+                    or shared_footer_ref,
+                ),
             }
         )
     return {"request_head": request_head, "sections": sections}
