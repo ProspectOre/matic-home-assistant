@@ -231,7 +231,7 @@ def _coordinator_body(body: str) -> tuple[str, str | None]:
     return "\n".join(lines[start:]), match.group("head").lower()
 
 
-def _raw_sections(body: str) -> list[tuple[str, str]]:
+def _raw_sections(body: str, coordinator_bound: bool = False) -> list[tuple[str, str]]:
     lines = body.splitlines()
     starts: list[int] = []
     kinds: dict[int, str] = {}
@@ -271,7 +271,7 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
                 or not starts
                 or REVIEWED_COMMIT.search(previous)
                 or _standalone_regular_clean(previous)
-                or _standalone_security_clean(previous)
+                or (coordinator_bound and _standalone_security_clean(previous))
                 or marker_only
             ):
                 kind = (
@@ -282,7 +282,8 @@ def _raw_sections(body: str) -> list[tuple[str, str]]:
                         starts
                         and kinds[starts[-1]] == "security"
                         and (
-                            REVIEWED_COMMIT.search(previous)
+                            not coordinator_bound
+                            or REVIEWED_COMMIT.search(previous)
                             or not _standalone_security_clean(previous)
                         )
                     )
@@ -447,7 +448,9 @@ def _security_facts(kind: str, section: str) -> tuple[bool, bool]:
 
 def classify_body(body: str) -> dict[str, Any]:
     parsed_body, request_head = _coordinator_body(body)
-    raw_sections = _raw_sections(parsed_body)
+    raw_sections = _raw_sections(
+        parsed_body, coordinator_bound=request_head is not None
+    )
 
     sections: list[dict[str, Any]] = []
     for kind, text in raw_sections:
